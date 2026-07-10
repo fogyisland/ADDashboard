@@ -26,3 +26,7 @@ export async function closePool() {
     poolPromise = null;
   }
 }
+
+export function _setPoolForTest(p) {
+  poolPromise = Promise.resolve(p);
+}
