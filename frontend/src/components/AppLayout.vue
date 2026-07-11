@@ -12,6 +12,8 @@
           <div class="divider">管理</div>
           <router-link to="/admin/users">用户</router-link>
           <router-link to="/admin/roles">角色</router-link>
+          <router-link to="/admin/sites">当前可用站点</router-link>
+          <router-link to="/admin/dcs">当前可用服务器</router-link>
           <router-link to="/admin/config">系统配置</router-link>
           <router-link to="/admin/audit">审计日志</router-link>
         </template>

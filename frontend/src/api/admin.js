@@ -7,5 +7,7 @@ export const adminApi = {
   listRoles: () => api.get('/api/admin/roles'),
   getConfig: () => api.get('/api/admin/config'),
   updateConfig: (body) => api.put('/api/admin/config', body),
-  getAudit: (limit = 200) => api.get(`/api/admin/audit?limit=${limit}`)
+  getAudit: (limit = 200) => api.get(`/api/admin/audit?limit=${limit}`),
+  listSites: () => api.get('/api/admin/sites'),
+  listDcs: () => api.get('/api/admin/dcs')
 };

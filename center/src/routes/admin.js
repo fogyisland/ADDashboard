@@ -14,7 +14,10 @@ const CAML_MAP = new Map([
   ['config_key', 'configKey'],
   ['config_value', 'configValue'],
   ['updated_at', 'updatedAt'],
-  ['updated_by', 'updatedBy']
+  ['updated_by', 'updatedBy'],
+  ['link_count', 'linkCount'],
+  ['error_count', 'errorCount'],
+  ['last_seen', 'lastSeen']
 ]);
 
 function camelRow(row) {
@@ -169,6 +172,62 @@ export function adminRouter({ config, pool, logger }) {
       res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin audit list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // GET /api/admin/sites — distinct sites observed in ad_replication_status
+  // (both source_site and dest_site columns), with link/error counts and
+  // last-seen timestamp. Read-only; sites are derived from agent reports.
+  r.get('/api/admin/sites', auth, async (_req, res) => {
+    const SQL = `
+      SELECT site AS name,
+             COUNT(*)                                    AS link_count,
+             SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count,
+             MAX(collected_at)                           AS last_seen
+      FROM (
+        SELECT source_site AS site, status_code, collected_at
+          FROM ad_replication_status WHERE source_site IS NOT NULL
+        UNION ALL
+        SELECT dest_site,    status_code, collected_at
+          FROM ad_replication_status WHERE dest_site   IS NOT NULL
+      ) t
+      GROUP BY site
+      ORDER BY site
+    `;
+    try {
+      const [rows] = await pool.execute(SQL);
+      res.json(rows.map(camelRow));
+    } catch (e) {
+      logger.error({ err: e }, 'admin sites list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // GET /api/admin/dcs — distinct DCs (源/目的)  with link/error counts,
+  // most-frequently-observed site assignment, and last-seen timestamp.
+  r.get('/api/admin/dcs', auth, async (_req, res) => {
+    const SQL = `
+      SELECT dc AS name,
+             site,
+             COUNT(*)                                    AS link_count,
+             SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count,
+             MAX(collected_at)                           AS last_seen
+      FROM (
+        SELECT source_dc AS dc, source_site AS site, status_code, collected_at
+          FROM ad_replication_status WHERE source_dc IS NOT NULL
+        UNION ALL
+        SELECT dest_dc,   dest_site,    status_code, collected_at
+          FROM ad_replication_status WHERE dest_dc   IS NOT NULL
+      ) t
+      GROUP BY dc, site
+      ORDER BY dc, site
+    `;
+    try {
+      const [rows] = await pool.execute(SQL);
+      res.json(rows.map(camelRow));
+    } catch (e) {
+      logger.error({ err: e }, 'admin dcs list failed');
       res.status(500).json({ error: 'internal' });
     }
   });

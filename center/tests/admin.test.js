@@ -264,3 +264,69 @@ test('admin route: 500 on DB error returns {error: "internal"}', async () => {
   assert.equal(r.status, 500);
   assert.equal(r.body.error, 'internal');
 });
+
+// ----- SITES (derived from ad_replication_status) -----
+
+test('GET /api/admin/sites: 200 returns camelCase rows with linkCount/errorCount/lastSeen', async () => {
+  const last = new Date('2026-07-11T08:00:00Z');
+  const pool = buildMockPool([
+    {
+      // The UNION ALL of source_site + dest_site grouped by site
+      match: /FROM\s*\(\s*SELECT\s+source_site\s+AS\s+site/i,
+      rows: [
+        { name: 'SITE-A', link_count: 4, error_count: 1, last_seen: last },
+        { name: 'SITE-B', link_count: 2, error_count: 0, last_seen: last }
+      ]
+    }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/admin/sites')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 2);
+  assert.deepEqual(Object.keys(r.body[0]).sort(),
+    ['errorCount','lastSeen','linkCount','name']);
+  assert.equal(r.body[0].name, 'SITE-A');
+  assert.equal(r.body[0].linkCount, 4);
+  assert.equal(r.body[0].errorCount, 1);
+});
+
+// ----- DCS (derived from ad_replication_status, grouped by dc+site) -----
+
+test('GET /api/admin/dcs: 200 returns rows keyed on (name, site) pair', async () => {
+  const last = new Date('2026-07-11T08:00:00Z');
+  const pool = buildMockPool([
+    {
+      // The UNION ALL of source_dc + dest_dc grouped by dc, site
+      match: /FROM\s*\(\s*SELECT\s+source_dc\s+AS\s+dc/i,
+      rows: [
+        { name: 'DC-A1', site: 'SITE-A', link_count: 3, error_count: 0, last_seen: last },
+        { name: 'DC-B1', site: 'SITE-B', link_count: 2, error_count: 1, last_seen: last }
+      ]
+    }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/admin/dcs')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 2);
+  assert.deepEqual(Object.keys(r.body[0]).sort(),
+    ['errorCount','lastSeen','linkCount','name','site']);
+  assert.equal(r.body[0].name, 'DC-A1');
+  assert.equal(r.body[0].site, 'SITE-A');
+  assert.equal(r.body[0].linkCount, 3);
+});
+
+test('GET /api/admin/sites with empty replication_status -> empty array', async () => {
+  const pool = buildMockPool([
+    { match: /FROM\s*\(\s*SELECT\s+source_site\s+AS\s+site/i, rows: [] }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/admin/sites')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, []);
+});

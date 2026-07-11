@@ -9,6 +9,8 @@ import UsersView from './views/admin/UsersView.vue';
 import RolesView from './views/admin/RolesView.vue';
 import ConfigView from './views/admin/ConfigView.vue';
 import AuditView from './views/admin/AuditView.vue';
+import SitesView from './views/admin/SitesView.vue';
+import DcsView from './views/admin/DcsView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
 const routes = [
@@ -22,6 +24,8 @@ const routes = [
   { path: '/admin/roles', component: RolesView, meta: { perm: 'admin:users' } },
   { path: '/admin/config', component: ConfigView, meta: { perm: 'admin:users' } },
   { path: '/admin/audit', component: AuditView, meta: { perm: 'admin:users' } },
+  { path: '/admin/sites', component: SitesView, meta: { perm: 'admin:users' } },
+  { path: '/admin/dcs', component: DcsView, meta: { perm: 'admin:users' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 
