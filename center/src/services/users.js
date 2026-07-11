@@ -1,8 +1,7 @@
 import { getPool } from '../db.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 
-export async function findByUsername(username) {
-  const pool = await getPool();
+export async function findByUsername(pool, username) {
   const r = await pool.request()
     .input('u', username)
     .query(`SELECT u.id, u.username, u.password_hash, u.status, u.role_id, r.role_name, r.permissions
@@ -47,15 +46,14 @@ export async function deleteUser(id) {
   await pool.request().input('id', id).query('DELETE FROM sys_users WHERE id = @id');
 }
 
-export async function authenticate(username, password) {
-  const u = await findByUsername(username);
+export async function authenticate(pool, username, password) {
+  const u = await findByUsername(pool, username);
   if (!u || !u.status) return null;
   const ok = await verifyPassword(password, u.password_hash);
   if (!ok) return null;
   return { id: u.id, username: u.username, role: u.role_name, permissions: JSON.parse(u.permissions) };
 }
 
-export async function recordLogin(userId) {
-  const pool = await getPool();
+export async function recordLogin(pool, userId) {
   await pool.request().input('id', userId).query('UPDATE sys_users SET last_login_at = GETUTCDATE() WHERE id = @id');
 }
