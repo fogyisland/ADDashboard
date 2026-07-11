@@ -57,8 +57,8 @@ export function agentRouter({ config, pool, logger }) {
       const rows = data.map(row => ({ ...row, agentId, collectedAt }));
       await upsertStatus(pool, rows, { appendHistory: historyEnabled });
       await pool.execute(TOUCH_HEARTBEAT, [agentId]);
-      const { pollingIntervalMinutes, latencyThresholdMinutes } = await getAgentConfig(pool);
-      res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes } });
+      const { pollingIntervalMinutes, latencyThresholdMinutes, centerPublicHost, centerPublicPort } = await getAgentConfig(pool);
+      res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes, centerPublicHost, centerPublicPort } });
     } catch (e) {
       logger.error({ err: e, agentId }, 'report failed');
       res.status(500).json({ error: 'internal' });

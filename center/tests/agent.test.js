@@ -96,6 +96,44 @@ test('POST /api/agent/report missing payload -> 400', async () => {
   assert.equal(records.length, 0);
 });
 
+test('GET /api/agent/config -> 200 returns polling/latency/host/port', async () => {
+  const pool = buildMockPool([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'polling_interval_minutes', config_value: '5' },
+      { config_key: 'latency_threshold_minutes', config_value: '60' },
+      { config_key: 'agent_token', config_value: 'tok' },
+      { config_key: 'center_public_host', config_value: 'ad-dashboard.contoso.com' },
+      { config_key: 'center_public_port', config_value: '443' }
+    ]}
+  ]);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .get('/api/agent/config')
+    .set('X-Agent-Token', 'tok');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.pollingIntervalMinutes, 5);
+  assert.equal(res.body.latencyThresholdMinutes, 60);
+  assert.equal(res.body.agentToken, 'tok');
+  assert.equal(res.body.centerPublicHost, 'ad-dashboard.contoso.com');
+  assert.equal(res.body.centerPublicPort, '443');
+});
+
+test('GET /api/agent/config with missing center_public_* keys -> null fields, not undefined', async () => {
+  const pool = buildMockPool([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'polling_interval_minutes', config_value: '15' },
+      { config_key: 'latency_threshold_minutes', config_value: '180' }
+    ]}
+  ]);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .get('/api/agent/config')
+    .set('X-Agent-Token', 'tok');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.centerPublicHost, null);
+  assert.equal(res.body.centerPublicPort, null);
+});
+
 test('POST /api/agent/report with wrong token -> 401', async () => {
   const records = [];
   const pool = buildRecordingPool(records);
