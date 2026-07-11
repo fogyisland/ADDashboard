@@ -1,4 +1,1 @@
-<template><div>{{ name }} (placeholder — T16+ will implement)</div></template>
-<script setup>
-const props = defineProps({ name: String });
-</script>
+<template><div style="padding:24px">Dashboard placeholder</div></template>
