@@ -5,27 +5,19 @@ import bcrypt from 'bcrypt';
 import { authRouter } from '../src/routes/auth.js';
 import { default as supertest } from 'supertest';
 
-// Build a mock mssql pool whose request() is synchronous (matches real API)
-// and returns a promise of { recordset } from query().
-function buildMockPool(map) {
+// Keyed by username -> row. Routes execute the SELECT for findByUsername,
+// then UPDATE sys_users on success / INSERT audit_logs on failure.
+// We match by SQL fragment and use the first ? placeholder as the lookup.
+function buildMockPool(byUsername) {
   return {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) {
-          for (const [k, v] of Object.entries(self._inputs)) {
-            if (q.includes(`@${k}`)) {
-              if (q.includes('FROM sys_users u JOIN sys_roles r') && k === 'u') {
-                return { recordset: map[v] ? [map[v]] : [] };
-              }
-            }
-          }
-          // UPDATE / INSERT — succeed silently
-          return { recordset: [] };
-        }
-      };
-      return self;
+    async execute(sql, params = []) {
+      if (/FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i.test(sql)) {
+        const username = params[0];
+        const row = byUsername[username];
+        return [row ? [row] : [], []];
+      }
+      // UPDATE last_login_at / INSERT audit_logs — succeed silently
+      return [{ affectedRows: 1 }, []];
     }
   };
 }

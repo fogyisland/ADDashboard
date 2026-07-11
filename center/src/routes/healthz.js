@@ -6,11 +6,11 @@ export function healthzRouter() {
   r.get('/healthz', async (req, res) => {
     try {
       const pool = await getPool();
-      const r1 = await pool.request().query("SELECT 1 AS ok");
-      const r2 = await pool.request().query(
-        "SELECT TOP 1 last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC"
+      const [ping] = await pool.execute('SELECT 1 AS ok');
+      const [last] = await pool.execute(
+        'SELECT last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC LIMIT 1'
       );
-      res.json({ status: 'ok', db: r1.recordset[0].ok === 1 ? 'ok' : 'fail', lastHeartbeat: r2.recordset[0]?.last ?? null });
+      res.json({ status: 'ok', db: ping[0]?.ok === 1 ? 'ok' : 'fail', lastHeartbeat: last[0]?.last ?? null });
     } catch (e) {
       res.status(503).json({ status: 'degraded', error: e.message });
     }

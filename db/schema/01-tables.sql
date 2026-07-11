@@ -1,119 +1,105 @@
--- AD Replication Dashboard schema (SQL Server 2019+)
-SET QUOTED_IDENTIFIER ON;
-GO
+-- AD Replication Dashboard schema (MySQL 8.0+ / InnoDB)
+-- Charset: utf8mb4 (full Unicode); collation: utf8mb4_unicode_ci.
+-- Timezone is local (Asia/Shanghai) — handled at the connection / session level.
+-- Session defaults expected (set by db.js on connect):
+--   SET time_zone = '+08:00';
 
 -- Replication status snapshot (latest per partner pair)
-IF OBJECT_ID('ad_replication_status', 'U') IS NULL
-CREATE TABLE ad_replication_status (
-  id                BIGINT IDENTITY PRIMARY KEY,
-  collected_at      DATETIME2 NOT NULL,
-  agent_id          NVARCHAR(64) NOT NULL,
-  source_dc         NVARCHAR(128) NOT NULL,
-  dest_dc           NVARCHAR(128) NOT NULL,
-  source_site       NVARCHAR(64) NULL,
-  dest_site         NVARCHAR(64) NULL,
-  naming_context    NVARCHAR(256) NOT NULL,
-  last_success_time DATETIME2 NULL,
-  last_attempt_time DATETIME2 NULL,
+CREATE TABLE IF NOT EXISTS ad_replication_status (
+  id                BIGINT AUTO_INCREMENT PRIMARY KEY,
+  collected_at      DATETIME NOT NULL,
+  agent_id          VARCHAR(64) NOT NULL,
+  source_dc         VARCHAR(128) NOT NULL,
+  dest_dc           VARCHAR(128) NOT NULL,
+  source_site       VARCHAR(64) NULL,
+  dest_site         VARCHAR(64) NULL,
+  naming_context    VARCHAR(256) NOT NULL,
+  last_success_time DATETIME NULL,
+  last_attempt_time DATETIME NULL,
   status_code       INT NOT NULL DEFAULT 0,
-  error_message     NVARCHAR(512) NULL,
-  CONSTRAINT uq_repl_partner UNIQUE (source_dc, dest_dc, naming_context)
-);
-CREATE INDEX ix_repl_collected ON ad_replication_status(collected_at);
-CREATE INDEX ix_repl_dest ON ad_replication_status(dest_dc);
-GO
+  error_message     VARCHAR(512) NULL,
+  UNIQUE KEY uq_repl_partner (source_dc, dest_dc, naming_context),
+  KEY ix_repl_collected (collected_at),
+  KEY ix_repl_dest (dest_dc)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- History (append-only, retention managed by job)
-IF OBJECT_ID('ad_replication_history', 'U') IS NULL
-CREATE TABLE ad_replication_history (
-  id                BIGINT IDENTITY PRIMARY KEY,
-  collected_at      DATETIME2 NOT NULL,
-  agent_id          NVARCHAR(64) NOT NULL,
-  source_dc         NVARCHAR(128) NOT NULL,
-  dest_dc           NVARCHAR(128) NOT NULL,
-  naming_context    NVARCHAR(256) NOT NULL,
-  last_success_time DATETIME2 NULL,
+CREATE TABLE IF NOT EXISTS ad_replication_history (
+  id                BIGINT AUTO_INCREMENT PRIMARY KEY,
+  collected_at      DATETIME NOT NULL,
+  agent_id          VARCHAR(64) NOT NULL,
+  source_dc         VARCHAR(128) NOT NULL,
+  dest_dc           VARCHAR(128) NOT NULL,
+  naming_context    VARCHAR(256) NOT NULL,
+  last_success_time DATETIME NULL,
   status_code       INT NOT NULL,
-  error_message     NVARCHAR(512) NULL
-);
-CREATE INDEX ix_hist_time ON ad_replication_history(collected_at);
-GO
+  error_message     VARCHAR(512) NULL,
+  KEY ix_hist_time (collected_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Agent heartbeat
-IF OBJECT_ID('ad_agent_heartbeat', 'U') IS NULL
-CREATE TABLE ad_agent_heartbeat (
-  agent_id            NVARCHAR(64) PRIMARY KEY,
-  last_heartbeat_at   DATETIME2 NULL,
-  agent_version       NVARCHAR(32) NULL,
-  last_report_at      DATETIME2 NULL,
-  last_report_status  NVARCHAR(32) NULL,
+CREATE TABLE IF NOT EXISTS ad_agent_heartbeat (
+  agent_id            VARCHAR(64) PRIMARY KEY,
+  last_heartbeat_at   DATETIME NULL,
+  agent_version       VARCHAR(32) NULL,
+  last_report_at      DATETIME NULL,
+  last_report_status  VARCHAR(32) NULL,
   pending_queue_size  INT NOT NULL DEFAULT 0
-);
-GO
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Sites
-IF OBJECT_ID('ad_sites', 'U') IS NULL
-CREATE TABLE ad_sites (
-  site_id     INT IDENTITY PRIMARY KEY,
-  site_name   NVARCHAR(64) UNIQUE NOT NULL,
-  region_code NVARCHAR(32) NULL,
-  is_hub      BIT NOT NULL DEFAULT 0
-);
-GO
+CREATE TABLE IF NOT EXISTS ad_sites (
+  site_id     INT AUTO_INCREMENT PRIMARY KEY,
+  site_name   VARCHAR(64) UNIQUE NOT NULL,
+  region_code VARCHAR(32) NULL,
+  is_hub      TINYINT(1) NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- DCs
-IF OBJECT_ID('ad_dcs', 'U') IS NULL
-CREATE TABLE ad_dcs (
-  dc_name    NVARCHAR(128) PRIMARY KEY,
-  site_id    INT NULL FOREIGN KEY REFERENCES ad_sites(site_id),
-  ip_address NVARCHAR(64) NULL,
-  os_version NVARCHAR(64) NULL,
-  is_pdc     BIT NOT NULL DEFAULT 0
-);
-GO
+CREATE TABLE IF NOT EXISTS ad_dcs (
+  dc_name    VARCHAR(128) PRIMARY KEY,
+  site_id    INT NULL,
+  ip_address VARCHAR(64) NULL,
+  os_version VARCHAR(64) NULL,
+  is_pdc     TINYINT(1) NOT NULL DEFAULT 0,
+  CONSTRAINT fk_dcs_site FOREIGN KEY (site_id) REFERENCES ad_sites(site_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- System config (key-value)
-IF OBJECT_ID('system_config', 'U') IS NULL
-CREATE TABLE system_config (
-  config_key   NVARCHAR(64) PRIMARY KEY,
-  config_value NVARCHAR(MAX) NULL,
-  description  NVARCHAR(256) NULL,
-  updated_at   DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
-  updated_by   NVARCHAR(64) NULL
-);
-GO
+CREATE TABLE IF NOT EXISTS system_config (
+  config_key   VARCHAR(64) PRIMARY KEY,
+  config_value TEXT NULL,
+  description  VARCHAR(256) NULL,
+  updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_by   VARCHAR(64) NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- RBAC roles
-IF OBJECT_ID('sys_roles', 'U') IS NULL
-CREATE TABLE sys_roles (
-  id          INT IDENTITY PRIMARY KEY,
-  role_name   NVARCHAR(64) UNIQUE NOT NULL,
-  permissions NVARCHAR(MAX) NOT NULL DEFAULT '[]'
-);
-GO
+CREATE TABLE IF NOT EXISTS sys_roles (
+  id          INT AUTO_INCREMENT PRIMARY KEY,
+  role_name   VARCHAR(64) UNIQUE NOT NULL,
+  permissions TEXT NOT NULL DEFAULT '[]'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- RBAC users
-IF OBJECT_ID('sys_users', 'U') IS NULL
-CREATE TABLE sys_users (
-  id              INT IDENTITY PRIMARY KEY,
-  username        NVARCHAR(64) UNIQUE NOT NULL,
-  password_hash   NVARCHAR(256) NOT NULL,
-  role_id         INT NOT NULL FOREIGN KEY REFERENCES sys_roles(id),
-  status          BIT NOT NULL DEFAULT 1,
-  last_login_at   DATETIME2 NULL,
-  created_at      DATETIME2 NOT NULL DEFAULT GETUTCDATE()
-);
-GO
+CREATE TABLE IF NOT EXISTS sys_users (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  username        VARCHAR(64) UNIQUE NOT NULL,
+  password_hash   VARCHAR(256) NOT NULL,
+  role_id         INT NOT NULL,
+  status          TINYINT(1) NOT NULL DEFAULT 1,
+  last_login_at   DATETIME NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_users_role FOREIGN KEY (role_id) REFERENCES sys_roles(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Audit log
-IF OBJECT_ID('audit_logs', 'U') IS NULL
-CREATE TABLE audit_logs (
-  id         BIGINT IDENTITY PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id    INT NULL,
-  action     NVARCHAR(64) NOT NULL,
-  target     NVARCHAR(128) NULL,
-  payload    NVARCHAR(MAX) NULL,
-  created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
-);
-CREATE INDEX ix_audit_time ON audit_logs(created_at);
-GO
+  action     VARCHAR(64) NOT NULL,
+  target     VARCHAR(128) NULL,
+  payload    TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY ix_audit_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

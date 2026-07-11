@@ -74,9 +74,9 @@ sqlcmd -S localhost -Q "BACKUP DATABASE [AD_Monitoring] TO DISK='D:\Backups\AD_M
 
 ### Center machine lost
 
-1. Provision new management server with SQL Server
+1. Provision new management server with MySQL 8+
 2. Restore `AD_Monitoring` database from latest backup
-3. Install center: `.\scripts\install-center.ps1 -SqlServer ... -SqlPassword ... -AgentToken <same-as-before> -JwtSecret <same-as-before>`
+3. Install center: `.\scripts\install-center.ps1 -MySqlHost ... -MySqlPassword ... -AgentToken <same-as-before> -JwtSecret <same-as-before>`
 4. Verify `/healthz` returns 200
 
 Agents continue running with their locally cached `appsettings.json` and buffered queue; once center URL is reachable again, they resume reporting.

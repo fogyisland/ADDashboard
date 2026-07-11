@@ -3,52 +3,42 @@ import { agentToken } from '../auth/agent-token.js';
 import { upsertStatus } from '../services/replication.js';
 import { getConfig, getAgentConfig } from '../services/config.js';
 
-const HEARTBEAT_MERGE = `
-MERGE INTO ad_agent_heartbeat AS tgt
-USING (SELECT
-  @agentId          AS agent_id,
-  @agentVersion     AS agent_version,
-  @lastReportAt     AS last_report_at,
-  @lastReportStatus AS last_report_status,
-  @pendingQueueSize AS pending_queue_size
-) AS src
-ON (tgt.agent_id = src.agent_id)
-WHEN MATCHED THEN UPDATE SET
-  last_heartbeat_at   = GETUTCDATE(),
-  agent_version       = src.agent_version,
-  last_report_at      = ISNULL(src.last_report_at, tgt.last_report_at),
-  last_report_status  = ISNULL(src.last_report_status, tgt.last_report_status),
-  pending_queue_size  = src.pending_queue_size
-WHEN NOT MATCHED THEN INSERT (
+// MySQL: last_heartbeat_at is auto-touched via NOW() in INSERT, and preserved
+// (overwritten) on UPDATE. The IFNULL semantics from SQL Server become COALESCE.
+const HEARTBEAT_UPSERT = `
+INSERT INTO ad_agent_heartbeat (
   agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size
-) VALUES (
-  src.agent_id, GETUTCDATE(), src.agent_version, src.last_report_at, src.last_report_status, src.pending_queue_size
-);
+) VALUES (?, NOW(), ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+  last_heartbeat_at   = NOW(),
+  agent_version       = VALUES(agent_version),
+  last_report_at      = COALESCE(VALUES(last_report_at), last_report_at),
+  last_report_status  = COALESCE(VALUES(last_report_status), last_report_status),
+  pending_queue_size  = VALUES(pending_queue_size)
 `.trim();
 
 const TOUCH_HEARTBEAT = `
 UPDATE ad_agent_heartbeat
-   SET last_report_at = GETUTCDATE(),
+   SET last_report_at = NOW(),
        last_report_status = 'success'
- WHERE agent_id = @agentId;
+ WHERE agent_id = ?
 `.trim();
 
 export function agentRouter({ config, pool, logger }) {
   const r = Router();
   r.use(agentToken(config.agentToken));
 
-  // POST /api/agent/heartbeat
   r.post('/api/agent/heartbeat', async (req, res) => {
     const { agentId, agentVersion, lastReportAt, lastReportStatus, pendingQueueSize } = req.body || {};
     if (!agentId) return res.status(400).json({ error: 'missing agentId' });
     try {
-      await pool.request()
-        .input('agentId', agentId)
-        .input('agentVersion', agentVersion ?? null)
-        .input('lastReportAt', lastReportAt ?? null)
-        .input('lastReportStatus', lastReportStatus ?? null)
-        .input('pendingQueueSize', pendingQueueSize ?? 0)
-        .query(HEARTBEAT_MERGE);
+      await pool.execute(HEARTBEAT_UPSERT, [
+        agentId,
+        agentVersion ?? null,
+        lastReportAt ?? null,
+        lastReportStatus ?? null,
+        pendingQueueSize ?? 0
+      ]);
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e, agentId }, 'heartbeat failed');
@@ -56,7 +46,6 @@ export function agentRouter({ config, pool, logger }) {
     }
   });
 
-  // POST /api/agent/report
   r.post('/api/agent/report', async (req, res) => {
     const { agentId, collectedAt, data } = req.body || {};
     if (!agentId || !collectedAt || !Array.isArray(data)) {
@@ -67,9 +56,7 @@ export function agentRouter({ config, pool, logger }) {
       const historyEnabled = String(cfg.history_enabled ?? 'false').toLowerCase() === 'true';
       const rows = data.map(row => ({ ...row, agentId, collectedAt }));
       await upsertStatus(pool, rows, { appendHistory: historyEnabled });
-      await pool.request()
-        .input('agentId', agentId)
-        .query(TOUCH_HEARTBEAT);
+      await pool.execute(TOUCH_HEARTBEAT, [agentId]);
       const { pollingIntervalMinutes, latencyThresholdMinutes } = await getAgentConfig(pool);
       res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes } });
     } catch (e) {
@@ -78,7 +65,6 @@ export function agentRouter({ config, pool, logger }) {
     }
   });
 
-  // GET /api/agent/config
   r.get('/api/agent/config', async (_req, res) => {
     try {
       const full = await getAgentConfig(pool);

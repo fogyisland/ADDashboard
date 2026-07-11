@@ -5,7 +5,7 @@ export function buildTestApp({ pool }) {
   const config = {
     listenPort: 0, jwtSecret: 'test', agentToken: 'tok',
     staticDir: process.cwd(), env: 'test', logLevel: 'silent',
-    sql: { server: '', database: '' }
+    mysql: { host: '', database: '' }
   };
   return createApp({ config, pool, logger: createLogger({ component: 'test', level: 'silent' }) });
 }

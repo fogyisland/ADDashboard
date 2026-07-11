@@ -34,9 +34,8 @@ export function adminRouter({ config, pool, logger }) {
   // GET /api/admin/roles
   r.get('/api/admin/roles', async (_req, res) => {
     try {
-      const rs = await pool.request()
-        .query(`SELECT id, role_name, permissions FROM sys_roles ORDER BY id`);
-      const out = rs.recordset.map(row => ({
+      const [rows] = await pool.execute(`SELECT id, role_name, permissions FROM sys_roles ORDER BY id`);
+      const out = rows.map(row => ({
         id: row.id,
         roleName: row.role_name,
         permissions: row.permissions ? JSON.parse(row.permissions) : []
@@ -162,11 +161,12 @@ export function adminRouter({ config, pool, logger }) {
       let limit = Number(req.query.limit ?? 200);
       if (!Number.isFinite(limit) || limit <= 0) limit = 200;
       if (limit > 1000) limit = 1000;
-      const rs = await pool.request()
-        .input('l', limit)
-        .query(`SELECT TOP (@l) id, user_id, action, target, payload, created_at
-                FROM audit_logs ORDER BY created_at DESC, id DESC`);
-      res.json(rs.recordset.map(camelRow));
+      const [rows] = await pool.execute(
+        `SELECT id, user_id, action, target, payload, created_at
+           FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT ?`,
+        [limit]
+      );
+      res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin audit list failed');
       res.status(500).json({ error: 'internal' });

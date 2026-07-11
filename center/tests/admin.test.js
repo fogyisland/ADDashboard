@@ -4,33 +4,11 @@ import express from 'express';
 import { default as supertest } from 'supertest';
 import { adminRouter } from '../src/routes/admin.js';
 import { signJwt } from '../src/auth/jwt.js';
+import { buildMockPool, buildRecordingPool, buildThrowingPool } from './helpers/mysql-pool.js';
 
 const SECRET = 'test-secret-please-do-not-use-in-prod';
 
-// Programmable mock pool matching the dashboard.test.js pattern.
-// Returns rows keyed by SQL fragment match.
-function buildMockPool(scripts) {
-  return {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) {
-          for (const s of scripts) {
-            if (s.match.test(q)) {
-              const rows = typeof s.rows === 'function' ? s.rows() : s.rows;
-              return { recordset: Array.isArray(rows) ? rows : [] };
-            }
-          }
-          return { recordset: [] };
-        }
-      };
-      return self;
-    }
-  };
-}
-
-function buildApp({ pool, scripts }) {
+function buildApp({ pool }) {
   const a = express();
   a.use(express.json());
   const config = { jwtSecret: SECRET };
@@ -58,15 +36,13 @@ function operatorToken() {
 // ----- AUTH WIRING -----
 
 test('GET /api/admin/roles: 401 when no token', async () => {
-  const pool = buildMockPool([]);
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildMockPool() });
   const r = await supertest(app).get('/api/admin/roles');
   assert.equal(r.status, 401);
 });
 
 test('GET /api/admin/roles: 403 for operator token (missing admin:users perm)', async () => {
-  const pool = buildMockPool([]);
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildMockPool() });
   const r = await supertest(app)
     .get('/api/admin/roles')
     .set('Authorization', `Bearer ${operatorToken()}`);
@@ -74,7 +50,7 @@ test('GET /api/admin/roles: 403 for operator token (missing admin:users perm)', 
 });
 
 test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+sys_roles/i,
       rows: [
@@ -82,9 +58,8 @@ test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', a
         { id: 2, role_name: 'operator', permissions: '["write:reports"]' }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/admin/roles')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -101,7 +76,7 @@ test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', a
 // ----- USERS LIST -----
 
 test('GET /api/admin/users: 200 returns array of users', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i,
       rows: [
@@ -109,9 +84,8 @@ test('GET /api/admin/users: 200 returns array of users', async () => {
         { id: 2, username: 'bob',   status: 1, last_login_at: null, created_at: new Date('2026-07-11T00:00:00Z'), role_name: 'operator' }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -125,8 +99,7 @@ test('GET /api/admin/users: 200 returns array of users', async () => {
 // ----- CREATE USER -----
 
 test('POST /api/admin/users: 400 when missing fields', async () => {
-  const pool = buildMockPool([]);
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildMockPool() });
   const r = await supertest(app)
     .post('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -135,14 +108,13 @@ test('POST /api/admin/users: 400 when missing fields', async () => {
 });
 
 test('POST /api/admin/users: 409 when username already exists', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i,
       rows: [{ id: 1, username: 'alice', password_hash: 'x', status: 1, role_id: 1, role_name: 'admin', permissions: '["*"]' }]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .post('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -151,59 +123,52 @@ test('POST /api/admin/users: 409 when username already exists', async () => {
 });
 
 test('POST /api/admin/users: 201 on success and writes audit row', async () => {
-  let auditCalled = false;
-  let lastAuditAction = null;
-  let lastAuditTarget = null;
-  let lastAuditUserId = null;
+  // Find-by-username returns empty (no conflict), then INSERT INTO sys_users,
+  // then INSERT INTO audit_logs. We key on SQL fragments and capture params.
+  const recorded = [];
+  let auditCaptured = null;
   const pool = {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) {
-          if (/FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i.test(q)) {
-            return { recordset: [] };
-          }
-          if (/INSERT\s+INTO\s+audit_logs/i.test(q)) {
-            auditCalled = true;
-            lastAuditAction = self._inputs.a;
-            lastAuditTarget = self._inputs.t;
-            lastAuditUserId = self._inputs.u;
-            return { recordset: [] };
-          }
-          return { recordset: [] };
-        }
-      };
-      return self;
+    async execute(sql, params = []) {
+      recorded.push({ sql, params });
+      if (/FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i.test(sql)) {
+        return [[], []];
+      }
+      if (/INSERT\s+INTO\s+sys_users/i.test(sql)) {
+        return [{ insertId: 42, affectedRows: 1 }, []];
+      }
+      if (/INSERT\s+INTO\s+audit_logs/i.test(sql)) {
+        // [userId, action, target, payload_json]
+        auditCaptured = {
+          userId: params[0],
+          action: params[1],
+          target: params[2],
+          payload: params[3]
+        };
+        return [{ insertId: 99, affectedRows: 1 }, []];
+      }
+      return [[], []];
     }
   };
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .post('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`)
     .send({ username: 'charlie', password: 'pw', roleId: 1 });
   assert.equal(r.status, 201);
   assert.deepEqual(r.body, { ok: true });
-  assert.ok(auditCalled, 'audit_logs INSERT should have been called');
-  assert.equal(lastAuditAction, 'create_user');
-  assert.equal(lastAuditTarget, 'charlie');
-  assert.equal(lastAuditUserId, 'u1');
+  assert.ok(auditCaptured, 'audit_logs INSERT should have been called');
+  assert.equal(auditCaptured.action, 'create_user');
+  assert.equal(auditCaptured.target, 'charlie');
+  assert.equal(auditCaptured.userId, 'u1');
+  assert.match(auditCaptured.payload, /"username":"charlie"/);
 });
 
 // ----- UPDATE USER -----
 
 test('PUT /api/admin/users/:id: 200 with payload', async () => {
-  const pool = {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) { return { recordset: [] }; }
-      };
-      return self;
-    }
-  };
-  const app = buildApp({ pool, scripts: [] });
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .put('/api/admin/users/5')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -215,17 +180,9 @@ test('PUT /api/admin/users/:id: 200 with payload', async () => {
 // ----- DELETE USER -----
 
 test('DELETE /api/admin/users/:id: 200', async () => {
-  const pool = {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) { return { recordset: [] }; }
-      };
-      return self;
-    }
-  };
-  const app = buildApp({ pool, scripts: [] });
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .delete('/api/admin/users/5')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -236,7 +193,7 @@ test('DELETE /api/admin/users/:id: 200', async () => {
 // ----- CONFIG -----
 
 test('GET /api/admin/config: 200 returns dict from system_config', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+system_config/i,
       rows: [
@@ -244,9 +201,8 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
         { config_key: 'agent_token', config_value: 'tok-123' }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/admin/config')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -258,22 +214,15 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
 test('PUT /api/admin/config: 200 updates multiple keys', async () => {
   let updateCount = 0;
   const pool = {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) {
-          if (/UPDATE\s+system_config/i.test(q)) {
-            updateCount++;
-            return { recordset: [] };
-          }
-          return { recordset: [] };
-        }
-      };
-      return self;
+    async execute(sql, params = []) {
+      if (/UPDATE\s+system_config/i.test(sql)) {
+        updateCount++;
+        return [{ affectedRows: 1 }, []];
+      }
+      return [[], []];
     }
   };
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .put('/api/admin/config')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -285,7 +234,7 @@ test('PUT /api/admin/config: 200 updates multiple keys', async () => {
 // ----- AUDIT -----
 
 test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+audit_logs/i,
       rows: [
@@ -293,9 +242,8 @@ test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
         { id: 2, user_id: 1, action: 'create_user', target: 'bob', payload: '{"x":1}', created_at: new Date() }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/admin/audit?limit=5')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -309,16 +257,7 @@ test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
 // ----- DB ERROR PATH -----
 
 test('admin route: 500 on DB error returns {error: "internal"}', async () => {
-  const pool = {
-    request() {
-      return {
-        _inputs: {},
-        input() { return this; },
-        async query() { throw new Error('boom'); }
-      };
-    }
-  };
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildThrowingPool('boom') });
   const r = await supertest(app)
     .get('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`);

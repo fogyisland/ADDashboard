@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-const REQUIRED = ['sql.server', 'sql.database', 'listenPort', 'jwtSecret', 'agentToken', 'staticDir'];
+const REQUIRED = ['mysql.host', 'mysql.database', 'listenPort', 'jwtSecret', 'agentToken', 'staticDir'];
 
 export function loadConfig(path) {
   const raw = readFileSync(path, 'utf8');
@@ -12,7 +12,7 @@ export function loadConfig(path) {
     }
   }
   return {
-    sql: cfg.sql,
+    mysql: cfg.mysql,
     listenPort: cfg.listenPort,
     jwtSecret: cfg.jwtSecret,
     agentToken: cfg.agentToken,

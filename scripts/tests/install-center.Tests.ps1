@@ -16,10 +16,11 @@ Describe 'install-center.ps1' {
     $paramBlock | Should -Not -BeNullOrEmpty
     $paramNames = $paramBlock.Parameters.Name.VariablePath.UserPath
     $paramNames | Should -Contain 'InstallPath'
-    $paramNames | Should -Contain 'SqlServer'
-    $paramNames | Should -Contain 'SqlDatabase'
-    $paramNames | Should -Contain 'SqlUser'
-    $paramNames | Should -Contain 'SqlPassword'
+    $paramNames | Should -Contain 'MySqlHost'
+    $paramNames | Should -Contain 'MySqlPort'
+    $paramNames | Should -Contain 'MySqlDatabase'
+    $paramNames | Should -Contain 'MySqlUser'
+    $paramNames | Should -Contain 'MySqlPassword'
     $paramNames | Should -Contain 'ListenPort'
     $paramNames | Should -Contain 'AgentToken'
     $paramNames | Should -Contain 'JwtSecret'
@@ -30,5 +31,12 @@ Describe 'install-center.ps1' {
     $installPathParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'InstallPath' }
     $defaultValue = $installPathParam.DefaultValue.Extent.Text
     $defaultValue | Should -Match 'C:\\Program Files\\ADDashboard\\Center'
+  }
+
+  It 'has a default for MySqlPort of 3306' {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
+    $portParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'MySqlPort' }
+    $defaultValue = $portParam.DefaultValue.Extent.Text
+    $defaultValue | Should -Match '3306'
   }
 }

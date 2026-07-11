@@ -9,7 +9,7 @@ test('loadConfig parses required keys', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cfg-'));
   const path = join(dir, 'appsettings.json');
   writeFileSync(path, JSON.stringify({
-    sql: { server: 'localhost', database: 'AD_Monitoring', user: 'sa', password: 'pw' },
+    mysql: { host: 'localhost', port: 3306, database: 'AD_Monitoring', user: 'root', password: 'pw' },
     listenPort: 8080,
     jwtSecret: 'abc',
     agentToken: 'tok',

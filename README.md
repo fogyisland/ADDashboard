@@ -6,7 +6,7 @@ Self-hosted dashboard for monitoring Active Directory replication health across 
 
 - **Agent** (per-DC): Windows Service that runs PowerShell collection on a schedule and POSTs results to Center
 - **Center** (single): Windows Service exposing API + static frontend (Vue 3 + ECharts)
-- **Storage**: SQL Server 2019+
+- **Storage**: MySQL 8+
 - **Service manager**: NSSM
 
 See [docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md](docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md) for the full design.
@@ -15,7 +15,7 @@ See [docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md](docs/supe
 
 ```powershell
 # On the center management server
-.\scripts\install-center.ps1 -SqlServer localhost -ListenPort 8080
+.\scripts\install-center.ps1 -MySqlHost localhost -MySqlPassword <pw> -ListenPort 8080
 
 # On each DC
 .\scripts\install-agent.ps1 -CenterUrl http://center:8080 -AgentToken <token>

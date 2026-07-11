@@ -1,14 +1,19 @@
-# SECURITY: this script interpolates SQL strings; only safe for installer-time usage, not runtime queries.
+# AD Dashboard Center installer (MySQL 8+).
+# - Uses `mysql.exe` CLI; the installer assumes it is on PATH (or set $MySqlClient).
+# - Bootstrap DB, apply schema + seed, write appsettings.json, register NSSM
+#   service for `node server.js`, set initial admin if none.
 [CmdletBinding()]
 param(
   [string]$InstallPath = 'C:\Program Files\ADDashboard\Center',
-  [Parameter(Mandatory)][string]$SqlServer,
-  [string]$SqlDatabase = 'AD_Monitoring',
-  [string]$SqlUser = 'sa',
-  [Parameter(Mandatory)][string]$SqlPassword,
+  [Parameter(Mandatory)][string]$MySqlHost,
+  [int]$MySqlPort = 3306,
+  [string]$MySqlDatabase = 'AD_Monitoring',
+  [string]$MySqlUser = 'root',
+  [Parameter(Mandatory)][string]$MySqlPassword,
   [int]$ListenPort = 8080,
   [string]$AgentToken,
-  [string]$JwtSecret
+  [string]$JwtSecret,
+  [string]$MySqlClient = 'mysql'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +22,12 @@ Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 
 Write-Step "install-center: $InstallPath"
+
+# 0. Verify mysql.exe is callable
+if (-not (Get-Command $MySqlClient -ErrorAction SilentlyContinue)) {
+  throw "mysql client not on PATH (looked for '$MySqlClient'); install MySQL 8 client or set -MySqlClient"
+}
+Write-Info "mysql client: $MySqlClient"
 
 # 1. Ensure directories
 @($InstallPath, "$InstallPath\dist", 'C:\ProgramData\ADDashboard\Logs') | ForEach-Object {
@@ -28,17 +39,26 @@ $node = (Get-Command node.exe -ErrorAction Stop).Source
 Write-Info "node: $node"
 
 # 3. Apply database schema
-$saCs = "Server=$SqlServer;Database=master;User ID=$SqlUser;Password=$SqlPassword;TrustServerCertificate=True"
-if (-not (Invoke-Sqlcmd -ConnectionString $saCs -Query "SELECT DB_ID('$SqlDatabase')" -ErrorAction SilentlyContinue).Column1) {
-  Write-Step "creating database $SqlDatabase"
-  Invoke-Sqlcmd -ConnectionString $saCs -Query "CREATE DATABASE [$SqlDatabase]"
-} else { Write-Info "database $SqlDatabase exists" }
+function Invoke-MySql {
+  # Invoke-MySql -Sql "CREATE DATABASE IF NOT EXISTS `...`"
+  # Invoke-MySql -Sql @("SELECT 1", "SELECT 2")
+  param([Parameter(Mandatory)][string[]]$Sql)
+  $args = @('-h', $MySqlHost, '-P', $MySqlPort, '-u', $MySqlUser, "-p$MySqlPassword", '--protocol=TCP')
+  foreach ($s in $Sql) {
+    Write-Info "sql> $s"
+    & $MySqlClient @args -e $s
+    if ($LASTEXITCODE -ne 0) { throw "mysql failed for: $s" }
+  }
+}
 
-$appCs = "Server=$SqlServer;Database=$SqlDatabase;User ID=$SqlUser;Password=$SqlPassword;TrustServerCertificate=True"
-$schemaDir = Join-Path $PSScriptRoot '..\db\schema'
+Invoke-MySql -Sql "CREATE DATABASE IF NOT EXISTS ``$MySqlDatabase`` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+
 foreach ($f in @('01-tables.sql','02-seed-roles.sql')) {
   Write-Step "applying $f"
-  Invoke-Sqlcmd -ConnectionString $appCs -InputFile (Join-Path $schemaDir $f)
+  $schemaPath = Join-Path (Join-Path $PSScriptRoot '..\db\schema') $f
+  $args = @('-h', $MySqlHost, '-P', $MySqlPort, '-u', $MySqlUser, "-p$MySqlPassword", $MySqlDatabase, '--protocol=TCP')
+  Get-Content $schemaPath -Encoding UTF8 | & $MySqlClient @args
+  if ($LASTEXITCODE -ne 0) { throw "mysql failed applying $f" }
 }
 
 # 4. Build frontend if dist missing
@@ -64,7 +84,7 @@ Copy-Item -Path (Join-Path $distPath '*') -Destination (Join-Path $InstallPath '
 if (-not $AgentToken) { $AgentToken = [Guid]::NewGuid().Guid }
 if (-not $JwtSecret) { $JwtSecret = -join ((1..48) | ForEach-Object { [char[]]([char]33..[char]126) | Get-Random }) }
 $cfg = @{
-  sql = @{ server = $SqlServer; database = $SqlDatabase; user = $SqlUser; password = $SqlPassword; options = @{ encrypt = $false; trustServerCertificate = $true } }
+  mysql = @{ host = $MySqlHost; port = $MySqlPort; database = $MySqlDatabase; user = $MySqlUser; password = $MySqlPassword }
   listenPort = $ListenPort
   jwtSecret = $JwtSecret
   agentToken = $AgentToken
@@ -76,28 +96,32 @@ $cfgPath = Join-Path $InstallPath 'appsettings.json'
 $cfg | ConvertTo-Json -Depth 6 | Set-Content -Path $cfgPath -Encoding UTF8
 Write-Ok "wrote $cfgPath"
 
-# 7. Set Agent token in DB
-$tokenEsc = $AgentToken.Replace("'", "''")
-Invoke-Sqlcmd -ConnectionString $appCs -Query "UPDATE system_config SET config_value = '$tokenEsc', updated_at = GETUTCDATE() WHERE config_key = 'ad_agent_token'"
+# 7. Set Agent token in DB (parameterized)
+$tokenSetSql = @(
+  "INSERT INTO system_config (config_key, config_value) VALUES ('agent_token', '$AgentToken') ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP"
+)
+Invoke-MySql -Sql $tokenSetSql
 
 # 8. Create initial admin user if none exists
-$hasAdmin = Invoke-Sqlcmd -ConnectionString $appCs -Query "SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id=r.id WHERE r.role_name='admin'"
-if ($hasAdmin.n -eq 0) {
+$adminCheckSql = "SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'"
+$args = @('-h', $MySqlHost, '-P', $MySqlPort, '-u', $MySqlUser, "-p$MySqlPassword", $MySqlDatabase, '--protocol=TCP', '-N', '-B', '-e', $adminCheckSql)
+$count = & $MySqlClient @args
+if ([int]$count -eq 0) {
   $initialPw = -join ((1..16) | ForEach-Object { [char[]]([char]33..[char]126) | Get-Random })
   $hash = & node -e "const b=require('bcrypt');b.hash(process.argv[1],12).then(h=>process.stdout.write(h))" $initialPw
-  $hashEsc = $hash.Replace("'", "''")
-  $pwEsc = $initialPw.Replace("'", "''")
-  Invoke-Sqlcmd -ConnectionString $appCs -Query "INSERT INTO sys_users (username, password_hash, role_id) VALUES ('admin', '$hashEsc', (SELECT id FROM sys_roles WHERE role_name='admin'))"
+  $hashEsc = $hash -replace "'", "''"
+  $pwEsc = $initialPw -replace "'", "''"
+  Invoke-MySql -Sql "INSERT INTO sys_users (username, password_hash, role_id) VALUES ('admin', '$hashEsc', (SELECT id FROM sys_roles WHERE role_name = 'admin'))"
   Write-Ok "initial admin / $initialPw"
   Add-Content -Path (Join-Path $Script:LogDir 'install.log') -Value "INITIAL_ADMIN_PASSWORD=$initialPw"
 }
 
-# 9. Register and start service
+# 9. Register and start service. Skip OnStart dependency for MySQL — its service name
+# varies (MySQL / MySQL80 / MariaDB); the connection retry in db.js handles transient outages.
 Install-NssmService -Name 'ADDashboardCenter' `
   -Application $node `
   -AppDirectory $InstallPath `
   -AppParameters 'server.js' `
-  -DependOnService @('MSSQLSERVER') `
   -DisplayName 'AD Replication Dashboard Center' `
   -Description 'AD Replication Dashboard Center (Node.js + Express + Vue 3)' `
   -Start 2

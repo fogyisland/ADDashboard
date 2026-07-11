@@ -3,36 +3,14 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { default as supertest } from 'supertest';
 import { agentRouter } from '../src/routes/agent.js';
+import { buildMockPool, buildRecordingPool } from './helpers/mysql-pool.js';
 
-// Mock pool: request().query() delegates to a handler capturing SQL + inputs.
-// Closure-based capture: each request() call returns a fresh object whose
-// `query()` records itself via closure on `self`, then resets _inputs.
-function buildMockPool(captured) {
-  return {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) {
-          captured.push({ sql: q, inputs: { ...self._inputs } });
-          // Special-case reads that the route performs
-          if (/SELECT\s+config_value\s+FROM\s+system_config/i.test(q)) {
-            return { recordset: [{ config_key: 'history_enabled', config_value: 'false' }] };
-          }
-          if (/FROM\s+system_config/i.test(q)) {
-            return { recordset: [
-              { config_key: 'polling_interval_minutes', config_value: '15' },
-              { config_key: 'latency_threshold_minutes', config_value: '180' },
-              { config_key: 'agent_token', config_value: 'tok' }
-            ] };
-          }
-          return { recordset: [] };
-        }
-      };
-      return self;
-    }
-  };
-}
+// The agent routes issue:
+//   - INSERT INTO ad_agent_heartbeat ... ON DUPLICATE KEY UPDATE  (heartbeat)
+//   - SELECT ... FROM system_config ...                            (report, GET config)
+//   - UPDATE ad_agent_heartbeat SET last_report_at = NOW() ...     (report only)
+// To keep tests independent of exact SQL phrasing we key mocks by
+// a coarse fragment match.
 
 function buildApp({ pool, agentTokenValue }) {
   const app = express();
@@ -43,9 +21,9 @@ function buildApp({ pool, agentTokenValue }) {
   return app;
 }
 
-test('POST /api/agent/heartbeat with correct token -> 200 and MERGE was issued', async () => {
-  const captured = [];
-  const pool = buildMockPool(captured);
+test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
   const app = buildApp({ pool, agentTokenValue: 'tok' });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
@@ -53,31 +31,79 @@ test('POST /api/agent/heartbeat with correct token -> 200 and MERGE was issued',
     .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 3 });
   assert.equal(res.status, 200);
   assert.equal(res.body.ok, true);
-  assert.ok(captured.some(c => /MERGE\s+INTO\s+ad_agent_heartbeat/i.test(c.sql)),
-    'expected MERGE into ad_agent_heartbeat to be issued');
+  assert.equal(records.length, 1);
+  assert.match(records[0].sql, /INSERT\s+INTO\s+ad_agent_heartbeat/i);
+  assert.match(records[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
+  assert.deepEqual(records[0].params, ['agent-1', '1.0.0', null, null, 3]);
 });
 
-test('POST /api/agent/heartbeat with wrong token -> 401', async () => {
-  const captured = [];
-  const pool = buildMockPool(captured);
+test('POST /api/agent/heartbeat with wrong token -> 401 and no UPSERT issued', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
   const app = buildApp({ pool, agentTokenValue: 'tok' });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
     .set('X-Agent-Token', 'WRONG')
     .send({ agentId: 'agent-1' });
   assert.equal(res.status, 401);
-  // No MERGE should have been issued
-  assert.ok(!captured.some(c => /MERGE\s+INTO\s+ad_agent_heartbeat/i.test(c.sql)));
+  assert.equal(records.length, 0);
 });
 
-test('POST /api/agent/heartbeat missing agentId -> 400', async () => {
-  const captured = [];
-  const pool = buildMockPool(captured);
+test('POST /api/agent/heartbeat missing agentId -> 400 and no UPSERT issued', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
   const app = buildApp({ pool, agentTokenValue: 'tok' });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
     .set('X-Agent-Token', 'tok')
     .send({});
   assert.equal(res.status, 400);
-  assert.ok(!captured.some(c => /MERGE\s+INTO\s+ad_agent_heartbeat/i.test(c.sql)));
+  assert.equal(records.length, 0);
+});
+
+test('POST /api/agent/report with correct token -> 200, config echoed', async () => {
+  // scripts provides:
+  //  - history_enabled lookup (1st system_config SELECT, narrowed)
+  //  - full config bundle (2nd system_config SELECT in getAgentConfig)
+  const pool = buildMockPool([
+    { match: /SELECT\s+config_key,\s*config_value\s+FROM\s+system_config/i, rows: [{ config_key: 'history_enabled', config_value: 'true' }] },
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'polling_interval_minutes', config_value: '15' },
+      { config_key: 'latency_threshold_minutes', config_value: '180' },
+      { config_key: 'agent_token', config_value: 'tok' }
+    ]}
+  ]);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .post('/api/agent/report')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', collectedAt: '2026-07-11T00:00:00Z', data: [] });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.config.pollingIntervalMinutes, 15);
+  assert.equal(res.body.config.latencyThresholdMinutes, 180);
+});
+
+test('POST /api/agent/report missing payload -> 400', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .post('/api/agent/report')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1' });
+  assert.equal(res.status, 400);
+  assert.equal(records.length, 0);
+});
+
+test('POST /api/agent/report with wrong token -> 401', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .post('/api/agent/report')
+    .set('X-Agent-Token', 'WRONG')
+    .send({ agentId: 'agent-1', collectedAt: '2026-07-11T00:00:00Z', data: [] });
+  assert.equal(res.status, 401);
+  assert.equal(records.length, 0);
 });

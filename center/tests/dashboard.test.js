@@ -4,37 +4,11 @@ import express from 'express';
 import { default as supertest } from 'supertest';
 import { dashboardRouter } from '../src/routes/dashboard.js';
 import { signJwt } from '../src/auth/jwt.js';
+import { buildMockPool, buildThrowingPool } from './helpers/mysql-pool.js';
 
 const SECRET = 'test-secret-please-do-not-use-in-prod';
 
-// Programmable mock pool: returns recordset rows keyed by a tag.
-// `script.rows` may be an array (returned as-is) or a function that
-// returns an array (called each time the query matches).
-// SQL matching is intentionally coarse; we key by the route's marker
-// fragments so we don't need a SQL parser.
-function buildMockPool(scripts) {
-  // scripts: array of { match: RegExp, rows: any[] | (() => any[]) }
-  return {
-    request() {
-      const self = {
-        _inputs: {},
-        input(k, v) { self._inputs[k] = v; return self; },
-        async query(q) {
-          for (const s of scripts) {
-            if (s.match.test(q)) {
-              const rows = typeof s.rows === 'function' ? s.rows() : s.rows;
-              return { recordset: Array.isArray(rows) ? rows : [] };
-            }
-          }
-          return { recordset: [] };
-        }
-      };
-      return self;
-    }
-  };
-}
-
-function buildApp({ pool, scripts }) {
+function buildApp({ pool }) {
   const a = express();
   a.use(express.json());
   const config = { jwtSecret: SECRET };
@@ -54,15 +28,13 @@ function adminToken(extraPerms) {
 // ----- AUTH WIRING -----
 
 test('overview: 401 when no token', async () => {
-  const pool = buildMockPool([]);
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildMockPool() });
   const r = await supertest(app).get('/api/dashboard/overview');
   assert.equal(r.status, 401);
 });
 
 test('overview: 403 when missing read:dash perm', async () => {
-  const pool = buildMockPool([]);
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildMockPool() });
   const tok = signJwt(
     { sub: 'u2', role: 'viewer', permissions: ['read:something-else'] },
     SECRET,
@@ -75,8 +47,7 @@ test('overview: 403 when missing read:dash perm', async () => {
 });
 
 test('overview: 200 with valid token + wildcard perm', async () => {
-  // mock pool returns counts + lastUpdate + agent count
-  const scripts = [
+  const pool = buildMockPool([
     {
       // overview count SELECT (SUM CASE WHEN ...)
       match: /SUM\s*\(\s*CASE\s+WHEN/i,
@@ -93,9 +64,8 @@ test('overview: 200 with valid token + wildcard perm', async () => {
       match: /COUNT\(\*\)\s+AS\s+agent_count/i,
       rows: [{ agent_count: 3 }]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/dashboard/overview')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -111,7 +81,7 @@ test('overview: 200 with valid token + wildcard perm', async () => {
 // ----- SITE MATRIX -----
 
 test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warningCount/total', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /GROUP\s+BY\s+source_site\s*,\s*dest_site/i,
       rows: [
@@ -121,9 +91,8 @@ test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warning
           error_count: 1, warning_count: 1, total: 3 }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/dashboard/site-matrix')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -143,7 +112,7 @@ test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warning
 
 test('topology: returns nodes (site + dc) and links with source/target/statusCode/lastSuccessTime', async () => {
   const last = new Date('2026-07-10T12:34:56Z');
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+ad_replication_status/i,
       rows: [
@@ -155,9 +124,8 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
           status_code: 2, last_success_time: last }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/dashboard/topology')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -192,7 +160,7 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
 // ----- ERRORS -----
 
 test('errors: returns camelCase rows with status_code <> 0 and computed duration', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /status_code\s*<>\s*0/i,
       rows: [
@@ -207,9 +175,8 @@ test('errors: returns camelCase rows with status_code <> 0 and computed duration
         }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/dashboard/errors')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -227,7 +194,7 @@ test('errors: returns camelCase rows with status_code <> 0 and computed duration
 // ----- AGENTS -----
 
 test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async () => {
-  const scripts = [
+  const pool = buildMockPool([
     {
       match: /FROM\s+ad_agent_heartbeat/i,
       rows: [
@@ -242,9 +209,8 @@ test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async
         }
       ]
     }
-  ];
-  const pool = buildMockPool(scripts);
-  const app = buildApp({ pool, scripts });
+  ]);
+  const app = buildApp({ pool });
   const r = await supertest(app)
     .get('/api/dashboard/agents')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -260,16 +226,7 @@ test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async
 // ----- DB ERROR PATH -----
 
 test('overview: 500 on DB error, returns {error: "internal"}', async () => {
-  const pool = {
-    request() {
-      return {
-        _inputs: {},
-        input() { return this; },
-        async query() { throw new Error('boom'); }
-      };
-    }
-  };
-  const app = buildApp({ pool, scripts: [] });
+  const app = buildApp({ pool: buildThrowingPool('boom') });
   const r = await supertest(app)
     .get('/api/dashboard/overview')
     .set('Authorization', `Bearer ${adminToken()}`);

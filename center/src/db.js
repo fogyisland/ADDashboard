@@ -1,28 +1,40 @@
-import sql from 'mssql';
+// MySQL connection pool (mysql2/promise). Session-level timezone is set
+// to '+08:00' (Asia/Shanghai) so DATETIME columns are stored in local time
+// matching the AD DC host time zone. The pool lazily creates itself on
+// first initPool() and reuses the same pool across the process.
 
-let poolPromise = null;
+import mysql from 'mysql2/promise';
+
+let pool = null;
 
 export function initPool(config) {
-  if (poolPromise) return poolPromise;
-  poolPromise = new sql.ConnectionPool({
-    server: config.sql.server,
-    database: config.sql.database,
-    user: config.sql.user,
-    password: config.sql.password,
-    options: { encrypt: false, trustServerCertificate: true, ...(config.sql.options || {}) }
-  }).connect();
-  return poolPromise;
+  if (pool) return pool;
+  const c = config.mysql;
+  pool = mysql.createPool({
+    host: c.host,
+    port: c.port ?? 3306,
+    user: c.user,
+    password: c.password,
+    database: c.database,
+    waitForConnections: true,
+    connectionLimit: c.connectionLimit ?? 10,
+    namedPlaceholders: false,
+    timezone: '+08:00',
+    dateStrings: false,
+    multipleStatements: false,
+    charset: 'utf8mb4'
+  });
+  return pool;
 }
 
 export async function getPool() {
-  if (!poolPromise) throw new Error('db pool not initialized');
-  return poolPromise;
+  if (!pool) throw new Error('db pool not initialized');
+  return pool;
 }
 
 export async function closePool() {
-  if (poolPromise) {
-    const p = await poolPromise;
-    await p.close();
-    poolPromise = null;
+  if (pool) {
+    await pool.end();
+    pool = null;
   }
 }
