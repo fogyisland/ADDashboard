@@ -15,7 +15,7 @@ function app_(middlewares) {
 }
 
 test('userAuth attaches user from valid token', async () => {
-  const token = signJwt({ sub: '7', role: 'admin' }, 'secret', 60);
+  const token = signJwt({ sub: '7', role: 'admin', permissions: ['*'] }, 'secret', 60);
   const a = express();
   a.use(userAuth({ secret: 'secret' }));
   a.get('/p', (req, res) => res.json({ user: req.user }));

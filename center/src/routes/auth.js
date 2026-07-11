@@ -14,7 +14,7 @@ export function authRouter({ config, pool, logger }) {
       return res.status(401).json({ error: 'invalid credentials' });
     }
     await recordLogin(pool, user.id);
-    const token = signJwt({ sub: user.id, role: user.role }, config.jwtSecret, 8 * 3600);
+    const token = signJwt({ sub: user.id, role: user.role, permissions: user.permissions }, config.jwtSecret, 8 * 3600);
     await writeAudit(pool, { userId: user.id, action: 'login', target: username, payload: null });
     res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
   });
