@@ -29,10 +29,10 @@ function camelRow(row) {
 
 export function adminRouter({ config, pool, logger }) {
   const r = Router();
-  r.use(userAuth({ secret: config.jwtSecret }), requirePerm('admin:users'));
+  const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('admin:users')];
 
   // GET /api/admin/roles
-  r.get('/api/admin/roles', async (_req, res) => {
+  r.get('/api/admin/roles', auth, async (_req, res) => {
     try {
       const [rows] = await pool.execute(`SELECT id, role_name, permissions FROM sys_roles ORDER BY id`);
       const out = rows.map(row => ({
@@ -48,7 +48,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // GET /api/admin/users
-  r.get('/api/admin/users', async (_req, res) => {
+  r.get('/api/admin/users', auth, async (_req, res) => {
     try {
       const rs = await listUsers(pool);
       res.json(rs.map(camelRow));
@@ -59,7 +59,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // POST /api/admin/users
-  r.post('/api/admin/users', async (req, res) => {
+  r.post('/api/admin/users', auth, async (req, res) => {
     try {
       const { username, password, roleId, status } = req.body || {};
       if (!username || !password || roleId == null) {
@@ -85,7 +85,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // PUT /api/admin/users/:id
-  r.put('/api/admin/users/:id', async (req, res) => {
+  r.put('/api/admin/users/:id', auth, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const { password, roleId, status } = req.body || {};
@@ -105,7 +105,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // DELETE /api/admin/users/:id
-  r.delete('/api/admin/users/:id', async (req, res) => {
+  r.delete('/api/admin/users/:id', auth, async (req, res) => {
     try {
       const id = Number(req.params.id);
       await deleteUser(pool, id);
@@ -124,7 +124,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // GET /api/admin/config
-  r.get('/api/admin/config', async (_req, res) => {
+  r.get('/api/admin/config', auth, async (_req, res) => {
     try {
       const cfg = await getConfig(pool);
       res.json(cfg);
@@ -135,7 +135,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // PUT /api/admin/config
-  r.put('/api/admin/config', async (req, res) => {
+  r.put('/api/admin/config', auth, async (req, res) => {
     try {
       const updates = req.body || {};
       for (const [k, v] of Object.entries(updates)) {
@@ -156,7 +156,7 @@ export function adminRouter({ config, pool, logger }) {
   });
 
   // GET /api/admin/audit?limit=200
-  r.get('/api/admin/audit', async (req, res) => {
+  r.get('/api/admin/audit', auth, async (req, res) => {
     try {
       let limit = Number(req.query.limit ?? 200);
       if (!Number.isFinite(limit) || limit <= 0) limit = 200;

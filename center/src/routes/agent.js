@@ -26,9 +26,9 @@ UPDATE ad_agent_heartbeat
 
 export function agentRouter({ config, pool, logger }) {
   const r = Router();
-  r.use(agentToken(config.agentToken));
+  const agentMw = agentToken(config.agentToken);
 
-  r.post('/api/agent/heartbeat', async (req, res) => {
+  r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
     const { agentId, agentVersion, lastReportAt, lastReportStatus, pendingQueueSize } = req.body || {};
     if (!agentId) return res.status(400).json({ error: 'missing agentId' });
     try {
@@ -46,7 +46,7 @@ export function agentRouter({ config, pool, logger }) {
     }
   });
 
-  r.post('/api/agent/report', async (req, res) => {
+  r.post('/api/agent/report', agentMw, async (req, res) => {
     const { agentId, collectedAt, data } = req.body || {};
     if (!agentId || !collectedAt || !Array.isArray(data)) {
       return res.status(400).json({ error: 'missing agentId, collectedAt, or data[]' });

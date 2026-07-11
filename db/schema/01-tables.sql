@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 CREATE TABLE IF NOT EXISTS sys_roles (
   id          INT AUTO_INCREMENT PRIMARY KEY,
   role_name   VARCHAR(64) UNIQUE NOT NULL,
-  permissions TEXT NOT NULL DEFAULT '[]'
+  permissions TEXT NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- RBAC users

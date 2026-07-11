@@ -113,9 +113,9 @@ function camelRow(row) {
 
 export function dashboardRouter({ config, pool, logger }) {
   const r = Router();
-  r.use(userAuth({ secret: config.jwtSecret }), requirePerm('read:dash'));
+  const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('read:dash')];
 
-  r.get('/api/dashboard/overview', async (_req, res) => {
+  r.get('/api/dashboard/overview', auth, async (_req, res) => {
     try {
       const [counts] = await pool.execute(OVERVIEW_COUNTS);
       const [agents] = await pool.execute(AGENT_COUNT);
@@ -135,7 +135,7 @@ export function dashboardRouter({ config, pool, logger }) {
     }
   });
 
-  r.get('/api/dashboard/site-matrix', async (_req, res) => {
+  r.get('/api/dashboard/site-matrix', auth, async (_req, res) => {
     try {
       const [rows] = await pool.execute(SITE_MATRIX);
       res.json(rows.map(camelRow));
@@ -145,7 +145,7 @@ export function dashboardRouter({ config, pool, logger }) {
     }
   });
 
-  r.get('/api/dashboard/topology', async (_req, res) => {
+  r.get('/api/dashboard/topology', auth, async (_req, res) => {
     try {
       const [rows] = await pool.execute(TOPOLOGY);
       const siteSet = new Set();
@@ -177,7 +177,7 @@ export function dashboardRouter({ config, pool, logger }) {
     }
   });
 
-  r.get('/api/dashboard/errors', async (_req, res) => {
+  r.get('/api/dashboard/errors', auth, async (_req, res) => {
     try {
       const [rows] = await pool.execute(ERRORS);
       res.json(rows.map(camelRow));
@@ -187,7 +187,7 @@ export function dashboardRouter({ config, pool, logger }) {
     }
   });
 
-  r.get('/api/dashboard/agents', async (_req, res) => {
+  r.get('/api/dashboard/agents', auth, async (_req, res) => {
     try {
       const [rows] = await pool.execute(AGENTS);
       res.json(rows.map(camelRow));
