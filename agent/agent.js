@@ -13,11 +13,13 @@ const logger = createLogger({ component: 'agent', level: config.logLevel });
 
 const queue = openQueue(config.queueDbPath);
 
-// Standalone liveness heartbeat every 60s. The scheduler ALSO sends heartbeats
+// Standalone liveness heartbeat. Interval is read from config at startup;
+// changing it via center config requires restarting the agent process — same
+// trade-off as pollingIntervalMinutes. The scheduler ALSO sends heartbeats
 // after each collect cycle — they overlap intentionally so the center sees
 // liveness even when collect cycles are hours apart.
 const heartbeat = startHeartbeat({
-  intervalMs: 60_000,
+  intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
   payload: () => ({ agentId: config.agentId, agentVersion: '0.1.0', pendingQueueSize: queue.count() }),
   send: async (p) => { await postHeartbeat({ centerUrl: config.centerUrl, agentToken: config.agentToken, payload: p }); }
 });

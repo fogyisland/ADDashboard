@@ -21,6 +21,7 @@ export async function getAgentConfig(pool) {
   return {
     pollingIntervalMinutes: Number(all.polling_interval_minutes || 15),
     latencyThresholdMinutes: Number(all.latency_threshold_minutes || 180),
+    heartbeatIntervalSeconds: Number(all.heartbeat_interval_seconds || 5),
     agentToken: all.agent_token ?? null,
     centerPublicHost: all.center_public_host ?? null,
     centerPublicPort: all.center_public_port ?? null

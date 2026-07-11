@@ -70,6 +70,7 @@ test('POST /api/agent/report with correct token -> 200, config echoed', async ()
     { match: /FROM\s+system_config/i, rows: [
       { config_key: 'polling_interval_minutes', config_value: '15' },
       { config_key: 'latency_threshold_minutes', config_value: '180' },
+      { config_key: 'heartbeat_interval_seconds', config_value: '5' },
       { config_key: 'agent_token', config_value: 'tok' }
     ]}
   ]);
@@ -82,6 +83,7 @@ test('POST /api/agent/report with correct token -> 200, config echoed', async ()
   assert.equal(res.body.ok, true);
   assert.equal(res.body.config.pollingIntervalMinutes, 15);
   assert.equal(res.body.config.latencyThresholdMinutes, 180);
+  assert.equal(res.body.config.heartbeatIntervalSeconds, 5);
 });
 
 test('POST /api/agent/report missing payload -> 400', async () => {
@@ -96,11 +98,12 @@ test('POST /api/agent/report missing payload -> 400', async () => {
   assert.equal(records.length, 0);
 });
 
-test('GET /api/agent/config -> 200 returns polling/latency/host/port', async () => {
+test('GET /api/agent/config -> 200 returns polling/latency/heartbeat/host/port', async () => {
   const pool = buildMockPool([
     { match: /FROM\s+system_config/i, rows: [
       { config_key: 'polling_interval_minutes', config_value: '5' },
       { config_key: 'latency_threshold_minutes', config_value: '60' },
+      { config_key: 'heartbeat_interval_seconds', config_value: '3' },
       { config_key: 'agent_token', config_value: 'tok' },
       { config_key: 'center_public_host', config_value: 'ad-dashboard.contoso.com' },
       { config_key: 'center_public_port', config_value: '443' }
@@ -113,6 +116,7 @@ test('GET /api/agent/config -> 200 returns polling/latency/host/port', async () 
   assert.equal(res.status, 200);
   assert.equal(res.body.pollingIntervalMinutes, 5);
   assert.equal(res.body.latencyThresholdMinutes, 60);
+  assert.equal(res.body.heartbeatIntervalSeconds, 3);
   assert.equal(res.body.agentToken, 'tok');
   assert.equal(res.body.centerPublicHost, 'ad-dashboard.contoso.com');
   assert.equal(res.body.centerPublicPort, '443');

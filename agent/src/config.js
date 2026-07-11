@@ -4,6 +4,7 @@ const REQUIRED = ['centerUrl', 'agentId', 'agentToken'];
 const DEFAULTS = {
   logLevel: 'info',
   pollingIntervalMinutes: 15,
+  heartbeatIntervalSeconds: 5,
   queueDbPath: 'C:\\ProgramData\\ADDashboard\\Agent\\queue.db',
   powerShellPath: 'powershell.exe',
   psScriptPath: 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-replication.ps1',
