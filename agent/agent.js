@@ -18,7 +18,7 @@ const queue = openQueue(config.queueDbPath);
 // liveness even when collect cycles are hours apart.
 const heartbeat = startHeartbeat({
   intervalMs: 60_000,
-  payload: () => ({ agentId: config.agentId, version: '0.1.0', pendingQueueSize: queue.count() }),
+  payload: () => ({ agentId: config.agentId, agentVersion: '0.1.0', pendingQueueSize: queue.count() }),
   send: async (p) => { await postHeartbeat({ centerUrl: config.centerUrl, agentToken: config.agentToken, payload: p }); }
 });
 
@@ -42,7 +42,7 @@ const scheduler = createScheduler({
   sendHeartbeat: (extra) => postHeartbeat({
     centerUrl: config.centerUrl,
     agentToken: config.agentToken,
-    payload: { agentId: config.agentId, version: '0.1.0', ...extra }
+    payload: { agentId: config.agentId, agentVersion: '0.1.0', ...extra }
   }),
   runHealth: () => runHealthChecks({ centerUrl: config.centerUrl, agentToken: config.agentToken, hostname: config.agentId })
 });
