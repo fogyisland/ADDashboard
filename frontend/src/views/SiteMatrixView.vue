@@ -1,14 +1,17 @@
 <template>
-  <div class="site-matrix-view">
-    <h2>Replication Site Matrix</h2>
-    <p v-if="loading">Loading...</p>
-    <p v-else-if="error" class="err">{{ error }}</p>
-    <SiteMatrixChart v-else :data="data" />
-  </div>
+  <AppLayout>
+    <div class="site-matrix-view">
+      <h2>Replication Site Matrix</h2>
+      <p v-if="loading">Loading...</p>
+      <p v-else-if="error" class="err">{{ error }}</p>
+      <SiteMatrixChart v-else :data="data" />
+    </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
+import AppLayout from '../components/AppLayout.vue';
 import SiteMatrixChart from '../components/SiteMatrixChart.vue';
 import api from '../api/client.js';
 

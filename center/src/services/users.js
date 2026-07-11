@@ -1,4 +1,3 @@
-import { getPool } from '../db.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 
 export async function findByUsername(pool, username) {
@@ -10,16 +9,14 @@ export async function findByUsername(pool, username) {
   return r.recordset[0] || null;
 }
 
-export async function listUsers() {
-  const pool = await getPool();
+export async function listUsers(pool) {
   const r = await pool.request()
     .query(`SELECT u.id, u.username, u.status, u.last_login_at, u.created_at, r.role_name
             FROM sys_users u JOIN sys_roles r ON u.role_id = r.id ORDER BY u.id`);
   return r.recordset;
 }
 
-export async function createUser({ username, password, roleId, status = 1 }) {
-  const pool = await getPool();
+export async function createUser(pool, { username, password, roleId, status = 1 }) {
   const hash = await hashPassword(password);
   await pool.request()
     .input('u', username)
@@ -30,8 +27,7 @@ export async function createUser({ username, password, roleId, status = 1 }) {
             VALUES (@u, @h, @r, @s)`);
 }
 
-export async function updateUser(id, { password, roleId, status }) {
-  const pool = await getPool();
+export async function updateUser(pool, id, { password, roleId, status }) {
   const sets = [];
   const req = pool.request().input('id', id);
   if (password) { sets.push('password_hash = @h'); req.input('h', await hashPassword(password)); }
@@ -41,8 +37,7 @@ export async function updateUser(id, { password, roleId, status }) {
   await req.query(`UPDATE sys_users SET ${sets.join(', ')} WHERE id = @id`);
 }
 
-export async function deleteUser(id) {
-  const pool = await getPool();
+export async function deleteUser(pool, id) {
   await pool.request().input('id', id).query('DELETE FROM sys_users WHERE id = @id');
 }
 

@@ -10,9 +10,9 @@
         <tr v-for="u in users" :key="u.id">
           <td>{{ u.id }}</td>
           <td>{{ u.username }}</td>
-          <td>{{ u.role_name }}</td>
+          <td>{{ u.roleName }}</td>
           <td>{{ u.status ? '启用' : '禁用' }}</td>
-          <td>{{ u.last_login_at || '-' }}</td>
+          <td>{{ fmt(u.lastLoginAt) }}</td>
           <td>
             <button @click="openEdit(u)">编辑</button>
             <button class="danger" @click="del(u)">删除</button>
@@ -45,9 +45,10 @@ import { ref, onMounted } from 'vue';
 import AppLayout from '../../components/AppLayout.vue';
 import { adminApi } from '../../api/admin.js';
 const users = ref([]); const roles = ref([]); const editing = ref(null);
+function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 async function load() { users.value = (await adminApi.listUsers()).data; roles.value = (await adminApi.listRoles()).data; }
 function openCreate() { editing.value = { username: '', password: '', role_id: roles.value[0]?.id, status: 1 }; }
-function openEdit(u) { editing.value = { id: u.id, username: u.username, role_id: roles.value.find(r => r.roleName === u.role_name)?.id, status: u.status ? 1 : 0 }; }
+function openEdit(u) { editing.value = { id: u.id, username: u.username, role_id: roles.value.find(r => r.roleName === u.roleName)?.id, status: u.status ? 1 : 0 }; }
 async function save() {
   if (editing.value.id) await adminApi.updateUser(editing.value.id, { roleId: editing.value.role_id, status: editing.value.status });
   else await adminApi.createUser({ username: editing.value.username, password: editing.value.password, roleId: editing.value.role_id, status: editing.value.status });

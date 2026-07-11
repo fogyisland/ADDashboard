@@ -119,7 +119,7 @@ test('GET /api/admin/users: 200 returns array of users', async () => {
   assert.ok(Array.isArray(r.body));
   assert.equal(r.body.length, 2);
   assert.equal(r.body[0].username, 'alice');
-  assert.equal(r.body[0].role_name, 'admin');
+  assert.equal(r.body[0].roleName, 'admin');
 });
 
 // ----- CREATE USER -----

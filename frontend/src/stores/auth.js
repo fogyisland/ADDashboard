@@ -1,9 +1,14 @@
 import { defineStore } from 'pinia';
 
+function safeParseUser() {
+  try { return JSON.parse(localStorage.getItem('ad_user') || 'null'); }
+  catch { return null; }
+}
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     token: localStorage.getItem('ad_token'),
-    user: JSON.parse(localStorage.getItem('ad_user') || 'null')
+    user: safeParseUser()
   }),
   getters: {
     isLoggedIn: (s) => !!s.token,

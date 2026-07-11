@@ -1,8 +1,7 @@
 import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
-import { findByUsername } from '../services/users.js';
-import { hashPassword } from '../auth/password.js';
+import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
 import { getConfig, setConfig } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 
@@ -52,10 +51,8 @@ export function adminRouter({ config, pool, logger }) {
   // GET /api/admin/users
   r.get('/api/admin/users', async (_req, res) => {
     try {
-      const rs = await pool.request()
-        .query(`SELECT u.id, u.username, u.status, u.last_login_at, u.created_at, r.role_name
-                FROM sys_users u JOIN sys_roles r ON u.role_id = r.id ORDER BY u.id`);
-      res.json(rs.recordset);
+      const rs = await listUsers(pool);
+      res.json(rs.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin users list failed');
       res.status(500).json({ error: 'internal' });
@@ -73,14 +70,7 @@ export function adminRouter({ config, pool, logger }) {
       if (existing) {
         return res.status(409).json({ error: 'username exists' });
       }
-      const hash = await hashPassword(password);
-      await pool.request()
-        .input('u', username)
-        .input('h', hash)
-        .input('r', roleId)
-        .input('s', status ?? 1)
-        .query(`INSERT INTO sys_users (username, password_hash, role_id, status)
-                VALUES (@u, @h, @r, @s)`);
+      await createUser(pool, { username, password, roleId, status });
       await writeAudit(pool, {
         userId: req.user?.sub ?? null,
         action: 'create_user',
@@ -100,14 +90,7 @@ export function adminRouter({ config, pool, logger }) {
     try {
       const id = Number(req.params.id);
       const { password, roleId, status } = req.body || {};
-      const sets = [];
-      const req2 = pool.request().input('id', id);
-      if (password) { sets.push('password_hash = @h'); req2.input('h', await hashPassword(password)); }
-      if (roleId !== undefined) { sets.push('role_id = @r'); req2.input('r', roleId); }
-      if (status !== undefined) { sets.push('status = @s'); req2.input('s', status); }
-      if (sets.length > 0) {
-        await req2.query(`UPDATE sys_users SET ${sets.join(', ')} WHERE id = @id`);
-      }
+      await updateUser(pool, id, { password, roleId, status });
       await writeAudit(pool, {
         userId: req.user?.sub ?? null,
         action: 'update_user',
@@ -126,7 +109,7 @@ export function adminRouter({ config, pool, logger }) {
   r.delete('/api/admin/users/:id', async (req, res) => {
     try {
       const id = Number(req.params.id);
-      await pool.request().input('id', id).query('DELETE FROM sys_users WHERE id = @id');
+      await deleteUser(pool, id);
       await writeAudit(pool, {
         userId: req.user?.sub ?? null,
         action: 'delete_user',
