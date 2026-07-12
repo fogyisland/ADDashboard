@@ -12,6 +12,7 @@ import AuditView from './views/admin/AuditView.vue';
 import SitesView from './views/admin/ActiveSitesView.vue';
 import DcsView from './views/admin/ActiveDcsView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
+import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
 const routes = [
@@ -28,6 +29,7 @@ const routes = [
   { path: '/admin/sites', component: SitesView, meta: { perm: 'admin:users' } },
   { path: '/admin/dcs', component: DcsView, meta: { perm: 'admin:users' } },
   { path: '/admin/sites-catalog', component: SitesCatalogView, meta: { perm: 'admin:users' } },
+  { path: '/admin/dcs-catalog', component: DcsCatalogView, meta: { perm: 'admin:users' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

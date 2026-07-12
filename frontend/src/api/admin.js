@@ -13,5 +13,7 @@ export const adminApi = {
   listSitesCatalog: () => api.get('/api/admin/sites-catalog'),
   createSite: (body) => api.post('/api/admin/sites-catalog', body),
   updateSite: (id, body) => api.put(`/api/admin/sites-catalog/${id}`, body),
-  deleteSite: (id) => api.delete(`/api/admin/sites-catalog/${id}`)
+  deleteSite: (id) => api.delete(`/api/admin/sites-catalog/${id}`),
+  listDcsCatalog: () => api.get('/api/admin/dcs-catalog'),
+  assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId })
 };
