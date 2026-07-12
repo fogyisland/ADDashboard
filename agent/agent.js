@@ -48,14 +48,18 @@ const discovery = startDiscoveryScheduler({
   logger
 });
 
-// Periodically refresh config from center. If pollingIntervalMinutes changes,
-// the in-memory value updates but the scheduler's existing poll timer does NOT
-// restart — that takes effect on next service restart. Acceptable trade-off;
-// a runtime restart would require recreating pollTimer.
+// Periodically refresh config from center. If pollingIntervalMinutes or
+// discoveryIntervalHours changes, the in-memory value updates but the
+// scheduler's existing timers do NOT restart — that takes effect on next
+// service restart. Acceptable trade-off; a runtime restart would require
+// recreating pollTimer / discovery scheduler.
 const configRefresh = setInterval(async () => {
   const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
   if (r.ok && r.data?.pollingIntervalMinutes) {
     config.pollingIntervalMinutes = Number(r.data.pollingIntervalMinutes);
+  }
+  if (r.ok && r.data?.discoveryIntervalHours) {
+    config.discoveryIntervalHours = Number(r.data.discoveryIntervalHours);
   }
 }, 5 * 60_000);
 
