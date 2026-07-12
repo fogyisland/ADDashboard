@@ -18,6 +18,7 @@
           <router-link to="/admin/audit">审计日志</router-link>
           <router-link to="/admin/sites-catalog">AD 站点清单</router-link>
           <router-link to="/admin/dcs-catalog">AD 域控清单</router-link>
+          <router-link to="/admin/site-replication-matrix">站点复制矩阵</router-link>
         </template>
       </nav>
     </aside>
