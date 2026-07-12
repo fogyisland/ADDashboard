@@ -71,26 +71,28 @@ export function createMssqlDriver(config) {
 
   async function execute(sqlStr, params = []) {
     await ensureConnected();
-    const rewritten = rewritePlaceholders(sqlStr);
-    const isInsert = /^\s*(INSERT|MERGE)\b/i.test(sqlStr);
-    const needsScopeIdentity = isInsert && /\bINTO\b/i.test(sqlStr);
-
+    const isInsert = /^\s*(INSERT|MERGE)\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
+    const sqlWithId = isInsert
+      ? `${rewritePlaceholders(sqlStr)};\nSELECT CAST(SCOPE_IDENTITY() AS bigint) AS id`
+      : rewritePlaceholders(sqlStr);
     const request = pool.request();
+    if (isInsert) request.multiple = true;
     bindInputs(request, params);
-    const result = await request.query(rewritten);
-
-    let rows = normalizeRows(result.recordset ?? []);
-    let affectedRows = result.rowsAffected?.[0] ?? 0;
+    const result = await request.query(sqlWithId);
+    const recordsets = isInsert ? result.recordsets : [result.recordset];
+    const first = recordsets?.[0] ?? [];
+    const rows = normalizeRows(Array.isArray(first) ? first : []);
+    let affectedRows = 0;
     let insertId;
-
-    if (needsScopeIdentity) {
-      // Run SCOPE_IDENTITY() in a separate batch on the same connection.
-      const idReq = pool.request();
-      const idRes = await idReq.query('SELECT CAST(SCOPE_IDENTITY() AS bigint) AS id');
-      const idRow = idRes.recordset?.[0];
-      insertId = idRow?.id != null ? Number(idRow.id) : undefined;
+    if (isInsert) {
+      affectedRows = result.rowsAffected?.[0] ?? 0;
+      const idRow = recordsets[1]?.[0];
+      if (idRow?.id != null) {
+        insertId = Number(idRow.id);
+      } else {
+        throw new Error(`mssql driver: SCOPE_IDENTITY() returned NULL after INSERT (rowsAffected=${affectedRows})`);
+      }
     }
-
     return { rows, affectedRows, insertId };
   }
 
@@ -106,18 +108,27 @@ export function createMssqlDriver(config) {
     try {
       const txWrapper = {
         async execute(sqlStr, params = []) {
-          const rewritten = rewritePlaceholders(sqlStr);
+          const isInsert = /^\s*(INSERT|MERGE)\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
+          const sqlWithId = isInsert
+            ? `${rewritePlaceholders(sqlStr)};\nSELECT CAST(SCOPE_IDENTITY() AS bigint) AS id`
+            : rewritePlaceholders(sqlStr);
           const request = new sql.Request(tx);
+          if (isInsert) request.multiple = true;
           bindInputs(request, params);
-          const result = await request.query(rewritten);
-          let rows = normalizeRows(result.recordset ?? []);
-          let affectedRows = result.rowsAffected?.[0] ?? 0;
+          const result = await request.query(sqlWithId);
+          const recordsets = isInsert ? result.recordsets : [result.recordset];
+          const first = recordsets?.[0] ?? [];
+          const rows = normalizeRows(Array.isArray(first) ? first : []);
+          let affectedRows = 0;
           let insertId;
-          if (/^\s*(INSERT|MERGE)\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr)) {
-            const idReq = new sql.Request(tx);
-            const idRes = await idReq.query('SELECT CAST(SCOPE_IDENTITY() AS bigint) AS id');
-            const idRow = idRes.recordset?.[0];
-            insertId = idRow?.id != null ? Number(idRow.id) : undefined;
+          if (isInsert) {
+            affectedRows = result.rowsAffected?.[0] ?? 0;
+            const idRow = recordsets[1]?.[0];
+            if (idRow?.id != null) {
+              insertId = Number(idRow.id);
+            } else {
+              throw new Error(`mssql driver: SCOPE_IDENTITY() returned NULL after INSERT (rowsAffected=${affectedRows})`);
+            }
           }
           return { rows, affectedRows, insertId };
         },
