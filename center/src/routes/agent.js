@@ -4,17 +4,24 @@ import { upsertStatus } from '../services/replication.js';
 import { getConfig, getAgentConfig } from '../services/config.js';
 import { upsertDiscoveredDc } from '../services/discovery.js';
 import { getDb } from '../db/index.js';
+import { toMysqlDatetime } from '../utils/datetime.js';
 
 export function agentRouter({ config, logger }) {
   const r = Router();
   const agentMw = agentToken(config.agentToken);
 
   r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
-    const { agentId, agentVersion, pendingQueueSize } = req.body || {};
+    const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus } = req.body || {};
     if (!agentId) return res.status(400).json({ error: 'missing agentId' });
     try {
       const db = getDb();
-      await db.execute(db.sql.heartbeat.upsert, [agentId, agentVersion ?? null, pendingQueueSize ?? 0]);
+      await db.execute(db.sql.heartbeat.upsert, [
+        agentId,
+        agentVersion ?? null,
+        toMysqlDatetime(lastReportAt),
+        lastReportStatus ?? null,
+        pendingQueueSize ?? 0
+      ]);
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e, agentId }, 'heartbeat failed');
