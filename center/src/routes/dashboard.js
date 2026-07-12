@@ -197,5 +197,84 @@ export function dashboardRouter({ config, pool, logger }) {
     }
   });
 
+  r.get('/api/dashboard/site-replication-matrix', auth, async (req, res) => {
+    const siteName = req.query.site;
+    if (!siteName) return res.status(400).json({ error: 'missing site query param' });
+    try {
+      // 1) Site lookup
+      const [siteRows] = await pool.execute(
+        'SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?',
+        [siteName]
+      );
+      if (siteRows.length === 0) return res.status(404).json({ error: 'site not found' });
+      const sr = siteRows[0];
+      const site = {
+        siteId: sr.site_id,
+        siteName: sr.site_name,
+        regionCode: sr.region_code,
+        isHub: !!sr.is_hub,
+        description: sr.description
+      };
+      const siteId = sr.site_id;
+
+      // 2) DCs in site
+      const [dcRows] = await pool.execute(
+        `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master,
+                is_schema_master, is_domain_naming_master, is_infrastructure_master,
+                discovered_at, discovered_by_agent_id
+         FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
+        [siteId]
+      );
+      const dcs = dcRows.map(d => ({
+        dcName: d.dc_name,
+        osVersion: d.os_version,
+        isPdc: !!d.is_pdc,
+        isGc: !!d.is_gc,
+        isRidMaster: !!d.is_rid_master,
+        isSchemaMaster: !!d.is_schema_master,
+        isDomainNamingMaster: !!d.is_domain_naming_master,
+        isInfrastructureMaster: !!d.is_infrastructure_master,
+        discoveredAt: toIso(d.discovered_at),
+        discoveredByAgentId: d.discovered_by_agent_id
+      }));
+
+      // 3) Replication links between those DCs
+      let links = [];
+      if (dcs.length > 0) {
+        const placeholders = dcs.map(() => '?').join(',');
+        const dcNames = dcs.map(d => d.dcName);
+        const [linkRows] = await pool.execute(
+          `SELECT source_dc, dest_dc, naming_context, status_code,
+                  last_success_time, last_attempt_time,
+                  TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes
+           FROM ad_replication_status
+           WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders})
+           ORDER BY source_dc, dest_dc, naming_context`,
+          [...dcNames, ...dcNames]
+        );
+        links = linkRows.map(l => ({
+          source: l.source_dc,
+          target: l.dest_dc,
+          namingContext: l.naming_context,
+          statusCode: l.status_code,
+          lastSuccessTime: toIso(l.last_success_time),
+          lastAttemptTime: toIso(l.last_attempt_time),
+          durationMinutes: l.duration_minutes
+        }));
+      }
+
+      // 4) Refresh seconds
+      const [cfgRows] = await pool.execute(
+        "SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'"
+      );
+      const siteRefreshSeconds = Number(cfgRows[0]?.config_value || 10);
+
+      res.json({ site, dcs, links, siteRefreshSeconds });
+    } catch (e) {
+      logger.error({ err: e }, 'site-replication-matrix failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }

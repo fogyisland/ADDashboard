@@ -233,3 +233,84 @@ test('overview: 500 on DB error, returns {error: "internal"}', async () => {
   assert.equal(r.status, 500);
   assert.equal(r.body.error, 'internal');
 });
+
+// ----- SITE REPLICATION MATRIX (G) -----
+
+test('GET /api/dashboard/site-replication-matrix: 200 returns site + dcs + links', async () => {
+  const pool = buildMockPool([
+    // 1) site lookup
+    {
+      match: /FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i,
+      rows: [{ site_id: 1, site_name: 'Beijing-Site', region_code: 'BJ', is_hub: 1, description: 'BJ-DC' }]
+    },
+    // 2) DCs in site
+    {
+      match: /FROM\s+ad_dcs\s+WHERE\s+site_id\s*=\s*\?/i,
+      rows: [
+        { dc_name: 'DC-BJ-01', os_version: 'Win2022', is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, discovered_at: new Date(), discovered_by_agent_id: 'DC-BJ-01' },
+        { dc_name: 'DC-BJ-02', os_version: 'Win2019', is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, discovered_at: new Date(), discovered_by_agent_id: 'DC-BJ-02' }
+      ]
+    },
+    // 3) replication links
+    {
+      match: /FROM\s+ad_replication_status/i,
+      rows: [
+        { source_dc: 'DC-BJ-01', dest_dc: 'DC-BJ-02', naming_context: 'DC=contoso,DC=com', status_code: 0, last_success_time: new Date(), last_attempt_time: new Date(), duration_minutes: 5 }
+      ]
+    },
+    // 4) refresh seconds config
+    {
+      match: /FROM\s+system_config\s+WHERE\s+config_key\s*=\s*['"]site_matrix_refresh_seconds['"]/i,
+      rows: [{ config_value: '10' }]
+    }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/dashboard/site-replication-matrix?site=Beijing-Site')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.site.siteName, 'Beijing-Site');
+  assert.equal(r.body.dcs.length, 2);
+  assert.equal(r.body.dcs[0].dcName, 'DC-BJ-01');
+  assert.equal(r.body.links.length, 1);
+  assert.equal(r.body.links[0].source, 'DC-BJ-01');
+  assert.equal(r.body.links[0].target, 'DC-BJ-02');
+  assert.equal(r.body.siteRefreshSeconds, 10);
+});
+
+test('GET /api/dashboard/site-replication-matrix: 404 when site not found', async () => {
+  const pool = buildMockPool([
+    { match: /FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i, rows: [] }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/dashboard/site-replication-matrix?site=NoSuch')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+  assert.equal(r.status, 404);
+  assert.equal(r.body.error, 'site not found');
+});
+
+test('GET /api/dashboard/site-replication-matrix: 200 empty arrays when site has no DCs', async () => {
+  const pool = buildMockPool([
+    { match: /FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i, rows: [{ site_id: 5, site_name: 'Empty-Site', region_code: null, is_hub: 0, description: null }] },
+    { match: /FROM\s+ad_dcs\s+WHERE\s+site_id\s*=\s*\?/i, rows: [] },
+    { match: /FROM\s+ad_replication_status/i, rows: [] },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: '10' }] }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/dashboard/site-replication-matrix?site=Empty-Site')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.dcs, []);
+  assert.deepEqual(r.body.links, []);
+});
+
+test('GET /api/dashboard/site-replication-matrix: 400 when site query missing', async () => {
+  const pool = buildMockPool();
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/dashboard/site-replication-matrix')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+  assert.equal(r.status, 400);
+});
