@@ -149,3 +149,83 @@ test('POST /api/agent/report with wrong token -> 401', async () => {
   assert.equal(res.status, 401);
   assert.equal(records.length, 0);
 });
+
+import { upsertDiscoveredDc } from '../src/services/discovery.js';
+
+// ----- DISCOVER -----
+
+test('POST /api/agent/discover with correct token -> 200 and UPSERT to ad_dcs', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .post('/api/agent/discover')
+    .set('X-Agent-Token', 'tok')
+    .send({
+      agentId: 'DC-BJ-01',
+      collectedAt: '2026-07-12T00:00:00.000Z',
+      dc: {
+        name: 'DC-BJ-01',
+        siteHint: 'Beijing-Site',
+        osVersion: 'Windows Server 2019',
+        whenCreated: '2024-03-15T08:00:00.000Z',
+        isPdc: false,
+        isGc: true,
+        isRidMaster: false,
+        isSchemaMaster: false,
+        isDomainNamingMaster: false,
+        isInfrastructureMaster: false
+      }
+    });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(records.length, 1);
+  assert.match(records[0].sql, /INSERT\s+INTO\s+ad_dcs/i);
+  assert.match(records[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
+  // site_id must NOT appear in the SQL
+  assert.doesNotMatch(records[0].sql, /site_id\s*=/i);
+});
+
+test('POST /api/agent/discover missing dc.name -> 400', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .post('/api/agent/discover')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'DC-BJ-01', collectedAt: '2026-07-12T00:00:00.000Z', dc: {} });
+  assert.equal(res.status, 400);
+  assert.equal(records.length, 0);
+});
+
+test('POST /api/agent/discover with wrong token -> 401', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool, agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .post('/api/agent/discover')
+    .set('X-Agent-Token', 'WRONG')
+    .send({ agentId: 'DC-BJ-01', collectedAt: '2026-07-12T00:00:00.000Z', dc: { name: 'X' } });
+  assert.equal(res.status, 401);
+  assert.equal(records.length, 0);
+});
+
+test('upsertDiscoveredDc converts booleans to 0/1', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  await upsertDiscoveredDc(pool, {
+    agentId: 'A1',
+    collectedAt: '2026-07-12T00:00:00.000Z',
+    dc: {
+      name: 'A1', siteHint: 'S1', osVersion: 'Win2022', whenCreated: '2024-01-01T00:00:00.000Z',
+      isPdc: true, isGc: true, isRidMaster: false, isSchemaMaster: false,
+      isDomainNamingMaster: false, isInfrastructureMaster: true
+    }
+  });
+  // params: [name, siteHint, osVersion, whenCreated, isPdc, isGc, isRidMaster, isSchemaMaster, isDomainNamingMaster, isInfrastructureMaster, collectedAt, agentId]
+  assert.deepEqual(records[0].params, [
+    'A1', 'S1', 'Win2022', '2024-01-01T00:00:00.000Z',
+    1, 1, 0, 0, 0, 1,
+    '2026-07-12T00:00:00.000Z', 'A1'
+  ]);
+});

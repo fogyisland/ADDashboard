@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { agentToken } from '../auth/agent-token.js';
 import { upsertStatus } from '../services/replication.js';
 import { getConfig, getAgentConfig } from '../services/config.js';
+import { upsertDiscoveredDc } from '../services/discovery.js';
 
 // MySQL: last_heartbeat_at is auto-touched via NOW() in INSERT, and preserved
 // (overwritten) on UPDATE. The IFNULL semantics from SQL Server become COALESCE.
@@ -61,6 +62,20 @@ export function agentRouter({ config, pool, logger }) {
       res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds, centerPublicHost, centerPublicPort } });
     } catch (e) {
       logger.error({ err: e, agentId }, 'report failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.post('/api/agent/discover', agentMw, async (req, res) => {
+    const { agentId, collectedAt, dc } = req.body || {};
+    if (!agentId || !collectedAt || !dc?.name) {
+      return res.status(400).json({ error: 'missing agentId/collectedAt/dc.name' });
+    }
+    try {
+      await upsertDiscoveredDc(pool, { agentId, collectedAt, dc });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e, agentId }, 'discover failed');
       res.status(500).json({ error: 'internal' });
     }
   });
