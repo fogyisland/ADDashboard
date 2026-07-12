@@ -3,6 +3,7 @@ import { createLogger } from './src/logger.js';
 import { runCollector } from './src/collector.js';
 import { postReport, postHeartbeat, fetchConfig } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
+import { runDiscovery, postDiscovery, startDiscoveryScheduler } from './src/discovery.js';
 import { runHealthChecks } from './src/healthcheck.js';
 import { openQueue } from './src/local-queue.js';
 import { createScheduler } from './src/scheduler.js';
@@ -22,6 +23,29 @@ const heartbeat = startHeartbeat({
   intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
   payload: () => ({ agentId: config.agentId, agentVersion: '0.1.0', pendingQueueSize: queue.count() }),
   send: async (p) => { await postHeartbeat({ centerUrl: config.centerUrl, agentToken: config.agentToken, payload: p }); }
+});
+
+// Site/DCs topology discovery. Runs the PowerShell topology script on a long
+// interval (default 4h) and posts the result to the center's discover endpoint.
+const discovery = startDiscoveryScheduler({
+  intervalHours: config.discoveryIntervalHours,
+  run: async () => {
+    const snap = await runDiscovery({
+      powerShellPath: config.powerShellPath,
+      psDiscoveryScriptPath: config.psDiscoveryScriptPath
+    });
+    if (!snap) return;
+    await postDiscovery({
+      centerUrl: config.centerUrl,
+      agentToken: config.agentToken,
+      payload: {
+        agentId: config.agentId,
+        collectedAt: new Date().toISOString(),
+        dc: snap
+      }
+    });
+  },
+  logger
 });
 
 // Periodically refresh config from center. If pollingIntervalMinutes changes,
@@ -55,6 +79,7 @@ logger.info({ agentId: config.agentId, centerUrl: config.centerUrl }, 'agent sta
 const shutdown = async (sig) => {
   logger.info({ sig }, 'shutting down');
   heartbeat.stop();
+  discovery.stop();
   clearInterval(configRefresh);
   await scheduler.stop();
   queue.close();

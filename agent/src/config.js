@@ -5,6 +5,8 @@ const DEFAULTS = {
   logLevel: 'info',
   pollingIntervalMinutes: 15,
   heartbeatIntervalSeconds: 5,
+  discoveryIntervalHours: 4,
+  psDiscoveryScriptPath: 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-discovery.ps1',
   queueDbPath: 'C:\\ProgramData\\ADDashboard\\Agent\\queue.db',
   powerShellPath: 'powershell.exe',
   psScriptPath: 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-replication.ps1',
