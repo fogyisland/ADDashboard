@@ -330,3 +330,88 @@ test('GET /api/admin/sites with empty replication_status -> empty array', async 
   assert.equal(r.status, 200);
   assert.deepEqual(r.body, []);
 });
+
+// ----- SITES-CATALOG -----
+
+test('GET /api/admin/sites-catalog: 200 returns array with dcCount', async () => {
+  const pool = buildMockPool([
+    {
+      match: /FROM\s+ad_sites\s+s/i,
+      rows: [
+        { id: 1, site_name: 'Beijing-Site', region_code: 'BJ', is_hub: 1, description: 'BJ-DC', created_at: new Date(), updated_at: new Date(), dcCount: 3 },
+        { id: 2, site_name: 'Shanghai-Site', region_code: 'SH', is_hub: 0, description: null, created_at: new Date(), updated_at: new Date(), dcCount: 0 }
+      ]
+    }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/admin/sites-catalog')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 2);
+  assert.equal(r.body[0].siteName, 'Beijing-Site');
+  assert.equal(r.body[0].dcCount, 3);
+  assert.equal(r.body[0].isHub, 1);
+});
+
+test('POST /api/admin/sites-catalog: 201 on success, 409 on duplicate', async () => {
+  let insertCalls = 0;
+  let insertError = null;
+  const pool = {
+    async execute(sql, params = []) {
+      if (/INSERT\s+INTO\s+ad_sites/i.test(sql)) {
+        insertCalls++;
+        // Simulate duplicate-key error on second call
+        if (insertCalls === 1) return [{ insertId: 99, affectedRows: 1 }, []];
+        const err = new Error('Duplicate entry');
+        err.code = 'ER_DUP_ENTRY';
+        throw err;
+      }
+      return [[], []];
+    }
+  };
+  const app = buildApp({ pool });
+
+  // First call: success
+  const r1 = await supertest(app)
+    .post('/api/admin/sites-catalog')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ siteName: 'BJ', regionCode: 'BJ', isHub: true, description: 'test' });
+  assert.equal(r1.status, 201);
+  assert.equal(r1.body.id, 99);
+
+  // Second call: duplicate -> 409
+  const r2 = await supertest(app)
+    .post('/api/admin/sites-catalog')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ siteName: 'BJ', regionCode: 'BJ' });
+  assert.equal(r2.status, 409);
+});
+
+test('POST /api/admin/sites-catalog: 400 when siteName missing', async () => {
+  const pool = buildMockPool();
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .post('/api/admin/sites-catalog')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ regionCode: 'BJ' });
+  assert.equal(r.status, 400);
+});
+
+test('DELETE /api/admin/sites-catalog/:id: 200 and nullifies DCs first', async () => {
+  const executed = [];
+  const pool = {
+    async execute(sql, params = []) {
+      executed.push({ sql, params });
+      return [{ affectedRows: 1 }, []];
+    }
+  };
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .delete('/api/admin/sites-catalog/1')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  // First execute should nullify DCs, second should delete site
+  assert.match(executed[0].sql, /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*NULL/i);
+  assert.match(executed[1].sql, /DELETE\s+FROM\s+ad_sites/i);
+});

@@ -17,7 +17,10 @@ const CAML_MAP = new Map([
   ['updated_by', 'updatedBy'],
   ['link_count', 'linkCount'],
   ['error_count', 'errorCount'],
-  ['last_seen', 'lastSeen']
+  ['last_seen', 'lastSeen'],
+  ['site_name', 'siteName'],
+  ['region_code', 'regionCode'],
+  ['is_hub', 'isHub']
 ]);
 
 function camelRow(row) {
@@ -228,6 +231,78 @@ export function adminRouter({ config, pool, logger }) {
       res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin dcs list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- Sites Catalog -----
+
+  const SITES_LIST_SQL = `
+    SELECT s.site_id AS id, s.site_name AS siteName, s.region_code AS regionCode,
+           s.is_hub AS isHub, s.description, s.created_at AS createdAt, s.updated_at AS updatedAt,
+           (SELECT COUNT(*) FROM ad_dcs d WHERE d.site_id = s.site_id) AS dcCount
+    FROM ad_sites s
+    ORDER BY s.site_name
+  `.trim();
+
+  r.get('/api/admin/sites-catalog', auth, async (_req, res) => {
+    try {
+      const [rows] = await pool.execute(SITES_LIST_SQL);
+      res.json(rows.map(camelRow));
+    } catch (e) {
+      logger.error({ err: e }, 'sites-catalog list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.post('/api/admin/sites-catalog', auth, async (req, res) => {
+    const { siteName, regionCode, isHub, description } = req.body || {};
+    if (!siteName) return res.status(400).json({ error: 'missing siteName' });
+    try {
+      const [result] = await pool.execute(
+        'INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?)',
+        [siteName, regionCode ?? null, isHub ? 1 : 0, description ?? null]
+      );
+      res.status(201).json({ id: result.insertId });
+    } catch (e) {
+      if (e.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'siteName already exists' });
+      logger.error({ err: e }, 'sites-catalog create failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.put('/api/admin/sites-catalog/:id', auth, async (req, res) => {
+    const id = Number(req.params.id);
+    const { siteName, regionCode, isHub, description } = req.body || {};
+    const fields = [];
+    const params = [];
+    if (siteName !== undefined)    { fields.push('site_name = ?');    params.push(siteName); }
+    if (regionCode !== undefined)  { fields.push('region_code = ?');  params.push(regionCode); }
+    if (isHub !== undefined)       { fields.push('is_hub = ?');       params.push(isHub ? 1 : 0); }
+    if (description !== undefined) { fields.push('description = ?');  params.push(description); }
+    if (fields.length === 0) return res.status(400).json({ error: 'no fields to update' });
+    params.push(id);
+    try {
+      const [result] = await pool.execute(
+        `UPDATE ad_sites SET ${fields.join(', ')} WHERE site_id = ?`, params
+      );
+      if (result.affectedRows === 0) return res.status(404).json({ error: 'site not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'sites-catalog update failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.delete('/api/admin/sites-catalog/:id', auth, async (req, res) => {
+    const id = Number(req.params.id);
+    try {
+      await pool.execute('UPDATE ad_dcs SET site_id = NULL WHERE site_id = ?', [id]);
+      const [result] = await pool.execute('DELETE FROM ad_sites WHERE site_id = ?', [id]);
+      if (result.affectedRows === 0) return res.status(404).json({ error: 'site not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'sites-catalog delete failed');
       res.status(500).json({ error: 'internal' });
     }
   });
