@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
 
-function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
+export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
   return new Promise((resolve) => {
     const u = new URL(url);
     const lib = u.protocol === 'https:' ? https : http;

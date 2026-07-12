@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import http from 'node:http';
+import { requestJson } from './reporter.js';
 
 export function runDiscovery({ powerShellPath, psDiscoveryScriptPath }) {
   return new Promise((resolve) => {
@@ -22,36 +22,12 @@ export function runDiscovery({ powerShellPath, psDiscoveryScriptPath }) {
 }
 
 export function postDiscovery({ centerUrl, agentToken, payload }) {
-  return new Promise((resolve) => {
-    const url = new URL(`${centerUrl}/api/agent/discover`);
-    const body = JSON.stringify(payload);
-    const req = http.request({
-      method: 'POST',
-      hostname: url.hostname,
-      port: url.port || 80,
-      path: url.pathname,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-        'X-Agent-Token': agentToken
-      },
-      timeout: 30000
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          try { return resolve({ ok: true, status: res.statusCode, data: JSON.parse(data) }); }
-          catch { return resolve({ ok: true, status: res.statusCode, data: null }); }
-        }
-        try { return resolve({ ok: false, status: res.statusCode, data: JSON.parse(data) }); }
-        catch { return resolve({ ok: false, status: res.statusCode }); }
-      });
-    });
-    req.on('error', err => resolve({ ok: false, status: 0, error: err.message }));
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.write(body);
-    req.end();
+  return requestJson({
+    method: 'POST',
+    url: `${centerUrl}/api/agent/discover`,
+    headers: { 'X-Agent-Token': agentToken },
+    body: payload,
+    timeoutMs: 30000
   });
 }
 
