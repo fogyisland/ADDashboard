@@ -273,6 +273,9 @@ export function adminRouter({ config, pool, logger }) {
 
   r.put('/api/admin/sites-catalog/:id', auth, async (req, res) => {
     const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid id' });
+    }
     const { siteName, regionCode, isHub, description } = req.body || {};
     const fields = [];
     const params = [];
@@ -296,6 +299,9 @@ export function adminRouter({ config, pool, logger }) {
 
   r.delete('/api/admin/sites-catalog/:id', auth, async (req, res) => {
     const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'invalid id' });
+    }
     try {
       await pool.execute('UPDATE ad_dcs SET site_id = NULL WHERE site_id = ?', [id]);
       const [result] = await pool.execute('DELETE FROM ad_sites WHERE site_id = ?', [id]);

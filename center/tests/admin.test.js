@@ -416,6 +416,59 @@ test('DELETE /api/admin/sites-catalog/:id: 200 and nullifies DCs first', async (
   assert.match(executed[1].sql, /DELETE\s+FROM\s+ad_sites/i);
 });
 
+test('PUT /api/admin/sites-catalog/:id: 400 invalid id (non-numeric), no DB execute', async () => {
+  let executeCalls = 0;
+  const pool = {
+    async execute() {
+      executeCalls++;
+      return [{ affectedRows: 0 }, []];
+    }
+  };
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .put('/api/admin/sites-catalog/abc')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ siteName: 'X' });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'invalid id');
+  assert.equal(executeCalls, 0, 'no DB query should fire on invalid id');
+});
+
+test('DELETE /api/admin/sites-catalog/:id: 400 invalid id (negative), no DB execute', async () => {
+  let executeCalls = 0;
+  const pool = {
+    async execute() {
+      executeCalls++;
+      return [{ affectedRows: 0 }, []];
+    }
+  };
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .delete('/api/admin/sites-catalog/-1')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'invalid id');
+  assert.equal(executeCalls, 0, 'no DB query should fire on invalid id');
+});
+
+test('PUT /api/admin/sites-catalog/:id: 400 invalid id (zero), no DB execute', async () => {
+  let executeCalls = 0;
+  const pool = {
+    async execute() {
+      executeCalls++;
+      return [{ affectedRows: 0 }, []];
+    }
+  };
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .put('/api/admin/sites-catalog/0')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ siteName: 'X' });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'invalid id');
+  assert.equal(executeCalls, 0, 'no DB query should fire on zero id');
+});
+
 // ----- DCS-CATALOG -----
 
 test('GET /api/admin/dcs-catalog: 200 returns LEFT JOIN with site', async () => {
