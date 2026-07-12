@@ -1760,16 +1760,41 @@ Add `db` block:
 
 Move the existing `mysql:` block under `db.mysql`. Keep `listenPort`, `jwtSecret`, `agentToken`, `staticDir`, etc. at top level.
 
-**Step 3: Run full center tests (will still fail until T13-T16; expected)**
+**Step 3: Update `center/tests/config.test.js`**
+
+The first test (`loadConfig parses required keys`) feeds a fixture with a top-level `mysql:` key; the new `loadConfig` rejects that because `db.dialect` is missing. Replace the fixture JSON:
+
+```js
+writeFileSync(path, JSON.stringify({
+  db: {
+    dialect: 'mysql',
+    mysql: { host: 'localhost', port: 3306, database: 'AD_Monitoring', user: 'root', password: 'pw' }
+  },
+  listenPort: 8080,
+  jwtSecret: 'abc',
+  agentToken: 'tok',
+  staticDir: 'C:/web',
+  logLevel: 'info',
+  env: 'dev'
+}));
+```
+
+The `loadConfig throws if required key missing` test already passes (still throws on missing keys).
+
+The `getAgentConfig` tests still inject a `pool`-shaped object directly — that signature (`getAgentConfig(pool)`) stays unchanged in T9 (services are refactored to use `db` but `getAgentConfig` accepts the raw executor because `system_config` SQL stays a single statement and the test bypasses the facade). **No change needed there.**
+
+**Step 4: Run full center tests (config tests green; other failures expected until T13-T16)**
 
 ```bash
 cd center && npm test 2>&1 | tail -20
 ```
 
-**Step 4: Commit**
+Expected: at minimum the two `loadConfig` tests pass. Other test files may fail because they still call `initPool`/`getPool` — those are fixed in T16.
+
+**Step 5: Commit**
 
 ```bash
-git add center/src/config.js center/appsettings.json
+git add center/src/config.js center/appsettings.json center/tests/config.test.js
 git commit -m "feat(config): load db.dialect + per-dialect connection blocks"
 ```
 
@@ -2235,6 +2260,28 @@ _setDbForTest(mockDb);
 
 - Replace `pool: buildThrowingPool(msg)` with `buildThrowingPool(msg)` and `_setDbForTest(it)`.
 
+**Special case: `center/tests/healthz.test.js`.** This file calls `initPool({ mysql: {...} })` and `buildTestApp({ pool })` — both removed by T6. Replace the entire file:
+
+```js
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { init, close, getDb } from '../src/db/index.js';
+import { buildTestApp } from './helpers/test-app.js';
+
+test('GET /healthz returns 200 when DB reachable', async (t) => {
+  const url = process.env.TEST_SQL_URL;
+  if (!url) return t.skip('TEST_SQL_URL not set');
+  await init({ db: { dialect: 'mysql', mysql: { host: url, port: 3306, database: 'mysql', user: 'root', password: process.env.TEST_SQL_PASSWORD || '' } } });
+  const app = buildTestApp({ db: getDb() });
+  const { default: supertest } = await import('supertest');
+  const res = await supertest(app).get('/healthz');
+  assert.equal(res.status, 200);
+  await close();
+});
+```
+
+(The `buildTestApp({ db: ... })` factory signature change is covered by T11 — `healthzRouter({ config, db, logger })`.)
+
 **Step 6: Delete `center/tests/helpers/mysql-pool.js`**
 
 ```bash
@@ -2261,15 +2308,53 @@ git commit -m "test(db): dialect-agnostic db mock helper; update all test wiring
 ### Task 17: Integration test — replication (env-gated)
 
 **Files:**
+- Create: `center/tests/integration/_url.js` — shared `parseTestUrl(envKey)` helper
 - Create: `center/tests/integration/replication.integration.test.js`
 
-**Step 1: Create the integration test**
+> **URL format (shared by all integration tests):** `TEST_SQL_URL=user:password@host` (port optional, defaults 3306/mysql / 1433/mssql). Example: `TEST_SQL_URL=root:Admin909217@127.0.0.1:3306`. The helper extracts user/password/host/port via regex. Tests that don't care about credentials can use `TEST_SQL_URL=root@127.0.0.1`.
+
+**Step 1: Create the URL helper**
+
+Create `center/tests/integration/_url.js`:
 
 ```js
-import { test } 'node:test';
+// Parse "user:password@host:port" (or "user@host", "host", etc.) from an env var.
+// Defaults: port 3306 for mysql, 1433 for mssql. Throws on missing key.
+export function parseTestUrl(envKey, { defaultPort }) {
+  const raw = process.env[envKey];
+  if (!raw) throw new Error(`${envKey} not set`);
+  let user = null, password = '', host = raw, port = defaultPort;
+  const atIdx = raw.lastIndexOf('@');
+  if (atIdx >= 0) {
+    const creds = raw.slice(0, atIdx);
+    host = raw.slice(atIdx + 1);
+    const colonIdx = creds.indexOf(':');
+    if (colonIdx >= 0) {
+      user = creds.slice(0, colonIdx);
+      password = creds.slice(colonIdx + 1);
+    } else {
+      user = creds;
+    }
+  }
+  const portIdx = host.lastIndexOf(':');
+  if (portIdx >= 0 && /^\d+$/.test(host.slice(portIdx + 1))) {
+    port = parseInt(host.slice(portIdx + 1), 10);
+    host = host.slice(0, portIdx);
+  }
+  return { user, password, host, port };
+}
+```
+
+**Step 2: Create the integration test**
+
+Create `center/tests/integration/replication.integration.test.js`:
+
+```js
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { init, close, getDb } from '../../src/db/index.js';
 import { upsertStatus, listRecent, listBySite } from '../../src/services/replication.js';
+import { parseTestUrl } from './_url.js';
 
 function shouldRun(dialect) {
   const urlKey = dialect === 'mysql' ? 'TEST_SQL_URL' : 'TEST_MSSQL_URL';
@@ -2278,10 +2363,10 @@ function shouldRun(dialect) {
 
 async function bootDialect(dialect) {
   const urlKey = dialect === 'mysql' ? 'TEST_SQL_URL' : 'TEST_MSSQL_URL';
-  const url = process.env[urlKey];
+  const { user, password, host, port } = parseTestUrl(urlKey, { defaultPort: dialect === 'mysql' ? 3306 : 1433 });
   const cfg = dialect === 'mysql'
-    ? { db: { dialect: 'mysql', mysql: { host: url, port: 3306, database: 'ad_monitoring', user: 'root', password: '' } } }
-    : { db: { dialect: 'mssql', mssql: { server: url, database: 'ad_monitoring', user: 'sa', password: '' } } };
+    ? { db: { dialect: 'mysql', mysql: { host, port, database: 'ad_monitoring', user, password } } }
+    : { db: { dialect: 'mssql', mssql: { server: host, port, database: 'ad_monitoring', user, password } } };
   await init(cfg);
   const db = getDb();
   await db.execute('DELETE FROM ad_replication_history; DELETE FROM ad_replication_status;');
@@ -2341,18 +2426,18 @@ test('integration: replication listBySite filters correctly', async (t) => {
 });
 ```
 
-**Step 2: Run with mysql env set**
+**Step 3: Run with mysql env set**
 
 ```bash
-TEST_SQL_URL=127.0.0.1 node --test tests/integration/replication.integration.test.js 2>&1 | tail -20
+TEST_SQL_URL=root:Admin909217@127.0.0.1:3306 node --test tests/integration/replication.integration.test.js 2>&1 | tail -20
 ```
 
 Expected: 1-2 pass (depending on whether mssql env is also set), 0 fail.
 
-**Step 3: Commit**
+**Step 4: Commit**
 
 ```bash
-git add center/tests/integration/replication.integration.test.js
+git add center/tests/integration/_url.js center/tests/integration/replication.integration.test.js
 git commit -m "test(integration): replication round-trip against real mysql/mssql"
 ```
 
@@ -2370,6 +2455,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { init, close, getDb } from '../../src/db/index.js';
 import { upsertDiscoveredDc } from '../../src/services/discovery.js';
+import { parseTestUrl } from './_url.js';
 
 function dialectFromEnv() {
   if (process.env.TEST_SQL_URL) return 'mysql';
@@ -2381,9 +2467,10 @@ async function boot() {
   const dialect = dialectFromEnv();
   if (!dialect) return null;
   const urlKey = dialect === 'mysql' ? 'TEST_SQL_URL' : 'TEST_MSSQL_URL';
+  const { user, password, host, port } = parseTestUrl(urlKey, { defaultPort: dialect === 'mysql' ? 3306 : 1433 });
   const cfg = dialect === 'mysql'
-    ? { db: { dialect, mysql: { host: process.env[urlKey], port: 3306, database: 'ad_monitoring', user: 'root', password: '' } } }
-    : { db: { dialect, mssql: { server: process.env[urlKey], database: 'ad_monitoring', user: 'sa', password: '' } } };
+    ? { db: { dialect, mysql: { host, port, database: 'ad_monitoring', user, password } } }
+    : { db: { dialect, mssql: { server: host, port, database: 'ad_monitoring', user, password } } };
   await init(cfg);
   return getDb();
 }
@@ -2391,28 +2478,28 @@ async function boot() {
 test('integration: upsertDiscoveredDc inserts new DC', async (t) => {
   const db = await boot();
   if (!db) return t.skip('no TEST_*_URL set');
-  await db.execute('DELETE FROM ad_dcs WHERE dc_name = @p1'.replace('@p1', '?'), ['DC-INT-1']);
+  await db.execute('DELETE FROM ad_dcs WHERE dc_name = ?', ['DC-INT-1']);
   await upsertDiscoveredDc({
     agentId: 'agent-int-1',
     collectedAt: new Date('2026-07-12T00:00:00Z'),
     dc: { name: 'DC-INT-1', siteHint: 'SITE-X', osVersion: 'Win2022', whenCreated: new Date('2020-01-01T00:00:00Z'),
           isPdc: true, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false }
   });
-  const { rows } = await db.query('SELECT dc_name, is_pdc, is_gc FROM ad_dcs WHERE dc_name = @p1'.replace('@p1', '?'), ['DC-INT-1']);
+  const { rows } = await db.query('SELECT dc_name, is_pdc, is_gc FROM ad_dcs WHERE dc_name = ?', ['DC-INT-1']);
   assert.equal(rows.length, 1);
   assert.equal(Number(rows[0].is_pdc), 1);
   assert.equal(Number(rows[0].is_gc), 1);
-  await db.execute('DELETE FROM ad_dcs WHERE dc_name = @p1'.replace('@p1', '?'), ['DC-INT-1']);
+  await db.execute('DELETE FROM ad_dcs WHERE dc_name = ?', ['DC-INT-1']);
   await close();
 });
 ```
 
-(Using inline `?`-placeholder SQL above to avoid dialect-specific placeholder differences.)
+(Using inline `?`-placeholder SQL — `parseTestUrl` is the URL credential parser; the SQL adapter already rewrites `?` to `@pN` for mssql.)
 
 **Step 2: Run**
 
 ```bash
-TEST_SQL_URL=127.0.0.1 node --test tests/integration/discovery.integration.test.js 2>&1 | tail -10
+TEST_SQL_URL=root:Admin909217@127.0.0.1:3306 node --test tests/integration/discovery.integration.test.js 2>&1 | tail -10
 ```
 
 Expected: 1 pass, 0 fail.
@@ -2438,14 +2525,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { init, close, getDb } from '../../src/db/index.js';
 import { findByUsername, createUser, updateUser, deleteUser, listUsers } from '../../src/services/users.js';
+import { parseTestUrl } from './_url.js';
 
 async function boot() {
   const dialect = process.env.TEST_SQL_URL ? 'mysql' : process.env.TEST_MSSQL_URL ? 'mssql' : null;
   if (!dialect) return null;
   const urlKey = dialect === 'mysql' ? 'TEST_SQL_URL' : 'TEST_MSSQL_URL';
+  const { user, password, host, port } = parseTestUrl(urlKey, { defaultPort: dialect === 'mysql' ? 3306 : 1433 });
   const cfg = dialect === 'mysql'
-    ? { db: { dialect, mysql: { host: process.env[urlKey], port: 3306, database: 'ad_monitoring', user: 'root', password: '' } } }
-    : { db: { dialect, mssql: { server: process.env[urlKey], database: 'ad_monitoring', user: 'sa', password: '' } } };
+    ? { db: { dialect, mysql: { host, port, database: 'ad_monitoring', user, password } } }
+    : { db: { dialect, mssql: { server: host, port, database: 'ad_monitoring', user, password } } };
   await init(cfg);
   return getDb();
 }
@@ -2480,7 +2569,7 @@ test('integration: listUsers returns array including seeded admin', async (t) =>
 **Step 2: Run**
 
 ```bash
-TEST_SQL_URL=127.0.0.1 node --test tests/integration/users.integration.test.js 2>&1 | tail -10
+TEST_SQL_URL=root:Admin909217@127.0.0.1:3306 node --test tests/integration/users.integration.test.js 2>&1 | tail -10
 ```
 
 Expected: 2 pass, 0 fail.
@@ -2506,14 +2595,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { init, close, getDb } from '../../src/db/index.js';
 import { writeAudit, listAudit } from '../../src/services/audit.js';
+import { parseTestUrl } from './_url.js';
 
 async function boot() {
   const dialect = process.env.TEST_SQL_URL ? 'mysql' : process.env.TEST_MSSQL_URL ? 'mssql' : null;
   if (!dialect) return null;
   const urlKey = dialect === 'mysql' ? 'TEST_SQL_URL' : 'TEST_MSSQL_URL';
+  const { user, password, host, port } = parseTestUrl(urlKey, { defaultPort: dialect === 'mysql' ? 3306 : 1433 });
   const cfg = dialect === 'mysql'
-    ? { db: { dialect, mysql: { host: process.env[urlKey], port: 3306, database: 'ad_monitoring', user: 'root', password: '' } } }
-    : { db: { dialect, mssql: { server: process.env[urlKey], database: 'ad_monitoring', user: 'sa', password: '' } } };
+    ? { db: { dialect, mysql: { host, port, database: 'ad_monitoring', user, password } } }
+    : { db: { dialect, mssql: { server: host, port, database: 'ad_monitoring', user, password } } };
   await init(cfg);
   return getDb();
 }
@@ -2531,7 +2622,7 @@ test('integration: writeAudit + listAudit round-trip', async (t) => {
 **Step 2: Run**
 
 ```bash
-TEST_SQL_URL=127.0.0.1 node --test tests/integration/audit.integration.test.js 2>&1 | tail -10
+TEST_SQL_URL=root:Admin909217@127.0.0.1:3306 node --test tests/integration/audit.integration.test.js 2>&1 | tail -10
 ```
 
 Expected: 1 pass, 0 fail.
@@ -2557,14 +2648,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { init, close, getDb } from '../../src/db/index.js';
 import { upsertStatus, listBySite } from '../../src/services/replication.js';
+import { parseTestUrl } from './_url.js';
 
 async function boot() {
   const dialect = process.env.TEST_SQL_URL ? 'mysql' : process.env.TEST_MSSQL_URL ? 'mssql' : null;
   if (!dialect) return null;
   const urlKey = dialect === 'mysql' ? 'TEST_SQL_URL' : 'TEST_MSSQL_URL';
+  const { user, password, host, port } = parseTestUrl(urlKey, { defaultPort: dialect === 'mysql' ? 3306 : 1433 });
   const cfg = dialect === 'mysql'
-    ? { db: { dialect, mysql: { host: process.env[urlKey], port: 3306, database: 'ad_monitoring', user: 'root', password: '' } } }
-    : { db: { dialect, mssql: { server: process.env[urlKey], database: 'ad_monitoring', user: 'sa', password: '' } } };
+    ? { db: { dialect, mysql: { host, port, database: 'ad_monitoring', user, password } } }
+    : { db: { dialect, mssql: { server: host, port, database: 'ad_monitoring', user, password } } };
   await init(cfg);
   return getDb();
 }
@@ -2586,7 +2679,7 @@ test('integration: site-replication-matrix returns rows for site', async (t) => 
 **Step 2: Run**
 
 ```bash
-TEST_SQL_URL=127.0.0.1 node --test tests/integration/dashboard.integration.test.js 2>&1 | tail -10
+TEST_SQL_URL=root:Admin909217@127.0.0.1:3306 node --test tests/integration/dashboard.integration.test.js 2>&1 | tail -10
 ```
 
 Expected: 1 pass, 0 fail.
