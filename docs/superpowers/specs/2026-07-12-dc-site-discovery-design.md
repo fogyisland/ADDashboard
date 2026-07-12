@@ -296,11 +296,13 @@ r.post('/api/agent/discover', agentMw, async (req, res) => {
 | `frontend/src/views/admin/DcsView.vue` | **重命名** → `ActiveDcsView.vue` | 标题改"正在复制的域控"；路由路径不变 `/admin/dcs` |
 | `frontend/src/views/admin/SitesCatalogView.vue` | **新增** | 站点清单 CRUD |
 | `frontend/src/views/admin/DcsCatalogView.vue` | **新增** | DC 清单 + 站点分配 |
+| `frontend/src/views/admin/SiteReplicationMatrixView.vue` | **新增 (G)** | 站点内 DC×DC 复制矩阵 + 自动轮询 |
 | `frontend/src/components/SiteEditModal.vue` | **新增** | 创建/编辑 site 模态 |
 | `frontend/src/components/DcSiteAssignModal.vue` | **新增** | 分配站点模态（也可改用 inline select） |
-| `frontend/src/router.js` | **改** | 加 `/admin/sites-catalog`、`/admin/dcs-catalog`；routes 引用新文件名 |
-| `frontend/src/components/AppLayout.vue` | **改** | 侧边导航加 2 项 + 重命名 2 项 |
+| `frontend/src/router.js` | **改** | 加 `/admin/sites-catalog`、`/admin/dcs-catalog`、`/admin/site-replication-matrix`；routes 引用新文件名 |
+| `frontend/src/components/AppLayout.vue` | **改** | 侧边导航加 3 项（站点清单、域控清单、复制矩阵）+ 重命名 2 项 |
 | `frontend/src/api/admin.js` | **改** | 加 `listSitesCatalog / createSite / updateSite / deleteSite / listDcsCatalog / assignDcSite` |
+| `frontend/src/api/dashboard.js` | **改 (G)** | 加 `getSiteReplicationMatrix(siteName)` |
 
 ### 7.2 关键页面布局（描述）
 
@@ -337,6 +339,7 @@ git mv 旧文件到新文件名；保留路由 path 不变（`/admin/sites` → 
 |---|---|
 | `center/tests/agent.test.js` | 新增：`POST /api/agent/discover` 200/400/401；UPSERT 字段不含 site_id；discovered_at 用 NOW() |
 | `center/tests/admin.test.js` | 新增：sites-catalog CRUD；dcs-catalog GET；assign site；delete site 前 nullify |
+| `center/tests/dashboard.test.js`（新建, G） | `GET /api/dashboard/site-replication-matrix`：站点不存在 → 404；空站点 → 空数组；正常站点 → 返回 dcs + links；500 on DB error |
 
 ### 8.3 Frontend 测试
 
@@ -344,6 +347,7 @@ git mv 旧文件到新文件名；保留路由 path 不变（`/admin/sites` → 
 |---|---|
 | `frontend/src/views/admin/SitesCatalogView.spec.js` | 渲染表格；调用 listSitesCatalog；点击新建触发 modal |
 | `frontend/src/views/admin/DcsCatalogView.spec.js` | 渲染表格；调用 listDcsCatalog；点击 assign 触发 PUT |
+| `frontend/src/views/admin/SiteReplicationMatrixView.spec.js` (G) | 渲染 site dropdown；切换 site 触发重新拉数据；setInterval cleanup on unmount |
 
 ### 8.4 手动 e2e（可选）
 
@@ -376,6 +380,9 @@ git mv 旧文件到新文件名；保留路由 path 不变（`/admin/sites` → 
 5. 手动：浏览器 `/admin/dcs-catalog` 显示新 DC，可分配 site，刷新后持久
 6. 手动：浏览器 `/admin/sites-catalog` 可新建/编辑/删除 site
 7. 现有 `/admin/sites`, `/admin/dcs` 行为不变（页面标题改为"正在复制的..."）
+8. (G) 手动：浏览器 `/admin/site-replication-matrix` 下拉选站点，矩阵显示 DC×DC 复制状态，每 10s 自动刷新，组件卸载后无遗留请求
+9. (G) 手动：分配新 DC 到某站点后，矩阵新行/新列出现
+10. (G) 手动：站点未分配 DC 时矩阵显示"暂无 DC"占位而非报错
 
 ---
 
@@ -387,6 +394,168 @@ git mv 旧文件到新文件名；保留路由 path 不变（`/admin/sites` → 
 - **D** 进一步站点/DC UI 增强（如拖拽分配、批量操作）
 - **E** 拓扑/错误链路筛选
 - **F** ISTG（Inter-Site Topology Generator）
-- **G** Per-site / Per-DC 健康汇总
 - **H** discovery 间隔后台可调（admin UI 改 system_config）
 - **I** 多平台 MySQL + SQL Server
+
+---
+
+## 12. 子项目 G：Per-Site 复制矩阵（自动轮询页面）
+
+> 本节由用户于 2026-07-12 提出，合并到 A+B spec 内一起实施。
+
+### 12.1 目标
+
+新增一个管理页面，按站点展示**站点内 DC×DC 的复制状况**，并自动定时刷新，让运维一眼看清"哪两个 DC 之间复制坏了"。
+
+**强依赖 A**：必须先有 `ad_dcs.site_id`（admin 手动分配）才能确定"站点内的 DC"。如果站点未分配 DC，矩阵显示"该站点暂无 DC"。
+
+### 12.2 数据流
+
+```
+浏览器                              Center
+┌──────────────────────────────┐    ┌─────────────────────────────┐
+│ SiteReplicationMatrixView    │    │ GET /api/dashboard/         │
+│   选择站点 (下拉)             │    │     site-replication-matrix │
+│   拉取 DC×DC 复制矩阵         │───►│     ?site=<site_name>       │
+│                              │    │                             │
+│   setInterval(refresh, 10s)  │    │ 查 ad_dcs.site_id = X       │
+│   onUnmounted: clearInterval │    │ 查 ad_replication_status    │
+│                              │    │   WHERE source/dest DC IN   │
+└──────────────────────────────┘    │   (该站点的 DCs)            │
+                                     └─────────────────────────────┘
+```
+
+### 12.3 新增端点 `GET /api/dashboard/site-replication-matrix?site=<site_name>`
+
+挂在 `center/src/routes/dashboard.js`，使用现有 `auth` 中间件。
+
+参数：
+- `site` (required) — `ad_sites.site_name`
+
+返回（camelCase）：
+```json
+{
+  "site": {
+    "siteId": 1,
+    "siteName": "Beijing-Site",
+    "regionCode": "BJ",
+    "isHub": true,
+    "description": "..."
+  },
+  "dcs": [
+    { "dcName": "DC-BJ-01", "osVersion": "...", "isPdc": false, "isGc": true, "discoveredAt": "..." }
+  ],
+  "links": [
+    { "source": "DC-BJ-01", "target": "DC-BJ-02", "namingContext": "DC=contoso,DC=com", "statusCode": 0, "lastSuccessTime": "...", "lastAttemptTime": "...", "durationMinutes": 5 }
+  ],
+  "siteRefreshSeconds": 10
+}
+```
+
+SQL（两次查询，分别拿 DC 列表和链路列表）：
+
+```sql
+-- DCs in site
+SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id
+FROM ad_dcs WHERE site_id = ? ORDER BY dc_name;
+
+-- Replication links between these DCs
+SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time,
+       TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes
+FROM ad_replication_status
+WHERE source_dc IN (SELECT dc_name FROM ad_dcs WHERE site_id = ?)
+  AND dest_dc IN (SELECT dc_name FROM ad_dcs WHERE site_id = ?)
+ORDER BY source_dc, dest_dc, naming_context;
+```
+
+校验：
+- `site` 不存在 → 404 `{error: "site not found"}`
+- `site` 未分配 DC → 返回 `{site, dcs:[], links:[]}`（不是错误）
+
+错误处理沿用 dashboard.js 现有 try/catch → 500 `{error: "internal"}`。
+
+### 12.4 新增 config `site_matrix_refresh_seconds`
+
+`db/migrations/001-dc-site-discovery.sql` 追加：
+```sql
+INSERT IGNORE INTO system_config (config_key, config_value, description) VALUES
+  ('site_matrix_refresh_seconds', '10', '站点复制矩阵页面自动刷新间隔 (秒)');
+```
+
+`center/src/services/config.js` `getAgentConfig` 不动 — 这不是 agent 配置。需要在 dashboard 端读取，写一个 `getDashboardConfig(pool)` helper（或在 dashboard.js 内联 SELECT）。
+
+简单做法：dashboard.js 直接 `SELECT config_value FROM system_config WHERE config_key='site_matrix_refresh_seconds'`，未配置默认 10。
+
+### 12.5 前端 `SiteReplicationMatrixView.vue`
+
+路径：`frontend/src/views/admin/SiteReplicationMatrixView.vue`
+路由：`/admin/site-replication-matrix`
+权限：`meta: { perm: 'admin:users' }`
+
+布局（HTML 描述，frontend-design 后续细化）：
+```
+┌─────────────────────────────────────────────────────┐
+│ 站点复制矩阵                                         │
+│ 站点: [Beijing-Site ▼]   自动刷新: 10s  ●  ●  ●  ●   │
+├─────────────────────────────────────────────────────┤
+│         │ DC-BJ-01 │ DC-BJ-02 │ DC-BJ-03 │          │
+│ DC-BJ-01│    -     │   ●OK    │   ●ERR   │          │
+│ DC-BJ-02│   ●OK    │    -     │   ●OK    │          │
+│ DC-BJ-03│   ●OK    │   ●OK    │    -     │          │
+├─────────────────────────────────────────────────────┤
+│ DC-BJ-01 → DC-BJ-03 (DC=contoso,DC=com)             │
+│   status_code=2  last_success=...  duration=15min    │
+└─────────────────────────────────────────────────────┘
+```
+
+颜色规范：
+- 绿 (#22c55e) status_code=0
+- 黄 (#f59e0b) status_code=1
+- 红 (#ef4444) status_code>=2
+- 灰 (#475569) 对角线（自己到自己）
+
+行为：
+- 顶部下拉改变 site → 立即重新拉数据
+- 每 10s 自动拉一次（间隔由后端配置 `site_matrix_refresh_seconds` 返回）
+- 显示当前拉数据状态指示（"● ● ● ●" 四个点循环）
+- `onUnmounted` 必须 `clearInterval`
+- 单元格点击 → 下方详情面板展开显示该 link 的 naming_context + 时间
+
+### 12.6 路由 + 侧边导航
+
+`frontend/src/router.js`：
+```js
+{ path: '/admin/site-replication-matrix', component: SiteReplicationMatrixView, meta: { perm: 'admin:users' } }
+```
+
+`frontend/src/components/AppLayout.vue` 侧边导航（管理分组下，加在"AD 域控清单"之后）：
+- 站点复制矩阵 → `/admin/site-replication-matrix`
+
+### 12.7 测试
+
+| 文件 | 用例 |
+|---|---|
+| `center/tests/dashboard.test.js`（新建） | 站点不存在 → 404；站点无 DC → 空数组；正常站点 → 返回 dcs + links；500 on DB error |
+| `frontend/src/views/admin/SiteReplicationMatrixView.spec.js`（新建） | 渲染 site dropdown；切换 site 触发重新拉数据；setInterval cleanup on unmount |
+
+### 12.8 风险与限制（增量）
+
+| # | 风险 | 缓解 |
+|---|---|---|
+| 7 | 站点无 DC 时显示空矩阵 vs 隐藏站点 | 显示空矩阵 + "暂无 DC"占位（一致性优先） |
+| 8 | 站点分配了 DC 但 DC 从未上报 discovery → ad_dcs 中行存在但 discovered_at 为 NULL | 矩阵仍显示 DC，但前端标 "尚未上报元数据" |
+| 9 | 自动刷新时如果上一次请求还没回来 → race condition | 用 ref 跟踪当前 siteId，新请求覆盖前 abort 旧的 |
+| 10 | setInterval 不清理 → 组件卸载后内存泄漏 | onUnmounted clearInterval（强制要求） |
+
+### 12.9 验收增量
+
+- 8. 手动：浏览器 `/admin/site-replication-matrix`，下拉选站点，矩阵显示
+- 9. 手动：观察指示灯，每 10s 拉一次，组件卸载后无遗留请求
+- 10. 手动：分配新 DC 到某站点，等 4h 后看矩阵是否包含新 DC
+
+---
+
+## 13. 文档版本
+
+- 2026-07-12 v1: 初版（A+B 子项目）
+- 2026-07-12 v2: 合并 G 子项目（站点复制矩阵 + 自动轮询页面）
