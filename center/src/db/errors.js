@@ -30,7 +30,6 @@ export class DbError extends Error {
   static wrap(e) {
     if (e instanceof DbError) return e;
     return new DbError(e, {
-      code: e.code,
       sqlState: e.sqlState || e.number?.toString(),
       sqlMessage: e.sqlMessage
     });
