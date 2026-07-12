@@ -3,43 +3,18 @@ import { agentToken } from '../auth/agent-token.js';
 import { upsertStatus } from '../services/replication.js';
 import { getConfig, getAgentConfig } from '../services/config.js';
 import { upsertDiscoveredDc } from '../services/discovery.js';
+import { getDb } from '../db/index.js';
 
-// MySQL: last_heartbeat_at is auto-touched via NOW() in INSERT, and preserved
-// (overwritten) on UPDATE. The IFNULL semantics from SQL Server become COALESCE.
-const HEARTBEAT_UPSERT = `
-INSERT INTO ad_agent_heartbeat (
-  agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size
-) VALUES (?, NOW(), ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE
-  last_heartbeat_at   = NOW(),
-  agent_version       = VALUES(agent_version),
-  last_report_at      = COALESCE(VALUES(last_report_at), last_report_at),
-  last_report_status  = COALESCE(VALUES(last_report_status), last_report_status),
-  pending_queue_size  = VALUES(pending_queue_size)
-`.trim();
-
-const TOUCH_HEARTBEAT = `
-UPDATE ad_agent_heartbeat
-   SET last_report_at = NOW(),
-       last_report_status = 'success'
- WHERE agent_id = ?
-`.trim();
-
-export function agentRouter({ config, pool, logger }) {
+export function agentRouter({ config, logger }) {
   const r = Router();
   const agentMw = agentToken(config.agentToken);
 
   r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
-    const { agentId, agentVersion, lastReportAt, lastReportStatus, pendingQueueSize } = req.body || {};
+    const { agentId, agentVersion, pendingQueueSize } = req.body || {};
     if (!agentId) return res.status(400).json({ error: 'missing agentId' });
     try {
-      await pool.execute(HEARTBEAT_UPSERT, [
-        agentId,
-        agentVersion ?? null,
-        lastReportAt ?? null,
-        lastReportStatus ?? null,
-        pendingQueueSize ?? 0
-      ]);
+      const db = getDb();
+      await db.execute(db.sql.heartbeat.upsert, [agentId, agentVersion ?? null, pendingQueueSize ?? 0]);
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e, agentId }, 'heartbeat failed');
@@ -53,12 +28,14 @@ export function agentRouter({ config, pool, logger }) {
       return res.status(400).json({ error: 'missing agentId, collectedAt, or data[]' });
     }
     try {
-      const cfg = await getConfig(pool);
+      const db = getDb();
+      const cfg = await getConfig();
       const historyEnabled = String(cfg.history_enabled ?? 'false').toLowerCase() === 'true';
-      const rows = data.map(row => ({ ...row, agentId, collectedAt }));
-      await upsertStatus(pool, rows, { appendHistory: historyEnabled });
-      await pool.execute(TOUCH_HEARTBEAT, [agentId]);
-      const { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds, centerPublicHost, centerPublicPort } = await getAgentConfig(pool);
+      await upsertStatus(
+        data.map(row => ({ ...row, agentId, collectedAt })),
+        { appendHistory: historyEnabled }
+      );
+      const { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds, centerPublicHost, centerPublicPort } = await getAgentConfig();
       res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds, centerPublicHost, centerPublicPort } });
     } catch (e) {
       logger.error({ err: e, agentId }, 'report failed');
@@ -72,7 +49,7 @@ export function agentRouter({ config, pool, logger }) {
       return res.status(400).json({ error: 'missing agentId/collectedAt/dc.name' });
     }
     try {
-      await upsertDiscoveredDc(pool, { agentId, collectedAt, dc });
+      await upsertDiscoveredDc({ agentId, collectedAt, dc });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e, agentId }, 'discover failed');
@@ -82,7 +59,7 @@ export function agentRouter({ config, pool, logger }) {
 
   r.get('/api/agent/config', async (_req, res) => {
     try {
-      const full = await getAgentConfig(pool);
+      const full = await getAgentConfig();
       res.json(full);
     } catch (e) {
       logger.error({ err: e }, 'agent config fetch failed');

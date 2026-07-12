@@ -1,72 +1,7 @@
 import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
-
-// Queries ---------------------------------------------------------------
-
-const OVERVIEW_COUNTS = `
-SELECT
-  COUNT(*)                                          AS total,
-  SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END)  AS healthy,
-  SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END)  AS warning,
-  SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END)  AS errored,
-  MAX(collected_at)                                  AS last_update
-FROM ad_replication_status;
-`.trim();
-
-const AGENT_COUNT = `
-SELECT COUNT(*) AS agent_count
-FROM ad_agent_heartbeat
-WHERE last_heartbeat_at IS NOT NULL;
-`.trim();
-
-const SITE_MATRIX = `
-SELECT
-  source_site,
-  dest_site,
-  SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count,
-  SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END)  AS warning_count,
-  COUNT(*)                                           AS total
-FROM ad_replication_status
-WHERE source_site IS NOT NULL AND dest_site IS NOT NULL
-GROUP BY source_site, dest_site
-ORDER BY source_site, dest_site;
-`.trim();
-
-const TOPOLOGY = `
-SELECT
-  source_site, dest_site,
-  source_dc,   dest_dc,
-  status_code, last_success_time
-FROM ad_replication_status;
-`.trim();
-
-const ERRORS = `
-SELECT
-  source_dc, dest_dc,
-  source_site, dest_site,
-  naming_context,
-  status_code,
-  last_success_time,
-  last_attempt_time,
-  TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes
-FROM ad_replication_status
-WHERE status_code <> 0
-ORDER BY last_attempt_time DESC;
-`.trim();
-
-const AGENTS = `
-SELECT
-  agent_id,
-  last_heartbeat_at,
-  agent_version,
-  last_report_at,
-  last_report_status,
-  pending_queue_size,
-  TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS seconds_since_heartbeat
-FROM ad_agent_heartbeat
-ORDER BY agent_id;
-`.trim();
+import { getDb } from '../db/index.js';
 
 // Helpers ---------------------------------------------------------------
 
@@ -111,14 +46,15 @@ function camelRow(row) {
 
 // Router ----------------------------------------------------------------
 
-export function dashboardRouter({ config, pool, logger }) {
+export function dashboardRouter({ config, logger }) {
   const r = Router();
   const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('read:dash')];
 
   r.get('/api/dashboard/overview', auth, async (_req, res) => {
     try {
-      const [counts] = await pool.execute(OVERVIEW_COUNTS);
-      const [agents] = await pool.execute(AGENT_COUNT);
+      const db = getDb();
+      const { rows: counts } = await db.query(db.sql.dashboard.overviewCounts);
+      const { rows: agents } = await db.query(db.sql.dashboard.agentCount);
       const c = counts[0] || {};
       const a = agents[0] || {};
       res.json({
@@ -137,7 +73,8 @@ export function dashboardRouter({ config, pool, logger }) {
 
   r.get('/api/dashboard/site-matrix', auth, async (_req, res) => {
     try {
-      const [rows] = await pool.execute(SITE_MATRIX);
+      const db = getDb();
+      const { rows } = await db.query(db.sql.dashboard.siteMatrix);
       res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'dashboard site-matrix failed');
@@ -147,7 +84,8 @@ export function dashboardRouter({ config, pool, logger }) {
 
   r.get('/api/dashboard/topology', auth, async (_req, res) => {
     try {
-      const [rows] = await pool.execute(TOPOLOGY);
+      const db = getDb();
+      const { rows } = await db.query(db.sql.dashboard.topology);
       const siteSet = new Set();
       const dcSet = new Map();
       const links = [];
@@ -179,7 +117,8 @@ export function dashboardRouter({ config, pool, logger }) {
 
   r.get('/api/dashboard/errors', auth, async (_req, res) => {
     try {
-      const [rows] = await pool.execute(ERRORS);
+      const db = getDb();
+      const { rows } = await db.query(db.sql.dashboard.errors);
       res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'dashboard errors failed');
@@ -189,7 +128,8 @@ export function dashboardRouter({ config, pool, logger }) {
 
   r.get('/api/dashboard/agents', auth, async (_req, res) => {
     try {
-      const [rows] = await pool.execute(AGENTS);
+      const db = getDb();
+      const { rows } = await db.query(db.sql.dashboard.agents);
       res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'dashboard agents failed');
@@ -201,11 +141,10 @@ export function dashboardRouter({ config, pool, logger }) {
     const siteName = req.query.site;
     if (!siteName) return res.status(400).json({ error: 'missing site query param' });
     try {
+      const db = getDb();
+
       // 1) Site lookup
-      const [siteRows] = await pool.execute(
-        'SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?',
-        [siteName]
-      );
+      const { rows: siteRows } = await db.query(db.sql.dashboard.siteLookup, [siteName]);
       if (siteRows.length === 0) return res.status(404).json({ error: 'site not found' });
       const sr = siteRows[0];
       const site = {
@@ -218,13 +157,7 @@ export function dashboardRouter({ config, pool, logger }) {
       const siteId = sr.site_id;
 
       // 2) DCs in site
-      const [dcRows] = await pool.execute(
-        `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master,
-                is_schema_master, is_domain_naming_master, is_infrastructure_master,
-                discovered_at, discovered_by_agent_id
-         FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
-        [siteId]
-      );
+      const { rows: dcRows } = await db.query(db.sql.dashboard.dcsBySite, [siteId]);
       const dcs = dcRows.map(d => ({
         dcName: d.dc_name,
         osVersion: d.os_version,
@@ -243,13 +176,8 @@ export function dashboardRouter({ config, pool, logger }) {
       if (dcs.length > 0) {
         const placeholders = dcs.map(() => '?').join(',');
         const dcNames = dcs.map(d => d.dcName);
-        const [linkRows] = await pool.execute(
-          `SELECT source_dc, dest_dc, naming_context, status_code,
-                  last_success_time, last_attempt_time,
-                  TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes
-           FROM ad_replication_status
-           WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders})
-           ORDER BY source_dc, dest_dc, naming_context`,
+        const { rows: linkRows } = await db.query(
+          db.sql.dashboard.dcReplicationLinks(placeholders),
           [...dcNames, ...dcNames]
         );
         links = linkRows.map(l => ({
@@ -264,9 +192,7 @@ export function dashboardRouter({ config, pool, logger }) {
       }
 
       // 4) Refresh seconds
-      const [cfgRows] = await pool.execute(
-        "SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'"
-      );
+      const { rows: cfgRows } = await db.query(db.sql.dashboard.refreshSeconds);
       const siteRefreshSeconds = Number(cfgRows[0]?.config_value || 10);
 
       res.json({ site, dcs, links, siteRefreshSeconds });

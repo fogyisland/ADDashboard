@@ -1,16 +1,19 @@
 import { Router } from 'express';
-import { getPool } from '../db.js';
+import { getDb } from '../db/index.js';
 
 export function healthzRouter() {
   const r = Router();
-  r.get('/healthz', async (req, res) => {
+  r.get('/healthz', async (_req, res) => {
     try {
-      const pool = await getPool();
-      const [ping] = await pool.execute('SELECT 1 AS ok');
-      const [last] = await pool.execute(
-        'SELECT last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC LIMIT 1'
-      );
-      res.json({ status: 'ok', db: ping[0]?.ok === 1 ? 'ok' : 'fail', lastHeartbeat: last[0]?.last ?? null });
+      const db = getDb();
+      await db.healthcheck();
+      const { rows: lastRows } = await db.query(db.sql.health.lastHeartbeat);
+      res.json({
+        status: 'ok',
+        db: 'ok',
+        dialect: db.dialect,
+        lastHeartbeat: lastRows[0]?.last ?? null
+      });
     } catch (e) {
       res.status(503).json({ status: 'degraded', error: e.message });
     }
