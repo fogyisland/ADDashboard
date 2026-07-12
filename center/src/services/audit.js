@@ -1,16 +1,21 @@
-// Audit log writer (MySQL). Best-effort: never throws out of `writeAudit`,
-// so admin/login flows still return success/failure on their own action.
-// Signature: writeAudit(pool, { userId, action, target, payload, logger? })
+import { getDb } from '../db/index.js';
 
-export async function writeAudit(pool, { userId, action, target, payload, logger } = {}) {
+export async function writeAudit({ userId, action, target, payload }, logger) {
+  const db = getDb();
   try {
-    await pool.execute(
-      `INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)`,
-      [userId ?? null, action, target ?? null, payload == null ? null : JSON.stringify(payload)]
-    );
+    await db.execute(db.sql.audit.write, [
+      userId ?? null,
+      action,
+      target ?? null,
+      payload == null ? null : JSON.stringify(payload)
+    ]);
   } catch (e) {
-    if (logger && typeof logger.error === 'function') {
-      logger.error({ err: e, action, target }, 'audit write failed');
-    }
+    if (logger) logger.warn({ err: e.message, action, target }, 'audit write failed (best-effort)');
   }
+}
+
+export async function listAudit(limit) {
+  const db = getDb();
+  const { rows } = await db.query(db.sql.audit.list, [limit]);
+  return rows;
 }
