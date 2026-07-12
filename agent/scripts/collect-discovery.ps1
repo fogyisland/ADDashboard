@@ -31,7 +31,7 @@ function Get-LocalDcSnapshot {
 
   return [PSCustomObject]@{
     Name                   = [string]$dc.Name
-    SiteHint               = [string]$dc.SiteObjectName
+    SiteHint               = [string]$dc.Site
     OsVersion              = [string]$dc.OperatingSystem
     WhenCreated            = $whenCreatedIso
     IsPdc                  = [bool]$dc.IsPDC
