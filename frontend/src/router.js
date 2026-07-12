@@ -9,8 +9,8 @@ import UsersView from './views/admin/UsersView.vue';
 import RolesView from './views/admin/RolesView.vue';
 import ConfigView from './views/admin/ConfigView.vue';
 import AuditView from './views/admin/AuditView.vue';
-import SitesView from './views/admin/SitesView.vue';
-import DcsView from './views/admin/DcsView.vue';
+import SitesView from './views/admin/ActiveSitesView.vue';
+import DcsView from './views/admin/ActiveDcsView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
 const routes = [
