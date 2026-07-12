@@ -80,3 +80,31 @@ sqlcmd -S localhost -Q "BACKUP DATABASE [AD_Monitoring] TO DISK='D:\Backups\AD_M
 4. Verify `/healthz` returns 200
 
 Agents continue running with their locally cached `appsettings.json` and buffered queue; once center URL is reachable again, they resume reporting.
+
+## Database Migrations & Discovery
+
+### Migrations
+
+Database migrations live in `db/migrations/NNN-name.sql`. They are applied
+automatically by `scripts/install-center.ps1` after the base schema.
+
+To apply manually:
+
+```powershell
+Get-Content db\migrations\001-dc-site-discovery.sql | mysql -h <host> -P 3306 -u root -p<pwd> ad_monitoring
+```
+
+To list applied migrations, query the implicit list (we track via
+filename ordering, not a migrations table — see ADR-XXX if/when we add
+a tracking table).
+
+### DC/Site Discovery
+
+Agents collect local DC metadata every `discovery_interval_hours` (default 4h)
+and POST to `/api/agent/discover`. The center UPSERTs into `ad_dcs`; `site_id`
+is never touched by the agent.
+
+Admins maintain sites via `/admin/sites-catalog` and assign DCs via
+`/admin/dcs-catalog`. The `/admin/site-replication-matrix` page shows the
+DC×DC replication matrix for a selected site and auto-refreshes every
+`site_matrix_refresh_seconds` (default 10s).

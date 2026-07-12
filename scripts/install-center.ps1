@@ -54,11 +54,21 @@ function Invoke-MySql {
 Invoke-MySql -Sql "CREATE DATABASE IF NOT EXISTS ``$MySqlDatabase`` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 
 foreach ($f in @('01-tables.sql','02-seed-roles.sql')) {
-  Write-Step "applying $f"
+  Write-Step "applying schema/$f"
   $schemaPath = Join-Path (Join-Path $PSScriptRoot '..\db\schema') $f
   $args = @('-h', $MySqlHost, '-P', $MySqlPort, '-u', $MySqlUser, "-p$MySqlPassword", $MySqlDatabase, '--protocol=TCP')
   Get-Content $schemaPath -Encoding UTF8 | & $MySqlClient @args
-  if ($LASTEXITCODE -ne 0) { throw "mysql failed applying $f" }
+  if ($LASTEXITCODE -ne 0) { throw "mysql failed applying schema/$f" }
+}
+
+$migrationsDir = Join-Path (Join-Path $PSScriptRoot '..\db') 'migrations'
+if (Test-Path $migrationsDir) {
+  Get-ChildItem -Path $migrationsDir -Filter '*.sql' | Sort-Object Name | ForEach-Object {
+    Write-Step "applying migration/$($_.Name)"
+    $args = @('-h', $MySqlHost, '-P', $MySqlPort, '-u', $MySqlUser, "-p$MySqlPassword", $MySqlDatabase, '--protocol=TCP')
+    Get-Content $_.FullName -Encoding UTF8 | & $MySqlClient @args
+    if ($LASTEXITCODE -ne 0) { throw "mysql failed applying migration/$($_.Name)" }
+  }
 }
 
 # 4. Build frontend if dist missing
