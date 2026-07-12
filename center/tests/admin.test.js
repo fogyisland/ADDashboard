@@ -415,3 +415,73 @@ test('DELETE /api/admin/sites-catalog/:id: 200 and nullifies DCs first', async (
   assert.match(executed[0].sql, /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*NULL/i);
   assert.match(executed[1].sql, /DELETE\s+FROM\s+ad_sites/i);
 });
+
+// ----- DCS-CATALOG -----
+
+test('GET /api/admin/dcs-catalog: 200 returns LEFT JOIN with site', async () => {
+  const pool = buildMockPool([
+    {
+      match: /FROM\s+ad_dcs\s+d\s+LEFT\s+JOIN\s+ad_sites/i,
+      rows: [
+        {
+          dcName: 'DC-BJ-01', siteId: 1, siteName: 'Beijing-Site',
+          siteHint: 'Beijing-Site', osVersion: 'Win2022', whenCreated: new Date(),
+          isPdc: 0, isGc: 1, isRidMaster: 0, isSchemaMaster: 0,
+          isDomainNamingMaster: 0, isInfrastructureMaster: 0,
+          discoveredAt: new Date(), discoveredByAgentId: 'DC-BJ-01'
+        },
+        {
+          dcName: 'DC-SH-01', siteId: null, siteName: null,
+          siteHint: 'Shanghai-Site', osVersion: 'Win2019', whenCreated: null,
+          isPdc: 0, isGc: 1, isRidMaster: 0, isSchemaMaster: 0,
+          isDomainNamingMaster: 0, isInfrastructureMaster: 0,
+          discoveredAt: new Date(), discoveredByAgentId: 'DC-SH-01'
+        }
+      ]
+    }
+  ]);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .get('/api/admin/dcs-catalog')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 2);
+  assert.equal(r.body[0].dcName, 'DC-BJ-01');
+  assert.equal(r.body[0].siteName, 'Beijing-Site');
+  assert.equal(r.body[1].siteId, null); // unassigned
+});
+
+test('PUT /api/admin/dcs-catalog/:dc_name/site: 200 sets siteId', async () => {
+  let updateCalled = false;
+  const pool = {
+    async execute(sql, params = []) {
+      if (/UPDATE\s+ad_dcs\s+SET\s+site_id\s*=/i.test(sql)) {
+        updateCalled = true;
+        assert.equal(params[0], 1);
+        assert.equal(params[1], 'DC-BJ-01');
+        return [{ affectedRows: 1 }, []];
+      }
+      return [[], []];
+    }
+  };
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .put('/api/admin/dcs-catalog/DC-BJ-01/site')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ siteId: 1 });
+  assert.equal(r.status, 200);
+  assert.equal(updateCalled, true);
+});
+
+test('PUT /api/admin/dcs-catalog/:dc_name/site with siteId:null unbinds', async () => {
+  const records = [];
+  const pool = buildRecordingPool(records);
+  const app = buildApp({ pool });
+  const r = await supertest(app)
+    .put('/api/admin/dcs-catalog/DC-BJ-01/site')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ siteId: null });
+  assert.equal(r.status, 200);
+  assert.match(records[0].sql, /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*\?/i);
+  assert.equal(records[0].params[0], null);
+});

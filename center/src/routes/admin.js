@@ -307,5 +307,50 @@ export function adminRouter({ config, pool, logger }) {
     }
   });
 
+  // ----- DCs Catalog -----
+
+  const DCS_LIST_SQL = `
+SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName,
+       d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated,
+       d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster,
+       d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster,
+       d.is_infrastructure_master AS isInfrastructureMaster,
+       d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId
+FROM ad_dcs d
+LEFT JOIN ad_sites s ON d.site_id = s.site_id
+ORDER BY d.dc_name
+`.trim();
+
+  r.get('/api/admin/dcs-catalog', auth, async (_req, res) => {
+    try {
+      const [rows] = await pool.execute(DCS_LIST_SQL);
+      res.json(rows.map(r => ({
+        ...r,
+        isPdc: !!r.isPdc, isGc: !!r.isGc, isRidMaster: !!r.isRidMaster,
+        isSchemaMaster: !!r.isSchemaMaster, isDomainNamingMaster: !!r.isDomainNamingMaster,
+        isInfrastructureMaster: !!r.isInfrastructureMaster
+      })));
+    } catch (e) {
+      logger.error({ err: e }, 'dcs-catalog list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.put('/api/admin/dcs-catalog/:dc_name/site', auth, async (req, res) => {
+    const dcName = req.params.dc_name;
+    const { siteId } = req.body || {};
+    try {
+      const [result] = await pool.execute(
+        'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
+        [siteId ?? null, dcName]
+      );
+      if (result.affectedRows === 0) return res.status(404).json({ error: 'dc not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'dcs-catalog site assign failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }
