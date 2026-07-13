@@ -30,52 +30,76 @@ async function bootDialect(dialect) {
 test('integration: replication upsertStatus round-trip (mysql)', async (t) => {
   if (!shouldRun('mysql')) return t.skip('TEST_SQL_URL not set');
   await bootDialect('mysql');
-  const row = {
-    agentId: 'agent-int-1',
-    collectedAt: new Date('2026-07-12T00:00:00Z'),
-    sourceDc: 'DC-A', destDc: 'DC-B',
-    sourceSite: 'SITE-A', destSite: 'SITE-B',
-    namingContext: 'DC=test,DC=com',
-    lastSuccessTime: new Date('2026-07-11T23:55:00Z'),
-    lastAttemptTime: new Date('2026-07-11T23:55:30Z'),
-    statusCode: 0,
-    errorMessage: null
-  };
-  await upsertStatus([row], { appendHistory: true });
-  const recent = await listRecent(10);
-  assert.ok(recent.find(r => r.source_dc === 'DC-A' && r.dest_dc === 'DC-B'));
-  await close();
+  try {
+    const row = {
+      agentId: 'agent-int-1',
+      collectedAt: new Date('2026-07-12T00:00:00Z'),
+      sourceDc: 'DC-A', destDc: 'DC-B',
+      sourceSite: 'SITE-A', destSite: 'SITE-B',
+      namingContext: 'DC=test,DC=com',
+      lastSuccessTime: new Date('2026-07-11T23:55:00Z'),
+      lastAttemptTime: new Date('2026-07-11T23:55:30Z'),
+      statusCode: 0,
+      errorMessage: null
+    };
+    await upsertStatus([row], { appendHistory: true });
+    const recent = await listRecent(10);
+    assert.ok(recent.find(r => r.source_dc === 'DC-A' && r.dest_dc === 'DC-B'));
+  } finally {
+    try {
+      const db = getDb();
+      await db.execute('DELETE FROM ad_replication_history');
+      await db.execute('DELETE FROM ad_replication_status');
+    } catch {}
+    await close();
+  }
 });
 
 test('integration: replication upsertStatus round-trip (mssql)', async (t) => {
   if (!shouldRun('mssql')) return t.skip('TEST_MSSQL_URL not set');
   await bootDialect('mssql');
-  const row = {
-    agentId: 'agent-int-1',
-    collectedAt: new Date('2026-07-12T00:00:00Z'),
-    sourceDc: 'DC-A', destDc: 'DC-B',
-    sourceSite: 'SITE-A', destSite: 'SITE-B',
-    namingContext: 'DC=test,DC=com',
-    lastSuccessTime: new Date('2026-07-11T23:55:00Z'),
-    lastAttemptTime: new Date('2026-07-11T23:55:30Z'),
-    statusCode: 0,
-    errorMessage: null
-  };
-  await upsertStatus([row], { appendHistory: true });
-  const recent = await listRecent(10);
-  assert.ok(recent.find(r => r.source_dc === 'DC-A' && r.dest_dc === 'DC-B'));
-  await close();
+  try {
+    const row = {
+      agentId: 'agent-int-1',
+      collectedAt: new Date('2026-07-12T00:00:00Z'),
+      sourceDc: 'DC-A', destDc: 'DC-B',
+      sourceSite: 'SITE-A', destSite: 'SITE-B',
+      namingContext: 'DC=test,DC=com',
+      lastSuccessTime: new Date('2026-07-11T23:55:00Z'),
+      lastAttemptTime: new Date('2026-07-11T23:55:30Z'),
+      statusCode: 0,
+      errorMessage: null
+    };
+    await upsertStatus([row], { appendHistory: true });
+    const recent = await listRecent(10);
+    assert.ok(recent.find(r => r.source_dc === 'DC-A' && r.dest_dc === 'DC-B'));
+  } finally {
+    try {
+      const db = getDb();
+      await db.execute('DELETE FROM ad_replication_history');
+      await db.execute('DELETE FROM ad_replication_status');
+    } catch {}
+    await close();
+  }
 });
 
 test('integration: replication listBySite filters correctly', async (t) => {
   if (!shouldRun('mysql') && !shouldRun('mssql')) return t.skip('no TEST_*_URL set');
   const dialect = shouldRun('mysql') ? 'mysql' : 'mssql';
   await bootDialect(dialect);
-  await upsertStatus([
-    { agentId: 'a', collectedAt: new Date(), sourceDc: 'X', destDc: 'Y', sourceSite: 'SITE-FOO', destSite: 'SITE-BAR', namingContext: 'NC', lastSuccessTime: null, lastAttemptTime: null, statusCode: 0, errorMessage: null },
-    { agentId: 'a', collectedAt: new Date(), sourceDc: 'P', destDc: 'Q', sourceSite: 'OTHER', destSite: 'SITE-FOO', namingContext: 'NC2', lastSuccessTime: null, lastAttemptTime: null, statusCode: 0, errorMessage: null }
-  ]);
-  const rows = await listBySite('SITE-FOO', 10);
-  assert.ok(rows.length >= 2);
-  await close();
+  try {
+    await upsertStatus([
+      { agentId: 'a', collectedAt: new Date(), sourceDc: 'X', destDc: 'Y', sourceSite: 'SITE-FOO', destSite: 'SITE-BAR', namingContext: 'NC', lastSuccessTime: null, lastAttemptTime: null, statusCode: 0, errorMessage: null },
+      { agentId: 'a', collectedAt: new Date(), sourceDc: 'P', destDc: 'Q', sourceSite: 'OTHER', destSite: 'SITE-FOO', namingContext: 'NC2', lastSuccessTime: null, lastAttemptTime: null, statusCode: 0, errorMessage: null }
+    ]);
+    const rows = await listBySite('SITE-FOO', 10);
+    assert.ok(rows.length >= 2);
+  } finally {
+    try {
+      const db = getDb();
+      await db.execute('DELETE FROM ad_replication_history');
+      await db.execute('DELETE FROM ad_replication_status');
+    } catch {}
+    await close();
+  }
 });
