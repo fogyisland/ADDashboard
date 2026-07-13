@@ -34,10 +34,9 @@ Describe 'install-center.ps1' {
     $defaultValue | Should -Match 'C:\\Program Files\\ADDashboard\\Center'
   }
 
-  It 'has a default for DbDialect of mysql' {
+  It 'has an empty DbUser parameter default for dialect-aware resolution' {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
-    $dialectParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'DbDialect' }
-    $defaultValue = $dialectParam.DefaultValue.Extent.Text
-    $defaultValue | Should -Match 'mysql'
+    $dbUserParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'DbUser' }
+    $dbUserParam.DefaultValue.Extent.Text | Should -Be "''"
   }
 }

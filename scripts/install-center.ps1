@@ -12,7 +12,7 @@ param(
   [Parameter(Mandatory)][string]$DbHost,
   [int]$DbPort,         # default picked per dialect below (3306 mysql / 1433 mssql)
   [string]$DbDatabase = 'AD_Monitoring',
-  [string]$DbUser = 'sa',
+  [string]$DbUser = '',
   [Parameter(Mandatory)][string]$DbPassword,
   [int]$ListenPort = 8080,
   [string]$AgentToken,
@@ -26,6 +26,13 @@ Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 
 # 0. Resolve dialect-specific defaults for port + client binary.
+if (-not $DbUser) {
+  $DbUser = switch ($DbDialect) {
+    'mysql'  { 'root' }
+    'mssql'  { 'sa' }
+  }
+  Write-Info "DbUser defaulting to '$DbUser' for dialect '$DbDialect'"
+}
 if (-not $DbPort) {
   $DbPort = if ($DbDialect -eq 'mssql') { 1433 } else { 3306 }
 }
