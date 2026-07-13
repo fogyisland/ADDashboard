@@ -1,7 +1,7 @@
 import express from 'express';
 import { healthzRouter } from './routes/healthz.js';
 
-export function createApp({ config, pool, logger }) {
+export function createApp({ config, db, logger }) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '10mb' }));

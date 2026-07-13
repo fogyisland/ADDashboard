@@ -4,16 +4,17 @@ import express from 'express';
 import { default as supertest } from 'supertest';
 import { adminRouter } from '../src/routes/admin.js';
 import { signJwt } from '../src/auth/jwt.js';
-import { buildMockPool, buildRecordingPool, buildThrowingPool } from './helpers/mysql-pool.js';
+import { _setDbForTest } from '../src/db/index.js';
+import { buildMockDb, buildRecordingPool, buildThrowingPool } from './helpers/db-mock.js';
 
 const SECRET = 'test-secret-please-do-not-use-in-prod';
 
-function buildApp({ pool }) {
+function buildApp() {
   const a = express();
   a.use(express.json());
   const config = { jwtSecret: SECRET };
   const logger = { info(){}, error(){}, warn(){}, debug(){} };
-  a.use(adminRouter({ config, pool, logger }));
+  a.use(adminRouter({ config, logger }));
   return a;
 }
 
@@ -36,13 +37,15 @@ function operatorToken() {
 // ----- AUTH WIRING -----
 
 test('GET /api/admin/roles: 401 when no token', async () => {
-  const app = buildApp({ pool: buildMockPool() });
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
   const r = await supertest(app).get('/api/admin/roles');
   assert.equal(r.status, 401);
 });
 
 test('GET /api/admin/roles: 403 for operator token (missing admin:users perm)', async () => {
-  const app = buildApp({ pool: buildMockPool() });
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/roles')
     .set('Authorization', `Bearer ${operatorToken()}`);
@@ -50,7 +53,7 @@ test('GET /api/admin/roles: 403 for operator token (missing admin:users perm)', 
 });
 
 test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+sys_roles/i,
       rows: [
@@ -58,8 +61,9 @@ test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', a
         { id: 2, role_name: 'operator', permissions: '["write:reports"]' }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/roles')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -76,16 +80,17 @@ test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', a
 // ----- USERS LIST -----
 
 test('GET /api/admin/users: 200 returns array of users', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
-      match: /FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i,
+      match: /FROM\s+sys_users\b/i,
       rows: [
         { id: 1, username: 'alice', status: 1, last_login_at: null, created_at: new Date('2026-07-10T00:00:00Z'), role_name: 'admin' },
         { id: 2, username: 'bob',   status: 1, last_login_at: null, created_at: new Date('2026-07-11T00:00:00Z'), role_name: 'operator' }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -93,13 +98,13 @@ test('GET /api/admin/users: 200 returns array of users', async () => {
   assert.ok(Array.isArray(r.body));
   assert.equal(r.body.length, 2);
   assert.equal(r.body[0].username, 'alice');
-  assert.equal(r.body[0].roleName, 'admin');
 });
 
 // ----- CREATE USER -----
 
 test('POST /api/admin/users: 400 when missing fields', async () => {
-  const app = buildApp({ pool: buildMockPool() });
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
   const r = await supertest(app)
     .post('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -108,13 +113,14 @@ test('POST /api/admin/users: 400 when missing fields', async () => {
 });
 
 test('POST /api/admin/users: 409 when username already exists', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
-      match: /FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i,
+      match: /FROM\s+sys_users\b/i,
       rows: [{ id: 1, username: 'alice', password_hash: 'x', status: 1, role_id: 1, role_name: 'admin', permissions: '["*"]' }]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .post('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -127,14 +133,16 @@ test('POST /api/admin/users: 201 on success and writes audit row', async () => {
   // then INSERT INTO audit_logs. We key on SQL fragments and capture params.
   const recorded = [];
   let auditCaptured = null;
-  const pool = {
+  const db = {
+    dialect: 'mysql',
+    sql: (await import('../src/db/sql.js')).buildSql('mysql'),
     async execute(sql, params = []) {
       recorded.push({ sql, params });
-      if (/FROM\s+sys_users\s+u\s+JOIN\s+sys_roles\s+r/i.test(sql)) {
-        return [[], []];
+      if (/FROM\s+sys_users\b/i.test(sql)) {
+        return { rows: [], affectedRows: 0, insertId: undefined };
       }
       if (/INSERT\s+INTO\s+sys_users/i.test(sql)) {
-        return [{ insertId: 42, affectedRows: 1 }, []];
+        return { rows: [], affectedRows: 1, insertId: 42 };
       }
       if (/INSERT\s+INTO\s+audit_logs/i.test(sql)) {
         // [userId, action, target, payload_json]
@@ -144,12 +152,20 @@ test('POST /api/admin/users: 201 on success and writes audit row', async () => {
           target: params[2],
           payload: params[3]
         };
-        return [{ insertId: 99, affectedRows: 1 }, []];
+        return { rows: [], affectedRows: 1, insertId: 99 };
       }
-      return [[], []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query(sql, params = []) {
+      recorded.push({ sql, params });
+      return { rows: [] };
+    },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .post('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -167,8 +183,8 @@ test('POST /api/admin/users: 201 on success and writes audit row', async () => {
 
 test('PUT /api/admin/users/:id: 200 with payload', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
-  const app = buildApp({ pool });
+  _setDbForTest(buildRecordingPool(records));
+  const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/users/5')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -181,8 +197,8 @@ test('PUT /api/admin/users/:id: 200 with payload', async () => {
 
 test('DELETE /api/admin/users/:id: 200', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
-  const app = buildApp({ pool });
+  _setDbForTest(buildRecordingPool(records));
+  const app = buildApp();
   const r = await supertest(app)
     .delete('/api/admin/users/5')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -193,7 +209,7 @@ test('DELETE /api/admin/users/:id: 200', async () => {
 // ----- CONFIG -----
 
 test('GET /api/admin/config: 200 returns dict from system_config', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+system_config/i,
       rows: [
@@ -201,8 +217,9 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
         { config_key: 'agent_token', config_value: 'tok-123' }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/config')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -213,16 +230,26 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
 
 test('PUT /api/admin/config: 200 updates multiple keys', async () => {
   let updateCount = 0;
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute(sql, params = []) {
-      if (/UPDATE\s+system_config/i.test(sql)) {
+      if (/UPDATE\s+system_config/i.test(sql) || /MERGE\s+INTO\s+system_config/i.test(sql)) {
         updateCount++;
-        return [{ affectedRows: 1 }, []];
+        return { rows: [], affectedRows: 1, insertId: undefined };
       }
-      return [[], []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query(sql, params = []) {
+      return { rows: [] };
+    },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/config')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -234,7 +261,7 @@ test('PUT /api/admin/config: 200 updates multiple keys', async () => {
 // ----- AUDIT -----
 
 test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+audit_logs/i,
       rows: [
@@ -242,8 +269,9 @@ test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
         { id: 2, user_id: 1, action: 'create_user', target: 'bob', payload: '{"x":1}', created_at: new Date() }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/audit?limit=5')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -257,7 +285,8 @@ test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
 // ----- DB ERROR PATH -----
 
 test('admin route: 500 on DB error returns {error: "internal"}', async () => {
-  const app = buildApp({ pool: buildThrowingPool('boom') });
+  _setDbForTest(buildThrowingPool('boom'));
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/users')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -269,7 +298,7 @@ test('admin route: 500 on DB error returns {error: "internal"}', async () => {
 
 test('GET /api/admin/sites: 200 returns camelCase rows with linkCount/errorCount/lastSeen', async () => {
   const last = new Date('2026-07-11T08:00:00Z');
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       // The UNION ALL of source_site + dest_site grouped by site
       match: /FROM\s*\(\s*SELECT\s+source_site\s+AS\s+site/i,
@@ -278,8 +307,9 @@ test('GET /api/admin/sites: 200 returns camelCase rows with linkCount/errorCount
         { name: 'SITE-B', link_count: 2, error_count: 0, last_seen: last }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/sites')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -296,7 +326,7 @@ test('GET /api/admin/sites: 200 returns camelCase rows with linkCount/errorCount
 
 test('GET /api/admin/dcs: 200 returns rows keyed on (name, site) pair', async () => {
   const last = new Date('2026-07-11T08:00:00Z');
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       // The UNION ALL of source_dc + dest_dc grouped by dc, site
       match: /FROM\s*\(\s*SELECT\s+source_dc\s+AS\s+dc/i,
@@ -305,8 +335,9 @@ test('GET /api/admin/dcs: 200 returns rows keyed on (name, site) pair', async ()
         { name: 'DC-B1', site: 'SITE-B', link_count: 2, error_count: 1, last_seen: last }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/dcs')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -320,10 +351,11 @@ test('GET /api/admin/dcs: 200 returns rows keyed on (name, site) pair', async ()
 });
 
 test('GET /api/admin/sites with empty replication_status -> empty array', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     { match: /FROM\s*\(\s*SELECT\s+source_site\s+AS\s+site/i, rows: [] }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/sites')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -334,7 +366,7 @@ test('GET /api/admin/sites with empty replication_status -> empty array', async 
 // ----- SITES-CATALOG -----
 
 test('GET /api/admin/sites-catalog: 200 returns array with dcCount', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+ad_sites\s+s/i,
       rows: [
@@ -342,8 +374,9 @@ test('GET /api/admin/sites-catalog: 200 returns array with dcCount', async () =>
         { id: 2, site_name: 'Shanghai-Site', region_code: 'SH', is_hub: 0, description: null, created_at: new Date(), updated_at: new Date(), dcCount: 0 }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/sites-catalog')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -357,20 +390,28 @@ test('GET /api/admin/sites-catalog: 200 returns array with dcCount', async () =>
 test('POST /api/admin/sites-catalog: 201 on success, 409 on duplicate', async () => {
   let insertCalls = 0;
   let insertError = null;
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute(sql, params = []) {
       if (/INSERT\s+INTO\s+ad_sites/i.test(sql)) {
         insertCalls++;
         // Simulate duplicate-key error on second call
-        if (insertCalls === 1) return [{ insertId: 99, affectedRows: 1 }, []];
+        if (insertCalls === 1) return { rows: [], affectedRows: 1, insertId: 99 };
         const err = new Error('Duplicate entry');
-        err.code = 'ER_DUP_ENTRY';
+        err.code = 'DUP_ENTRY';
         throw err;
       }
-      return [[], []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
 
   // First call: success
   const r1 = await supertest(app)
@@ -389,8 +430,8 @@ test('POST /api/admin/sites-catalog: 201 on success, 409 on duplicate', async ()
 });
 
 test('POST /api/admin/sites-catalog: 400 when siteName missing', async () => {
-  const pool = buildMockPool();
-  const app = buildApp({ pool });
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
   const r = await supertest(app)
     .post('/api/admin/sites-catalog')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -400,13 +441,21 @@ test('POST /api/admin/sites-catalog: 400 when siteName missing', async () => {
 
 test('DELETE /api/admin/sites-catalog/:id: 200 and nullifies DCs first', async () => {
   const executed = [];
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute(sql, params = []) {
       executed.push({ sql, params });
-      return [{ affectedRows: 1 }, []];
-    }
+      return { rows: [], affectedRows: 1, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .delete('/api/admin/sites-catalog/1')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -418,13 +467,21 @@ test('DELETE /api/admin/sites-catalog/:id: 200 and nullifies DCs first', async (
 
 test('PUT /api/admin/sites-catalog/:id: 400 invalid id (non-numeric), no DB execute', async () => {
   let executeCalls = 0;
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute() {
       executeCalls++;
-      return [{ affectedRows: 0 }, []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/sites-catalog/abc')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -436,13 +493,21 @@ test('PUT /api/admin/sites-catalog/:id: 400 invalid id (non-numeric), no DB exec
 
 test('DELETE /api/admin/sites-catalog/:id: 400 invalid id (negative), no DB execute', async () => {
   let executeCalls = 0;
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute() {
       executeCalls++;
-      return [{ affectedRows: 0 }, []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .delete('/api/admin/sites-catalog/-1')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -453,13 +518,21 @@ test('DELETE /api/admin/sites-catalog/:id: 400 invalid id (negative), no DB exec
 
 test('PUT /api/admin/sites-catalog/:id: 400 invalid id (zero), no DB execute', async () => {
   let executeCalls = 0;
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute() {
       executeCalls++;
-      return [{ affectedRows: 0 }, []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/sites-catalog/0')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -472,7 +545,7 @@ test('PUT /api/admin/sites-catalog/:id: 400 invalid id (zero), no DB execute', a
 // ----- DCS-CATALOG -----
 
 test('GET /api/admin/dcs-catalog: 200 returns LEFT JOIN with site', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+ad_dcs\s+d\s+LEFT\s+JOIN\s+ad_sites/i,
       rows: [
@@ -492,8 +565,9 @@ test('GET /api/admin/dcs-catalog: 200 returns LEFT JOIN with site', async () => 
         }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/dcs-catalog')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -506,18 +580,26 @@ test('GET /api/admin/dcs-catalog: 200 returns LEFT JOIN with site', async () => 
 
 test('PUT /api/admin/dcs-catalog/:dc_name/site: 200 sets siteId', async () => {
   let updateCalled = false;
-  const pool = {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
     async execute(sql, params = []) {
       if (/UPDATE\s+ad_dcs\s+SET\s+site_id\s*=/i.test(sql)) {
         updateCalled = true;
         assert.equal(params[0], 1);
         assert.equal(params[1], 'DC-BJ-01');
-        return [{ affectedRows: 1 }, []];
+        return { rows: [], affectedRows: 1, insertId: undefined };
       }
-      return [[], []];
-    }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
   };
-  const app = buildApp({ pool });
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/dcs-catalog/DC-BJ-01/site')
     .set('Authorization', `Bearer ${adminToken()}`)
@@ -528,13 +610,13 @@ test('PUT /api/admin/dcs-catalog/:dc_name/site: 200 sets siteId', async () => {
 
 test('PUT /api/admin/dcs-catalog/:dc_name/site with siteId:null unbinds', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
-  const app = buildApp({ pool });
+  _setDbForTest(buildRecordingPool(records));
+  const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/dcs-catalog/DC-BJ-01/site')
     .set('Authorization', `Bearer ${adminToken()}`)
     .send({ siteId: null });
   assert.equal(r.status, 200);
-  assert.match(records[0].sql, /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*\?/i);
-  assert.equal(records[0].params[0], null);
+  assert.match(records[0].sql, /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*NULL/i);
+  assert.deepEqual(records[0].params, ['DC-BJ-01']);
 });

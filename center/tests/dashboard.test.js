@@ -4,16 +4,17 @@ import express from 'express';
 import { default as supertest } from 'supertest';
 import { dashboardRouter } from '../src/routes/dashboard.js';
 import { signJwt } from '../src/auth/jwt.js';
-import { buildMockPool, buildThrowingPool } from './helpers/mysql-pool.js';
+import { _setDbForTest } from '../src/db/index.js';
+import { buildMockDb, buildThrowingPool } from './helpers/db-mock.js';
 
 const SECRET = 'test-secret-please-do-not-use-in-prod';
 
-function buildApp({ pool }) {
+function buildApp() {
   const a = express();
   a.use(express.json());
   const config = { jwtSecret: SECRET };
   const logger = { info(){}, error(){}, warn(){}, debug(){} };
-  a.use(dashboardRouter({ config, pool, logger }));
+  a.use(dashboardRouter({ config, logger }));
   return a;
 }
 
@@ -28,13 +29,15 @@ function adminToken(extraPerms) {
 // ----- AUTH WIRING -----
 
 test('overview: 401 when no token', async () => {
-  const app = buildApp({ pool: buildMockPool() });
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
   const r = await supertest(app).get('/api/dashboard/overview');
   assert.equal(r.status, 401);
 });
 
 test('overview: 403 when missing read:dash perm', async () => {
-  const app = buildApp({ pool: buildMockPool() });
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
   const tok = signJwt(
     { sub: 'u2', role: 'viewer', permissions: ['read:something-else'] },
     SECRET,
@@ -47,7 +50,7 @@ test('overview: 403 when missing read:dash perm', async () => {
 });
 
 test('overview: 200 with valid token + wildcard perm', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       // overview count SELECT (SUM CASE WHEN ...)
       match: /SUM\s*\(\s*CASE\s+WHEN/i,
@@ -64,8 +67,9 @@ test('overview: 200 with valid token + wildcard perm', async () => {
       match: /COUNT\(\*\)\s+AS\s+agent_count/i,
       rows: [{ agent_count: 3 }]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/overview')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -81,7 +85,7 @@ test('overview: 200 with valid token + wildcard perm', async () => {
 // ----- SITE MATRIX -----
 
 test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warningCount/total', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /GROUP\s+BY\s+source_site\s*,\s*dest_site/i,
       rows: [
@@ -91,8 +95,9 @@ test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warning
           error_count: 1, warning_count: 1, total: 3 }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/site-matrix')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -112,7 +117,7 @@ test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warning
 
 test('topology: returns nodes (site + dc) and links with source/target/statusCode/lastSuccessTime', async () => {
   const last = new Date('2026-07-10T12:34:56Z');
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+ad_replication_status/i,
       rows: [
@@ -124,8 +129,9 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
           status_code: 2, last_success_time: last }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/topology')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -160,7 +166,7 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
 // ----- ERRORS -----
 
 test('errors: returns camelCase rows with status_code <> 0 and computed duration', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /status_code\s*<>\s*0/i,
       rows: [
@@ -175,8 +181,9 @@ test('errors: returns camelCase rows with status_code <> 0 and computed duration
         }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/errors')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -194,7 +201,7 @@ test('errors: returns camelCase rows with status_code <> 0 and computed duration
 // ----- AGENTS -----
 
 test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     {
       match: /FROM\s+ad_agent_heartbeat/i,
       rows: [
@@ -209,8 +216,9 @@ test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async
         }
       ]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/agents')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -226,7 +234,8 @@ test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async
 // ----- DB ERROR PATH -----
 
 test('overview: 500 on DB error, returns {error: "internal"}', async () => {
-  const app = buildApp({ pool: buildThrowingPool('boom') });
+  _setDbForTest(buildThrowingPool('boom'));
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/overview')
     .set('Authorization', `Bearer ${adminToken()}`);
@@ -237,7 +246,7 @@ test('overview: 500 on DB error, returns {error: "internal"}', async () => {
 // ----- SITE REPLICATION MATRIX (G) -----
 
 test('GET /api/dashboard/site-replication-matrix: 200 returns site + dcs + links', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     // 1) site lookup
     {
       match: /FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i,
@@ -263,8 +272,9 @@ test('GET /api/dashboard/site-replication-matrix: 200 returns site + dcs + links
       match: /FROM\s+system_config\s+WHERE\s+config_key\s*=\s*['"]site_matrix_refresh_seconds['"]/i,
       rows: [{ config_value: '10' }]
     }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/site-replication-matrix?site=Beijing-Site')
     .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
@@ -279,10 +289,11 @@ test('GET /api/dashboard/site-replication-matrix: 200 returns site + dcs + links
 });
 
 test('GET /api/dashboard/site-replication-matrix: 404 when site not found', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     { match: /FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i, rows: [] }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/site-replication-matrix?site=NoSuch')
     .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
@@ -291,13 +302,14 @@ test('GET /api/dashboard/site-replication-matrix: 404 when site not found', asyn
 });
 
 test('GET /api/dashboard/site-replication-matrix: 200 empty arrays when site has no DCs', async () => {
-  const pool = buildMockPool([
+  const db = buildMockDb([
     { match: /FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i, rows: [{ site_id: 5, site_name: 'Empty-Site', region_code: null, is_hub: 0, description: null }] },
     { match: /FROM\s+ad_dcs\s+WHERE\s+site_id\s*=\s*\?/i, rows: [] },
     { match: /FROM\s+ad_replication_status/i, rows: [] },
     { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: '10' }] }
-  ]);
-  const app = buildApp({ pool });
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/site-replication-matrix?site=Empty-Site')
     .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
@@ -307,8 +319,9 @@ test('GET /api/dashboard/site-replication-matrix: 200 empty arrays when site has
 });
 
 test('GET /api/dashboard/site-replication-matrix: 400 when site query missing', async () => {
-  const pool = buildMockPool();
-  const app = buildApp({ pool });
+  const db = buildMockDb().standard();
+  _setDbForTest(db);
+  const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/site-replication-matrix')
     .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);

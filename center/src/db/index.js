@@ -47,3 +47,8 @@ export async function close() {
   await state.db.close();
   state = null;
 }
+
+// Test helper — replace the facade with a mock so tests don't need a real DB.
+export function _setDbForTest(mockDb) {
+  state = { db: mockDb, driver: null };
+}

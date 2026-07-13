@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { _setDbForTest } from '../src/db/index.js';
 import { upsertStatus } from '../src/services/replication.js';
-import { buildRecordingPool } from './helpers/mysql-pool.js';
+import { buildRecordingPool } from './helpers/db-mock.js';
 
 const baseRow = {
   agentId: 'agent-1',
@@ -19,8 +20,9 @@ const baseRow = {
 
 test('upsertStatus issues an INSERT ... ON DUPLICATE KEY UPDATE per row', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
-  await upsertStatus(pool, [baseRow], { appendHistory: false });
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  await upsertStatus([baseRow], { appendHistory: false });
   assert.equal(records.length, 1, 'expected exactly one query');
   assert.match(records[0].sql, /INSERT\s+INTO\s+ad_replication_status/i);
   assert.match(records[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
@@ -28,8 +30,9 @@ test('upsertStatus issues an INSERT ... ON DUPLICATE KEY UPDATE per row', async 
 
 test('upsertStatus with appendHistory:true issues UPSERT + history INSERT per row', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
-  await upsertStatus(pool, [baseRow], { appendHistory: true });
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  await upsertStatus([baseRow], { appendHistory: true });
   assert.equal(records.length, 2, 'expected exactly two queries');
   assert.match(records[0].sql, /INSERT\s+INTO\s+ad_replication_status/i);
   assert.match(records[1].sql, /INSERT\s+INTO\s+ad_replication_history/i);
@@ -37,8 +40,9 @@ test('upsertStatus with appendHistory:true issues UPSERT + history INSERT per ro
 
 test('upsertStatus binds agentId, sourceDc, destDc, namingContext as positional params', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
-  await upsertStatus(pool, [baseRow], { appendHistory: false });
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  await upsertStatus([baseRow], { appendHistory: false });
   const params = records[0].params;
   // Param order per rowParams(): collectedAt, agentId, sourceDc, destDc,
   // sourceSite, destSite, namingContext, lastSuccessTime, lastAttemptTime,
@@ -51,9 +55,10 @@ test('upsertStatus binds agentId, sourceDc, destDc, namingContext as positional 
 
 test('upsertStatus coerces null/undefined nullable text fields to null', async () => {
   const records = [];
-  const pool = buildRecordingPool(records);
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
   const row = { ...baseRow, sourceSite: undefined, errorMessage: undefined };
-  await upsertStatus(pool, [row], { appendHistory: false });
+  await upsertStatus([row], { appendHistory: false });
   const params = records[0].params;
   assert.equal(params[4], null, 'sourceSite -> null');
   assert.equal(params[10], null, 'errorMessage -> null');

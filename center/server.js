@@ -1,6 +1,6 @@
 import { createApp } from './src/app.js';
 import { loadConfig } from './src/config.js';
-import { initPool, closePool, getPool } from './src/db.js';
+import { init, close, getDb } from './src/db/index.js';
 import { createLogger } from './src/logger.js';
 import { authRouter } from './src/routes/auth.js';
 import { agentRouter } from './src/routes/agent.js';
@@ -12,19 +12,19 @@ const config = loadConfig(configPath);
 const logger = createLogger({ component: 'center', level: config.logLevel });
 
 (async () => {
-  await initPool(config);
-  const pool = await getPool();
-  const app = createApp({ config, pool, logger });
-  app.use(authRouter({ config, pool, logger }));
-  app.use(agentRouter({ config, pool, logger }));
-  app.use(dashboardRouter({ config, pool, logger }));
-  app.use(adminRouter({ config, pool, logger }));
+  await init(config);
+  const db = getDb();
+  const app = createApp({ config, db, logger });
+  app.use(authRouter({ config, logger }));
+  app.use(agentRouter({ config, logger }));
+  app.use(dashboardRouter({ config, logger }));
+  app.use(adminRouter({ config, logger }));
   const server = app.listen(config.listenPort, () => {
     logger.info({ port: config.listenPort }, 'center listening');
   });
   const shutdown = async (sig) => {
     logger.info({ sig }, 'shutting down');
-    server.close(async () => { await closePool(); process.exit(0); });
+    server.close(async () => { await close(); process.exit(0); });
     setTimeout(() => process.exit(1), 10000).unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));

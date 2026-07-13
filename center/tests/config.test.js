@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config.js';
 import { getAgentConfig } from '../src/services/config.js';
+import { _setDbForTest } from '../src/db/index.js';
+import { buildMockDb } from './helpers/db-mock.js';
 
 test('loadConfig parses required keys', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cfg-'));
@@ -36,18 +38,20 @@ test('loadConfig throws if required key missing', () => {
 });
 
 test('getAgentConfig exposes discoveryIntervalHours from system_config', async () => {
-  const pool = {
-    async execute() {
-      return [[
+  const db = buildMockDb([
+    {
+      match: /FROM\s+system_config/i,
+      rows: [
         { config_key: 'polling_interval_minutes', config_value: '10' },
         { config_key: 'latency_threshold_minutes', config_value: '90' },
         { config_key: 'heartbeat_interval_seconds', config_value: '3' },
         { config_key: 'discovery_interval_hours', config_value: '6' },
         { config_key: 'agent_token', config_value: 't0k' }
-      ], []];
+      ]
     }
-  };
-  const cfg = await getAgentConfig(pool);
+  ]).standard();
+  _setDbForTest(db);
+  const cfg = await getAgentConfig();
   assert.equal(cfg.pollingIntervalMinutes, 10);
   assert.equal(cfg.latencyThresholdMinutes, 90);
   assert.equal(cfg.heartbeatIntervalSeconds, 3);
@@ -56,11 +60,10 @@ test('getAgentConfig exposes discoveryIntervalHours from system_config', async (
 });
 
 test('getAgentConfig defaults discoveryIntervalHours to 4 when missing', async () => {
-  const pool = {
-    async execute() {
-      return [[], []];
-    }
-  };
-  const cfg = await getAgentConfig(pool);
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [] }
+  ]).standard();
+  _setDbForTest(db);
+  const cfg = await getAgentConfig();
   assert.equal(cfg.discoveryIntervalHours, 4);
 });

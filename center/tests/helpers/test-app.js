@@ -1,11 +1,10 @@
 import { createApp } from '../../src/app.js';
 import { createLogger } from '../../src/logger.js';
 
-export function buildTestApp({ pool }) {
+export function buildTestApp({ db } = {}) {
   const config = {
     listenPort: 0, jwtSecret: 'test', agentToken: 'tok',
-    staticDir: process.cwd(), env: 'test', logLevel: 'silent',
-    mysql: { host: '', database: '' }
+    staticDir: process.cwd(), env: 'test', logLevel: 'silent'
   };
-  return createApp({ config, pool, logger: createLogger({ component: 'test', level: 'silent' }) });
+  return createApp({ config, db, logger: createLogger({ component: 'test', level: 'silent' }) });
 }
