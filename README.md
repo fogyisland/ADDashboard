@@ -14,12 +14,18 @@ See [docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md](docs/supe
 ## Quick Start
 
 ```powershell
-# On the center management server
-.\scripts\install-center.ps1 -MySqlHost localhost -MySqlPassword <pw> -ListenPort 8080
+# On the center management server (MySQL 5.7+ — default dialect)
+.\scripts\install-center.ps1 -DbDialect mysql -DbHost localhost -DbDatabase ad_monitoring -DbUser root -DbPassword <pw> -ListenPort 8080
+
+# Or for SQL Server 2014+
+.\scripts\install-center.ps1 -DbDialect mssql -DbHost <server> -DbDatabase AD_Monitoring -DbUser sa -DbPassword <pw> -ListenPort 8080
 
 # On each DC
 .\scripts\install-agent.ps1 -CenterUrl http://center:8080 -AgentToken <token>
 ```
+
+For full per-dialect parameter lists and appsettings examples, see
+[docs/operations/runbook.md](docs/operations/runbook.md#multi-database-support).
 
 ## Development
 

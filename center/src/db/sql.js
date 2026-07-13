@@ -23,7 +23,7 @@ const VARIANTS = {
     },
     users: {
       findByUsername: 'SELECT id, username, password_hash, role_id, status FROM sys_users WHERE username = ? LIMIT 1',
-      list: 'SELECT id, username, role_id, status, last_login_at, created_at FROM sys_users ORDER BY id',
+      list: 'SELECT u.id, u.username, u.role_id, u.status, u.last_login_at, u.created_at, r.role_name FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id ORDER BY u.id',
       create: 'INSERT INTO sys_users (username, password_hash, role_id, status) VALUES (?, ?, ?, ?)',
       update: 'UPDATE sys_users SET password_hash = COALESCE(?, password_hash), role_id = COALESCE(?, role_id), status = COALESCE(?, status) WHERE id = ?',
       delete: 'DELETE FROM sys_users WHERE id = ?',
@@ -91,7 +91,7 @@ const VARIANTS = {
     },
     users: {
       findByUsername: 'SELECT TOP 1 id, username, password_hash, role_id, status FROM sys_users WHERE username = ?',
-      list: 'SELECT id, username, role_id, status, last_login_at, created_at FROM sys_users ORDER BY id',
+      list: 'SELECT u.id, u.username, u.role_id, u.status, u.last_login_at, u.created_at, r.role_name FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id ORDER BY u.id',
       create: 'INSERT INTO sys_users (username, password_hash, role_id, status) VALUES (?, ?, ?, ?)',
       update: 'UPDATE sys_users SET password_hash = COALESCE(?, password_hash), role_id = COALESCE(?, role_id), status = COALESCE(?, status) WHERE id = ?',
       delete: 'DELETE FROM sys_users WHERE id = ?',

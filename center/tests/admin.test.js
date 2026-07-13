@@ -100,6 +100,60 @@ test('GET /api/admin/users: 200 returns array of users', async () => {
   assert.equal(r.body[0].username, 'alice');
 });
 
+test('GET /api/admin/users: rows include camelCased roleName from JOIN (mysql)', async () => {
+  // Guards regression I-1: users.list must JOIN sys_roles so the admin UI's
+  // role dropdown (UsersView.vue:51) can match users by roleName and the
+  // roleName cell (UsersView.vue:13) renders correctly.
+  const db = buildMockDb([
+    {
+      // The new mysql/mssql users.list pattern: SELECT ..., r.role_name
+      // FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id.
+      match: /sys_users\s+u\s+LEFT\s+JOIN\s+sys_roles\s+r\s+ON\s+u\.role_id\s*=\s*r\.id/i,
+      rows: [
+        { id: 1, username: 'alice', role_id: 1, status: 1, last_login_at: null, created_at: new Date('2026-07-10T00:00:00Z'), role_name: 'admin' },
+        { id: 2, username: 'bob',   role_id: 2, status: 1, last_login_at: null, created_at: new Date('2026-07-11T00:00:00Z'), role_name: 'operator' },
+        { id: 3, username: 'carol', role_id: null, status: 0, last_login_at: null, created_at: new Date('2026-07-12T00:00:00Z'), role_name: null }
+      ]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/users')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 3);
+  // camelRow maps role_name -> roleName
+  assert.equal(r.body[0].roleName, 'admin');
+  assert.equal(r.body[1].roleName, 'operator');
+  // LEFT JOIN means users without a role still appear, with roleName null
+  assert.equal(r.body[2].roleName, null);
+  // snake_case column must NOT leak to the wire (camelRow consumed it)
+  assert.equal(r.body[0].role_name, undefined);
+});
+
+test('GET /api/admin/users: rows include camelCased roleName (mssql dialect)', async () => {
+  // Same JOIN behaviour must hold for the SQL Server variant.
+  const db = buildMockDb(
+    [
+      {
+        match: /sys_users\s+u\s+LEFT\s+JOIN\s+sys_roles\s+r\s+ON\s+u\.role_id\s*=\s*r\.id/i,
+        rows: [
+          { id: 1, username: 'alice', role_id: 1, status: 1, last_login_at: null, created_at: new Date('2026-07-10T00:00:00Z'), role_name: 'admin' }
+        ]
+      }
+    ],
+    { dialect: 'mssql' }
+  ).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/users')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body[0].roleName, 'admin');
+});
+
 // ----- CREATE USER -----
 
 test('POST /api/admin/users: 400 when missing fields', async () => {

@@ -74,9 +74,9 @@ sqlcmd -S localhost -Q "BACKUP DATABASE [AD_Monitoring] TO DISK='D:\Backups\AD_M
 
 ### Center machine lost
 
-1. Provision new management server with MySQL 8+
+1. Provision new management server with the database tier used previously (MySQL 8+ OR SQL Server 2014+ — see [Multi-Database Support](#multi-database-support) below)
 2. Restore `AD_Monitoring` database from latest backup
-3. Install center: `.\scripts\install-center.ps1 -MySqlHost ... -MySqlPassword ... -AgentToken <same-as-before> -JwtSecret <same-as-before>`
+3. Install center using the same dialect: `.\scripts\install-center.ps1 -DbDialect <mysql|mssql> -DbHost <host> -DbDatabase AD_Monitoring -DbUser <user> -DbPassword <pw> -AgentToken <same-as-before> -JwtSecret <same-as-before>` (see the multi-DB section for the full param set per dialect)
 4. Verify `/healthz` returns 200
 
 Agents continue running with their locally cached `appsettings.json` and buffered queue; once center URL is reachable again, they resume reporting.
@@ -90,8 +90,16 @@ automatically by `scripts/install-center.ps1` after the base schema.
 
 To apply manually:
 
+The installer applies migrations automatically after the base schema (see
+[Multi-Database Support](#multi-database-support) below). To apply a
+migration manually, use the CLI for your deployed dialect:
+
 ```powershell
+# MySQL
 Get-Content db\migrations\001-dc-site-discovery.sql | mysql -h <host> -P 3306 -u root -p<pwd> ad_monitoring
+
+# SQL Server (requires sqlcmd on PATH)
+Invoke-Sqlcmd -ServerInstance <host> -Database AD_Monitoring -InputFile db\migrations\mssql\001-dc-site-discovery.sql
 ```
 
 To list applied migrations, query the implicit list (we track via
