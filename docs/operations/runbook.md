@@ -108,3 +108,83 @@ Admins maintain sites via `/admin/sites-catalog` and assign DCs via
 `/admin/dcs-catalog`. The `/admin/site-replication-matrix` page shows the
 DC×DC replication matrix for a selected site and auto-refreshes every
 `site_matrix_refresh_seconds` (default 10s).
+
+## Multi-Database Support
+
+The center service supports both MySQL 5.7+ and SQL Server 2014+ via deploy-time
+selection. Pick one dialect in `appsettings.json` (or via the installer parameter);
+the service does not switch at runtime.
+
+### MySQL 5.7+ (default)
+
+`appsettings.json`:
+```json
+{
+  "db": {
+    "dialect": "mysql",
+    "mysql": { "host": "...", "port": 3306, "database": "...", "user": "...", "password": "..." }
+  }
+}
+```
+
+Bootstrap:
+```
+.\scripts\install-center.ps1 -DbDialect mysql -DbHost <host> -DbPort 3306 -DbDatabase ad_monitoring -DbUser root -DbPassword <pw>
+```
+
+### SQL Server 2014+
+
+`appsettings.json`:
+```json
+{
+  "db": {
+    "dialect": "mssql",
+    "mssql": { "server": "...", "database": "...", "user": "...", "password": "...", "encrypt": false }
+  }
+}
+```
+
+Operator must pre-create the empty database before running the installer.
+
+Bootstrap:
+```
+.\scripts\install-center.ps1 -DbDialect mssql -DbHost <server> -DbDatabase ad_monitoring -DbUser sa -DbPassword <pw>
+```
+
+Requires `sqlcmd` on PATH (SQL Server Command Line Tools).
+
+### Schema and migration layout
+
+```
+db/
+├── schema/
+│   ├── 01-tables.sql           # mysql (default; legacy alias)
+│   ├── 02-seed-roles.sql       # mysql
+│   ├── mysql/                  # canonical mysql location
+│   │   ├── 01-tables.sql
+│   │   └── 02-seed-roles.sql
+│   └── mssql/
+│       ├── 01-tables.sql
+│       └── 02-seed-roles.sql
+└── migrations/
+    ├── 001-dc-site-discovery.sql  # mysql (legacy alias)
+    ├── mysql/
+    │   └── 001-dc-site-discovery.sql
+    └── mssql/
+        └── 001-dc-site-discovery.sql
+```
+
+### Integration testing
+
+```bash
+# Run all integration tests against mysql:
+TEST_SQL_URL=127.0.0.1 npm test --workspace=center
+
+# Run against sql server:
+TEST_MSSQL_URL=myserver.local npm test --workspace=center
+
+# Run against both:
+TEST_SQL_URL=127.0.0.1 TEST_MSSQL_URL=myserver.local npm test --workspace=center
+```
+
+If neither env is set, integration tests skip and only mock-based unit tests run.

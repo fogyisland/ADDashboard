@@ -33,3 +33,11 @@ npm run build:frontend
 
 - Runbook: [docs/operations/runbook.md](docs/operations/runbook.md)
 - Troubleshooting: [docs/operations/troubleshooting.md](docs/operations/troubleshooting.md)
+
+## Multi-Database Backend
+
+The `center` service supports both **MySQL 5.7+** and **SQL Server 2014+**.
+Pick the dialect in `appsettings.json` via `db.dialect`. The same codebase
+runs against either database; deploy-time selection only.
+
+See `docs/operations/runbook.md` for full setup instructions.
