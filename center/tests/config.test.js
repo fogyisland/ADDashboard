@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadConfig } from '../src/config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { loadConfig, loadConfigOrNull, defaultConfig } from '../src/config.js';
 import { getAgentConfig } from '../src/services/config.js';
 import { _setDbForTest } from '../src/db/index.js';
 import { buildMockDb } from './helpers/db-mock.js';
@@ -66,4 +69,21 @@ test('getAgentConfig defaults discoveryIntervalHours to 4 when missing', async (
   _setDbForTest(db);
   const cfg = await getAgentConfig();
   assert.equal(cfg.discoveryIntervalHours, 4);
+});
+
+test('loadConfigOrNull returns null when file is missing', () => {
+  assert.strictEqual(loadConfigOrNull('./does-not-exist.json'), null);
+});
+
+test('loadConfigOrNull throws on parse error', () => {
+  const tmp = path.join(os.tmpdir(), `bad-${Date.now()}.json`);
+  fs.writeFileSync(tmp, '{ not json');
+  assert.throws(() => loadConfigOrNull(tmp), /JSON/);
+  fs.unlinkSync(tmp);
+});
+
+test('defaultConfig returns listenPort 8080 and no db block', () => {
+  const d = defaultConfig();
+  assert.strictEqual(d.listenPort, 8080);
+  assert.strictEqual(d.db, undefined);
 });

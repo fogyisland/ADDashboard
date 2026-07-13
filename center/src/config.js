@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { SUPPORTED_DIALECTS } from './db/sql.js';
 
 const REQUIRED_BY_DIALECT = {
@@ -43,5 +43,23 @@ export function loadConfig(path) {
     logLevel: cfg.logLevel || 'info',
     env: cfg.env || 'prod',
     frontendDevProxy: cfg.frontendDevProxy || null
+  };
+}
+
+export function loadConfigOrNull(path) {
+  if (!existsSync(path)) return null;
+  return loadConfig(path);
+}
+
+export function defaultConfig() {
+  return {
+    db: undefined,
+    listenPort: 8080,
+    jwtSecret: '',
+    agentToken: '',
+    staticDir: './dist',
+    logLevel: 'info',
+    env: 'prod',
+    frontendDevProxy: null
   };
 }
