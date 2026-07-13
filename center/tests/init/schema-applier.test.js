@@ -58,6 +58,32 @@ test('splitSqlStatements handles real schema file (smoke test against db/schema/
   for (const s of stmts) assert.ok(s.trim().length > 0);
 });
 
+test('splitSqlStatements handles MySQL DELIMITER $$ directives', () => {
+  const sql = 'DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 1; END$$\nDELIMITER ;\nSELECT 2;';
+  const stmts = splitSqlStatements(sql);
+  // Expect exactly 2 statements — DELIMITER directives must be stripped (they're
+  // client-side, not server-side), and the procedure body (which contains ;)
+  // must remain one statement terminated by $$.
+  assert.strictEqual(stmts.length, 2, `expected 2 statements, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.match(stmts[0], /CREATE PROCEDURE p\(\) BEGIN SELECT 1; END/);
+  assert.doesNotMatch(stmts[0], /DELIMITER/);
+  assert.match(stmts[1], /SELECT 2/);
+});
+
+test('splitSqlStatements handles real mysql migration with DELIMITER (db/migrations/001-dc-site-discovery.sql)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/001-dc-site-discovery.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // Expect at minimum: the CREATE PROCEDURE statement, the CALL statements batch, and the INSERT statement
+  assert.ok(stmts.length >= 2, `expected >= 2 statements, got ${stmts.length}`);
+  // Must contain the CREATE PROCEDURE as a single statement (the stored proc body has ; inside)
+  const procStmt = stmts.find(s => /CREATE PROCEDURE/.test(s));
+  assert.ok(procStmt, 'expected a single CREATE PROCEDURE statement');
+  assert.match(procStmt, /BEGIN/);
+  assert.match(procStmt, /END/);
+  // Must also include CALL statements (these use the default ; delimiter)
+  assert.ok(stmts.some(s => /CALL migrate_001_add_column_if_missing/.test(s)));
+});
+
 import { applyAll } from '../../src/init/schema-applier.js';
 import { buildMockDb } from '../helpers/db-mock.js';
 

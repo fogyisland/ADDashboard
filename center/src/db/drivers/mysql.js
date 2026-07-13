@@ -42,7 +42,17 @@ export function createMysqlDriver(config) {
   });
 
   async function execute(sqlStr, params = []) {
-    const [rows, _fields] = await pool.execute(sqlStr, normalizeParams(params));
+    // mysql2 prepared-statement protocol (pool.execute) doesn't support:
+    //  - comment-only statements
+    //  - statements containing BEGIN/END blocks (CREATE PROCEDURE/FUNCTION/TRIGGER bodies)
+    //  - statements containing DELIMITER directives (already stripped by splitter)
+    // For statements with no bound params, fall back to pool.query() (COM_QUERY
+    // protocol) which handles all of these cases. When params are present,
+    // pool.execute() handles placeholder binding correctly.
+    const useQuery = params.length === 0;
+    const [rows, _fields] = useQuery
+      ? await pool.query(sqlStr)
+      : await pool.execute(sqlStr, normalizeParams(params));
     // rows may be array (SELECT) or OkPacket-shaped object (INSERT/UPDATE).
     if (Array.isArray(rows)) {
       return { rows, affectedRows: 0, insertId: undefined };

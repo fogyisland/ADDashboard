@@ -13,8 +13,23 @@ export function splitSqlStatements(sql) {
   let inSingle = false;
   let inDouble = false;
   let blockDepth = 0; // tracks BEGIN...END nesting (MSSQL blocks)
+  let currentDelim = ';'; // MySQL DELIMITER directive support
   while (i < sql.length) {
     const c = sql[i];
+
+    // MySQL DELIMITER directive (start of line: buf is empty OR buf ends with \n).
+    // Comments are skipped over by allowing whitespace-only content; but in
+    // practice the directive typically appears on its own line.
+    if (c === 'D' && (buf === '' || buf.endsWith('\n')) && /^\s*DELIMITER\s+(\S+)/.test(sql.slice(i))) {
+      const m = /^\s*DELIMITER\s+(\S+)/.exec(sql.slice(i));
+      currentDelim = m[1];
+      buf = '';
+      // Skip to end of line
+      const nl = sql.indexOf('\n', i);
+      i = nl >= 0 ? nl + 1 : sql.length;
+      continue;
+    }
+
     if (inSingle) {
       buf += c;
       if (c === "'" && sql[i + 1] === "'") { buf += sql[i + 1]; i += 2; continue; }
@@ -36,14 +51,26 @@ export function splitSqlStatements(sql) {
     if (c === 'E' && /END\b/.test(sql.slice(i, i + 3))) {
       if (blockDepth > 0) blockDepth--; buf += sql.slice(i, i + 3); i += 3; continue;
     }
-    // Only treat ; as a statement terminator when we're not inside a BEGIN/END
-    // block and the next char is \n, \r, another ;, or end-of-string.
-    if (c === ';' && blockDepth === 0 &&
-        (i + 1 >= sql.length || sql[i + 1] === '\n' || sql[i + 1] === '\r' || sql[i + 1] === ';')) {
+    // Statement terminator: matches the current delimiter (default ';').
+    // Single-char delimiter (e.g. ';'): split when next char is \n, \r, another terminator, or end-of-string.
+    // Multi-char delimiter (e.g. '$$'): split on exact match followed by \n, \r, or end-of-string.
+    if (currentDelim.length === 1 && c === currentDelim[0] && blockDepth === 0 &&
+        (i + 1 >= sql.length || sql[i + 1] === '\n' || sql[i + 1] === '\r' || sql[i + 1] === currentDelim[0])) {
       const stmt = buf.trim();
       if (stmt.length > 0) out.push(stmt);
       buf = '';
       i++;
+      continue;
+    }
+    if (currentDelim.length > 1 && c === currentDelim[0] && blockDepth === 0 &&
+        sql.slice(i, i + currentDelim.length) === currentDelim &&
+        (i + currentDelim.length >= sql.length ||
+         sql[i + currentDelim.length] === '\n' ||
+         sql[i + currentDelim.length] === '\r')) {
+      const stmt = buf.trim();
+      if (stmt.length > 0) out.push(stmt);
+      buf = '';
+      i += currentDelim.length;
       continue;
     }
     buf += c;

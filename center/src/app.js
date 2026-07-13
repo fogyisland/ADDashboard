@@ -1,9 +1,10 @@
 import express from 'express';
 import { healthzRouter } from './routes/healthz.js';
 
-export function createApp({ config, db, logger }) {
+export function createApp({ config, db, logger, needsInit = false }) {
   const app = express();
   app.disable('x-powered-by');
+  app.locals.needsInit = needsInit;
   app.use(express.json({ limit: '10mb' }));
   app.use((req, _res, next) => {
     req.log = logger.child({ method: req.method, url: req.url });
