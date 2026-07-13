@@ -19,7 +19,7 @@ The wizard moves the application init into a Vue 3 SPA served by the center Node
 | Decision | Choice |
 |---|---|
 | Relationship to PS installer | Wizard replaces the schema/seed/admin/config portion of `install-center.ps1`; PS keeps deployment only |
-| Wizard trigger | Server boots in init mode when `sys_users` is empty (also when appsettings.json missing or DB unreachable) |
+| Wizard trigger | Server boots in init mode when no admin user exists in `sys_users` (also when appsettings.json missing or DB unreachable) |
 | Once-init access guard | `/init` route and `/api/init/*` endpoints return 404 forever once any admin user exists |
 | PS installer scope post-change | Keeps: NSSM service registration, file copy, directory creation, service start. Removes: DB schema/seed/admin/config |
 
@@ -34,7 +34,7 @@ The server decides init mode vs normal mode before mounting any non-init routes:
 | No config | `appsettings.json` missing | Init mode (built-in defaults: `listenPort=8080`, no DB) |
 | Config but no DB block | `appsettings.json` exists but `db.dialect` missing | Init mode |
 | DB unreachable | Config valid, but `db.healthcheck()` fails | Init mode (log warning) |
-| DB reachable, no admin | Config valid, DB up, `SELECT COUNT(*) FROM sys_users` returns 0 | Init mode |
+| DB reachable, no admin | Config valid, DB up, `SELECT COUNT(*) FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'` returns 0 | Init mode |
 | Normal | Config valid, DB up, `sys_users` has ≥1 row | Normal mode (current behavior) |
 
 Mode is determined on every boot (cheap `SELECT COUNT(*)`, ~5ms).
@@ -52,7 +52,7 @@ Mode is determined on every boot (cheap `SELECT COUNT(*)`, ~5ms).
 
 The init router holds a single **wizard facade** in module scope (separate from the global facade):
 - `POST /db/test` creates the wizard facade (or rebuilds if params changed). Subsequent calls reuse it.
-- `POST /db/apply` and `POST /admin/create` reuse the existing wizard facade.
+- `POST /db/apply` and `POST /admin/create` reuse the existing wizard facade if present, otherwise create one from the request's `connParams`. (UX does not force a test step.)
 - `POST /finalize` writes the config file; doesn't touch the facade.
 - The wizard facade is closed on `/finalize` success or server shutdown.
 
@@ -65,7 +65,7 @@ The init router holds a single **wizard facade** in module scope (separate from 
 | `GET /status` | — | Returns `{needsInit: bool, dialect?: 'mysql'\|'mssql'}` |
 | `POST /db/test` | `{dialect, host\|server, port, database, user, password, encrypt?}` | Wizard facade → `SELECT 1`. Returns `{ok, error?}`. Does not mutate global facade. |
 | `POST /db/apply` | `{dialect, connParams, createDatabase: bool}` | Creates DB (mysql only, if `createDatabase: true`), applies `01-tables.sql`, `02-seed-roles.sql`, all migrations. Idempotent. |
-| `POST /admin/create` | `{dialect, connParams, username, password}` | INSERTs admin into `sys_users`. Pre-check: `SELECT COUNT(*) FROM sys_users` must be 0, else 409. |
+| `POST /admin/create` | `{dialect, connParams, username, password}` | INSERTs admin into `sys_users`. Pre-check via `users.count` (must be 0), else 409. |
 | `POST /finalize` | `{listenPort, agentToken, jwtSecret, logLevel, env, dialect, connParams}` | Writes `appsettings.json`. Returns `{ok: true, path}`. |
 
 Guard middleware on every route: returns **404** if `needsInit === false` (init complete). 404 (not 401/403) to avoid leaking wizard existence.
@@ -94,7 +94,7 @@ So re-running is safe even if a previous attempt partially succeeded.
 
 ### `admin-creator.js`
 
-Inserts via SQL registry (new keys, see below). Uses existing `hashPassword` helper from `center/src/auth/password.js`. Pre-check: `SELECT COUNT(*) FROM sys_users` — must be 0, else 409.
+Inserts via SQL registry (new keys, see below). Uses existing `hashPassword` helper from `center/src/auth/password.js`. Pre-check via `db.execute(db.sql.users.count, [])` — must return 0, else 409.
 
 ### `config-writer.js`
 
@@ -110,7 +110,7 @@ if (config) {
   try { await init(config); db = getDb(); }
   catch (e) { logger.warn({err: e}, 'db init failed, falling back to init mode'); }
 }
-const needsInit = await checkNeedsInit(db);   // null db → true; throws → true; count===0 → true
+const needsInit = await checkNeedsInit(db);   // null db → true; throws → true; admin count === 0 → true
 
 const app = createApp({ config: config || defaultConfig(), db, logger, needsInit });
 if (needsInit) {
@@ -130,7 +130,7 @@ Graceful shutdown also closes the wizard facade if open.
 - `users.createAdmin` (mysql + mssql variants):
   - mysql: `INSERT INTO sys_users (username, password_hash, role_id) VALUES (?, ?, (SELECT id FROM sys_roles WHERE role_name = 'admin'))`
   - mssql: `INSERT INTO sys_users (username, password_hash, role_id) SELECT ?, ?, id FROM sys_roles WHERE role_name = 'admin'`
-- `users.count` (mysql + mssql variants, for the pre-check): `SELECT COUNT(*) AS n FROM sys_users`
+- `users.count` (mysql + mssql variants, for the pre-check): `SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'`
 
 ## Frontend — `frontend/src/views/init/`
 
@@ -223,11 +223,11 @@ Wraps the 5 init endpoints using the existing axios client.
 - `center/tests/init/schema-applier.test.js` — feeds fixture SQL files (with `IF NOT EXISTS` blocks, semicolons in strings, multi-line IF/END) through the splitter. Asserts statement count + content. ~6 tests.
 - `center/tests/init/admin-creator.test.js` — mocks facade, asserts SQL shape + bcrypt call + 409 on pre-check fail. ~3 tests.
 - `center/tests/init/config-writer.test.js` — writes to temp file, reads back, asserts JSON shape. ~3 tests.
-- `center/tests/init/server-needs-init.test.js` — unit-tests the `checkNeedsInit(db)` helper: returns `true` when facade null, when query throws, when `sys_users` empty; returns `false` when count > 0. ~4 tests.
+- `center/tests/init/server-needs-init.test.js` — unit-tests the `checkNeedsInit(db)` helper: returns `true` when facade null, when query throws, when admin count is 0; returns `false` when admin count > 0. ~4 tests.
 
 **Integration (env-gated, matches T17-T21 pattern):**
 - `center/tests/integration/init.integration.test.js` — end-to-end against real mysql:
-  1. Drop sys_users (clean slate)
+  1. Drop the admin user from sys_users (clean slate — leave any other users alone if present)
   2. `POST /api/init/db/test` with test conn params → `{ok: true}`
   3. `POST /api/init/db/apply` → schema + seed + migrations applied; verify tables exist, seed rows present
   4. `POST /api/init/admin/create` → admin inserted
