@@ -22,7 +22,7 @@ export async function createUser({ username, password, roleId, status }) {
 export async function updateUser(id, { password, roleId, status }) {
   const db = getDb();
   const passwordHash = password ? await bcrypt.hash(password, 12) : null;
-  await db.execute(db.sql.users.update, [passwordHash, roleId, status, id]);
+  await db.execute(db.sql.users.update, [passwordHash, roleId ?? null, status ?? null, id]);
 }
 
 export async function deleteUser(id) {
