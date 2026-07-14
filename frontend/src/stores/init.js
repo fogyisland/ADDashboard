@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import * as initApi from '../api/init.js';
+import { resetInitStatusCache } from '../router.js';
 
 const DEFAULTS = {
   mysql: { host: '127.0.0.1', port: 3306, database: '', user: 'root', password: '' },
@@ -71,6 +72,7 @@ export const useInitStore = defineStore('init', {
           dialect: this.dialect, connParams: this.connParams,
           listenPort: 8080, agentToken: '', jwtSecret: '', logLevel: 'info', env: 'prod', staticDir: './dist'
         });
+        resetInitStatusCache();
         return r.data;
       } catch (e) {
         this.finalizeError = e.response?.data?.error || e.message;

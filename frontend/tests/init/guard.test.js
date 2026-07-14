@@ -8,7 +8,7 @@ vi.mock('../../src/api/client.js', () => ({
 }));
 
 import api from '../../src/api/client.js';
-import router, { _resetInitStatusCacheForTest } from '../../src/router.js';
+import router, { resetInitStatusCache, _resetInitStatusCacheForTest } from '../../src/router.js';
 
 describe('init bootstrap guard', () => {
   beforeEach(() => {
@@ -64,9 +64,23 @@ describe('init bootstrap guard', () => {
     expect(router.currentRoute.value.path).toBe('/login');
   });
 
+  it('invalidates cached init status after reset', async () => {
+    api.get.mockResolvedValueOnce({ data: { needsInit: true } });
+    await router.push('/login');
+    await router.isReady();
+    expect(router.currentRoute.value.path).toBe('/init');
+
+    resetInitStatusCache();
+    api.get.mockResolvedValueOnce({ data: { needsInit: false } });
+    await router.push('/login');
+
+    expect(router.currentRoute.value.path).toBe('/login');
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
+
   it('caches init status after first call', async () => {
     api.get.mockResolvedValue({ data: { needsInit: false } });
-    await router.push('/login');
+    await router.push('/init');
     await router.isReady();
     await router.push('/login');
     expect(api.get).toHaveBeenCalledTimes(1);

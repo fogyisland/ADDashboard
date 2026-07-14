@@ -62,6 +62,10 @@ router.beforeEach(async (to) => {
   return true;
 });
 
+export function resetInitStatusCache() {
+  initStatusCache = null;
+}
+
 // Exported for tests so the module-level cache can be reset between cases.
 export function _resetInitStatusCacheForTest() { initStatusCache = null; }
 

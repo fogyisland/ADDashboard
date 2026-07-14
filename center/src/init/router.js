@@ -98,7 +98,11 @@ export function initRouter({ logger, configPath, getNeedsInit, _deps = null }) {
         env: env || 'prod',
         staticDir: staticDir || './dist'
       });
-      await deps.closeWizardFacade();
+      try {
+        await deps.closeWizardFacade();
+      } catch (e) {
+        logger.error({ err: e.message }, 'init wizard facade close failed');
+      }
       res.json({ ok: true, path: configPath });
     } catch (e) {
       logger.error({ err: e.message }, 'init finalize failed');

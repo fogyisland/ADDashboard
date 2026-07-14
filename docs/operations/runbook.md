@@ -233,7 +233,7 @@ If you need to re-run the wizard (e.g., after losing the admin password
 and there's no other admin):
 
 ```sql
-DELETE FROM sys_users WHERE username = 'admin';
+DELETE FROM sys_users WHERE role_id IN (SELECT id FROM sys_roles WHERE role_name = 'admin');
 ```
 
 Then restart the service. The wizard will appear again.

@@ -94,6 +94,34 @@ test('POST /api/init/admin/create returns 409 on AdminConflictError', async () =
   assert.strictEqual(r.status, 409);
 });
 
+test('POST /api/init/finalize succeeds when closing wizard facade fails', async () => {
+  let wrotePath = null, loggedError = null;
+  const app = express();
+  app.use(express.json());
+  app.use('/api/init', initRouter({
+    logger: { info: () => {}, warn: () => {}, error: (details, message) => { loggedError = { details, message }; } },
+    configPath: './does-not-matter.json',
+    getNeedsInit: () => true,
+    _deps: {
+      withOneShotFacade: async (d, p, w) => w({ execute: async () => ({}), query: async () => ({}), close: async () => {} }),
+      applyAll: async () => ({}),
+      createAdmin: async () => ({ id: 1, username: 'admin' }),
+      writeConfig: ({ path }) => { wrotePath = path; return { ok: true, path }; },
+      getWizardFacade: async () => ({}),
+      closeWizardFacade: async () => { throw new Error('pool already closed'); }
+    }
+  }));
+  const r = await call(app, 'POST', '/api/init/finalize', {
+    dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
+  });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.ok, true);
+  assert.strictEqual(wrotePath, './does-not-matter.json');
+  assert.deepStrictEqual(loggedError, {
+    details: { err: 'pool already closed' },
+    message: 'init wizard facade close failed'
+  });
+});
 test('POST /api/init/finalize writes config and closes wizard facade', async () => {
   let wrotePath = null, closed = false;
   // Use a fresh setup here because we need to capture both wrotePath (from writeConfig)
