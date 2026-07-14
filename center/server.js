@@ -48,7 +48,7 @@ const logger = createLogger({ component: 'center', level: 'info' });
   // with "db not initialized". Operator must clear the marker (and restore or
   // rebuild appsettings.json) before the service can run.
   if (markerLocked && !config) {
-    logger.error('init marker present but config missing — refusing to start. To recover: restore appsettings.json (preferred) OR clear the .initialized marker + registry value AND delete appsettings.json to re-run the wizard.');
+    logger.error('init marker present but config missing — refusing to start. To recover: restore appsettings.json (preferred) OR clear the ADDASHBOARD_INITIALIZED key in .env + registry value AND delete appsettings.json to re-run the wizard.');
     process.exit(2);
   }
   const needsInit = markerLocked ? false : await checkNeedsInit(db);
