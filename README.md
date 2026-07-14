@@ -13,19 +13,20 @@ See [docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md](docs/supe
 
 ## Quick Start
 
-```powershell
-# On the center management server (MySQL 5.7+ — default dialect)
-.\scripts\install-center.ps1 -DbDialect mysql -DbHost localhost -DbDatabase ad_monitoring -DbUser root -DbPassword <pw> -ListenPort 8080
+```bash
+# 1. Deploy (PowerShell installer — handles NSSM service registration, file copy, service start)
+.\scripts\install-center.ps1
 
-# Or for SQL Server 2014+
-.\scripts\install-center.ps1 -DbDialect mssql -DbHost <server> -DbDatabase AD_Monitoring -DbUser sa -DbPassword <pw> -ListenPort 8080
+# 2. Open browser to http://localhost:8080/init
+#    Complete the 3-screen setup wizard:
+#    - Database connection (MySQL or SQL Server)
+#    - Administrator account
+#    - Initialize schema + seed
 
-# On each DC
-.\scripts\install-agent.ps1 -CenterUrl http://center:8080 -AgentToken <token>
+# 3. Log in at http://localhost:8080/login
 ```
 
-For full per-dialect parameter lists and appsettings examples, see
-[docs/operations/runbook.md](docs/operations/runbook.md#multi-database-support).
+See [docs/operations/runbook.md](docs/operations/runbook.md#first-run-setup-wizard) for details.
 
 ## Development
 
@@ -39,6 +40,7 @@ npm run build:frontend
 
 - Runbook: [docs/operations/runbook.md](docs/operations/runbook.md)
 - Troubleshooting: [docs/operations/troubleshooting.md](docs/operations/troubleshooting.md)
+- First-run setup wizard: serve from the center service at `/init` when no admin user exists. See [runbook](docs/operations/runbook.md#first-run-setup-wizard).
 
 ## Multi-Database Backend
 

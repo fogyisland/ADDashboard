@@ -196,3 +196,55 @@ TEST_SQL_URL=127.0.0.1 TEST_MSSQL_URL=myserver.local npm test --workspace=center
 ```
 
 If neither env is set, integration tests skip and only mock-based unit tests run.
+
+## First-Run Setup Wizard
+
+On first boot (or whenever no admin user exists), the center service
+boots in **init mode** and serves a 3-screen browser wizard at
+`http://server:8080/init`. The wizard:
+
+1. **Screen 1 — Database connection**: pick MySQL or SQL Server, fill in
+   host/port/database/user/password, click "Test connection" to verify,
+   then "Next".
+2. **Screen 2 — Administrator**: set the initial admin username and
+   password (≥8 chars, with strength indicator).
+3. **Screen 3 — Initialize**: auto-executes schema apply + seed + admin
+   creation + writes `appsettings.json`. Shows progress per stage.
+
+After init completes:
+- `appsettings.json` exists on disk with the chosen DB config.
+- `sys_users` has the new admin.
+- `sys_roles` has the 3 default roles (admin/operator/viewer).
+- `system_config` has the 7 default keys (ad_agent_token, polling_interval_minutes, etc.).
+- `/init` redirects to `/login`.
+- `/api/init/*` returns 404.
+
+### Trigger conditions (init mode)
+
+The server enters init mode when **any** of the following is true:
+- `appsettings.json` is missing
+- `appsettings.json` exists but has no `db.dialect` field
+- `db.healthcheck()` fails (DB unreachable)
+- `SELECT COUNT(*) FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'` returns 0
+
+### Recovery
+
+If you need to re-run the wizard (e.g., after losing the admin password
+and there's no other admin):
+
+```sql
+DELETE FROM sys_users WHERE username = 'admin';
+```
+
+Then restart the service. The wizard will appear again.
+
+### Install flow
+
+```bash
+# 1. Deploy (install-center.ps1 — slimmed, deployment only)
+.\scripts\install-center.ps1 -InstallPath 'C:\Program Files\ADDashboard\Center'
+
+# 2. Open browser to http://server:8080/init
+# 3. Complete the 3 screens
+# 4. Log in at http://server:8080/login with the new admin credentials
+```
