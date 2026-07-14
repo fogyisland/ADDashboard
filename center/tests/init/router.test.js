@@ -16,6 +16,7 @@ function makeApp({
   app.use('/api/init', initRouter({
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     configPath: './appsettings.json',
+    installPath: '.',
     getNeedsInit: () => needsInit,
     _deps: {
       withOneShotFacade: async (d, p, w) => w({ execute: async () => dbTestResult, query: async () => dbTestResult, close: async () => {} }),
@@ -23,7 +24,8 @@ function makeApp({
       createAdmin: createAdminFn,
       writeConfig: writeConfigFn,
       getWizardFacade: async () => ({ execute: async () => dbTestResult, query: async () => dbTestResult, close: async () => {} }),
-      closeWizardFacade: async () => {}
+      closeWizardFacade: async () => {},
+      writeMarker: async () => {}
     }
   }));
   return app;

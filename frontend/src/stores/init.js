@@ -68,9 +68,12 @@ export const useInitStore = defineStore('init', {
     async finalize() {
       this.finalizeError = null;
       try {
+        const agentToken = crypto.randomUUID().replace(/-/g, '');
+        const jwtSecret = Array.from(crypto.getRandomValues(new Uint8Array(48)))
+          .map(b => String.fromCharCode(33 + (b % 94))).join('');
         const r = await initApi.finalize({
           dialect: this.dialect, connParams: this.connParams,
-          listenPort: 8080, agentToken: '', jwtSecret: '', logLevel: 'info', env: 'prod', staticDir: './dist'
+          listenPort: 8080, agentToken, jwtSecret, logLevel: 'info', env: 'prod', staticDir: './dist'
         });
         resetInitStatusCache();
         return r.data;

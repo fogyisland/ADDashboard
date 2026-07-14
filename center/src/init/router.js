@@ -4,6 +4,7 @@ import { getWizardFacade, closeWizardFacade } from './wizard-facade.js';
 import { applyAll } from './schema-applier.js';
 import { createAdmin, AdminConflictError } from './admin-creator.js';
 import { writeConfig } from './config-writer.js';
+import { writeMarker } from './marker.js';
 
 // Canonicalize conn params so equivalent params (different key order) produce
 // stable JSON.stringify output. This ensures getWizardFacade's key-order-sensitive
@@ -14,10 +15,10 @@ function canonicalize(p) {
   return Object.fromEntries(Object.entries(p).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-export function initRouter({ logger, configPath, getNeedsInit, _deps = null }) {
+export function initRouter({ logger, configPath, installPath, getNeedsInit, _deps = null }) {
   const deps = _deps ?? {
     withOneShotFacade, applyAll, createAdmin, writeConfig,
-    getWizardFacade, closeWizardFacade
+    getWizardFacade, closeWizardFacade, writeMarker
   };
   const r = express.Router();
 
@@ -98,6 +99,13 @@ export function initRouter({ logger, configPath, getNeedsInit, _deps = null }) {
         env: env || 'prod',
         staticDir: staticDir || './dist'
       });
+      // Persist init-complete marker so the wizard stays locked even if
+      // appsettings.json is later deleted. File + registry both written.
+      try {
+        await deps.writeMarker(installPath);
+      } catch (e) {
+        logger.error({ err: e.message }, 'init marker write failed (non-fatal)');
+      }
       try {
         await deps.closeWizardFacade();
       } catch (e) {
