@@ -12,7 +12,7 @@
 // which only works if the marker is also cleared).
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 
 const REG_KEY = 'HKLM\\SOFTWARE\\ADDashboard';
 const REG_VALUE = 'Initialized';
@@ -127,6 +127,9 @@ export async function hasMarker(installPath, _exec = defaultExec) {
 
 // Resolve the install dir from a config file path. Falls back to dirname of
 // the config path so the marker lives alongside appsettings.json.
+// Uses path.win32 because installPath is always a Windows directory in our
+// deployment (NSSM service, Windows-only). Locking the helper to win32 keeps
+// behavior consistent when this code is unit-tested on a non-Windows host.
 export function installPathFromConfigPath(configPath) {
-  return dirname(configPath);
+  return win32.dirname(configPath);
 }

@@ -35,7 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install PowerShell
-        uses: microsoft/powershell@v20250709
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https software-properties-common
+          wget -q https://packages.microsoft.com/config/ubuntu/24.04/packages-microsoft-prod.deb
+          sudo dpkg -i packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo apt-get install -y powershell
       - name: Install Pester 5
         shell: pwsh
         run: |
