@@ -32,7 +32,7 @@ const logger = createLogger({ component: 'center', level: 'info' });
   const app = createApp({ config: finalConfig, db, logger, needsInit });
   if (needsInit) {
     logger.info('init mode: serving /api/init/* and /init');
-    app.use(initRouter({ logger, configPath, getNeedsInit: () => needsInit }));
+    app.use('/api/init', initRouter({ logger, configPath, getNeedsInit: () => needsInit }));
   } else {
     app.use(authRouter({ config: finalConfig, logger }));
     app.use(agentRouter({ config: finalConfig, logger }));
