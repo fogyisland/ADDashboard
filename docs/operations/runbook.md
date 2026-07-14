@@ -1,5 +1,16 @@
 # AD Dashboard Operations Runbook
 
+## Prerequisites
+
+- **Node.js 18+** (LTS recommended) — the center service is Node, and the
+  agent runs Node-based collection scripts.
+- **NSSM** (Windows Service Helper) — installed by `scripts/install-center.ps1`
+  via `Install-Module` if missing.
+- **Database**: MySQL 5.7+ or SQL Server 2014+ (deploy-time choice).
+- **PowerShell 5.1+** (ships with Windows 10/Server 2016+).
+- For SQL Server deployments: `sqlcmd` on PATH (SQL Server Command Line
+  Tools) — only needed when applying migrations manually.
+
 ## Services
 
 | Service | Machine | Display Name | NSSM Name |
@@ -230,13 +241,34 @@ The server enters init mode when **any** of the following is true:
 ### Recovery
 
 If you need to re-run the wizard (e.g., after losing the admin password
-and there's no other admin):
+and there's no other admin), you must clear **both** the init marker and
+the admin row — the marker alone will block the wizard from re-appearing
+even after deleting admins.
+
+**Step 1 — clear the init marker** (one or both of):
+
+- **File marker**: edit `<installPath>/.env` and delete the
+  `ADDASHBOARD_INITIALIZED` and `ADDASHBOARD_INITIALIZED_AT` lines
+  (save and close).
+- **Windows registry**: open an elevated `cmd.exe` and run
+  `reg delete "HKLM\SOFTWARE\ADDashboard" /v Initialized /f`.
+
+**Step 2 — clear the admin row**:
 
 ```sql
 DELETE FROM sys_users WHERE role_id IN (SELECT id FROM sys_roles WHERE role_name = 'admin');
 ```
 
-Then restart the service. The wizard will appear again.
+**Step 3 — restart the service**:
+
+```powershell
+Restart-Service ADDashboardCenter
+```
+
+The wizard appears again at `http://server:8080/init`. To fully reset
+to a clean install (different DB host, etc.), also delete
+`appsettings.json` before restarting — the wizard will then require the
+full DB connection + admin setup flow.
 
 ### Install flow
 

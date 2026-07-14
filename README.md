@@ -11,6 +11,13 @@ Self-hosted dashboard for monitoring Active Directory replication health across 
 
 See [docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md](docs/superpowers/specs/2026-07-10-ad-dashboard-service-design.md) for the full design.
 
+## Prerequisites
+
+- **Node.js 18+** — center service is Node; agent uses Node-based scripts
+- **NSSM** — Windows Service Helper (auto-installed by installer)
+- **MySQL 5.7+** or **SQL Server 2014+**
+- **PowerShell 5.1+**
+
 ## Quick Start
 
 ```bash
