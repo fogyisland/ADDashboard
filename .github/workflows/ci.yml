@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node (center + agent + frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm install
+      - name: Center tests
+        run: npm run test:center
+      - name: Agent tests
+        run: npm run test:agent
+      - name: Frontend tests
+        run: npm run test:frontend
+      - name: Frontend build (sanity)
+        run: npm run build:frontend
+
+  pester:
+    name: PowerShell installer tests (Pester)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PowerShell
+        uses: microsoft/powershell@v20250709
+      - name: Install Pester 5
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
+      - name: Run Pester
+        shell: pwsh
+        run: Invoke-Pester ./scripts/tests -Output Detailed

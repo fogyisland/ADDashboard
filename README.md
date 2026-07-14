@@ -2,6 +2,19 @@
 
 自研的 AD 复制健康看板，用于跨站点、跨 DC 监控 Active Directory 复制状态。
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/fogyisland/ADDashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/fogyisland/ADDashboard/actions/workflows/ci.yml)
+![Node](https://img.shields.io/badge/Node-18%2B-339933?logo=node.js&logoColor=white)
+![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)
+
+## 克隆
+
+```bash
+git clone https://github.com/fogyisland/ADDashboard.git
+cd ADDashboard
+npm install
+```
+
 ## 架构
 
 - **Agent**（每台 DC 一份）：Windows 服务，按计划运行 PowerShell 采集脚本，把结果 POST 给 Center。
