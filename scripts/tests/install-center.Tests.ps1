@@ -2,7 +2,7 @@ Describe 'install-center (slimmed)' {
   It 'has AST-clean syntax' {
     $tokens = $null
     $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile("$PSScriptRoot\..\install-center.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+    [System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors.Count -gt 0) {
       throw "Parse errors ($($errors.Count)):`n$($errors | Out-String)"
     }
@@ -10,13 +10,13 @@ Describe 'install-center (slimmed)' {
   }
 
   It 'does not accept DB-side params' {
-    $content = Get-Content "$PSScriptRoot\..\install-center.ps1" -Raw
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
     $content | Should -Not -Match '\-DbDialect'
     $content | Should -Not -Match '\-DbHost'
   }
 
   It 'mentions /init wizard' {
-    $content = Get-Content "$PSScriptRoot\..\install-center.ps1" -Raw
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
     $content | Should -Match '/init'
   }
 }
