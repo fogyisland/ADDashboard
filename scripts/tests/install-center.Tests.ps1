@@ -1,10 +1,10 @@
 Describe 'install-center (slimmed)' {
   It 'has AST-clean syntax' {
+    $tokens = $null
     $errors = $null
-    [System.Management.Automation.Language.Parser]::ParseFile("$PSScriptRoot\..\install-center.ps1", [ref]$null, [ref]$errors) | Out-Null
+    [System.Management.Automation.Language.Parser]::ParseFile("$PSScriptRoot\..\install-center.ps1", [ref]$tokens, [ref]$errors) | Out-Null
     if ($errors.Count -gt 0) {
-      $details = ($errors | ForEach-Object { "$($_.Extent.StartLineNumber):$($_.Extent.StartColumnNumber) $($_.Message)" }) -join "`n"
-      throw "Parse errors:`n$details"
+      throw "Parse errors ($($errors.Count)):`n$($errors | Out-String)"
     }
     $errors.Count | Should -Be 0
   }
