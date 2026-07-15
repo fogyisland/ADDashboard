@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'Logger.psm1') -Force
 
 $nssmDir  = Join-Path $ProjectRoot 'nssm'
 $nssmExe  = Join-Path $nssmDir 'nssm.exe'
