@@ -16,7 +16,7 @@ test('loadConfig returns parsed values with defaults', () => {
   assert.equal(c.pollingIntervalMinutes, 15);
   assert.equal(c.heartbeatIntervalSeconds, 5);
   assert.equal(c.discoveryIntervalHours, 4);
-  assert.equal(c.psDiscoveryScriptPath, 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-discovery.ps1');
+  assert.equal(c.psDiscoveryScriptPath, 'C:\\addashboard\\Agent\\scripts\\collect-discovery.ps1');
   assert.equal(c.healthCheckIntervalMs, 600_000);
   rmSync(dir, { recursive: true });
 });

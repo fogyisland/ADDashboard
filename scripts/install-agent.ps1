@@ -5,7 +5,7 @@ param(
   [Parameter(Mandatory)][string[]]$ComputerName,
   [Parameter(Mandatory)][string]$CenterUrl,
   [Parameter(Mandatory)][string]$AgentToken,
-  [string]$InstallPath = 'C:\Program Files\ADDashboard\Agent',
+  [string]$InstallPath = 'C:\addashboard\Agent',
   # Internal-use parameters for remote-install forwarding. When the script runs
   # in a remote session, $PSScriptRoot is null; we pre-resolve and pass these
   # explicitly so the scriptblock always knows where to copy from.
@@ -14,18 +14,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 
-if (-not $AgentSrc) { $AgentSrc = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'agent' }
+# Ensure NSSM is available locally (no-op when remote — only used on the orchestrator)
+. (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
+
+if (-not $AgentSrc) { $AgentSrc = Join-Path $projectRoot 'agent' }
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 $node = (Get-Command node.exe -ErrorAction Stop).Source
+$Script:LogDir = 'C:\addashboard\Logs'
 
 function Install-LocalAgent {
   Write-Step "installing local agent to $InstallPath"
-  @($InstallPath, $psScriptDstDir, 'C:\ProgramData\ADDashboard\Logs', 'C:\ProgramData\ADDashboard\Agent') | ForEach-Object {
+  @($InstallPath, $psScriptDstDir, 'C:\addashboard\Logs', 'C:\addashboard\Agent') | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
   Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
@@ -40,7 +45,7 @@ function Install-LocalAgent {
     agentToken = $AgentToken
     logLevel = 'info'
     pollingIntervalMinutes = 15
-    queueDbPath = 'C:\ProgramData\ADDashboard\Agent\queue.db'
+    queueDbPath = 'C:\addashboard\Agent\queue.db'
     psScriptPath = "$InstallPath\scripts\collect-replication.ps1"
     healthCheckIntervalMs = 600000
   }

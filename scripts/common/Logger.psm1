@@ -1,4 +1,4 @@
-$Script:LogDir = 'C:\ProgramData\ADDashboard\Logs'
+$Script:LogDir = 'C:\addashboard\Logs'
 if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
 
 function Write-Log {

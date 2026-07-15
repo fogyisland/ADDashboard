@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$InstallPath = 'C:\Program Files\ADDashboard\Center',
+  [string]$InstallPath = 'C:\addashboard\Center',
   [switch]$RebuildFrontend
 )
 $ErrorActionPreference = 'Stop'

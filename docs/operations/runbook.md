@@ -25,10 +25,10 @@ Get-Service ADReplicationAgent, ADDashboardCenter | Format-Table Name, Status, S
 Restart-Service ADReplicationAgent -Force
 
 # 跟踪 agent 日志
-Get-Content "C:\ProgramData\ADDashboard\Logs\ADReplicationAgent-stdout.log" -Tail 100 -Wait
+Get-Content "C:\addashboard\Logs\ADReplicationAgent-stdout.log" -Tail 100 -Wait
 
 # 跟踪 center 日志
-Get-Content "C:\ProgramData\ADDashboard\Logs\ADDashboardCenter-stdout.log" -Tail 100 -Wait
+Get-Content "C:\addashboard\Logs\ADDashboardCenter-stdout.log" -Tail 100 -Wait
 
 # 健康检查
 Invoke-WebRequest http://center:8080/healthz | Select -ExpandProperty Content
@@ -76,7 +76,7 @@ sqlcmd -S localhost -Q "BACKUP DATABASE [AD_Monitoring] TO DISK='D:\Backups\AD_M
 
 1. 生成新 UUID：`[Guid]::NewGuid().Guid`
 2. 用 admin 登录 → 管理 → 系统配置 → 把 `ad_agent_token` 改为新值
-3. 在每台 DC 上：编辑 `C:\Program Files\ADDashboard\Agent\appsettings.json` 的 `agentToken`，然后 `Restart-Service ADReplicationAgent`
+3. 在每台 DC 上：编辑 `C:\addashboard\Agent\appsettings.json` 的 `agentToken`，然后 `Restart-Service ADReplicationAgent`
 
 ## 灾难恢复
 
@@ -240,7 +240,7 @@ Restart-Service ADDashboardCenter
 
 ```powershell
 # 1. 部署（install-center.ps1 — 仅做部署，不做应用初始化）
-.\scripts\install-center.ps1 -InstallPath 'C:\Program Files\ADDashboard\Center'
+.\scripts\install-center.ps1 -InstallPath 'C:\addashboard\Center'
 
 # 2. 浏览器打开 http://server:8080/init
 # 3. 完成 3 屏向导

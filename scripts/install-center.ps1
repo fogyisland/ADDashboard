@@ -5,38 +5,44 @@
 # register NSSM service, start service.
 [CmdletBinding()]
 param(
-  [string]$InstallPath = 'C:\Program Files\ADDashboard\Center',
+  [string]$InstallPath = 'C:\addashboard\Center',
   [int]$ListenPort = 8080,
   [string]$AgentToken,   # generated if missing
   [string]$JwtSecret     # generated if missing
 )
 
 $ErrorActionPreference = 'Stop'
+$projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 
 Write-Step "install-center: $InstallPath (deployment only — wizard handles app init)"
 
+# 0. Ensure NSSM is available locally (downloads to <projectRoot>/nssm/ on first run)
+. (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
+
 # 1. Ensure directories
-@($InstallPath, "$InstallPath\dist", 'C:\ProgramData\ADDashboard\Logs') | ForEach-Object {
+$logDir = 'C:\addashboard\Logs'
+@($InstallPath, "$InstallPath\dist", $logDir) | ForEach-Object {
   if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null; Write-Info "created $_" }
 }
+$Script:LogDir = $logDir
 
 # 2. Verify Node.js
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 Write-Info "node: $node"
 
 # 3. Build frontend if dist missing
-$distPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'frontend\dist'
+$distPath = Join-Path $projectRoot 'frontend\dist'
 if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
   Write-Step "building frontend"
-  Push-Location (Resolve-Path (Join-Path $PSScriptRoot '..'))
+  Push-Location $projectRoot
   try { npm run build:frontend } finally { Pop-Location }
 }
 
-# 4. Copy center files
-$srcDir = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'center'
+# 4. Copy center files (exclude node_modules + tests + appsettings.json + project-local nssm/)
+$srcDir = Join-Path $projectRoot 'center'
 Copy-Item -Path (Join-Path $srcDir '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
 if (-not (Test-Path (Join-Path $InstallPath 'node_modules'))) {
   Write-Step "installing center node_modules"

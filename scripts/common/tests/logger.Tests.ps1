@@ -1,8 +1,8 @@
 BeforeAll {
   Import-Module "$PSScriptRoot/../Logger.psm1" -Force
-  # Logger writes to C:\ProgramData\ADDashboard\Logs\install.log on import.
+  # Logger writes to C:\addashboard\Logs\install.log on import.
   # We just verify the last line(s) in that file after each call.
-  $logDir = 'C:\ProgramData\ADDashboard\Logs'
+  $logDir = 'C:\addashboard\Logs'
   $script:LogFile = Join-Path $logDir 'install.log'
   if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 }

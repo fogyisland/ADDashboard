@@ -5,7 +5,7 @@ import { runCollector } from '../src/collector.js';
 test('runCollector returns ok:true for valid PS script', async () => {
   const r = await runCollector({
     powerShellPath: 'powershell.exe',
-    psScriptPath: 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-replication.ps1',
+    psScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-replication.ps1',
     timeoutMs: 10000
   });
   // In CI without AD module, ok may be false; we assert structure exists

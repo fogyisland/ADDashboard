@@ -23,3 +23,7 @@ agent/queue.db-wal
 
 # Dev-only Chrome DevTools redirect helper (local debugging)
 scripts/cdp-redirect.js
+
+# NSSM binary downloaded by Ensure-Nssm.ps1 (auto-installed on first deploy)
+nssm/
+nssm.zip

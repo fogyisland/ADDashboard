@@ -212,6 +212,6 @@ test('hasMarker: ignores .env without the marker key', async () => {
 test('installPathFromConfigPath: dirname of config path', () => {
   assert.equal(installPathFromConfigPath('/etc/addashboard/appsettings.json'), '/etc/addashboard');
   assert.equal(installPathFromConfigPath('./appsettings.json'), '.');
-  assert.equal(installPathFromConfigPath('C:\\Program Files\\ADDashboard\\Center\\appsettings.json'),
-    'C:\\Program Files\\ADDashboard\\Center');
+  assert.equal(installPathFromConfigPath('C:\\addashboard\\Center\\appsettings.json'),
+    'C:\\addashboard\\Center');
 });

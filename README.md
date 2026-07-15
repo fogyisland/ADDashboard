@@ -34,7 +34,7 @@ npm install
 ## 快速开始
 
 ```powershell
-# 1. 部署（PowerShell installer — 处理 NSSM 服务注册、文件拷贝、服务启动）
+# 1. 部署（PowerShell installer — 首次运行会自动下载 NSSM 到 .\nssm\）
 .\scripts\install-center.ps1
 
 # 2. 浏览器打开 http://localhost:8080/init
@@ -45,6 +45,15 @@ npm install
 
 # 3. 在 http://localhost:8080/login 用刚创建的 admin 账号登录
 ```
+
+**默认安装路径：**
+
+| 服务 | 路径 | 日志 |
+|---|---|---|
+| Center | `C:\addashboard\Center\` | `C:\addashboard\Logs\ADDashboardCenter-*.log` |
+| Agent | `C:\addashboard\Agent\`（每台 DC） | `C:\addashboard\Logs\ADReplicationAgent-*.log` |
+
+如需改路径，直接传参：`.\scripts\install-center.ps1 -InstallPath 'D:\apps\center'`
 
 详细参见 [docs/operations/runbook.md](docs/operations/runbook.md#首次启动设置向导-first-run-setup-wizard)。
 

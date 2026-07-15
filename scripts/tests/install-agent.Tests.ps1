@@ -21,10 +21,10 @@ Describe 'install-agent.ps1' {
     $paramNames | Should -Contain 'InstallPath'
   }
 
-  It 'has a default for InstallPath of C:\Program Files\ADDashboard\Agent' {
+  It 'has a default for InstallPath of C:\addashboard\Agent' {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
     $installPathParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'InstallPath' }
     $defaultValue = $installPathParam.DefaultValue.Extent.Text
-    $defaultValue | Should -Match 'C:\\Program Files\\ADDashboard\\Agent'
+    $defaultValue | Should -Match 'C:\\addashboard\\Agent'
   }
 }

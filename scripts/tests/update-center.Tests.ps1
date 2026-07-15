@@ -19,10 +19,10 @@ Describe 'update-center.ps1' {
     $paramNames | Should -Contain 'RebuildFrontend'
   }
 
-  It 'has a default for InstallPath of C:\Program Files\ADDashboard\Center' {
+  It 'has a default for InstallPath of C:\addashboard\Center' {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
     $installPathParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'InstallPath' }
     $defaultValue = $installPathParam.DefaultValue.Extent.Text
-    $defaultValue | Should -Match 'C:\\Program Files\\ADDashboard\\Center'
+    $defaultValue | Should -Match 'C:\\addashboard\\Center'
   }
 }

@@ -6,10 +6,10 @@ const DEFAULTS = {
   pollingIntervalMinutes: 15,
   heartbeatIntervalSeconds: 5,
   discoveryIntervalHours: 4,
-  psDiscoveryScriptPath: 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-discovery.ps1',
-  queueDbPath: 'C:\\ProgramData\\ADDashboard\\Agent\\queue.db',
+  psDiscoveryScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-discovery.ps1',
+  queueDbPath: 'C:\\addashboard\\Agent\\queue.db',
   powerShellPath: 'powershell.exe',
-  psScriptPath: 'C:\\Program Files\\ADDashboard\\Agent\\scripts\\collect-replication.ps1',
+  psScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-replication.ps1',
   healthCheckIntervalMs: 600_000
 };
 

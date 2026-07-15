@@ -9,12 +9,13 @@ function Set-NssmPath {
 function Get-NssmPath {
   if ($Script:NssmPath -and (Test-Path $Script:NssmPath)) { return $Script:NssmPath }
   $candidates = @(
+    (Join-Path (Join-Path $PSScriptRoot '..\..\nssm') 'nssm.exe'),
     'C:\Tools\nssm\win64\nssm.exe',
     'C:\Tools\nssm-2.24\win64\nssm.exe',
     (Join-Path $PSScriptRoot '..\..\tools\nssm.exe')
   )
   foreach ($p in $candidates) { if (Test-Path $p) { $Script:NssmPath = $p; return $p } }
-  throw "nssm.exe not found. Set-NssmPath or place in C:\Tools\nssm\win64\nssm.exe"
+  throw "nssm.exe not found. Run scripts/common/Ensure-Nssm.ps1 first, or place in C:\Tools\nssm\win64\nssm.exe"
 }
 
 function Invoke-Nssm {
