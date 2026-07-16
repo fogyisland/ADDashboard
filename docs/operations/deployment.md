@@ -43,13 +43,13 @@
 | Node.js | 18+（推荐 LTS 20/22） | center 服务 + agent 都是 Node 实现。安装时 `node.exe` 必须在 PATH 中 |
 | PowerShell | 5.1+ | Windows 10 / Server 2016+ 自带。installer 脚本用 PS 5.1 语法 |
 | 数据库 | MySQL 5.7+ **或** SQL Server 2014+ | 二选一，运行时不可切换 |
-| 网络（首次部署） | 出网 HTTPS 到 nssm.cc | installer 首次运行会自动下载 NSSM 2.24（< 350 KB）到 `<repo>/nssm/nssm.exe` |
+| 网络（首次部署） | 出网 HTTPS 到 nssm.cc | 仅当 `publish/nssm/nssm.exe` 不存在时才下载；否则直接用仓库内捆绑的副本 |
 | 端口 | Center 监听 `:8080`（可改） | 防火墙需放行 |
 | ActiveDirectory 模块 | — | 仅 Agent 端需要（PowerShell `Get-ADReplication*` cmdlet） |
 
 **特别说明：**
-- **NSSM 不需要预装**。`scripts/common/Ensure-Nssm.ps1` 会在 install 脚本首次调用时从 [nssm.cc](https://nssm.cc/release/nssm-2.24.zip) 自动下载（已在 v1.0.0 commit `a1059d9` 起落地）。
-- 如果目标机器**不能出网**，可以先把 nssm.exe 放到项目根的 `nssm/` 目录（脚本会优先用本地副本）。
+- **NSSM 已捆绑在仓库内**：`publish/nssm/nssm.exe`（约 324 KB）随 git 提交，`Get-NssmPath` 优先用此路径。clone 仓库后**不需要**任何额外下载。
+- 仅在 `publish/nssm/nssm.exe` 缺失（例如浅克隆/裁剪包）时，`scripts/common/Ensure-Nssm.ps1` 才会从 [nssm.cc](https://nssm.cc/release/nssm-2.24.zip) 自动下载回填到同一目录。
 
 ---
 
@@ -284,7 +284,7 @@ npm start
 | `Agent 反复重启 (StartPending → Stopped)` | `Get-EventLog Application -Source NSSM -Newest 20`；日志同上 |
 | `Agent 心跳正常但无数据` | 验证 `Test-NetConnection center -Port 8080`；检查 DC 上 appsettings.json 的 `agentToken` 是否与 center 的 `system_config.ad_agent_token` 一致 |
 | `前端 502 Bad Gateway` | center 进程退出，查 stderr log；常见 OOM（`Get-Process | Sort WorkingSet` 查 top 5） |
-| `install-center.ps1 报 'nssm.exe not found'` | 检查 `<repo>/nssm/nssm.exe` 是否存在；或目标机器是否可访问 `https://nssm.cc/release/nssm-2.24.zip` |
+| `install-center.ps1 报 'nssm.exe not found'` | 检查 `<repo>/publish/nssm/nssm.exe` 是否存在（被 .gitignore 排除的情况：需 `git checkout HEAD -- publish/` 或手动 `Ensure-Nssm.ps1`） |
 | `首次启动没出现 /init` | 检查 `.env` 是否已被错误写入 `ADDASHBOARD_INITIALIZED=1`；清掉后重启 |
 
 更多故障模式参见 [`troubleshooting.md`](troubleshooting.md)。
@@ -292,6 +292,29 @@ npm start
 ---
 
 ## 附录：完整文件清单
+
+**仓库内 release artifact（随 git 提交）：**
+
+```
+ADDashboard/                     # 仓库根
+├── publish\
+│   └── nssm\
+│       └── nssm.exe             # NSSM 2.24（约 324 KB），发布时捆绑，install 时优先用
+├── scripts\
+│   ├── install-center.ps1       # Center 部署入口
+│   ├── install-agent.ps1        # Agent 部署入口（支持远程批量）
+│   ├── update-*.ps1             # 升级脚本
+│   ├── uninstall-*.ps1          # 卸载脚本
+│   └── common\
+│       ├── Logger.psm1
+│       ├── NSSM.psm1            # Get-NssmPath 候选：publish/nssm/ > nssm/ > C:\Tools\nssm
+│       └── Ensure-Nssm.ps1      # 仅在 publish/nssm/nssm.exe 缺失时下载回填
+├── center\                      # center 源码（installer 拷贝到 InstallPath）
+├── agent\                       # agent 源码（installer 拷贝到 InstallPath）
+└── frontend\                    # Vue 3 前端源码（installer build 后拷贝到 InstallPath\dist）
+```
+
+**目标机器上的安装产物（`C:\addashboard\`）：**
 
 ```
 C:\addashboard\

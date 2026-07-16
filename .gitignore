@@ -27,3 +27,5 @@ scripts/cdp-redirect.js
 # NSSM binary downloaded by Ensure-Nssm.ps1 (auto-installed on first deploy)
 nssm/
 nssm.zip
+# ...but the published copy under publish/nssm/ IS tracked as a release artifact
+!publish/nssm/

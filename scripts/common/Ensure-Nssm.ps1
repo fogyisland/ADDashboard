@@ -9,7 +9,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Logger.psm1') -Force
 
-$nssmDir  = Join-Path $ProjectRoot 'nssm'
+$nssmDir  = Join-Path $ProjectRoot (Join-Path 'publish' 'nssm')
 $nssmExe  = Join-Path $nssmDir 'nssm.exe'
 
 if (Test-Path $nssmExe) {
