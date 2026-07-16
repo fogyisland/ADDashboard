@@ -27,7 +27,7 @@ npm install
 ## 环境依赖
 
 - **Node.js 18+** — center 服务是 Node 实现；agent 也使用 Node 脚本
-- **NSSM** — Windows 服务管理器（installer 会自动安装）
+- **NSSM** — 已捆绑在 `publish/nssm/nssm.exe`，无需额外下载
 - **MySQL 5.7+** 或 **SQL Server 2014+**（部署时二选一）
 - **PowerShell 5.1+**
 
