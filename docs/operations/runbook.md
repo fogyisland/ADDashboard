@@ -1,5 +1,7 @@
 # AD Dashboard 运维 Runbook
 
+> **首次部署请看 [deployment.md](deployment.md)** — 本文是已部署之后的日常运维、恢复与故障排查。
+
 ## 环境依赖（Prerequisites）
 
 - **Node.js 18+**（推荐 LTS）— center 服务是 Node 实现，agent 也使用 Node 脚本采集数据。

@@ -67,9 +67,10 @@ npm run build:frontend
 
 ## 运维文档
 
-- Runbook：[docs/operations/runbook.md](docs/operations/runbook.md)
+- 部署指南：[docs/operations/deployment.md](docs/operations/deployment.md) — 从「拿到新机器」到「浏览器可用」的全流程
+- Runbook：[docs/operations/runbook.md](docs/operations/runbook.md) — 日常运维与灾难恢复
 - Troubleshooting：[docs/operations/troubleshooting.md](docs/operations/troubleshooting.md)
-- 首次启动设置向导：center 服务在无 admin 时会在 `/init` 提供向导。参见 [runbook](docs/operations/runbook.md#首次启动设置向导-first-run-setup-wizard)。
+- 首次启动设置向导：center 服务在无 admin 时会在 `/init` 提供向导。参见 [deployment](docs/operations/deployment.md#首次启动向导)。
 
 ## 多数据库后端
 
