@@ -29,3 +29,10 @@ nssm/
 nssm.zip
 # ...but the published copy under publish/nssm/ IS tracked as a release artifact
 !publish/nssm/
+
+# Green version bundle (publish/) — source code is tracked, build artifacts are not
+publish/center/node_modules/
+publish/agent/node_modules/
+publish/frontend/node_modules/
+publish/center/dist/
+publish/frontend/dist/
