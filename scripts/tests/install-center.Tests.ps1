@@ -20,3 +20,24 @@ Describe 'install-center (slimmed)' {
     $content | Should -Match '/init'
   }
 }
+
+Describe 'install-center -InPlace switch' {
+  It 'accepts -InPlace switch' {
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
+    $content | Should -Match '\[switch\]\$InPlace'
+  }
+
+  It 'overrides InstallPath when -InPlace is set' {
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
+    # When InPlace is set, InstallPath must resolve to <projectRoot>\center, not C:\addashboard\Center.
+    # Match the branch: if -not $InPlace use param default; else override.
+    $content | Should -Match 'if\s*\(\s*\$InPlace\s*\)\s*\{'
+    $content | Should -Match '\$projectRoot.{0,5}''center'''
+  }
+
+  It 'still copies files when -InPlace is NOT set (regression guard)' {
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
+    # Copy-Item must still exist (production install path unchanged).
+    $content | Should -Match 'Copy-Item'
+  }
+}
