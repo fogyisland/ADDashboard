@@ -86,7 +86,14 @@ export function createMssqlDriver(config) {
     let insertId;
     if (isInsert) {
       affectedRows = result.rowsAffected?.[0] ?? 0;
-      const idRow = recordsets[1]?.[0];
+      // mssql@11 collapses INSERT batches that return no columns out of
+      // `recordsets` (see tedious/request.js: `if (Object.keys(columns).length === 0) return`).
+      // So for `INSERT ... SELECT` (no OUTPUT) followed by `SELECT SCOPE_IDENTITY()`,
+      // recordsets.length is 1 and the id row lives at index 0. For other shapes
+      // (e.g. INSERT ... VALUES) it may be index 1. Read the last recordset to
+      // cover both shapes — same pattern the library itself uses internally
+      // for batch outputs (`recordsets.pop()[0]`).
+      const idRow = recordsets[recordsets.length - 1]?.[0];
       if (idRow?.id != null) {
         insertId = Number(idRow.id);
       } else {
@@ -123,7 +130,7 @@ export function createMssqlDriver(config) {
           let insertId;
           if (isInsert) {
             affectedRows = result.rowsAffected?.[0] ?? 0;
-            const idRow = recordsets[1]?.[0];
+            const idRow = recordsets[recordsets.length - 1]?.[0];
             if (idRow?.id != null) {
               insertId = Number(idRow.id);
             } else {

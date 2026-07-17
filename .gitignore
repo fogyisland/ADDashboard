@@ -36,3 +36,7 @@ publish/agent/node_modules/
 publish/frontend/node_modules/
 publish/center/dist/
 publish/frontend/dist/
+
+# Leftover zips dropped in publish/ by user tooling (re-zip if needed)
+publish/db.zip
+publish/frontend.zip
