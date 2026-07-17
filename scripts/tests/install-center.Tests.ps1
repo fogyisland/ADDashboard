@@ -43,20 +43,26 @@ Describe 'install-center -InPlace switch' {
 }
 
 Describe 'install-center service recovery' {
-  It 'sets NSSM AppExitAction to Restart' {
+  It 'calls Set-ServiceRecovery helper (single source of truth)' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
-    $content | Should -Match 'AppExitAction.*Restart'
+    $content | Should -Match 'Set-ServiceRecovery\s+-Name\s+''ADDashboardCenter'''
   }
 
-  It 'sets NSSM AppRestartDelay to 2000' {
-    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
-    $content | Should -Match 'AppRestartDelay.*2000'
+  It 'Set-ServiceRecovery helper in Service.psm1 sets NSSM AppExitAction=Restart and AppRestartDelay=2000' {
+    $serviceContent = Get-Content (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1') -Raw
+    $serviceContent | Should -Match 'AppExitAction\s+Restart'
+    $serviceContent | Should -Match 'AppRestartDelay\s+2000'
   }
 
-  It 'configures Windows Service Recovery via sc.exe failure' {
-    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
-    $content | Should -Match 'sc\.exe\s+failure\s+ADDashboardCenter'
-    $content | Should -Match 'reset=\s*60'
-    $content | Should -Match 'restart/5000/restart/10000/restart/30000'
+  It 'Set-ServiceRecovery helper in Service.psm1 configures Windows Service Recovery via sc.exe failure' {
+    $serviceContent = Get-Content (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1') -Raw
+    $serviceContent | Should -Match 'sc\.exe\s+failure\s+\$Name'
+    $serviceContent | Should -Match 'reset=\s*60'
+    $serviceContent | Should -Match 'restart/5000/restart/10000/restart/30000'
+    # Mirror sync: publish/scripts/common/Service.psm1 must contain the same strings.
+    $publishServiceContent = Get-Content (Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts\common') 'Service.psm1') -Raw
+    $publishServiceContent | Should -Match 'sc\.exe\s+failure\s+\$Name'
+    $publishServiceContent | Should -Match 'reset=\s*60'
+    $publishServiceContent | Should -Match 'restart/5000/restart/10000/restart/30000'
   }
 }
