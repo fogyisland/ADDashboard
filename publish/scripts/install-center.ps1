@@ -90,6 +90,19 @@ Install-NssmService -Name 'ADDashboardCenter' `
   -Description 'AD Replication Dashboard Center (Node.js + Express + Vue 3)' `
   -Start 2
 
+# Configure auto-restart: NSSM picks up process.exit(0) and re-launches with new appsettings.json;
+# Windows Service Recovery handles crashes (OOM, segfault, kill -9).
+$nssm = Get-NssmPath
+& $nssm set 'ADDashboardCenter' AppExitAction Restart | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "nssm set AppExitAction failed: $LASTEXITCODE" }
+& $nssm set 'ADDashboardCenter' AppRestartDelay 2000 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "nssm set AppRestartDelay failed: $LASTEXITCODE" }
+# Note: sc.exe requires SPACE after `=`. Use Start-Process + ArgumentList array (Windows quoting safe).
+$scArgs = @('failure', 'ADDashboardCenter', 'reset=', '60', 'actions=', 'restart/5000/restart/10000/restart/30000')
+$p = Start-Process -FilePath 'sc.exe' -ArgumentList $scArgs -NoNewWindow -Wait -PassThru
+if ($p.ExitCode -ne 0) { throw "sc.exe failure ADDashboardCenter failed: exit $($p.ExitCode)" }
+Write-Info "service recovery set: NSSM AppExitAction=Restart + sc failure reset=60 actions=restart/5000/restart/10000/restart/30000"
+
 if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   Write-Ok "service started"
 } else {

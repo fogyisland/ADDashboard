@@ -41,3 +41,22 @@ Describe 'install-center -InPlace switch' {
     $content | Should -Match 'Copy-Item'
   }
 }
+
+Describe 'install-center service recovery' {
+  It 'sets NSSM AppExitAction to Restart' {
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
+    $content | Should -Match 'AppExitAction.*Restart'
+  }
+
+  It 'sets NSSM AppRestartDelay to 2000' {
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
+    $content | Should -Match 'AppRestartDelay.*2000'
+  }
+
+  It 'configures Windows Service Recovery via sc.exe failure' {
+    $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
+    $content | Should -Match 'sc\.exe\s+failure\s+ADDashboardCenter'
+    $content | Should -Match 'reset=\s*60'
+    $content | Should -Match 'restart/5000/restart/10000/restart/30000'
+  }
+}
