@@ -148,7 +148,7 @@ publish/                                  ← 解压后的根目录
 | 文件 | 位置 |
 |---|---|
 | `appsettings.json` | `publish\center\appsettings.json` |
-| 初始化标记（`.env` + 注册表） | `publish\center\.env` + `HKCU\SOFTWARE\ADDashboard\Initialized` |
+| 初始化标记（`.env` + 注册表） | `publish\center\.env` + `HKLM\SOFTWARE\ADDashboard\Initialized` |
 | center 日志 | `C:\addashboard\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 自动滚动） |
 
 `--console` 前台模式（开发）下，所有数据写到 publish/ 同级目录（不污染 `C:\`）：
@@ -156,7 +156,7 @@ publish/                                  ← 解压后的根目录
 | 文件 | 位置 |
 |---|---|
 | `appsettings.json` | `publish\center\appsettings.json` |
-| 初始化标记（`.env` + 注册表） | `publish\center\.env` + `HKCU\SOFTWARE\ADDashboard\Initialized` |
+| 初始化标记（`.env` + 注册表） | `publish\center\.env` + `HKLM\SOFTWARE\ADDashboard\Initialized` |
 | center 日志 | 控制台 stdout（前台运行，无文件日志） |
 
 若想重置：删除 `appsettings.json` 和 `.env`，重启服务，再次访问 `/init`。
