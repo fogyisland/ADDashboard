@@ -97,58 +97,95 @@ test('POST /api/init/admin/create returns 409 on AdminConflictError', async () =
 });
 
 test('POST /api/init/finalize succeeds when closing wizard facade fails', async () => {
-  let wrotePath = null, loggedError = null;
-  const app = express();
-  app.use(express.json());
-  app.use('/api/init', initRouter({
-    logger: { info: () => {}, warn: () => {}, error: (details, message) => { loggedError = { details, message }; } },
-    configPath: './does-not-matter.json',
-    getNeedsInit: () => true,
-    _deps: {
-      withOneShotFacade: async (d, p, w) => w({ execute: async () => ({}), query: async () => ({}), close: async () => {} }),
-      applyAll: async () => ({}),
-      createAdmin: async () => ({ id: 1, username: 'admin' }),
-      writeConfig: ({ path }) => { wrotePath = path; return { ok: true, path }; },
-      getWizardFacade: async () => ({}),
-      closeWizardFacade: async () => { throw new Error('pool already closed'); }
-    }
-  }));
-  const r = await call(app, 'POST', '/api/init/finalize', {
-    dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
-  });
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.body.ok, true);
-  assert.strictEqual(wrotePath, './does-not-matter.json');
-  assert.deepStrictEqual(loggedError, {
-    details: { err: 'pool already closed' },
-    message: 'init wizard facade close failed'
-  });
+  // Stub process.exit so the route's setImmediate(() => process.exit(0)) does
+  // not terminate the test runner. The actual exit behaviour is verified by
+  // the dedicated test below.
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    let wrotePath = null, loggedError = null;
+    const app = express();
+    app.use(express.json());
+    app.use('/api/init', initRouter({
+      logger: { info: () => {}, warn: () => {}, error: (details, message) => { loggedError = { details, message }; } },
+      configPath: './does-not-matter.json',
+      getNeedsInit: () => true,
+      _deps: {
+        withOneShotFacade: async (d, p, w) => w({ execute: async () => ({}), query: async () => ({}), close: async () => {} }),
+        applyAll: async () => ({}),
+        createAdmin: async () => ({ id: 1, username: 'admin' }),
+        writeConfig: ({ path }) => { wrotePath = path; return { ok: true, path }; },
+        getWizardFacade: async () => ({}),
+        closeWizardFacade: async () => { throw new Error('pool already closed'); }
+      }
+    }));
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
+    assert.strictEqual(wrotePath, './does-not-matter.json');
+    assert.deepStrictEqual(loggedError, {
+      details: { err: 'pool already closed' },
+      message: 'init wizard facade close failed'
+    });
+  } finally {
+    process.exit = origExit;
+  }
 });
 test('POST /api/init/finalize writes config and closes wizard facade', async () => {
-  let wrotePath = null, closed = false;
-  // Use a fresh setup here because we need to capture both wrotePath (from writeConfig)
-  // and closed (from closeWizardFacade). makeApp captures only one; this test needs both.
-  const app = express();
-  app.use(express.json());
-  app.use('/api/init', initRouter({
-    logger: { info: () => {}, warn: () => {}, error: () => {} },
-    configPath: './does-not-matter.json',
-    getNeedsInit: () => true,
-    _deps: {
-      withOneShotFacade: async (d, p, w) => w({ execute: async () => ({}), query: async () => ({}), close: async () => {} }),
-      applyAll: async () => ({}),
-      createAdmin: async () => ({ id: 1, username: 'admin' }),
-      writeConfig: ({ path }) => { wrotePath = path; return { ok: true, path }; },
-      getWizardFacade: async () => ({}),
-      closeWizardFacade: async () => { closed = true; }
-    }
-  }));
-  const r = await call(app, 'POST', '/api/init/finalize', {
-    dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
-    listenPort: 8080, agentToken: 'a', jwtSecret: 'j', logLevel: 'info', env: 'prod', staticDir: './dist'
-  });
-  assert.strictEqual(r.status, 200);
-  assert.strictEqual(r.body.ok, true);
-  assert.strictEqual(wrotePath, './does-not-matter.json');
-  assert.strictEqual(closed, true);
+  // Stub process.exit so the route's setImmediate(() => process.exit(0)) does
+  // not terminate the test runner. The actual exit behaviour is verified by
+  // the dedicated test below.
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    let wrotePath = null, closed = false;
+    // Use a fresh setup here because we need to capture both wrotePath (from writeConfig)
+    // and closed (from closeWizardFacade). makeApp captures only one; this test needs both.
+    const app = express();
+    app.use(express.json());
+    app.use('/api/init', initRouter({
+      logger: { info: () => {}, warn: () => {}, error: () => {} },
+      configPath: './does-not-matter.json',
+      getNeedsInit: () => true,
+      _deps: {
+        withOneShotFacade: async (d, p, w) => w({ execute: async () => ({}), query: async () => ({}), close: async () => {} }),
+        applyAll: async () => ({}),
+        createAdmin: async () => ({ id: 1, username: 'admin' }),
+        writeConfig: ({ path }) => { wrotePath = path; return { ok: true, path }; },
+        getWizardFacade: async () => ({}),
+        closeWizardFacade: async () => { closed = true; }
+      }
+    }));
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080, agentToken: 'a', jwtSecret: 'j', logLevel: 'info', env: 'prod', staticDir: './dist'
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
+    assert.strictEqual(wrotePath, './does-not-matter.json');
+    assert.strictEqual(closed, true);
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('POST /api/init/finalize schedules process.exit(0) after responding', async () => {
+  let exited = false;
+  const origExit = process.exit;
+  process.exit = (code) => { exited = code === 0; };
+  try {
+    const app = makeApp();
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
+    // Wait for setImmediate to fire
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(exited, true, 'process.exit(0) should have been called');
+  } finally {
+    process.exit = origExit;
+  }
 });
