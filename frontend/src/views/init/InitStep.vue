@@ -11,12 +11,18 @@
       </li>
     </ul>
 
-    <div v-if="allDone" class="done">
-      <p>✓ 初始化完成！</p>
-      <button type="button" @click="goLogin">前往登录</button>
+    <div v-if="restarting" class="restarting">
+      <p>初始化完成，服务正在重启，请稍候…</p>
+      <p class="hint">（通常需要几秒钟）</p>
     </div>
 
-    <div v-if="failed" class="failed">
+    <div v-if="timedOut" class="failed">
+      <p class="err">服务重启超时。请尝试手动重启：</p>
+      <button type="button" @click="runStartBat">运行 start.bat</button>
+      <p class="hint">或在管理员命令行执行：nssm restart ADDashboardCenter</p>
+    </div>
+
+    <div v-if="failed && !timedOut" class="failed">
       <p class="err">初始化失败：{{ errorMsg }}</p>
       <button type="button" @click="retry">重试</button>
     </div>
@@ -24,9 +30,13 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useInitStore } from '../../stores/init.js';
+import * as initApi from '../../api/init.js';
+
+const POLL_INTERVAL_MS = 1000;
+const POLL_TIMEOUT_MS = 30000;
 
 const store = useInitStore();
 const router = useRouter();
@@ -40,9 +50,14 @@ const stages = reactive([
   { key: 'config',    label: '写入配置',    status: 'pending', error: null }
 ]);
 
-const allDone = computed(() => stages.every(s => s.status === 'done'));
 const failed = computed(() => stages.some(s => s.status === 'failed'));
 const errorMsg = computed(() => stages.find(s => s.status === 'failed')?.error || '');
+
+const restarting = ref(false);
+const timedOut = ref(false);
+
+let pollTimer = null;
+let pollDeadline = 0;
 
 function iconFor(status) {
   return { pending: '○', inProgress: '◌', done: '✓', failed: '✗' }[status] || '○';
@@ -53,7 +68,43 @@ function setStatus(key, status, error = null) {
   if (s) { s.status = status; s.error = error; }
 }
 
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+async function pollStatusTick() {
+  // 30s wall-clock deadline check (Date.now — fake timers don't tick this).
+  if (Date.now() >= pollDeadline) {
+    stopPolling();
+    timedOut.value = true;
+    return;
+  }
+  try {
+    const r = await initApi.getStatus();
+    if (r && r.data && r.data.needsInit === false) {
+      stopPolling();
+      router.push('/login');
+    }
+  } catch {
+    // Transient network error during restart — keep polling until deadline.
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  restarting.value = true;
+  pollDeadline = Date.now() + POLL_TIMEOUT_MS;
+  pollTimer = setInterval(pollStatusTick, POLL_INTERVAL_MS);
+  // Fire one immediate check so a fast restart short-circuits without waiting 1s.
+  pollStatusTick();
+}
+
 async function runSequence() {
+  timedOut.value = false;
+  restarting.value = false;
   for (const s of stages) { s.status = 'pending'; s.error = null; }
   try {
     if (store.dialect === 'mysql') {
@@ -76,16 +127,29 @@ async function runSequence() {
     setStatus('config', 'inProgress');
     await store.finalize();
     setStatus('config', 'done');
+
+    // After finalize 200, the backend will process.exit(0) and NSSM restarts.
+    // Poll /api/init/status until the new instance reports needsInit=false,
+    // then redirect to /login. If the restart takes longer than 30s,
+    // surface a manual-restart hint.
+    startPolling();
   } catch (e) {
+    stopPolling();
     const failedStage = stages.find(s => s.status === 'inProgress');
     if (failedStage) setStatus(failedStage.key, 'failed', e.response?.data?.error || e.message);
   }
 }
 
 function retry() { runSequence(); }
-function goLogin() { router.push('/login'); }
+
+function runStartBat() {
+  // Browser context — open a manual instruction. We can't shell out from the
+  // page, but the message tells the user exactly what to do.
+  window.alert('请在 AD Dashboard 安装目录中以管理员身份运行 start.bat，或执行：\nnssm restart ADDashboardCenter');
+}
 
 onMounted(() => { runSequence(); });
+onBeforeUnmount(stopPolling);
 </script>
 
 <style scoped>
@@ -98,9 +162,10 @@ onMounted(() => { runSequence(); });
 .icon { font-size: 16px; width: 20px; text-align: center; }
 .label { flex: 1; }
 .err { font-size: 12px; color: var(--red); }
-.done, .failed { padding: 16px; border-radius: 4px; }
+.done, .failed, .restarting { padding: 16px; border-radius: 4px; }
 .done { background: var(--green-bg); }
 .failed { background: var(--red-bg); }
+.restarting { background: var(--accent-bg); color: var(--accent); }
 button { padding: 8px 16px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); cursor: pointer; }
 .hint { color: var(--muted); font-size: 13px; }
 </style>
