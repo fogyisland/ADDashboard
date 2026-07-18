@@ -276,6 +276,33 @@ npm start
 
 ---
 
+## Green Bundle（publish/）的默认行为变更
+
+`publish/` 目录下的便携绿色版（zip 解压即用）入口 `start.bat` / `start.ps1` **已从「前台跑 node」改为「默认安装并启动 ADDashboardCenter Windows 服务」**。
+
+行为对比：
+
+| 入口 | 旧默认 | 新默认 | 开发模式开关 |
+|---|---|---|---|
+| `start.bat` | 前台跑 `node server.js`（开发态） | 注册并启动 `ADDashboardCenter` 服务（幂等） | `--console` / `-c` |
+| `start.ps1` | （无） | 同上，PowerShell 镜像 | `-Console` |
+
+新默认下，`start.bat` / `start.ps1` 会以 **管理员身份** 调用 `scripts/install-center.ps1 -InPlace`：
+
+- `InstallPath` 覆盖为 `<publish 根>\center`（**不拷贝**到 `C:\addashboard\Center`，与生产路径隔离）。
+- `node_modules` 与 `frontend/dist/` 缺失时会自动补齐。
+- NSSM 注册的服务名仍是 `ADDashboardCenter`，启动类型 = 自动。
+- 日志落到 `C:\addashboard\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
+- `appsettings.json` 与 `.env` 初始化标记仍按 init 向导逻辑写入 `<InstallPath>` 下。
+
+适用与限制：
+
+- **必须以管理员身份运行** `start.bat` / `start.ps1`（默认模式），否则立即报错并退出。改用 `--console` / `-Console` 无需管理员。
+- 同一台机器上 `publish/center` 路径下的服务实例与 `C:\addashboard\Center` 下的生产实例 **共享服务名 `ADDashboardCenter`**，二者不能同时跑 —— 绿色版适合作为「试用 + 排错」入口，生产部署仍走仓库根 `scripts/install-center.ps1`（无 `-InPlace`）。
+- 想看完整的服务管理 / 卸载 / 日志路径说明见 [`publish/README.md`](../../publish/README.md)。
+
+---
+
 ## 故障排查
 
 | 症状 | 排查起点 |
