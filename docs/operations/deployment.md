@@ -13,6 +13,7 @@
 7. [升级与回滚](#升级与回滚)
 8. [本地 production preview（无服务）](#本地-production-preview无服务)
 9. [故障排查](#故障排查)
+10. [Green Bundle（publish/）的默认行为变更](#green-bundlepublish的默认行为变更)
 
 ---
 

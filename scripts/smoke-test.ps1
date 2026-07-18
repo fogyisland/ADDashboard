@@ -5,6 +5,7 @@ param(
   [Parameter(Mandatory)][string]$Password
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 
 function Step($n, $ok, $detail='') {
   $line = "{0,-50} {1}" -f $n, $(if ($ok) { 'PASS' } else { "FAIL $detail" })
@@ -53,8 +54,9 @@ try {
 
 # 6. NSSM AppExitAction=Restart and AppRestartDelay=2000 (Set-ServiceRecovery)
 try {
-  $exitAction = (nssm get ADDashboardCenter AppExitAction 2>&1 | Out-String).Trim()
-  $restartDelay = (nssm get ADDashboardCenter AppRestartDelay 2>&1 | Out-String).Trim()
+  $nssm = Get-NssmPath
+  $exitAction = (& $nssm get ADDashboardCenter AppExitAction 2>&1 | Out-String).Trim()
+  $restartDelay = (& $nssm get ADDashboardCenter AppRestartDelay 2>&1 | Out-String).Trim()
   $okExit = ($exitAction -eq 'Restart')
   $okDelay = ($restartDelay -eq '2000')
   $detail = "AppExitAction='$exitAction' AppRestartDelay='$restartDelay'"
