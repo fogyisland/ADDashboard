@@ -27,3 +27,29 @@ Describe 'smoke-test.ps1' {
     $hasMandatory | Should -Not -BeNullOrEmpty
   }
 }
+
+Describe 'smoke-test.ps1 in-place + recovery probes' {
+  It 'probes Test-Path on C:\addashboard\Center (in-place guard)' {
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'Test-Path'
+    $content | Should -Match 'C:\\addashboard\\Center'
+  }
+
+  It 'probes nssm AppExitAction=Restart and AppRestartDelay=2000' {
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'nssm\s+get\s+ADDashboardCenter\s+AppExitAction'
+    $content | Should -Match 'AppRestartDelay'
+    $content | Should -Match "'Restart'"
+    $content | Should -Match "'2000'"
+  }
+
+  It 'probes sc.exe qfailure ADDashboardCenter for restart + 60' {
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'sc\.exe\s+qfailure\s+ADDashboardCenter'
+    # Two Step calls assert presence of 'restart' and '60' substrings in output.
+    $restartMatches = [regex]::Matches($content, 'restart')
+    $sixtyMatches = [regex]::Matches($content, '(?<![0-9])60(?![0-9])')
+    $restartMatches.Count | Should -BeGreaterOrEqual 2
+    $sixtyMatches.Count | Should -BeGreaterOrEqual 2
+  }
+}
