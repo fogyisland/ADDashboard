@@ -1,5 +1,5 @@
-# Downloads NSSM 2.24 to <projectRoot>/nssm/nssm.exe if missing.
-# Idempotent: re-running is a no-op when the binary is already in place.
+# Downloads NSSM 2.24 if not already present locally.
+# Idempotent: re-running is a no-op when an existing nssm.exe is found.
 # Requires PowerShell 5.1+ (Invoke-WebRequest + Expand-Archive are 5.0+).
 [CmdletBinding()]
 param(
@@ -8,14 +8,27 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Logger.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'NSSM.psm1') -Force
 
+# Single source of truth for "where is nssm?": NSSM.psm1::Get-NssmPath
+# searches both <root>/publish/nssm/ and <root>/nssm/, so it works for
+# the canonical install (ProjectRoot = repo root, nssm bundled at
+# <root>/publish/nssm/) AND the green-bundle -InPlace install
+# (ProjectRoot = publish/, nssm bundled at publish/nssm/).
+try {
+  $existing = Get-NssmPath
+  if ($existing -and (Test-Path $existing)) {
+    Write-Info "nssm already at $existing"
+    return $existing
+  }
+} catch {
+  # No nssm found in any candidate path. Fall through to download.
+}
+
+# Download to <ProjectRoot>/publish/nssm/ — keeps the bundle layout
+# consistent regardless of which root called us.
 $nssmDir  = Join-Path $ProjectRoot (Join-Path 'publish' 'nssm')
 $nssmExe  = Join-Path $nssmDir 'nssm.exe'
-
-if (Test-Path $nssmExe) {
-  Write-Info "nssm already at $nssmExe"
-  return $nssmExe
-}
 
 if (-not (Test-Path $nssmDir)) {
   New-Item -ItemType Directory -Path $nssmDir -Force | Out-Null
@@ -34,6 +47,7 @@ try {
   Expand-Archive -Path $zipPath -DestinationPath $extract -Force
   $srcExe = Join-Path (Join-Path (Join-Path $extract 'nssm-2.24') 'win64') 'nssm.exe'
   Copy-Item -Path $srcExe -Destination $nssmExe -Force
+  Set-NssmPath -Path $nssmExe
   Write-Info "nssm installed at $nssmExe"
   return $nssmExe
 }
