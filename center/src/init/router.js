@@ -112,8 +112,8 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
         logger.error({ err: e.message }, 'init wizard facade close failed');
       }
       res.json({ ok: true, path: configPath });
-      // Exit so NSSM AppExit=Restart picks up the new appsettings.json on
-      // next launch. setImmediate defers the exit to the "check" phase so
+      // Exit so NSSM AppExit=Default Restart picks up the new appsettings.json
+      // on next launch. setImmediate defers the exit to the "check" phase so
       // res.json can flush the response body before the process dies.
       setImmediate(() => process.exit(0));
     } catch (e) {

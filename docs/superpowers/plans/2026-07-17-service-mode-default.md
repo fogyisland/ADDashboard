@@ -210,9 +210,9 @@ Add to `scripts/tests/install-center.Tests.ps1`:
 
 ```powershell
 Describe 'install-center service recovery' {
-  It 'sets NSSM AppExit to Restart' {
+  It 'sets NSSM AppExit to Default Restart' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
-    $content | Should -Match 'AppExit.*Restart'
+    $content | Should -Match 'AppExit\s+Default\s+Restart'
   }
 
   It 'sets NSSM AppRestartDelay to 2000' {
@@ -243,8 +243,11 @@ function Set-ServiceRecovery {
   param([Parameter(Mandatory)][string]$Name)
   $nssm = Get-NssmPath
   # NSSM-level: restart cleanly on process.exit(0) (used by wizard finalize).
-  & $nssm set $Name AppExit Restart | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "nssm set $Name AppExit failed: $LASTEXITCODE" }
+  # AppExit requires the sub-parameter form `<exit_code|Default> <action>` —
+  # NSSM 2.24 rejects bare `AppExit Restart` with "requires a subparameter!".
+  # `Default Restart` means: restart the service on ANY exit code.
+  & $nssm set $Name AppExit Default Restart | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "nssm set $Name AppExit Default Restart failed: $LASTEXITCODE" }
   & $nssm set $Name AppRestartDelay 2000 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "nssm set $Name AppRestartDelay failed: $LASTEXITCODE" }
   # Windows-level: restart on crash (OOM, segfault, kill -9).
@@ -252,7 +255,7 @@ function Set-ServiceRecovery {
   $scArgs = @('failure', $Name, 'reset=', '60', 'actions=', 'restart/5000/restart/10000/restart/30000')
   $p = Start-Process -FilePath 'sc.exe' -ArgumentList $scArgs -NoNewWindow -Wait -PassThru
   if ($p.ExitCode -ne 0) { throw "sc.exe failure $Name failed: exit $($p.ExitCode)" }
-  Write-Info "service recovery set: NSSM AppExit=Restart + sc failure reset=60 actions=restart/5000/restart/10000/restart/30000"
+  Write-Info "service recovery set: NSSM AppExit=Default Restart + sc failure reset=60 actions=restart/5000/restart/10000/restart/30000"
 }
 ```
 
@@ -919,7 +922,7 @@ EOF
 - Consumes: Tasks 1+2 outputs (in-place service install + NSSM recovery settings).
 - Produces: Three new probe steps appended to `smoke-test.ps1`:
   1. `Test-Path C:\addashboard\Center` → assert false (in-place didn't copy files).
-  2. `nssm get ADDashboardCenter AppExit` → assert `Restart`; `AppRestartDelay` → assert `2000`.
+  2. `nssm get ADDashboardCenter AppExit` → assert output contains `Default` and `Restart` (NSSM 2.24 prints `Default\Restart`); `AppRestartDelay` → assert `2000`.
   3. `sc.exe qfailure ADDashboardCenter` → assert output contains `restart` and `60`.
 
 - [ ] **Step 1: Mirror current `smoke-test.ps1` from publish to top-level**
@@ -943,7 +946,10 @@ Step 'no C:\addashboard\Center copy' $inPlaceOk "directory exists; in-place inst
 # 6. NSSM auto-restart settings
 $nssmExit = (nssm get ADDashboardCenter AppExit 2>$null)
 $nssmDelay = (nssm get ADDashboardCenter AppRestartDelay 2>$null)
-Step 'NSSM AppExit=Restart' ($nssmExit -eq 'Restart') "got: $nssmExit"
+# NSSM prints `Default\Restart` (or `Default: Restart` on some versions) for
+# the `AppExit=Default Restart` config. Match substrings to tolerate both.
+$okExit = ($nssmExit -match 'Default') -and ($nssmExit -match 'Restart')
+Step 'NSSM AppExit=Default\Restart' $okExit "got: $nssmExit"
 Step 'NSSM AppRestartDelay=2000' ($nssmDelay -eq '2000') "got: $nssmDelay"
 
 # 7. Windows Service Recovery
@@ -978,7 +984,8 @@ Describe 'smoke-test.ps1 in-place + recovery checks' {
 
   It 'probes NSSM AppExit' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'smoke-test.ps1') -Raw
-    $content | Should -Match 'AppExit=Restart'
+    $content | Should -Match "'Default'"
+    $content | Should -Match "'Restart'"
     $content | Should -Match 'AppRestartDelay=2000'
   }
 

@@ -48,10 +48,35 @@ Describe 'install-center service recovery' {
     $content | Should -Match 'Set-ServiceRecovery\s+-Name\s+''ADDashboardCenter'''
   }
 
-  It 'Set-ServiceRecovery helper in Service.psm1 sets NSSM AppExit=Restart and AppRestartDelay=2000' {
+  It 'Set-ServiceRecovery helper in Service.psm1 sets NSSM AppExit Default Restart and AppRestartDelay=2000' {
     $serviceContent = Get-Content (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1') -Raw
-    $serviceContent | Should -Match 'AppExit\s+Restart'
+    # NSSM 2.24 `AppExit` requires the sub-parameter form `<exit_code|Default> <action>` —
+    # "Default Restart" means restart the service on ANY exit code. Bare `AppExit Restart`
+    # is rejected with "Parameter \"AppExit\" requires a subparameter!".
+    $serviceContent | Should -Match 'AppExit\s+Default\s+Restart'
     $serviceContent | Should -Match 'AppRestartDelay\s+2000'
+  }
+
+  It 'Set-ServiceRecovery helper uses AppExit sub-parameter form "Default Restart" (NSSM 2.24 contract)' {
+    # Regression guard: this is the THIRD real-world NSSM bug caught by external
+    # install runs (after `AppExitAction` invalid param and `Start 2` enum code).
+    # In every prior case the existing regex-based Pester assertion matched the
+    # wrong substring. The bare `AppExit Restart` form was never actually invoked
+    # against a live nssm.exe. Now we explicitly REQUIRE the sub-parameter form
+    # and FORBID the bare form, plus assert mirror sync.
+    $servicePath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $serviceContent = Get-Content $servicePath -Raw
+    # Required: the corrected sub-parameter form must be present.
+    $serviceContent | Should -Match 'AppExit\s+Default\s+Restart' `
+      'Service.psm1 must call `nssm set Name AppExit Default Restart` (sub-parameter form required by NSSM 2.24).'
+    # Forbidden: bare form must NOT appear as a pipe+Out-Null pattern.
+    $serviceContent | Should -Not -Match 'AppExit\s+Restart\s*\|\s*Out-Null' `
+      'Service.psm1 must NOT call bare `nssm set Name AppExit Restart` — NSSM 2.24 rejects this with "AppExit requires a subparameter!".'
+    # Mirror sync.
+    $publishPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts\common') 'Service.psm1'
+    $publishContent = Get-Content $publishPath -Raw
+    $publishContent | Should -Match 'AppExit\s+Default\s+Restart' `
+      'publish/scripts/common/Service.psm1 mirror out of sync — must contain "AppExit Default Restart".'
   }
 
   It 'Set-ServiceRecovery helper in Service.psm1 configures Windows Service Recovery via sc.exe failure' {

@@ -35,11 +35,15 @@ Describe 'smoke-test.ps1 in-place + recovery probes' {
     $content | Should -Match 'C:\\addashboard\\Center'
   }
 
-  It 'probes nssm AppExit=Restart and AppRestartDelay=2000' {
+  It 'probes nssm AppExit (Default Restart) and AppRestartDelay=2000' {
     $content = Get-Content $scriptPath -Raw
     $content | Should -Match 'nssm\s+get\s+ADDashboardCenter\s+AppExit'
     $content | Should -Match 'AppRestartDelay'
+    # After the AppExit sub-parameter fix, smoke-test.ps1 asserts the action
+    # substring 'Restart' AND the exit-code wildcard 'Default' to handle the
+    # `Default\Restart` / `Default: Restart` output shapes across NSSM versions.
     $content | Should -Match "'Restart'"
+    $content | Should -Match "'Default'"
     $content | Should -Match "'2000'"
   }
 

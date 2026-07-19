@@ -52,15 +52,17 @@ try {
   Step 'no C:\addashboard\Center copy (in-place)' (-not $exists) "path exists: $exists"
 } catch { Step 'no C:\addashboard\Center copy (in-place)' $false $_.Exception.Message }
 
-# 6. NSSM AppExit=Restart and AppRestartDelay=2000 (Set-ServiceRecovery)
+# 6. NSSM AppExit=Default Restart and AppRestartDelay=2000 (Set-ServiceRecovery).
+# `nssm get AppExit` prints something like "Default\Restart" or "Default: Restart"
+# depending on NSSM version — match the action substring rather than the exact line.
 try {
   $nssm = Get-NssmPath
   $exitAction = (& $nssm get ADDashboardCenter AppExit 2>&1 | Out-String).Trim()
   $restartDelay = (& $nssm get ADDashboardCenter AppRestartDelay 2>&1 | Out-String).Trim()
-  $okExit = ($exitAction -eq 'Restart')
+  $okExit = ($exitAction -match 'Restart' -and $exitAction -match 'Default')
   $okDelay = ($restartDelay -eq '2000')
   $detail = "AppExit='$exitAction' AppRestartDelay='$restartDelay'"
-  Step 'nssm AppExit=Restart' $okExit $detail
+  Step 'nssm AppExit=Default Restart' $okExit $detail
   Step 'nssm AppRestartDelay=2000' $okDelay $detail
 } catch { Step 'nssm AppExit/AppRestartDelay' $false $_.Exception.Message }
 

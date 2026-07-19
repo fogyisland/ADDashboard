@@ -136,14 +136,14 @@ Tasks are ordered to keep the build green after every step. Each task is one com
 - Modify: `publish/scripts/install-center.ps1`
 
 **What:** After `Install-NssmService` succeeds (Task 1's last step), run:
-- `nssm set ADDashboardCenter AppExit Restart`
+- `nssm set ADDashboardCenter AppExit Default Restart` (NSSM 2.24 requires the sub-parameter `<exit_code|Default> <action>`; bare `AppExit Restart` is rejected with "requires a subparameter!")
 - `nssm set ADDashboardCenter AppRestartDelay 2000`
 - `sc.exe failure ADDashboardCenter reset= 60 actions= restart/5000/restart/10000/restart/30000`
 
 These run both for `-InPlace` and for the default production path. Wrap in a helper `Set-ServiceRecovery` in `publish/scripts/common/Service.psm1` so it's reusable.
 
 **Pass criteria:**
-- `nssm get ADDashboardCenter AppExit` → `Restart`
+- `nssm get ADDashboardCenter AppExit` → output contains `Default` and `Restart` (NSSM 2.24 prints `Default\Restart`)
 - `nssm get ADDashboardCenter AppRestartDelay` → `2000`
 - `sc.exe qfailure ADDashboardCenter` → shows three `restart` actions with 5000/10000/30000 delays and `RESET_PERIOD` containing 60
 - Re-running `install-center.ps1 -InPlace` is idempotent (no error from re-setting values)
@@ -217,7 +217,7 @@ These run both for `-InPlace` and for the default production path. Wrap in a hel
 
 **What:** Add three new checks at the end of the existing smoke test:
 1. `Test-Path C:\addashboard\Center` → assert false (verifies -InPlace didn't copy files).
-2. `nssm get ADDashboardCenter AppExit` → assert `Restart`; `AppRestartDelay` → assert `2000`.
+2. `nssm get ADDashboardCenter AppExit` → assert output contains `Default` and `Restart` (handle NSSM 2.24's `Default\Restart` printout); `AppRestartDelay` → assert `2000`.
 3. `sc.exe qfailure ADDashboardCenter` → assert output contains `restart` and `60`.
 
 These run after the existing healthcheck/login/dashboard probes.
