@@ -52,17 +52,17 @@ try {
   Step 'no C:\addashboard\Center copy (in-place)' (-not $exists) "path exists: $exists"
 } catch { Step 'no C:\addashboard\Center copy (in-place)' $false $_.Exception.Message }
 
-# 6. NSSM AppExitAction=Restart and AppRestartDelay=2000 (Set-ServiceRecovery)
+# 6. NSSM AppExit=Restart and AppRestartDelay=2000 (Set-ServiceRecovery)
 try {
   $nssm = Get-NssmPath
-  $exitAction = (& $nssm get ADDashboardCenter AppExitAction 2>&1 | Out-String).Trim()
+  $exitAction = (& $nssm get ADDashboardCenter AppExit 2>&1 | Out-String).Trim()
   $restartDelay = (& $nssm get ADDashboardCenter AppRestartDelay 2>&1 | Out-String).Trim()
   $okExit = ($exitAction -eq 'Restart')
   $okDelay = ($restartDelay -eq '2000')
-  $detail = "AppExitAction='$exitAction' AppRestartDelay='$restartDelay'"
-  Step 'nssm AppExitAction=Restart' $okExit $detail
+  $detail = "AppExit='$exitAction' AppRestartDelay='$restartDelay'"
+  Step 'nssm AppExit=Restart' $okExit $detail
   Step 'nssm AppRestartDelay=2000' $okDelay $detail
-} catch { Step 'nssm AppExitAction/AppRestartDelay' $false $_.Exception.Message }
+} catch { Step 'nssm AppExit/AppRestartDelay' $false $_.Exception.Message }
 
 # 7. Windows Service Recovery: sc.exe qfailure output must contain 'restart' and '60'
 try {

@@ -4,7 +4,7 @@
 
 **Goal:** Convert the green-bundle entry point (`publish/start.bat`) from a foreground console process to a Windows-service installer. The user opens a browser instead of babysitting a terminal; service auto-restarts on clean exit (wizard finalize) and on crash.
 
-**Architecture:** `start.bat` becomes an idempotent shell that calls `install-center.ps1 -InPlace` (which registers an NSSM service pointing at `publish/center/` in-place, with no file copy), waits for the service to reach `Running`, and exits. The wizard's `/finalize` handler calls `process.exit(0)` after writing `appsettings.json`; NSSM's `AppExitAction=Restart` picks it up and re-launches the service with the new config. Crashes are covered by `sc.exe failure` recovery. `start.bat --console` preserves the legacy console mode for development.
+**Architecture:** `start.bat` becomes an idempotent shell that calls `install-center.ps1 -InPlace` (which registers an NSSM service pointing at `publish/center/` in-place, with no file copy), waits for the service to reach `Running`, and exits. The wizard's `/finalize` handler calls `process.exit(0)` after writing `appsettings.json`; NSSM's `AppExit=Restart` picks it up and re-launches the service with the new config. Crashes are covered by `sc.exe failure` recovery. `start.bat --console` preserves the legacy console mode for development.
 
 **Tech Stack:** Windows services via NSSM 2.24 (bundled at `publish/nssm/nssm.exe`), PowerShell 5.1 + pwsh 7+ (existing constraint), Express + Vue 3 (no change), Node 18+.
 
@@ -29,10 +29,10 @@
 
 - `publish/start.bat` — entry shell, default → service install; `--console` → node foreground.
 - `publish/start.ps1` — PowerShell mirror of `start.bat` (same matrix, PowerShell syntax).
-- `publish/scripts/install-center.ps1` — add `-InPlace` switch; add NSSM `AppExitAction=Restart` + `AppRestartDelay=2000`; add `sc.exe failure` recovery.
+- `publish/scripts/install-center.ps1` — add `-InPlace` switch; add NSSM `AppExit=Restart` + `AppRestartDelay=2000`; add `sc.exe failure` recovery.
 - `center/src/init/router.js` — `process.exit(0)` via `setImmediate` after `/finalize` returns 200.
 - `frontend/src/views/init/InitStep.vue` — after finalize 200, poll `/api/init/status` until `needsInit=false`, then route to `/login`; 30s timeout with manual restart hint.
-- `publish/scripts/smoke-test.ps1` — extend with new checks: NSSM `AppExitAction`, `AppRestartDelay`, `sc.exe qfailure` settings, in-place install verification (no `C:\addashboard\Center`).
+- `publish/scripts/smoke-test.ps1` — extend with new checks: NSSM `AppExit`, `AppRestartDelay`, `sc.exe qfailure` settings, in-place install verification (no `C:\addashboard\Center`).
 - `publish/README.md` — rewrite "green version = console, service mode = optional upgrade" → "green version = service by default; `--console` for dev".
 - `docs/operations/deployment.md` — add a one-paragraph note that green-bundle `start.bat` now installs as service by default (link to updated README).
 
@@ -92,7 +92,7 @@ When `-InPlace` is set:
 - `AppRotateFiles = 1`
 - `AppRotateOnline = 1`
 - `AppRotateBytes = 10485760` (10 MB)
-- `AppExitAction = Restart` (NEW)
+- `AppExit = Restart` (NEW)
 - `AppRestartDelay = 2000` (NEW)
 - `Start = 2` (auto-start)
 - `DisplayName = "AD Replication Dashboard Center"`
@@ -121,7 +121,7 @@ Tasks are ordered to keep the build green after every step. Each task is one com
 **Files:**
 - Modify: `publish/scripts/install-center.ps1`
 
-**What:** Add the `[switch]$InPlace` parameter to the param block. Branch at the top: when `$InPlace`, override `$InstallPath` to `Join-Path $projectRoot 'center'`, log "in-place install: $InstallPath", and skip all file-copy + dist-mirror steps. Also skip `npm install --omit=dev` IF `node_modules` exists; only run it on first-time setup. Do NOT yet add NSSM `AppExitAction` / `AppRestartDelay` / `sc failure` — those are Task 2.
+**What:** Add the `[switch]$InPlace` parameter to the param block. Branch at the top: when `$InPlace`, override `$InstallPath` to `Join-Path $projectRoot 'center'`, log "in-place install: $InstallPath", and skip all file-copy + dist-mirror steps. Also skip `npm install --omit=dev` IF `node_modules` exists; only run it on first-time setup. Do NOT yet add NSSM `AppExit` / `AppRestartDelay` / `sc failure` — those are Task 2.
 
 **Pass criteria:**
 - `pwsh -File scripts/install-center.ps1 -InPlace` (or PS 5.1 equivalent) on a clean publish dir → service installed pointing at `publish\center`, no `C:\addashboard\Center` directory created, `Test-Path C:\addashboard\Center` returns false.
@@ -136,19 +136,19 @@ Tasks are ordered to keep the build green after every step. Each task is one com
 - Modify: `publish/scripts/install-center.ps1`
 
 **What:** After `Install-NssmService` succeeds (Task 1's last step), run:
-- `nssm set ADDashboardCenter AppExitAction Restart`
+- `nssm set ADDashboardCenter AppExit Restart`
 - `nssm set ADDashboardCenter AppRestartDelay 2000`
 - `sc.exe failure ADDashboardCenter reset= 60 actions= restart/5000/restart/10000/restart/30000`
 
 These run both for `-InPlace` and for the default production path. Wrap in a helper `Set-ServiceRecovery` in `publish/scripts/common/Service.psm1` so it's reusable.
 
 **Pass criteria:**
-- `nssm get ADDashboardCenter AppExitAction` → `Restart`
+- `nssm get ADDashboardCenter AppExit` → `Restart`
 - `nssm get ADDashboardCenter AppRestartDelay` → `2000`
 - `sc.exe qfailure ADDashboardCenter` → shows three `restart` actions with 5000/10000/30000 delays and `RESET_PERIOD` containing 60
 - Re-running `install-center.ps1 -InPlace` is idempotent (no error from re-setting values)
 
-**Commit:** `feat(install): enable auto-restart via NSSM AppExitAction + sc failure recovery`
+**Commit:** `feat(install): enable auto-restart via NSSM AppExit + sc failure recovery`
 
 ### Task 3: start.bat — service install by default, --console escape
 
@@ -217,7 +217,7 @@ These run both for `-InPlace` and for the default production path. Wrap in a hel
 
 **What:** Add three new checks at the end of the existing smoke test:
 1. `Test-Path C:\addashboard\Center` → assert false (verifies -InPlace didn't copy files).
-2. `nssm get ADDashboardCenter AppExitAction` → assert `Restart`; `AppRestartDelay` → assert `2000`.
+2. `nssm get ADDashboardCenter AppExit` → assert `Restart`; `AppRestartDelay` → assert `2000`.
 3. `sc.exe qfailure ADDashboardCenter` → assert output contains `restart` and `60`.
 
 These run after the existing healthcheck/login/dashboard probes.
@@ -265,7 +265,7 @@ These run after the existing healthcheck/login/dashboard probes.
 
 **Placeholder scan:** No TBDs. Every section has concrete file paths, exact commands, exact values (NSSM params, `sc failure` actions, polling interval, timeout). All test rows have concrete pass criteria.
 
-**Internal consistency:** The `-InPlace` switch is referenced consistently in install-center.ps1 (Task 1+2), start.bat (Task 3), start.ps1 (Task 4), and the README (Task 8). The `process.exit(0)` decision (Task 5) and frontend polling (Task 6) form a closed loop: backend exits → NSSM restarts → new config → `needsInit:false` → frontend redirects. The recovery layers (NSSM `AppExitAction=Restart` for clean exit, `sc failure` for crashes) don't overlap and don't conflict.
+**Internal consistency:** The `-InPlace` switch is referenced consistently in install-center.ps1 (Task 1+2), start.bat (Task 3), start.ps1 (Task 4), and the README (Task 8). The `process.exit(0)` decision (Task 5) and frontend polling (Task 6) form a closed loop: backend exits → NSSM restarts → new config → `needsInit:false` → frontend redirects. The recovery layers (NSSM `AppExit=Restart` for clean exit, `sc failure` for crashes) don't overlap and don't conflict.
 
 **Scope check:** This is a focused change: one entry shell, one install script param, one wizard handler, one Vue view, one smoke test extension, two doc files. Right-sized for a single implementation plan. No decomposition needed.
 

@@ -37,7 +37,7 @@
 | 2 | 管理员账户：admin 用户名 + 密码（≥8 字符） |
 | 3 | 自动跑 schema + seed + 创建 admin + 写 `appsettings.json` + 写初始化标记 |
 
-向导 finalize 后，center 通过 `setImmediate` 干净退出（exit code 0），NSSM `AppExitAction=Restart` + Windows Service Recovery 立即拉起新进程，前端轮询到状态由 `needsInit=true` 变为 `needsInit=false` 后跳到 **<http://localhost:8080/login>**，用刚创建的 admin 登录即可。
+向导 finalize 后，center 通过 `setImmediate` 干净退出（exit code 0），NSSM `AppExit=Restart` + Windows Service Recovery 立即拉起新进程，前端轮询到状态由 `needsInit=true` 变为 `needsInit=false` 后跳到 **<http://localhost:8080/login>**，用刚创建的 admin 登录即可。
 
 ---
 

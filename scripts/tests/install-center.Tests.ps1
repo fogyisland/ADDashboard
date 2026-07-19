@@ -48,9 +48,9 @@ Describe 'install-center service recovery' {
     $content | Should -Match 'Set-ServiceRecovery\s+-Name\s+''ADDashboardCenter'''
   }
 
-  It 'Set-ServiceRecovery helper in Service.psm1 sets NSSM AppExitAction=Restart and AppRestartDelay=2000' {
+  It 'Set-ServiceRecovery helper in Service.psm1 sets NSSM AppExit=Restart and AppRestartDelay=2000' {
     $serviceContent = Get-Content (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1') -Raw
-    $serviceContent | Should -Match 'AppExitAction\s+Restart'
+    $serviceContent | Should -Match 'AppExit\s+Restart'
     $serviceContent | Should -Match 'AppRestartDelay\s+2000'
   }
 

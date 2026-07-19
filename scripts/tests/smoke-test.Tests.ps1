@@ -35,9 +35,9 @@ Describe 'smoke-test.ps1 in-place + recovery probes' {
     $content | Should -Match 'C:\\addashboard\\Center'
   }
 
-  It 'probes nssm AppExitAction=Restart and AppRestartDelay=2000' {
+  It 'probes nssm AppExit=Restart and AppRestartDelay=2000' {
     $content = Get-Content $scriptPath -Raw
-    $content | Should -Match 'nssm\s+get\s+ADDashboardCenter\s+AppExitAction'
+    $content | Should -Match 'nssm\s+get\s+ADDashboardCenter\s+AppExit'
     $content | Should -Match 'AppRestartDelay'
     $content | Should -Match "'Restart'"
     $content | Should -Match "'2000'"

@@ -4,7 +4,7 @@
 
 **Goal:** Convert the green-bundle entry point (`publish/start.bat`) from a foreground console process to an idempotent Windows-service installer. The user double-clicks `start.bat`, the service installs + starts, the window exits, and the user opens their browser. Wizard finalize triggers an NSSM auto-restart so the service comes back with the new config. Crashes are handled by Windows Service Recovery. `start.bat --console` preserves the legacy foreground mode for development.
 
-**Architecture:** `start.bat` becomes a thin shell wrapper that detects admin context and either calls `install-center.ps1 -InPlace` (registers NSSM service pointing at `publish/center/` in-place, no file copy) or runs `node center\server.js` directly in `--console` mode. `install-center.ps1` gains an `-InPlace` switch plus NSSM `AppExitAction=Restart` and `sc.exe failure` recovery settings. The wizard's `/finalize` handler calls `process.exit(0)` so NSSM picks it up and restarts the service. The frontend polls `/api/init/status` until `needsInit=false`, then redirects to `/login`.
+**Architecture:** `start.bat` becomes a thin shell wrapper that detects admin context and either calls `install-center.ps1 -InPlace` (registers NSSM service pointing at `publish/center/` in-place, no file copy) or runs `node center\server.js` directly in `--console` mode. `install-center.ps1` gains an `-InPlace` switch plus NSSM `AppExit=Restart` and `sc.exe failure` recovery settings. The wizard's `/finalize` handler calls `process.exit(0)` so NSSM picks it up and restarts the service. The frontend polls `/api/init/status` until `needsInit=false`, then redirects to `/login`.
 
 **Tech Stack:** Windows services via NSSM 2.24 (bundled at `publish/nssm/nssm.exe` + `nssm/nssm.exe`); PowerShell 5.1 + pwsh 7+; Express + Vue 3 (no framework change); Node 18+.
 
@@ -202,7 +202,7 @@ EOF
 
 **Interfaces:**
 - Consumes: Task 1's `[switch]$InPlace` parameter; `Install-NssmService` from `NSSM.psm1`
-- Produces: `Set-ServiceRecovery` helper in `common/Service.psm1`. After `Install-NssmService` succeeds, the script calls `Set-ServiceRecovery -Name 'ADDashboardCenter'`. NSSM `AppExitAction=Restart`, `AppRestartDelay=2000`. `sc.exe failure` set to `reset= 60 actions= restart/5000/restart/10000/restart/30000`.
+- Produces: `Set-ServiceRecovery` helper in `common/Service.psm1`. After `Install-NssmService` succeeds, the script calls `Set-ServiceRecovery -Name 'ADDashboardCenter'`. NSSM `AppExit=Restart`, `AppRestartDelay=2000`. `sc.exe failure` set to `reset= 60 actions= restart/5000/restart/10000/restart/30000`.
 
 - [ ] **Step 1: Write failing Pester test for recovery settings**
 
@@ -210,9 +210,9 @@ Add to `scripts/tests/install-center.Tests.ps1`:
 
 ```powershell
 Describe 'install-center service recovery' {
-  It 'sets NSSM AppExitAction to Restart' {
+  It 'sets NSSM AppExit to Restart' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
-    $content | Should -Match 'AppExitAction.*Restart'
+    $content | Should -Match 'AppExit.*Restart'
   }
 
   It 'sets NSSM AppRestartDelay to 2000' {
@@ -232,7 +232,7 @@ Describe 'install-center service recovery' {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd /d/ToolDevelop/ADDashboard && pwsh -Command "Invoke-Pester ./scripts/tests/install-center.Tests.ps1 -Output Detailed"`
-Expected: the new `It 'sets NSSM AppExitAction to Restart'` fails.
+Expected: the new `It 'sets NSSM AppExit to Restart'` fails.
 
 - [ ] **Step 3: Add `Set-ServiceRecovery` helper to `scripts/common/Service.psm1`**
 
@@ -243,8 +243,8 @@ function Set-ServiceRecovery {
   param([Parameter(Mandatory)][string]$Name)
   $nssm = Get-NssmPath
   # NSSM-level: restart cleanly on process.exit(0) (used by wizard finalize).
-  & $nssm set $Name AppExitAction Restart | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "nssm set $Name AppExitAction failed: $LASTEXITCODE" }
+  & $nssm set $Name AppExit Restart | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "nssm set $Name AppExit failed: $LASTEXITCODE" }
   & $nssm set $Name AppRestartDelay 2000 | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "nssm set $Name AppRestartDelay failed: $LASTEXITCODE" }
   # Windows-level: restart on crash (OOM, segfault, kill -9).
@@ -252,7 +252,7 @@ function Set-ServiceRecovery {
   $scArgs = @('failure', $Name, 'reset=', '60', 'actions=', 'restart/5000/restart/10000/restart/30000')
   $p = Start-Process -FilePath 'sc.exe' -ArgumentList $scArgs -NoNewWindow -Wait -PassThru
   if ($p.ExitCode -ne 0) { throw "sc.exe failure $Name failed: exit $($p.ExitCode)" }
-  Write-Info "service recovery set: NSSM AppExitAction=Restart + sc failure reset=60 actions=restart/5000/restart/10000/restart/30000"
+  Write-Info "service recovery set: NSSM AppExit=Restart + sc failure reset=60 actions=restart/5000/restart/10000/restart/30000"
 }
 ```
 
@@ -289,9 +289,9 @@ Expected: 6 Pester tests pass (3+2 from Task 1 + 3 new). 145/146 + 56/56 node te
 ```bash
 git add scripts/install-center.ps1 scripts/common/Service.psm1 scripts/tests/install-center.Tests.ps1 publish/scripts/install-center.ps1 publish/scripts/common/Service.psm1
 git commit -m "$(cat <<'EOF'
-feat(install): enable auto-restart via NSSM AppExitAction + sc failure recovery
+feat(install): enable auto-restart via NSSM AppExit + sc failure recovery
 
-Wizard finalize calls process.exit(0) so NSSM AppExitAction=Restart picks it
+Wizard finalize calls process.exit(0) so NSSM AppExit=Restart picks it
 up and re-launches the service with the new appsettings.json. Crashes
 (OOM, segfault, kill -9) are covered by Windows Service Recovery via
 sc.exe failure: 3 restart attempts at 5/10/30s with a 60s reset window.
@@ -599,7 +599,7 @@ In `center/src/init/router.js`, after line 114 (`res.json({ ok: true, path: conf
 
 ```javascript
       res.json({ ok: true, path: configPath });
-      // Service mode: exit so NSSM AppExitAction=Restart picks up the new appsettings.json.
+      // Service mode: exit so NSSM AppExit=Restart picks up the new appsettings.json.
       // setImmediate runs after I/O callbacks but before timers, giving res.json a chance
       // to flush the response before the process dies. In console mode, this also exits
       // the foreground process — dev restarts manually.
@@ -625,7 +625,7 @@ fix(init): exit process after finalize so NSSM restarts with new config
 
 After /api/init/finalize writes appsettings.json and the init-complete marker,
 the backend schedules process.exit(0) via setImmediate. NSSM's
-AppExitAction=Restart (set by install-center.ps1) catches the clean exit
+AppExit=Restart (set by install-center.ps1) catches the clean exit
 and re-launches the service with the new config picked up.
 
 In console/dev mode, the same exit terminates the foreground process —
@@ -919,7 +919,7 @@ EOF
 - Consumes: Tasks 1+2 outputs (in-place service install + NSSM recovery settings).
 - Produces: Three new probe steps appended to `smoke-test.ps1`:
   1. `Test-Path C:\addashboard\Center` → assert false (in-place didn't copy files).
-  2. `nssm get ADDashboardCenter AppExitAction` → assert `Restart`; `AppRestartDelay` → assert `2000`.
+  2. `nssm get ADDashboardCenter AppExit` → assert `Restart`; `AppRestartDelay` → assert `2000`.
   3. `sc.exe qfailure ADDashboardCenter` → assert output contains `restart` and `60`.
 
 - [ ] **Step 1: Mirror current `smoke-test.ps1` from publish to top-level**
@@ -941,9 +941,9 @@ $inPlaceOk = -not (Test-Path 'C:\addashboard\Center')
 Step 'no C:\addashboard\Center copy' $inPlaceOk "directory exists; in-place install may have copied files"
 
 # 6. NSSM auto-restart settings
-$nssmExit = (nssm get ADDashboardCenter AppExitAction 2>$null)
+$nssmExit = (nssm get ADDashboardCenter AppExit 2>$null)
 $nssmDelay = (nssm get ADDashboardCenter AppRestartDelay 2>$null)
-Step 'NSSM AppExitAction=Restart' ($nssmExit -eq 'Restart') "got: $nssmExit"
+Step 'NSSM AppExit=Restart' ($nssmExit -eq 'Restart') "got: $nssmExit"
 Step 'NSSM AppRestartDelay=2000' ($nssmDelay -eq '2000') "got: $nssmDelay"
 
 # 7. Windows Service Recovery
@@ -965,7 +965,7 @@ Expected: no diff output.
 
 - [ ] **Step 4: Update or add Pester test for the smoke-test additions**
 
-Edit `scripts/tests/smoke-test.Tests.ps1`. Read it first to see its structure, then add an `It 'checks NSSM AppExitAction'` block matching the new probes. If the file's existing tests are content-shape assertions, follow that style.
+Edit `scripts/tests/smoke-test.Tests.ps1`. Read it first to see its structure, then add an `It 'checks NSSM AppExit'` block matching the new probes. If the file's existing tests are content-shape assertions, follow that style.
 
 If no existing tests check content of smoke-test.ps1, create the file `scripts/tests/smoke-test.Tests.ps1` with:
 
@@ -976,9 +976,9 @@ Describe 'smoke-test.ps1 in-place + recovery checks' {
     $content | Should -Match 'no C:\\addashboard\\Center copy'
   }
 
-  It 'probes NSSM AppExitAction' {
+  It 'probes NSSM AppExit' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'smoke-test.ps1') -Raw
-    $content | Should -Match 'AppExitAction=Restart'
+    $content | Should -Match 'AppExit=Restart'
     $content | Should -Match 'AppRestartDelay=2000'
   }
 
@@ -1003,7 +1003,7 @@ test(smoke): verify -InPlace, NSSM exit action, and Windows recovery
 
 Adds three new probes to smoke-test.ps1:
   - C:\addashboard\Center must NOT exist (in-place didn't copy)
-  - NSSM AppExitAction=Restart + AppRestartDelay=2000
+  - NSSM AppExit=Restart + AppRestartDelay=2000
   - sc.exe qfailure output contains 'restart' and '60'
 
 Mirrored to publish/scripts/ for the green bundle.
@@ -1068,7 +1068,7 @@ with:
 首次运行会自动：
 
 1. 注册 `ADDashboardCenter` Windows 服务（NSSM 包装，指向 `publish\center\`）
-2. 配置服务自启 + NSSM `AppExitAction=Restart`（wizard finalize 后自动重启）+ Windows Service Recovery（崩溃三次重试）
+2. 配置服务自启 + NSSM `AppExit=Restart`（wizard finalize 后自动重启）+ Windows Service Recovery（崩溃三次重试）
 3. 安装 `publish/center/` 运行时依赖 + 构建前端
 4. 启动服务，监听 `http://localhost:8080`
 
@@ -1185,7 +1185,7 @@ If all five steps pass: branch is ready for merge.
 
 **1. Spec coverage:** Every section of the spec maps to a task here:
 - `-InPlace` switch (spec "Interface Contracts" + Task 1) → Task 1.
-- NSSM `AppExitAction` + `sc failure` (spec "NSSM parameters" + "sc.exe failure") → Task 2.
+- NSSM `AppExit` + `sc failure` (spec "NSSM parameters" + "sc.exe failure") → Task 2.
 - `start.bat` argument matrix (spec "start.bat argument matrix") → Task 3.
 - `start.ps1` PowerShell mirror (spec "no parallel entry scripts" + parity) → Task 4.
 - Wizard finalize → `process.exit(0)` (spec "Wizard finalize changes") → Task 5.
@@ -1200,7 +1200,7 @@ If all five steps pass: branch is ready for merge.
 - `install-center.ps1` `[switch]$InPlace` introduced in Task 1, used in Tasks 2-3. ✅
 - `Set-ServiceRecovery -Name 'ADDashboardCenter'` defined in Task 2, used in Task 2 itself. ✅
 - `initApi.getStatus()` is the API the frontend polling calls — confirmed in `frontend/src/api/init.js` (existing pattern). ✅
-- `process.exit(0)` in Task 5 matches NSSM `AppExitAction=Restart` from Task 2. ✅
+- `process.exit(0)` in Task 5 matches NSSM `AppExit=Restart` from Task 2. ✅
 - Mirror sync (`scripts/` ↔ `publish/scripts/`) is a Step in every relevant task, not a separate task. ✅
 
 **4. Scope check:** The plan covers exactly what the spec describes. No agent changes. No production copy-path changes. No hot reload. No cross-platform.
