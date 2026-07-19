@@ -88,6 +88,36 @@ Describe 'install-center service recovery' {
     }
   }
 
+  It 'NSSM.psm1 owns its $Script:LogDir (modules cannot read caller script-scope variables)' {
+    # Module functions resolve $Script:LogDir in their OWN module scope, not
+    # the caller's script scope. The previous layout had install-center.ps1
+    # setting $Script:LogDir in its own scope and NSSM.psm1 reading it from
+    # inside Set-NssmParameters — which silently returned $null and crashed
+    # later as a Join-Path '-Path' binding error. Guard: NSSM.psm1 must
+    # own the state via Set-NssmLogDir, and every install script must call it.
+    $nssmPath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'NSSM.psm1'
+    $nssmContent = Get-Content $nssmPath -Raw
+    $nssmContent | Should -Match '\$Script:LogDir\s*=.*addashboard.*Logs' `
+      'NSSM.psm1 must seed its own $Script:LogDir at module load.'
+    $nssmContent | Should -Match 'function Set-NssmLogDir' `
+      'NSSM.psm1 must export a Set-NssmLogDir setter for callers to push updates.'
+    $nssmContent | Should -Not -Match 'requires Logger.psm1' `
+      'Drop the old "requires Logger first" comment block — the indirection
+      through Logger.psm1 `$Script:` was the root cause of the binding error.'
+
+    foreach ($script in @('install-center.ps1','install-agent.ps1')) {
+      $scriptPath = Join-Path (Join-Path $PSScriptRoot '..') $script
+      $content = Get-Content $scriptPath -Raw
+      $content | Should -Match 'Set-NssmLogDir' `
+        "$script must call Set-NssmLogDir to push the log dir into NSSM module scope."
+
+      # Mirror sync
+      $publishScript = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts') $script
+      $pub = Get-Content $publishScript -Raw
+      $pub | Should -Match 'Set-NssmLogDir'  "publish/$script mirror out of sync."
+    }
+  }
+
   It 'center server.js catches uncaughtException and unhandledRejection with fatal log + exit(1)' {
     # Without these traps, NSSM-restarted services that crash in <1500 ms
     # produce no stderr trace because pino's default async buffer drains

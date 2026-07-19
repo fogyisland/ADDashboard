@@ -1,9 +1,25 @@
-# Requires Logger.psm1 to be imported first (uses Write-Warn2).
+# Module-scoped state — function calls DO NOT cross modules to read $Script: in
+# the caller's scope, so each module that wants shared state owns its own
+# $Script: variable plus an explicit setter. See Set-NssmLogDir / Set-NssmPath.
 $Script:NssmPath = $null
+$Script:LogDir = 'C:\addashboard\Logs'
+if (-not (Test-Path $Script:LogDir)) {
+  New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null
+}
 
 function Set-NssmPath {
   param([string]$Path)
   $Script:NssmPath = $Path
+}
+
+function Set-NssmLogDir {
+  param([string]$Path)
+  if ($Path) {
+    $Script:LogDir = $Path
+    if (-not (Test-Path $Script:LogDir)) {
+      New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null
+    }
+  }
 }
 
 function Get-NssmPath {

@@ -28,15 +28,21 @@ Write-Step "install-center: $InstallPath (deployment only — wizard handles app
 # 0. Ensure NSSM is available locally (downloads to <projectRoot>/nssm/ on first run)
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
+# Set log directory inside the NSSM module's own $Script: scope — module
+# functions can't see the caller's $Script:LogDir, so we have to push the
+# value across explicitly via the module's setter. Same value is held in
+# this script's $Script:LogDir for the Write-Err2 path below.
+$Script:LogDir = 'C:\addashboard\Logs'
+if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
+Set-NssmLogDir $Script:LogDir
+
 # When -InPlace, skip file copy / dist mirror / npm install of the install target.
 # node_modules is still installed if missing (green-bundle first-time setup).
 if (-not $InPlace) {
   # 1. Ensure directories
-  $logDir = 'C:\addashboard\Logs'
-  @($InstallPath, "$InstallPath\dist", $logDir) | ForEach-Object {
+  @($InstallPath, "$InstallPath\dist") | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null; Write-Info "created $_" }
   }
-  $Script:LogDir = $logDir
 
   # 2. Verify Node.js
   $node = (Get-Command node.exe -ErrorAction Stop).Source
@@ -61,8 +67,6 @@ if (-not $InPlace) {
   Copy-Item -Path (Join-Path $distPath '*') -Destination (Join-Path $InstallPath 'dist') -Recurse -Force
 } else {
   # In-place: only install node_modules if missing; build dist if missing.
-  $Script:LogDir = 'C:\addashboard\Logs'
-  if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
   $node = (Get-Command node.exe -ErrorAction Stop).Source
   Write-Info "node: $node"
   if (-not (Test-Path (Join-Path $InstallPath 'node_modules'))) {

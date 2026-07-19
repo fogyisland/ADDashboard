@@ -22,11 +22,17 @@ Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 # Ensure NSSM is available locally (no-op when remote — only used on the orchestrator)
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
+# Set log directory inside the NSSM module's own $Script: scope — module
+# functions can't see the caller's $Script:LogDir, so we have to push the
+# value across explicitly via the module's setter.
+$Script:LogDir = 'C:\addashboard\Logs'
+if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
+Set-NssmLogDir $Script:LogDir
+
 if (-not $AgentSrc) { $AgentSrc = Join-Path $projectRoot 'agent' }
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 $node = (Get-Command node.exe -ErrorAction Stop).Source
-$Script:LogDir = 'C:\addashboard\Logs'
 
 function Install-LocalAgent {
   Write-Step "installing local agent to $InstallPath"
