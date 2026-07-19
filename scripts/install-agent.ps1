@@ -58,7 +58,7 @@ function Install-LocalAgent {
     -DependOnService @('DNS Client','Netlogon') `
     -DisplayName "AD Replication Agent (on $env:COMPUTERNAME)" `
     -Description 'AD Replication collection agent' `
-    -Start 2
+    -Start SERVICE_AUTO_START
   if (Start-ServiceSafe -Name 'ADReplicationAgent' -WaitSeconds 20) { Write-Ok "agent started on $env:COMPUTERNAME" }
   else { Write-Err2 "agent failed to start on $env:COMPUTERNAME" }
 }

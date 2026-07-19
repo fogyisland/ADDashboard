@@ -35,7 +35,8 @@ function Install-NssmService {
     [string[]]$DependOnService = @(),
     [string]$DisplayName = $Name,
     [string]$Description = '',
-    [int]$Start = 2
+    [ValidateSet('SERVICE_AUTO_START','SERVICE_DELAYED_AUTO_START','SERVICE_DEMAND_START','SERVICE_DISABLED')]
+    [string]$Start = 'SERVICE_AUTO_START'
   )
   if (Get-Service -Name $Name -ErrorAction SilentlyContinue) {
     Write-Warn2 "Service $Name already installed; skipping install"
@@ -54,7 +55,8 @@ function Set-NssmParameters {
     [string[]]$DependOnService = @(),
     [string]$DisplayName = $Name,
     [string]$Description = '',
-    [int]$Start = 2
+    [ValidateSet('SERVICE_AUTO_START','SERVICE_DELAYED_AUTO_START','SERVICE_DEMAND_START','SERVICE_DISABLED')]
+    [string]$Start = 'SERVICE_AUTO_START'
   )
   Invoke-Nssm @('set', $Name, 'AppDirectory', $AppDirectory)
   Invoke-Nssm @('set', $Name, 'AppParameters', $AppParameters)

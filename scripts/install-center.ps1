@@ -88,7 +88,7 @@ Install-NssmService -Name 'ADDashboardCenter' `
   -AppParameters 'server.js' `
   -DisplayName 'AD Replication Dashboard Center' `
   -Description 'AD Replication Dashboard Center (Node.js + Express + Vue 3)' `
-  -Start 2
+  -Start SERVICE_AUTO_START
 
 # Configure auto-restart: NSSM picks up process.exit(0) and re-launches with new appsettings.json;
 # Windows Service Recovery handles crashes (OOM, segfault, kill -9).

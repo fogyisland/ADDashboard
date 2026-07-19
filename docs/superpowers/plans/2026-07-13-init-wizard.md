@@ -2400,7 +2400,7 @@ Install-NssmService -Name 'ADDashboardCenter' `
   -AppParameters 'server.js' `
   -DisplayName 'AD Replication Dashboard Center' `
   -Description 'AD Replication Dashboard Center (Node.js + Express + Vue 3)' `
-  -Start 2
+  -Start SERVICE_AUTO_START
 
 if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   Write-Ok "service started"

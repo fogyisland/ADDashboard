@@ -3969,7 +3969,8 @@ function Install-NssmService {
     [string[]]$DependOnService = @(),
     [string]$DisplayName = $Name,
     [string]$Description = '',
-    [int]$Start = 2  # SERVICE_AUTO_START
+    [ValidateSet('SERVICE_AUTO_START','SERVICE_DELAYED_AUTO_START','SERVICE_DEMAND_START','SERVICE_DISABLED')]
+    [string]$Start = 'SERVICE_AUTO_START'
   )
   if (Get-Service -Name $Name -ErrorAction SilentlyContinue) {
     Write-Warn2 "Service $Name already installed; skipping install"
@@ -3988,7 +3989,8 @@ function Set-NssmParameters {
     [string[]]$DependOnService = @(),
     [string]$DisplayName = $Name,
     [string]$Description = '',
-    [int]$Start = 2
+    [ValidateSet('SERVICE_AUTO_START','SERVICE_DELAYED_AUTO_START','SERVICE_DEMAND_START','SERVICE_DISABLED')]
+    [string]$Start = 'SERVICE_AUTO_START'
   )
   Invoke-Nssm @('set', $Name, 'AppDirectory', $AppDirectory)
   Invoke-Nssm @('set', $Name, 'AppParameters', $AppParameters)
@@ -4168,7 +4170,7 @@ Install-NssmService -Name 'ADDashboardCenter' `
   -DependOnService @('MSSQLSERVER') `
   -DisplayName 'AD Replication Dashboard Center' `
   -Description 'AD Replication Dashboard Center (Node.js + Express + Vue 3)' `
-  -Start 2
+  -Start SERVICE_AUTO_START
 
 if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   Write-Ok "service started"
@@ -4254,7 +4256,7 @@ function Install-LocalAgent {
     -DependOnService @('DNS Client','Netlogon') `
     -DisplayName "AD Replication Agent (on $env:COMPUTERNAME)" `
     -Description 'AD Replication collection agent' `
-    -Start 2
+    -Start SERVICE_AUTO_START
   if (Start-ServiceSafe -Name 'ADReplicationAgent' -WaitSeconds 20) { Write-Ok "agent started on $env:COMPUTERNAME" }
   else { Write-Err2 "agent failed to start on $env:COMPUTERNAME" }
 }
