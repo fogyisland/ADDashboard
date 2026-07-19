@@ -87,4 +87,31 @@ Describe 'install-center service recovery' {
       $pub | Should -Match '\-Start\s+SERVICE_AUTO_START'  "publish/$script mirror out of sync."
     }
   }
+
+  It 'center server.js catches uncaughtException and unhandledRejection with fatal log + exit(1)' {
+    # Without these traps, NSSM-restarted services that crash in <1500 ms
+    # produce no stderr trace because pino's default async buffer drains
+    # after process.exit(). These handlers + the sync destination together
+    # guarantee any fatal exit lands a line on stderr before exit.
+    foreach ($tree in @('center','publish\center')) {
+      $serverPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') $tree) 'server.js'
+      $content = Get-Content $serverPath -Raw
+      $content | Should -Match "process\.on\('uncaughtException'" `
+        "$tree/server.js must register an uncaughtException trap."
+      $content | Should -Match "process\.on\('unhandledRejection'" `
+        "$tree/server.js must register an unhandledRejection trap."
+      $content | Should -Match 'process\.exit\(1\)' `
+        "$tree/server.js fatal traps must terminate with exit 1."
+    }
+    # Logger must use a sync destination. We can't read the runtime
+    # destination object directly, so we assert the literal is present.
+    foreach ($tree in @('center','publish\center','agent','publish\agent')) {
+      $loggerPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') $tree) 'src\logger.js'
+      $content = Get-Content $loggerPath -Raw
+      $content | Should -Match 'pino\.destination\(' `
+        "$tree/src/logger.js should use pino.destination(...)."
+      $content | Should -Match 'sync:\s*true' `
+        "$tree/src/logger.js must opt in to sync writes."
+    }
+  }
 }

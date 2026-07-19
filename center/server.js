@@ -15,6 +15,23 @@ const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || './appsett
 const installPath = installPathFromConfigPath(configPath);
 const logger = createLogger({ component: 'center', level: 'info' });
 
+// Last-line-of-defense traps for any exception that escapes the (async)
+// bootstrap. Without these, an uncaught throw outside the explicit
+// IIFE .catch fires Node's default behavior (exit 1, no stderr trace),
+// which combined with NSSM restart produces the "ran for <1500ms,
+// restart delayed" diagnostic with no visible cause. The logger is
+// synchronous (pino destination {dest:2,sync:true}) so the lines below
+// land on stderr before process.exit fires.
+process.on('uncaughtException', (err, origin) => {
+  logger.fatal({ err: err && err.message, stack: err && err.stack, origin }, 'uncaughtException');
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  logger.fatal({ err: err.message, stack: err.stack }, 'unhandledRejection');
+  process.exit(1);
+});
+
 (async () => {
   // Init-complete marker (file + registry) hard-locks the wizard off once
   // /finalize has run. Checked first so an attacker who deletes appsettings.json
