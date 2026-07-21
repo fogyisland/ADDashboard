@@ -49,4 +49,4 @@ jobs:
           Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
       - name: Run Pester
         shell: pwsh
-        run: Invoke-Pester ./scripts/tests -Output Detailed
+        run: Invoke-Pester ./scripts/tests,./scripts/common/tests -Output Detailed
