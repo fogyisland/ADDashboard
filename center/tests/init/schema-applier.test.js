@@ -103,6 +103,17 @@ test('splitSqlStatements handles migration 002 (JSON permissions → role_permis
   assert.ok(stmts.some(s => /^DROP PROCEDURE migrate_002_permissions_table/.test(s)));
 });
 
+test('splitSqlStatements parses migration 003 (port healthcheck tables)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/003-port-healthcheck.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // 2 CREATE TABLE statements, no DELIMITER needed. Defends against
+  // yesterday's comment-bug class -- the parser now correctly skips
+  // `--` line comments (with apostrophes in them).
+  assert.strictEqual(stmts.length, 2, `expected 2 statements, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.ok(stmts.some(s => /CREATE TABLE IF NOT EXISTS system_ports/.test(s)));
+  assert.ok(stmts.some(s => /CREATE TABLE IF NOT EXISTS ad_agent_port_status/.test(s)));
+});
+
 import { applyAll } from '../../src/init/schema-applier.js';
 import { buildMockDb } from '../helpers/db-mock.js';
 
