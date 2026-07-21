@@ -42,6 +42,19 @@ export function splitSqlStatements(sql) {
       if (c === '"') inDouble = false;
       i++; continue;
     }
+    // Line comment (-- to end of line): skip so an apostrophe in a comment
+    // (e.g. "wasn't") can't be mistaken for a string-literal open quote.
+    if (c === '-' && sql[i + 1] === '-') {
+      const nl = sql.indexOf('\n', i);
+      i = nl >= 0 ? nl : sql.length;
+      continue;
+    }
+    // Block comment (/* ... */): skip entirely.
+    if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      i = end >= 0 ? end + 2 : sql.length;
+      continue;
+    }
     if (c === "'") { inSingle = true; buf += c; i++; continue; }
     if (c === '"') { inDouble = true; buf += c; i++; continue; }
     // Track BEGIN/END blocks (word-boundary matched)
