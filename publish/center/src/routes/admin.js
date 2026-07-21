@@ -45,7 +45,9 @@ export function adminRouter({ config, logger }) {
       const out = rows.map(row => ({
         id: row.id,
         roleName: row.role_name,
-        permissions: row.permissions ? JSON.parse(row.permissions) : []
+        permissions: row.permissions
+          ? row.permissions.split(',').map(s => s.trim()).filter(Boolean)
+          : []
       }));
       res.json(out);
     } catch (e) {

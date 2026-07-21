@@ -22,7 +22,7 @@ const VARIANTS = {
       upsertDc: `INSERT INTO ad_dcs (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE site_hint = VALUES(site_hint), os_version = VALUES(os_version), when_created = VALUES(when_created), is_pdc = VALUES(is_pdc), is_gc = VALUES(is_gc), is_rid_master = VALUES(is_rid_master), is_schema_master = VALUES(is_schema_master), is_domain_naming_master = VALUES(is_domain_naming_master), is_infrastructure_master = VALUES(is_infrastructure_master), discovered_at = NOW(), discovered_by_agent_id = VALUES(discovered_by_agent_id)`
     },
     users: {
-      findByUsername: 'SELECT id, username, password_hash, role_id, status FROM sys_users WHERE username = ? LIMIT 1',
+      findByUsername: `SELECT u.id, u.username, u.password_hash, u.role_id, u.status, r.role_name, GROUP_CONCAT(rp.permission) AS permissions FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id LEFT JOIN role_permissions rp ON rp.role_id = r.id WHERE u.username = ? GROUP BY u.id, u.username, u.password_hash, u.role_id, u.status, r.role_name LIMIT 1`,
       list: 'SELECT u.id, u.username, u.role_id, u.status, u.last_login_at, u.created_at, r.role_name FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id ORDER BY u.id',
       create: 'INSERT INTO sys_users (username, password_hash, role_id, status) VALUES (?, ?, ?, ?)',
       update: 'UPDATE sys_users SET password_hash = COALESCE(?, password_hash), role_id = COALESCE(?, role_id), status = COALESCE(?, status) WHERE id = ?',
@@ -33,7 +33,7 @@ const VARIANTS = {
       count: 'SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = \'admin\''
     },
     roles: {
-      list: 'SELECT id, role_name, permissions FROM sys_roles ORDER BY id'
+      list: `SELECT r.id, r.role_name, GROUP_CONCAT(rp.permission) AS permissions FROM sys_roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id GROUP BY r.id, r.role_name ORDER BY r.id`
     },
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
@@ -92,7 +92,7 @@ const VARIANTS = {
       upsertDc: `MERGE INTO ad_dcs AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) ON t.dc_name = s.dc_name WHEN MATCHED THEN UPDATE SET site_hint = s.site_hint, os_version = s.os_version, when_created = s.when_created, is_pdc = s.is_pdc, is_gc = s.is_gc, is_rid_master = s.is_rid_master, is_schema_master = s.is_schema_master, is_domain_naming_master = s.is_domain_naming_master, is_infrastructure_master = s.is_infrastructure_master, discovered_at = SYSUTCDATETIME(), discovered_by_agent_id = s.discovered_by_agent_id WHEN NOT MATCHED THEN INSERT (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (s.dc_name, s.site_hint, s.os_version, s.when_created, s.is_pdc, s.is_gc, s.is_rid_master, s.is_schema_master, s.is_domain_naming_master, s.is_infrastructure_master, s.discovered_at, s.discovered_by_agent_id)`
     },
     users: {
-      findByUsername: 'SELECT TOP 1 id, username, password_hash, role_id, status FROM sys_users WHERE username = ?',
+      findByUsername: `SELECT TOP 1 u.id, u.username, u.password_hash, u.role_id, u.status, r.role_name, STRING_AGG(rp.permission, ',') AS permissions FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id LEFT JOIN role_permissions rp ON rp.role_id = r.id WHERE u.username = ? GROUP BY u.id, u.username, u.password_hash, u.role_id, u.status, r.role_name`,
       list: 'SELECT u.id, u.username, u.role_id, u.status, u.last_login_at, u.created_at, r.role_name FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id ORDER BY u.id',
       create: 'INSERT INTO sys_users (username, password_hash, role_id, status) VALUES (?, ?, ?, ?)',
       update: 'UPDATE sys_users SET password_hash = COALESCE(?, password_hash), role_id = COALESCE(?, role_id), status = COALESCE(?, status) WHERE id = ?',
@@ -103,7 +103,7 @@ const VARIANTS = {
       count: 'SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = \'admin\''
     },
     roles: {
-      list: 'SELECT id, role_name, permissions FROM sys_roles ORDER BY id'
+      list: `SELECT r.id, r.role_name, STRING_AGG(rp.permission, ',') AS permissions FROM sys_roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id GROUP BY r.id, r.role_name ORDER BY r.id`
     },
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',

@@ -1,10 +1,24 @@
 import bcrypt from 'bcrypt';
 import { getDb } from '../db/index.js';
 
+// Decode the comma-separated permissions string produced by GROUP_CONCAT (mysql)
+// or STRING_AGG (mssql) in users.findByUsername. Tolerant of test mocks that
+// already pass arrays, and of null when the user has no role or the role has
+// no permissions.
+function decodePermissions(value) {
+  if (Array.isArray(value)) return value;
+  if (value == null) return [];
+  if (typeof value !== 'string') return [];
+  return value.split(',').map(s => s.trim()).filter(Boolean);
+}
+
 export async function findByUsername(username) {
   const db = getDb();
   const { rows } = await db.query(db.sql.users.findByUsername, [username]);
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) return null;
+  row.permissions = decodePermissions(row.permissions);
+  return row;
 }
 
 export async function listUsers() {
