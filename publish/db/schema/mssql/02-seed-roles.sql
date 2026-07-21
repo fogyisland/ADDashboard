@@ -2,13 +2,31 @@
 -- SQL Server equivalent of MySQL's INSERT IGNORE: per-row existence check.
 
 IF NOT EXISTS (SELECT 1 FROM sys_roles WHERE role_name = 'admin')
-  INSERT INTO sys_roles (role_name, permissions) VALUES ('admin', '["*"]');
+  INSERT INTO sys_roles (role_name) VALUES ('admin');
 
 IF NOT EXISTS (SELECT 1 FROM sys_roles WHERE role_name = 'operator')
-  INSERT INTO sys_roles (role_name, permissions) VALUES ('operator', '["read:dash","execute:sync"]');
+  INSERT INTO sys_roles (role_name) VALUES ('operator');
 
 IF NOT EXISTS (SELECT 1 FROM sys_roles WHERE role_name = 'viewer')
-  INSERT INTO sys_roles (role_name, permissions) VALUES ('viewer', '["read:dash"]');
+  INSERT INTO sys_roles (role_name) VALUES ('viewer');
+
+-- Seed default role permissions (one row per granted permission).
+-- Subqueries resolve role_id from the just-inserted role_name rows above.
+IF NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN sys_roles r ON rp.role_id = r.id WHERE r.role_name = 'admin' AND rp.permission = '*')
+  INSERT INTO role_permissions (role_id, permission)
+    SELECT id, '*' FROM sys_roles WHERE role_name = 'admin';
+
+IF NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN sys_roles r ON rp.role_id = r.id WHERE r.role_name = 'operator' AND rp.permission = 'read:dash')
+  INSERT INTO role_permissions (role_id, permission)
+    SELECT id, 'read:dash' FROM sys_roles WHERE role_name = 'operator';
+
+IF NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN sys_roles r ON rp.role_id = r.id WHERE r.role_name = 'operator' AND rp.permission = 'execute:sync')
+  INSERT INTO role_permissions (role_id, permission)
+    SELECT id, 'execute:sync' FROM sys_roles WHERE role_name = 'operator';
+
+IF NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN sys_roles r ON rp.role_id = r.id WHERE r.role_name = 'viewer' AND rp.permission = 'read:dash')
+  INSERT INTO role_permissions (role_id, permission)
+    SELECT id, 'read:dash' FROM sys_roles WHERE role_name = 'viewer';
 
 -- Seed default system config (idempotent via IF NOT EXISTS guards)
 IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'ad_agent_token')
