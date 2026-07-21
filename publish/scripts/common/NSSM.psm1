@@ -54,11 +54,17 @@ function Install-NssmService {
     [ValidateSet('SERVICE_AUTO_START','SERVICE_DELAYED_AUTO_START','SERVICE_DEMAND_START','SERVICE_DISABLED')]
     [string]$Start = 'SERVICE_AUTO_START'
   )
-  if (Get-Service -Name $Name -ErrorAction SilentlyContinue) {
-    Write-Warn2 "Service $Name already installed; skipping install"
-    return
+  $existed = Get-Service -Name $Name -ErrorAction SilentlyContinue
+  if ($existed) {
+    # Service already registered — skip `nssm install` (would error "service already
+    # exists") but ALWAYS re-apply NSSM parameters. Skipping the parameter pass on
+    # re-install is the root cause of multiple real-world NSSM bugs (AppExit
+    # sub-parameter, AppDirectory pointing at old code, log path, rotation, etc.):
+    # any installer change to those settings never reached the existing service.
+    Write-Info "Service $Name already installed; refreshing NSSM parameters"
+  } else {
+    Invoke-Nssm @('install', $Name, $Application)
   }
-  Invoke-Nssm @('install', $Name, $Application)
   Set-NssmParameters -Name $Name -AppDirectory $AppDirectory -AppParameters $AppParameters `
     -DependOnService $DependOnService -DisplayName $DisplayName -Description $Description -Start $Start
 }
