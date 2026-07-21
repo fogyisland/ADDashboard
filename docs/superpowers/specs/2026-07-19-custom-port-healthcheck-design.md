@@ -93,9 +93,9 @@ CREATE TABLE ad_agent_port_status (
   ok              TINYINT(1) NOT NULL,
   latency_ms      INT NULL,
   last_checked_at DATETIME(3) NOT NULL,
-  PRIMARY KEY (agent_id, port),
-  CONSTRAINT fk_aps_agent FOREIGN KEY (agent_id)
-    REFERENCES ad_agent_heartbeat(agent_id) ON DELETE CASCADE
+  PRIMARY KEY (agent_id, port)
+  -- intentionally NO FK to ad_agent_heartbeat: probe results are a separate
+  -- fact from heartbeats and must survive retention purges of old heartbeats.
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- MSSQL
@@ -105,9 +105,8 @@ CREATE TABLE ad_agent_port_status (
   ok              BIT NOT NULL,
   latency_ms      INT NULL,
   last_checked_at DATETIME2(3) NOT NULL,
-  CONSTRAINT pk_aps PRIMARY KEY (agent_id, port),
-  CONSTRAINT fk_aps_agent FOREIGN KEY (agent_id)
-    REFERENCES ad_agent_heartbeat(agent_id) ON DELETE CASCADE
+  CONSTRAINT pk_aps PRIMARY KEY (agent_id, port)
+  -- intentionally NO FK to ad_agent_heartbeat (see MySQL note above)
 );
 ```
 
@@ -130,10 +129,7 @@ CREATE TABLE ad_agent_port_status (
 | GET    | `/api/admin/ports`         | `admin:users` | List all rows (camelCased) |
 | POST   | `/api/admin/ports`         | `admin:users` | `{port, label, sortOrder?}` → 201 `{id}`. Validate `port ∈ [1, 65535]`, non-empty `label`. 409 on duplicate port |
 | PUT    | `/api/admin/ports/:id`     | `admin:users` | Partial body. 404 if id missing |
-| DELETE | `/api/admin/ports/:id`     | `admin:users` | Cascade-deletes matching `ad_agent_port_status` rows for that port |
-| GET    | `/api/admin/ports/_lookup` | `admin:users` | Returns ports joined with the latest status per (port) for the optional `agentId` query string — used by the admin dashboard's "what's stale" view |
-
-Validation lives in the route handlers (same pattern as `/sites-catalog`).
+| DELETE | `/api/admin/ports/:id`     | `admin:users` | 200. Stale `ad_agent_port_status` rows for that port are simply hidden via INNER JOIN — no explicit cascade needed |
 
 ### Dashboard-side
 
@@ -194,7 +190,7 @@ INNER JOIN: rows in `ad_agent_port_status` whose port no longer exists in `syste
 | Admin CRUD | duplicate port | 409 `{error: 'port already exists'}` |
 | Admin CRUD | empty `label` | 400 |
 | Admin CRUD | DB error | 500 with logger.error |
-| Admin DELETE | port in `ad_agent_port_status` | Cascade delete those rows in same transaction |
+| Admin DELETE | port in `ad_agent_port_status` | No action — those rows are simply hidden via INNER JOIN |
 
 ### Concurrency
 - Concurrent heartbeats for the same `(agent_id, port)` resolve via `ON DUPLICATE KEY UPDATE` (MySQL) / `MERGE` (MSSQL). Last write wins.
