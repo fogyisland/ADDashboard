@@ -84,6 +84,25 @@ test('splitSqlStatements handles real mysql migration with DELIMITER (db/migrati
   assert.ok(stmts.some(s => /CALL migrate_001_add_column_if_missing/.test(s)));
 });
 
+test('splitSqlStatements handles migration 002 (JSON permissions → role_permissions)', () => {
+  // 002-permissions-table.sql replaces the legacy sys_roles.permissions
+  // JSON column with the relational role_permissions table. The migration
+  // uses a stored procedure with $$ delimiters, so the parser must keep the
+  // proc body as one statement.
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/002-permissions-table.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  assert.ok(stmts.length >= 3, `expected >= 3 statements, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  // Defensive CREATE TABLE role_permissions IF NOT EXISTS (split on ;)
+  assert.ok(stmts.some(s => /CREATE TABLE IF NOT EXISTS role_permissions/.test(s)));
+  // CREATE PROCEDURE body kept whole (uses $$ delimiter)
+  const procStmt = stmts.find(s => /CREATE PROCEDURE migrate_002_permissions_table/.test(s));
+  assert.ok(procStmt, 'expected a single CREATE PROCEDURE statement');
+  assert.match(procStmt, /WITH RECURSIVE nums/);
+  // CALL + DROP PROCEDURE on default ; delimiter
+  assert.ok(stmts.some(s => /CALL migrate_002_permissions_table/.test(s)));
+  assert.ok(stmts.some(s => /^DROP PROCEDURE migrate_002_permissions_table/.test(s)));
+});
+
 import { applyAll } from '../../src/init/schema-applier.js';
 import { buildMockDb } from '../helpers/db-mock.js';
 

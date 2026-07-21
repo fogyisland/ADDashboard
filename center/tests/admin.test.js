@@ -52,13 +52,17 @@ test('GET /api/admin/roles: 403 for operator token (missing admin:users perm)', 
   assert.equal(r.status, 403);
 });
 
-test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', async () => {
+test('GET /api/admin/roles: 200 with admin token and comma-split permissions', async () => {
+  // The roles.list SQL aggregates role_permissions rows via GROUP_CONCAT/STRING_AGG
+  // into a comma-separated string. The route splits it back into an array — no
+  // JSON.parse anywhere (the JSON-encoded sys_roles.permissions column was
+  // removed in favour of the relational role_permissions table).
   const db = buildMockDb([
     {
       match: /FROM\s+sys_roles/i,
       rows: [
-        { id: 1, role_name: 'admin', permissions: '["*"]' },
-        { id: 2, role_name: 'operator', permissions: '["write:reports"]' }
+        { id: 1, role_name: 'admin', permissions: '*' },
+        { id: 2, role_name: 'operator', permissions: 'read:dash,execute:sync' }
       ]
     }
   ]).standard();
@@ -74,7 +78,7 @@ test('GET /api/admin/roles: 200 with admin token and JSON-parsed permissions', a
   assert.equal(r.body[0].roleName, 'admin');
   assert.deepEqual(r.body[0].permissions, ['*']);
   assert.equal(r.body[1].roleName, 'operator');
-  assert.deepEqual(r.body[1].permissions, ['write:reports']);
+  assert.deepEqual(r.body[1].permissions, ['read:dash', 'execute:sync']);
 });
 
 // ----- USERS LIST -----
