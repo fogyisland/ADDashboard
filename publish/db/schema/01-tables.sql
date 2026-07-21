@@ -77,8 +77,18 @@ CREATE TABLE IF NOT EXISTS system_config (
 -- RBAC roles
 CREATE TABLE IF NOT EXISTS sys_roles (
   id          INT AUTO_INCREMENT PRIMARY KEY,
-  role_name   VARCHAR(64) UNIQUE NOT NULL,
-  permissions TEXT NOT NULL
+  role_name   VARCHAR(64) UNIQUE NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- RBAC role permissions (one row per granted permission — third normal form).
+-- Replaces the legacy sys_roles.permissions TEXT column that stored
+-- JSON-encoded arrays; JSON in a relational column was an anti-pattern that
+-- hid the findByUsername → JWT permission regression.
+CREATE TABLE IF NOT EXISTS role_permissions (
+  role_id    INT NOT NULL,
+  permission VARCHAR(64) NOT NULL,
+  PRIMARY KEY (role_id, permission),
+  CONSTRAINT fk_role_permissions_role FOREIGN KEY (role_id) REFERENCES sys_roles(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- RBAC users

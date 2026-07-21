@@ -114,8 +114,21 @@ BEGIN
   CREATE TABLE sys_roles (
     id          INT IDENTITY(1,1) PRIMARY KEY,
     role_name   NVARCHAR(64) NOT NULL,
-    permissions NVARCHAR(MAX) NOT NULL,
     CONSTRAINT uq_sys_roles_role_name UNIQUE (role_name)
+  );
+END;
+
+-- RBAC role permissions (one row per granted permission — third normal form).
+-- Replaces the legacy sys_roles.permissions NVARCHAR(MAX) column that stored
+-- JSON-encoded arrays; JSON in a relational column was an anti-pattern that
+-- hid the findByUsername → JWT permission regression.
+IF OBJECT_ID('role_permissions', 'U') IS NULL
+BEGIN
+  CREATE TABLE role_permissions (
+    role_id    INT NOT NULL,
+    permission NVARCHAR(64) NOT NULL,
+    CONSTRAINT pk_role_permissions PRIMARY KEY (role_id, permission),
+    CONSTRAINT fk_role_permissions_role FOREIGN KEY (role_id) REFERENCES sys_roles(id) ON DELETE CASCADE
   );
 END;
 

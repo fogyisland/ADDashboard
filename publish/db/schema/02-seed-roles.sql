@@ -1,8 +1,16 @@
 -- Seed default roles (idempotent via INSERT IGNORE)
-INSERT IGNORE INTO sys_roles (role_name, permissions) VALUES
-  ('admin',    '["*"]'),
-  ('operator', '["read:dash","execute:sync"]'),
-  ('viewer',   '["read:dash"]');
+INSERT IGNORE INTO sys_roles (role_name) VALUES
+  ('admin'),
+  ('operator'),
+  ('viewer');
+
+-- Seed default role permissions (one row per granted permission).
+-- Subqueries resolve role_id from the just-inserted role_name rows above.
+INSERT IGNORE INTO role_permissions (role_id, permission) VALUES
+  ((SELECT id FROM sys_roles WHERE role_name = 'admin'),    '*'),
+  ((SELECT id FROM sys_roles WHERE role_name = 'operator'), 'read:dash'),
+  ((SELECT id FROM sys_roles WHERE role_name = 'operator'), 'execute:sync'),
+  ((SELECT id FROM sys_roles WHERE role_name = 'viewer'),   'read:dash');
 
 -- Seed default system config (idempotent via INSERT IGNORE)
 INSERT IGNORE INTO system_config (config_key, config_value, description) VALUES
