@@ -10,7 +10,15 @@ export async function upsertPortStatuses(agentId, portRows, { validPortsSet }) {
   const db = getDb();
   let accepted = 0;
   let rejected = 0;
-  await db.transaction(async () => {
+  // CRITICAL: route every per-row execute through the transaction's `tx`
+  // handle so all upserts run on the same connection inside the BEGIN/COMMIT.
+  // Calling `db.execute` (the pool facade) inside the callback would commit
+  // the empty transaction and run the loop outside atomicity.
+  // `new Date()` is driver-normalized to local time via the MySQL session
+  // timezone (`+08:00`) and the MSSQL DATETIME2 column accepts the ISO string
+  // unchanged — so timestamps match the project's documented local-time
+  // convention (see db/README.md).
+  await db.transaction(async (tx) => {
     for (const row of portRows) {
       if (!row || typeof row !== 'object') { rejected++; continue; }
       const port = Number(row.port);
@@ -21,7 +29,7 @@ export async function upsertPortStatuses(agentId, portRows, { validPortsSet }) {
         rejected++;
         continue;
       }
-      await db.execute(db.sql.portStatus.upsertOne, [
+      await tx.execute(db.sql.portStatus.upsertOne, [
         agentId, port, ok, latencyMs, new Date()
       ]);
       accepted++;

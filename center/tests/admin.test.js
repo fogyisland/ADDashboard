@@ -700,6 +700,27 @@ test('GET /api/admin/ports: 200 returns rows from db.sql.ports.list', async () =
   assert.equal(r.body[0].label, 'RPC');
 });
 
+test('GET /api/admin/ports: snake_case sort_order is remapped to camelCase sortOrder', async () => {
+  // The CAML_MAP entry was added in the Task 2 review fix so that
+  // admin/ports response keys match the rest of the admin API
+  // (users, audit, sites, dcs). Without the map, the response would
+  // expose `sort_order` in a sea of camelCase keys.
+  const db = buildMockDb([
+    {
+      match: /FROM\s+system_ports/i,
+      rows: [{ id: 1, port: 135, label: 'RPC', sort_order: 7 }]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/ports')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body[0].sortOrder, 7);
+  assert.equal(r.body[0].sort_order, undefined, 'snake_case key must be remapped, not duplicated');
+});
+
 test('POST /api/admin/ports: validates port range (rejects 0 and 99999)', async () => {
   _setDbForTest(buildMockDb());
   const app = buildApp();

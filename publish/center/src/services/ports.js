@@ -18,7 +18,14 @@ export async function createPort({ port, label, sortOrder = 0 } = {}) {
     const r = await db.execute(db.sql.ports.create, [port, String(label).trim(), sortOrder]);
     return { id: r.insertId ?? null };
   } catch (e) {
-    if (e.code === 'DUP_ENTRY' || /duplicate/i.test(e.message)) {
+    // MySQL: DUP_ENTRY code (set by db/errors.js CODE_MAP) or "Duplicate entry" in message.
+    // MSSQL: error.number 2627 (UNIQUE KEY violation) or 2601 (duplicate key on
+    // unique index) — the message reads "Violation of UNIQUE KEY constraint"
+    // which does NOT match /duplicate/i, so we must match by error number too.
+    if (e.code === 'DUP_ENTRY'
+      || e.number === 2627
+      || e.number === 2601
+      || /duplicate/i.test(e.message || '')) {
       throw Object.assign(new Error('port already exists'), { httpStatus: 409 });
     }
     throw e;

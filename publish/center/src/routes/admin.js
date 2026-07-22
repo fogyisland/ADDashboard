@@ -22,7 +22,8 @@ const CAML_MAP = new Map([
   ['last_seen', 'lastSeen'],
   ['site_name', 'siteName'],
   ['region_code', 'regionCode'],
-  ['is_hub', 'isHub']
+  ['is_hub', 'isHub'],
+  ['sort_order', 'sortOrder']
 ]);
 
 function camelRow(row) {
@@ -297,7 +298,10 @@ export function adminRouter({ config, logger }) {
   r.get('/api/admin/ports', auth, async (_req, res) => {
     try {
       const rows = await listPorts();
-      res.json(rows);
+      // Wrap in camelRow so snake_case columns from SQL (e.g. sort_order) are
+      // remapped to camelCase (sortOrder) — the rest of the admin responses
+      // (users, audit, sites, dcs) already do this.
+      res.json(rows.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin ports list failed');
       res.status(500).json({ error: 'internal' });

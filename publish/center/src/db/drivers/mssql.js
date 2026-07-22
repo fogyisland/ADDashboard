@@ -71,7 +71,11 @@ export function createMssqlDriver(config) {
 
   async function execute(sqlStr, params = []) {
     await ensureConnected();
-    const isInsert = /^\s*(INSERT|MERGE)\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
+    // Heuristic: only `INSERT ... INTO <table>` carries an IDENTITY to surface.
+    // MERGE upserts target tables without IDENTITY (e.g. ad_agent_port_status,
+    // ad_dcs, ad_agent_heartbeat, system_config) and would trip the
+    // SCOPE_IDENTITY() NULL guard below. MERGE callers do not consume insertId.
+    const isInsert = /^\s*INSERT\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
     const sqlWithId = isInsert
       ? `${rewritePlaceholders(sqlStr)};\nSELECT CAST(SCOPE_IDENTITY() AS bigint) AS id`
       : rewritePlaceholders(sqlStr);
@@ -82,10 +86,13 @@ export function createMssqlDriver(config) {
     const recordsets = isInsert ? result.recordsets : [result.recordset];
     const first = recordsets?.[0] ?? [];
     const rows = normalizeRows(Array.isArray(first) ? first : []);
-    let affectedRows = 0;
+    // Always read the first batch's rowsAffected so UPDATE/DELETE/MERGE callers
+    // (which use this for 404 detection) see the real count. For INSERT+SCOPE_IDENTITY
+    // batches, rowsAffected[0] is the INSERT batch and rowsAffected[1] is the
+    // SCOPE_IDENTITY() probe (=1). Use [0] for the meaningful count.
+    const affectedRows = result.rowsAffected?.[0] ?? 0;
     let insertId;
     if (isInsert) {
-      affectedRows = result.rowsAffected?.[0] ?? 0;
       // mssql@11 collapses INSERT batches that return no columns out of
       // `recordsets` (see tedious/request.js: `if (Object.keys(columns).length === 0) return`).
       // So for `INSERT ... SELECT` (no OUTPUT) followed by `SELECT SCOPE_IDENTITY()`,
@@ -115,7 +122,8 @@ export function createMssqlDriver(config) {
     try {
       const txWrapper = {
         async execute(sqlStr, params = []) {
-          const isInsert = /^\s*(INSERT|MERGE)\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
+          // Same INSERT/MERGE heuristic as pool.execute — see execute() above.
+          const isInsert = /^\s*INSERT\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
           const sqlWithId = isInsert
             ? `${rewritePlaceholders(sqlStr)};\nSELECT CAST(SCOPE_IDENTITY() AS bigint) AS id`
             : rewritePlaceholders(sqlStr);
@@ -126,10 +134,9 @@ export function createMssqlDriver(config) {
           const recordsets = isInsert ? result.recordsets : [result.recordset];
           const first = recordsets?.[0] ?? [];
           const rows = normalizeRows(Array.isArray(first) ? first : []);
-          let affectedRows = 0;
+          const affectedRows = result.rowsAffected?.[0] ?? 0;
           let insertId;
           if (isInsert) {
-            affectedRows = result.rowsAffected?.[0] ?? 0;
             const idRow = recordsets[recordsets.length - 1]?.[0];
             if (idRow?.id != null) {
               insertId = Number(idRow.id);
