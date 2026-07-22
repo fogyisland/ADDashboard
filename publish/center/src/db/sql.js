@@ -75,6 +75,30 @@ const VARIANTS = {
     },
     heartbeat: {
       upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = CURRENT_TIMESTAMP, agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size)`
+    },
+    ports: {
+      list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
+      listForAgent: `SELECT sp.port, sp.label, aps.ok, aps.latency_ms AS latencyMs, aps.last_checked_at AS lastCheckedAt
+        FROM system_ports sp
+        INNER JOIN ad_agent_port_status aps ON aps.port = sp.port AND aps.agent_id = ?
+        ORDER BY sp.sort_order, sp.port`,
+      create: 'INSERT INTO system_ports (port, label, sort_order) VALUES (?, ?, ?)',
+      findByPort: 'SELECT id FROM system_ports WHERE port = ?',
+      updatePartial: (fields) => `UPDATE system_ports SET ${fields.join(', ')} WHERE id = ?`,
+      delete: 'DELETE FROM system_ports WHERE id = ?'
+    },
+    portStatus: {
+      // Single-row upsert; called in a loop inside a transaction. MySQL flavor.
+      upsertOne: `INSERT INTO ad_agent_port_status
+        (agent_id, port, ok, latency_ms, last_checked_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          ok = VALUES(ok),
+          latency_ms = VALUES(latency_ms),
+          last_checked_at = VALUES(last_checked_at)`,
+      listForAgents: (placeholders) => `SELECT agent_id AS agentId, port, ok, latency_ms AS latencyMs, last_checked_at AS lastCheckedAt
+        FROM ad_agent_port_status
+        WHERE agent_id IN (${placeholders})`
     }
   },
   mssql: {
@@ -145,6 +169,29 @@ const VARIANTS = {
     },
     heartbeat: {
       upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size)`
+    },
+    ports: {
+      list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
+      listForAgent: `SELECT sp.port, sp.label, aps.ok, aps.latency_ms AS latencyMs, aps.last_checked_at AS lastCheckedAt
+        FROM system_ports sp
+        INNER JOIN ad_agent_port_status aps ON aps.port = sp.port AND aps.agent_id = @p1
+        ORDER BY sp.sort_order, sp.port`,
+      create: 'INSERT INTO system_ports (port, label, sort_order) VALUES (@p1, @p2, @p3)',
+      findByPort: 'SELECT id FROM system_ports WHERE port = @p1',
+      updatePartial: (fields) => `UPDATE system_ports SET ${fields.join(', ')} WHERE id = @p${fields.length + 1}`,
+      delete: 'DELETE FROM system_ports WHERE id = @p1'
+    },
+    portStatus: {
+      // MSSQL uses MERGE for atomic upsert (no native ON DUPLICATE KEY).
+      // Uses ? placeholders — db.execute remaps ? -> @pN for MSSQL.
+      upsertOne: `MERGE INTO ad_agent_port_status AS t
+        USING (SELECT ? AS agent_id, ? AS port, ? AS ok, ? AS latency_ms, ? AS last_checked_at) AS s
+        ON t.agent_id = s.agent_id AND t.port = s.port
+        WHEN MATCHED THEN UPDATE SET t.ok = s.ok, t.latency_ms = s.latency_ms, t.last_checked_at = s.last_checked_at
+        WHEN NOT MATCHED THEN INSERT (agent_id, port, ok, latency_ms, last_checked_at) VALUES (s.agent_id, s.port, s.ok, s.latency_ms, s.last_checked_at);`,
+      listForAgents: (placeholders) => `SELECT agent_id AS agentId, port, ok, latency_ms AS latencyMs, last_checked_at AS lastCheckedAt
+        FROM ad_agent_port_status
+        WHERE agent_id IN (${placeholders})`
     }
   }
 };

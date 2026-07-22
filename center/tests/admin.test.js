@@ -678,3 +678,176 @@ test('PUT /api/admin/dcs-catalog/:dc_name/site with siteId:null unbinds', async 
   assert.match(records[0].sql, /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*NULL/i);
   assert.deepEqual(records[0].params, ['DC-BJ-01']);
 });
+
+// ----- PORTS (system_ports admin CRUD) -----
+
+test('GET /api/admin/ports: 200 returns rows from db.sql.ports.list', async () => {
+  const db = buildMockDb([
+    {
+      match: /FROM\s+system_ports/i,
+      rows: [{ id: 1, port: 135, label: 'RPC', sort_order: 0, sortOrder: 0 }]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/ports')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 1);
+  assert.equal(r.body[0].id, 1);
+  assert.equal(r.body[0].port, 135);
+  assert.equal(r.body[0].label, 'RPC');
+});
+
+test('POST /api/admin/ports: validates port range (rejects 0 and 99999)', async () => {
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
+  for (const bad of [0, 99999]) {
+    const r = await supertest(app)
+      .post('/api/admin/ports')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ port: bad, label: 'x' });
+    assert.equal(r.status, 400, `port=${bad} should fail`);
+  }
+});
+
+test('POST /api/admin/ports: 409 on duplicate port', async () => {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
+    async execute(sql) {
+      if (/INSERT\s+INTO\s+system_ports/i.test(sql)) {
+        const err = new Error('Duplicate entry');
+        err.code = 'DUP_ENTRY';
+        throw err;
+      }
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
+  };
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .post('/api/admin/ports')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ port: 135, label: 'RPC' });
+  assert.equal(r.status, 409);
+});
+
+test('PUT /api/admin/ports/:id: 200 updates a row', async () => {
+  const records = [];
+  _setDbForTest(buildRecordingPool(records));
+  const app = buildApp();
+  const r = await supertest(app)
+    .put('/api/admin/ports/3')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ label: 'New' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  // Must have invoked UPDATE system_ports SET ... WHERE id = ?
+  const updateCall = records.find(rec => /UPDATE\s+system_ports/i.test(rec.sql));
+  assert.ok(updateCall, 'UPDATE system_ports must have been issued');
+  assert.deepEqual(updateCall.params, ['New', 3]);
+});
+
+test('PUT /api/admin/ports/:id: 400 invalid id (non-numeric), no DB execute', async () => {
+  let executeCalls = 0;
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
+    async execute() {
+      executeCalls++;
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
+  };
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .put('/api/admin/ports/abc')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ label: 'X' });
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'invalid id');
+  assert.equal(executeCalls, 0);
+});
+
+test('PUT /api/admin/ports/:id: 400 when no fields to update', async () => {
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
+  const r = await supertest(app)
+    .put('/api/admin/ports/3')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({});
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'no fields to update');
+});
+
+test('DELETE /api/admin/ports/:id: 404 if row missing', async () => {
+  const { buildSql } = await import('../src/db/sql.js');
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
+    async execute() {
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    },
+    async query() { return { rows: [] }; },
+    async transaction() {},
+    async healthcheck() {},
+    async close() {}
+  };
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .delete('/api/admin/ports/999')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 404);
+  assert.equal(r.body.error, 'port not found');
+});
+
+test('DELETE /api/admin/ports/:id: 200 on success', async () => {
+  const records = [];
+  _setDbForTest(buildRecordingPool(records));
+  const app = buildApp();
+  const r = await supertest(app)
+    .delete('/api/admin/ports/5')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.match(records[0].sql, /DELETE\s+FROM\s+system_ports/i);
+});
+
+test('GET /api/admin/ports: 401 when no token', async () => {
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
+  const r = await supertest(app).get('/api/admin/ports');
+  assert.equal(r.status, 401);
+});
+
+test('GET /api/admin/ports: 403 for operator token (missing admin:users perm)', async () => {
+  _setDbForTest(buildMockDb());
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/ports')
+    .set('Authorization', `Bearer ${operatorToken()}`);
+  assert.equal(r.status, 403);
+});
+
+test('GET /api/admin/ports: 500 on DB error returns {error: "internal"}', async () => {
+  _setDbForTest(buildThrowingPool('boom'));
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/ports')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 500);
+  assert.equal(r.body.error, 'internal');
+});

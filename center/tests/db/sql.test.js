@@ -32,3 +32,43 @@ test('mssql users.count matches mysql semantics', () => {
   assert.match(sql.users.count, /COUNT\(\*\)/);
   assert.match(sql.users.count, /JOIN\s+sys_roles/);
 });
+
+// --- ports + portStatus (T2: custom-port healthcheck) ---
+
+test('mysql: ports.list orders by sort_order, port', () => {
+  const sql = buildSql('mysql').ports.list;
+  assert.match(sql, /FROM system_ports/i);
+  assert.match(sql, /ORDER BY sort_order, port/);
+});
+
+test('mysql: ports.create uses 3 positional placeholders (port, label, sort_order)', () => {
+  const sql = buildSql('mysql').ports.create;
+  assert.strictEqual((sql.match(/\?/g) || []).length, 3);
+});
+
+test('mysql: ports.updatePartial builds SET clauses with ?', () => {
+  const sql = buildSql('mysql').ports.updatePartial(['port = ?', 'label = ?']);
+  assert.match(sql, /SET port = \?, label = \? WHERE id = \?/);
+});
+
+test('mssql: ports.updatePartial caller is responsible for ? → @pN', () => {
+  // updatePartial itself just joins the field clauses; the caller substitutes
+  // placeholders. (The mssql versions of CREATE / DELETE stay in `?` form
+  // because db.execute remaps them per-adapter.)
+  const sql = buildSql('mssql').ports.updatePartial(['port = @p1', 'label = @p2']);
+  assert.match(sql, /SET port = @p1, label = @p2 WHERE id = @p3/);
+});
+
+test('mysql: portStatus.upsertOne uses ON DUPLICATE KEY UPDATE on (agent_id, port)', () => {
+  const sql = buildSql('mysql').portStatus.upsertOne;
+  assert.match(sql, /INSERT INTO ad_agent_port_status/);
+  assert.match(sql, /ON DUPLICATE KEY UPDATE/);
+  // 5 placeholders: agent_id, port, ok, latency_ms, last_checked_at
+  assert.strictEqual((sql.match(/\?/g) || []).length, 5);
+});
+
+test('mssql: portStatus.upsertOne uses MERGE with USING (VALUES)', () => {
+  const sql = buildSql('mssql').portStatus.upsertOne;
+  assert.match(sql, /MERGE INTO ad_agent_port_status/i);
+  assert.match(sql, /USING \(SELECT \? AS agent_id, \? AS port/i);
+});

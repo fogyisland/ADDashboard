@@ -4,6 +4,7 @@ import { requirePerm } from '../auth/rbac.js';
 import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
 import { getConfig, setConfig } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
+import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
 import { getDb } from '../db/index.js';
 
 // Snake -> camel rename for known columns in admin responses.
@@ -288,6 +289,55 @@ export function adminRouter({ config, logger }) {
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog site assign failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- Ports -----
+  r.get('/api/admin/ports', auth, async (_req, res) => {
+    try {
+      const rows = await listPorts();
+      res.json(rows);
+    } catch (e) {
+      logger.error({ err: e }, 'admin ports list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.post('/api/admin/ports', auth, async (req, res) => {
+    try {
+      const out = await createPort(req.body || {});
+      res.status(201).json(out);
+    } catch (e) {
+      if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+      logger.error({ err: e }, 'admin ports create failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.put('/api/admin/ports/:id', auth, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+    try {
+      const ok = await updatePort(id, req.body || {});
+      if (!ok) return res.status(404).json({ error: 'port not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+      logger.error({ err: e }, 'admin ports update failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.delete('/api/admin/ports/:id', auth, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+    try {
+      const ok = await deletePort(id);
+      if (!ok) return res.status(404).json({ error: 'port not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'admin ports delete failed');
       res.status(500).json({ error: 'internal' });
     }
   });
