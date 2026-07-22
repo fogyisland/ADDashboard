@@ -3,6 +3,8 @@ import { agentToken } from '../auth/agent-token.js';
 import { upsertStatus } from '../services/replication.js';
 import { getConfig, getAgentConfig } from '../services/config.js';
 import { upsertDiscoveredDc } from '../services/discovery.js';
+import { listPorts } from '../services/ports.js';
+import { upsertPortStatuses } from '../services/port-status.js';
 import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 
@@ -10,8 +12,18 @@ export function agentRouter({ config, logger }) {
   const r = Router();
   const agentMw = agentToken(config.agentToken);
 
+  r.get('/api/agent/ports', agentMw, async (_req, res) => {
+    try {
+      const rows = await listPorts();
+      res.json(rows);
+    } catch (e) {
+      logger.error({ err: e }, 'agent ports fetch failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
-    const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus } = req.body || {};
+    const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports } = req.body || {};
     if (!agentId) return res.status(400).json({ error: 'missing agentId' });
     try {
       const db = getDb();
@@ -22,6 +34,18 @@ export function agentRouter({ config, logger }) {
         lastReportStatus ?? null,
         pendingQueueSize ?? 0
       ]);
+
+      // Optional port-status ingest (back-compat: pre-feature agents omit `ports`).
+      if (ports !== undefined && ports !== null) {
+        if (!Array.isArray(ports)) {
+          return res.status(400).json({ error: 'ports must be an array' });
+        }
+        const portRows = await listPorts();
+        const validPortsSet = new Set(portRows.map(p => p.port));
+        const { accepted, rejected } = await upsertPortStatuses(agentId, ports, { validPortsSet });
+        return res.json({ ok: true, accepted, rejected });
+      }
+
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e, agentId }, 'heartbeat failed');
