@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { getDb } from '../db/index.js';
+import { listPortStatusesForAgents } from '../services/port-status.js';
+import { listPorts } from '../services/ports.js';
 
 // Helpers ---------------------------------------------------------------
 
@@ -130,7 +132,35 @@ export function dashboardRouter({ config, logger }) {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.dashboard.agents);
-      res.json(rows.map(camelRow));
+      const agents = rows.map(camelRow);
+
+      // Attach per-agent portStatuses. `listPortStatusesForAgents` returns rows
+      // straight from ad_agent_port_status (no join), so staleness is enforced
+      // HERE: a status row whose port is no longer registered in system_ports
+      // is dropped. `labelByPort` doubles as the "is this port registered?"
+      // gate — a port absent from the map is stale and hidden. When system_ports
+      // is empty the map is empty, so every status row is hidden (fallback: []).
+      const agentIds = agents.map(a => a.agentId).filter(Boolean);
+      const portRows = await listPortStatusesForAgents(agentIds);
+      const portMeta = await listPorts();
+      const labelByPort = new Map(portMeta.map(p => [p.port, p.label]));
+
+      const portStatusByAgent = new Map();
+      for (const row of portRows) {
+        if (!labelByPort.has(row.port)) continue; // stale — hidden
+        if (!portStatusByAgent.has(row.agentId)) portStatusByAgent.set(row.agentId, []);
+        portStatusByAgent.get(row.agentId).push({
+          port: row.port,
+          label: labelByPort.get(row.port) ?? null,
+          ok: !!row.ok,
+          latencyMs: row.latencyMs,
+          lastCheckedAt: toIso(row.lastCheckedAt)
+        });
+      }
+      for (const a of agents) {
+        a.portStatuses = portStatusByAgent.get(a.agentId) ?? [];
+      }
+      res.json(agents);
     } catch (e) {
       logger.error({ err: e }, 'dashboard agents failed');
       res.status(500).json({ error: 'internal' });

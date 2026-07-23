@@ -231,6 +231,103 @@ test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async
   assert.equal(r.body[0].secondsSinceHeartbeat, 42);
 });
 
+test('agents: attaches portStatuses per agent (INNER JOIN semantics — stale rows hidden)', async () => {
+  // Two agents; only agent-1 (dc01) has probe results. agent-2 (dc02) has none.
+  // agent-1 has a status row for port 99999 which is NOT in system_ports —
+  // it must be hidden (stale port removed from system_ports).
+  const checkedAt = new Date('2026-07-23T00:00:00Z');
+  const db = buildMockDb([
+    {
+      match: /FROM\s+ad_agent_heartbeat/i,
+      rows: [
+        {
+          agent_id: 'dc01',
+          last_heartbeat_at: new Date('2026-07-23T00:00:00Z'),
+          agent_version: '1.0.0',
+          last_report_at: null,
+          last_report_status: 'success',
+          pending_queue_size: 0,
+          seconds_since_heartbeat: 5
+        },
+        {
+          agent_id: 'dc02',
+          last_heartbeat_at: new Date('2026-07-23T00:00:00Z'),
+          agent_version: '1.0.0',
+          last_report_at: null,
+          last_report_status: 'success',
+          pending_queue_size: 0,
+          seconds_since_heartbeat: 7
+        }
+      ]
+    },
+    {
+      // listPortStatusesForAgents -> portStatus.listForAgents
+      match: /FROM\s+ad_agent_port_status\s+WHERE\s+agent_id\s+IN/i,
+      rows: [
+        { agentId: 'dc01', port: 135, ok: 1, latencyMs: 3, lastCheckedAt: checkedAt },
+        { agentId: 'dc01', port: 99999, ok: 0, latencyMs: 99, lastCheckedAt: checkedAt }
+      ]
+    },
+    {
+      // listPorts -> ports.list. Only 135 registered; 99999 absent.
+      match: /FROM\s+system_ports\s+ORDER\s+BY/i,
+      rows: [{ id: 1, port: 135, label: 'RPC', sortOrder: 0 }]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/agents')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 2);
+  const dc01 = r.body.find(a => a.agentId === 'dc01');
+  const dc02 = r.body.find(a => a.agentId === 'dc02');
+  assert.deepEqual(dc01.portStatuses, [
+    { port: 135, label: 'RPC', ok: true, latencyMs: 3, lastCheckedAt: checkedAt.toISOString() }
+  ], 'stale port 99999 status row must be hidden');
+  assert.deepEqual(dc02.portStatuses, [], 'dc02 has no port statuses yet');
+});
+
+test('agents: portStatuses empty for all agents when system_ports is empty (fallback)', async () => {
+  const checkedAt = new Date('2026-07-23T00:00:00Z');
+  const db = buildMockDb([
+    {
+      match: /FROM\s+ad_agent_heartbeat/i,
+      rows: [
+        {
+          agent_id: 'dc01',
+          last_heartbeat_at: new Date('2026-07-23T00:00:00Z'),
+          agent_version: '1.0.0',
+          last_report_at: null,
+          last_report_status: 'success',
+          pending_queue_size: 0,
+          seconds_since_heartbeat: 5
+        }
+      ]
+    },
+    {
+      match: /FROM\s+ad_agent_port_status\s+WHERE\s+agent_id\s+IN/i,
+      rows: [
+        { agentId: 'dc01', port: 135, ok: 1, latencyMs: 3, lastCheckedAt: checkedAt }
+      ]
+    },
+    {
+      // system_ports empty -> every status row is stale -> hidden.
+      match: /FROM\s+system_ports\s+ORDER\s+BY/i,
+      rows: []
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/agents')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.length, 1);
+  assert.deepEqual(r.body[0].portStatuses, [], 'no registered ports -> all statuses hidden');
+});
+
 // ----- DB ERROR PATH -----
 
 test('overview: 500 on DB error, returns {error: "internal"}', async () => {
