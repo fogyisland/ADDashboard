@@ -5,6 +5,7 @@ import { postReport, postHeartbeat, fetchConfig } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { runDiscovery, postDiscovery, startDiscoveryScheduler } from './src/discovery.js';
 import { runHealthChecks } from './src/healthcheck.js';
+import { fetchPortList } from './src/port-config-fetcher.js';
 import { openQueue } from './src/local-queue.js';
 import { createScheduler } from './src/scheduler.js';
 
@@ -14,6 +15,19 @@ const logger = createLogger({ component: 'agent', level: config.logLevel });
 
 const queue = openQueue(config.queueDbPath);
 
+// Custom-port health probe state. `cachedPortList` is the latest copy of the
+// admin-defined /api/agent/ports list (refreshed on the healthcheck cadence);
+// `latestPortResults` is the most recent probe output, attached to the
+// heartbeat payload when non-empty. Both are mutable cache slots updated by
+// `refreshPortList()` and `runHealth` respectively.
+let cachedPortList = [];
+let latestPortResults = [];
+async function refreshPortList() {
+  cachedPortList = await fetchPortList(config.centerUrl, config.agentToken);
+}
+// Initial refresh on startup, before any heartbeat fires.
+await refreshPortList();
+
 // Standalone liveness heartbeat. Interval is read from config at startup;
 // changing it via center config requires restarting the agent process — same
 // trade-off as pollingIntervalMinutes. The scheduler ALSO sends heartbeats
@@ -21,7 +35,13 @@ const queue = openQueue(config.queueDbPath);
 // liveness even when collect cycles are hours apart.
 const heartbeat = startHeartbeat({
   intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
-  payload: () => ({ agentId: config.agentId, agentVersion: '0.1.0', pendingQueueSize: queue.count() }),
+  payload: () => {
+    const p = { agentId: config.agentId, agentVersion: '0.1.0', pendingQueueSize: queue.count() };
+    if (Array.isArray(latestPortResults) && latestPortResults.length > 0) {
+      p.ports = latestPortResults.map(x => ({ port: x.port, ok: x.ok, latencyMs: x.latencyMs }));
+    }
+    return p;
+  },
   send: async (p) => { await postHeartbeat({ centerUrl: config.centerUrl, agentToken: config.agentToken, payload: p }); }
 });
 
@@ -69,12 +89,28 @@ const scheduler = createScheduler({
   queue,
   collect: () => runCollector({ powerShellPath: config.powerShellPath, psScriptPath: config.psScriptPath }),
   send: (snap) => postReport({ centerUrl: config.centerUrl, agentToken: config.agentToken, snapshot: snap }),
-  sendHeartbeat: (extra) => postHeartbeat({
-    centerUrl: config.centerUrl,
-    agentToken: config.agentToken,
-    payload: { agentId: config.agentId, agentVersion: '0.1.0', ...extra }
-  }),
-  runHealth: () => runHealthChecks({ centerUrl: config.centerUrl, agentToken: config.agentToken, hostname: config.agentId })
+  sendHeartbeat: (extra) => {
+    const payload = { agentId: config.agentId, agentVersion: '0.1.0', ...extra };
+    if (Array.isArray(latestPortResults) && latestPortResults.length > 0) {
+      payload.ports = latestPortResults.map(x => ({ port: x.port, ok: x.ok, latencyMs: x.latencyMs }));
+    }
+    return postHeartbeat({
+      centerUrl: config.centerUrl,
+      agentToken: config.agentToken,
+      payload
+    });
+  },
+  runHealth: async () => {
+    await refreshPortList();
+    const r = await runHealthChecks({
+      centerUrl: config.centerUrl,
+      agentToken: config.agentToken,
+      hostname: config.agentId,
+      ports: cachedPortList.map(p => p.port)
+    });
+    if (Array.isArray(r.ports)) latestPortResults = r.ports;
+    return r;
+  }
 });
 
 scheduler.start();
