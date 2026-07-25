@@ -231,10 +231,12 @@ test('agents: returns camelCase rows with computed secondsSinceHeartbeat', async
   assert.equal(r.body[0].secondsSinceHeartbeat, 42);
 });
 
-test('agents: attaches portStatuses per agent (INNER JOIN semantics — stale rows hidden)', async () => {
+test('agents: attaches portStatuses per agent (stale rows hidden via INNER JOIN)', async () => {
   // Two agents; only agent-1 (dc01) has probe results. agent-2 (dc02) has none.
-  // agent-1 has a status row for port 99999 which is NOT in system_ports —
-  // it must be hidden (stale port removed from system_ports).
+  // SQL helper does INNER JOIN against system_ports, so a status row whose
+  // port is no longer registered is filtered at the DB layer. The mock
+  // simulates the post-JOIN output: only dc01/port 135 survives (label from
+  // system_ports), and dc01/port 99999 is gone.
   const checkedAt = new Date('2026-07-23T00:00:00Z');
   const db = buildMockDb([
     {
@@ -261,17 +263,11 @@ test('agents: attaches portStatuses per agent (INNER JOIN semantics — stale ro
       ]
     },
     {
-      // listPortStatusesForAgents -> portStatus.listForAgents
-      match: /FROM\s+ad_agent_port_status\s+WHERE\s+agent_id\s+IN/i,
+      // listPortStatusesForAgents -> portStatus.listForAgents (post-INNER-JOIN)
+      match: /FROM\s+ad_agent_port_status[\s\S]*?WHERE\s+\S*\.?agent_id\s+IN/i,
       rows: [
-        { agentId: 'dc01', port: 135, ok: 1, latencyMs: 3, lastCheckedAt: checkedAt },
-        { agentId: 'dc01', port: 99999, ok: 0, latencyMs: 99, lastCheckedAt: checkedAt }
+        { agentId: 'dc01', port: 135, ok: 1, latencyMs: 3, lastCheckedAt: checkedAt, label: 'RPC' }
       ]
-    },
-    {
-      // listPorts -> ports.list. Only 135 registered; 99999 absent.
-      match: /FROM\s+system_ports\s+ORDER\s+BY/i,
-      rows: [{ id: 1, port: 135, label: 'RPC', sortOrder: 0 }]
     }
   ]).standard();
   _setDbForTest(db);
@@ -285,7 +281,7 @@ test('agents: attaches portStatuses per agent (INNER JOIN semantics — stale ro
   const dc02 = r.body.find(a => a.agentId === 'dc02');
   assert.deepEqual(dc01.portStatuses, [
     { port: 135, label: 'RPC', ok: true, latencyMs: 3, lastCheckedAt: checkedAt.toISOString() }
-  ], 'stale port 99999 status row must be hidden');
+  ], 'port 135 status row passes through with label from JOIN');
   assert.deepEqual(dc02.portStatuses, [], 'dc02 has no port statuses yet');
 });
 
@@ -307,14 +303,8 @@ test('agents: portStatuses empty for all agents when system_ports is empty (fall
       ]
     },
     {
-      match: /FROM\s+ad_agent_port_status\s+WHERE\s+agent_id\s+IN/i,
-      rows: [
-        { agentId: 'dc01', port: 135, ok: 1, latencyMs: 3, lastCheckedAt: checkedAt }
-      ]
-    },
-    {
-      // system_ports empty -> every status row is stale -> hidden.
-      match: /FROM\s+system_ports\s+ORDER\s+BY/i,
+      // system_ports empty -> INNER JOIN returns zero rows -> empty statuses.
+      match: /FROM\s+ad_agent_port_status[\s\S]*?WHERE\s+\S*\.?agent_id\s+IN/i,
       rows: []
     }
   ]).standard();

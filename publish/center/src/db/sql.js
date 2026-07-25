@@ -96,9 +96,12 @@ const VARIANTS = {
           ok = VALUES(ok),
           latency_ms = VALUES(latency_ms),
           last_checked_at = VALUES(last_checked_at)`,
-      listForAgents: (placeholders) => `SELECT agent_id AS agentId, port, ok, latency_ms AS latencyMs, last_checked_at AS lastCheckedAt
-        FROM ad_agent_port_status
-        WHERE agent_id IN (${placeholders})`
+      listForAgents: (placeholders) => `SELECT aps.agent_id AS agentId, aps.port, aps.ok, aps.latency_ms AS latencyMs, aps.last_checked_at AS lastCheckedAt,
+               sp.label AS label
+        FROM ad_agent_port_status aps
+        INNER JOIN system_ports sp ON aps.port = sp.port
+        WHERE aps.agent_id IN (${placeholders})
+        ORDER BY sp.sort_order, sp.port`
     }
   },
   mssql: {
@@ -189,9 +192,12 @@ const VARIANTS = {
         ON t.agent_id = s.agent_id AND t.port = s.port
         WHEN MATCHED THEN UPDATE SET t.ok = s.ok, t.latency_ms = s.latency_ms, t.last_checked_at = s.last_checked_at
         WHEN NOT MATCHED THEN INSERT (agent_id, port, ok, latency_ms, last_checked_at) VALUES (s.agent_id, s.port, s.ok, s.latency_ms, s.last_checked_at);`,
-      listForAgents: (placeholders) => `SELECT agent_id AS agentId, port, ok, latency_ms AS latencyMs, last_checked_at AS lastCheckedAt
-        FROM ad_agent_port_status
-        WHERE agent_id IN (${placeholders})`
+      listForAgents: (placeholders) => `SELECT aps.agent_id AS agentId, aps.port, aps.ok, aps.latency_ms AS latencyMs, aps.last_checked_at AS lastCheckedAt,
+               sp.label AS label
+        FROM ad_agent_port_status aps
+        INNER JOIN system_ports sp ON aps.port = sp.port
+        WHERE aps.agent_id IN (${placeholders})
+        ORDER BY sp.sort_order, sp.port`
     }
   }
 };
