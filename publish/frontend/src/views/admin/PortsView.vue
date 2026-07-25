@@ -30,7 +30,7 @@
         <label>排序<input type="number" v-model.number="form.sortOrder" /></label>
         <div class="actions">
           <button @click="cancel">取消</button>
-          <button class="save-btn" @click="save" :disabled="saving">{{ saving ? '保存中...' : '保存' }}</button>
+          <button class="save-btn" @click="save" :disabled="saving || !canSave">{{ saving ? '保存中...' : '保存' }}</button>
         </div>
         <span v-if="msg" class="msg">{{ msg }}</span>
       </div>
@@ -39,7 +39,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import AppLayout from '../../components/AppLayout.vue';
 import { portsApi } from '../../api/ports.js';
 
@@ -48,6 +48,11 @@ const editing = ref(null);
 const form = ref({ id: null, port: null, label: '', sortOrder: 0 });
 const saving = ref(false);
 const msg = ref('');
+
+const canSave = computed(() => {
+  const p = form.value.port;
+  return Number.isInteger(p) && p >= 1 && p <= 65535 && !!(form.value.label || '').trim();
+});
 
 async function load() {
   const { data } = await portsApi.list();
