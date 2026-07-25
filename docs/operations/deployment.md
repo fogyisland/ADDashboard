@@ -11,9 +11,10 @@
 5. [首次启动向导](#首次启动向导)
 6. [服务管理](#服务管理)
 7. [升级与回滚](#升级与回滚)
-8. [本地 production preview（无服务）](#本地-production-preview无服务)
-9. [故障排查](#故障排查)
-10. [Green Bundle（publish/）的默认行为变更](#green-bundlepublish的默认行为变更)
+8. [自定义端口健康检查（migration 003）](#自定义端口健康检查migration-003)
+9. [本地 production preview（无服务）](#本地-production-preview无服务)
+10. [故障排查](#故障排查)
+11. [Green Bundle（publish/）的默认行为变更](#green-bundlepublish的默认行为变更)
 
 ---
 
@@ -253,6 +254,72 @@ git pull
 center 没有内置版本管理。最简单的回滚方式是：
 1. `git checkout <previous-tag>` 在部署目录
 2. 重新跑 `update-center.ps1`
+
+---
+
+## 自定义端口健康检查（migration 003）
+
+此特性让管理员维护一份「待探测 TCP 端口」清单（如 RPC `135`、AD Web Services `9389`、自定义 `50001-50003`），每台 Agent 拉取该清单、对本机做 TCP 连通性探测，并把结果随心跳上报；Center 在 **Agents 视图** 用彩色徽章展示每个端口的最新状态。
+
+数据落在两张新表：`system_ports`（管理员维护的端口清单）与 `ad_agent_port_status`（每 Agent × 每端口的最新探测结果）。二者由 **migration 003** 引入。
+
+### 全新部署：无需额外操作
+
+首次启动向导的 schema 应用器（`center/src/init/schema-applier.js` 的 `applyAll`）在跑完 `01-tables.sql` + `02-seed-roles.sql` 后，会**按文件名顺序自动应用 `db/migrations/` 下的全部迁移**（001 → 002 → 003）。所以走 [首次启动向导](#首次启动向导) 的全新库会自动建好这两张表，**不用手动跑任何 SQL**。
+
+### 存量升级：手动应用 migration 003
+
+已初始化的部署被 init 完成标记（`.env` 的 `ADDASHBOARD_INITIALIZED=1` + 注册表）硬锁在向导之外，`update-center.ps1` **只更新代码、不碰数据库**。因此升级到含本特性的版本后，必须对现有库手动应用一次 migration 003。两份迁移都是幂等的（`CREATE TABLE IF NOT EXISTS` / `IF OBJECT_ID(...) IS NULL`），重复执行安全。
+
+**MySQL：**
+
+```powershell
+# 用库里的账户执行；<db> 为 appsettings.json 里配置的库名
+Get-Content .\db\migrations\003-port-healthcheck.sql -Raw | mysql -u <user> -p <db>
+```
+
+**SQL Server：**
+
+```powershell
+sqlcmd -S <server> -d <db> -U <user> -P <pass> -i .\db\migrations\mssql\003-port-healthcheck.sql
+```
+
+应用后 `Restart-Service ADDashboardCenter`（新增端点/服务需要重载代码，若升级步骤已重启则可跳过）。
+
+### 配置要探测的端口（管理员 UI）
+
+以 admin 身份登录后打开 **`http://<center>:8080/admin/ports`**（该路由要求 `admin:users` 权限），在此增删改端口清单：
+
+| 字段 | 说明 |
+|---|---|
+| `port` | 1-65535 的 TCP 端口号；全表唯一（重复端口返回 409） |
+| `label` | 展示名（如 `RPC Endpoint Mapper`） |
+| `sort_order` | 徽章展示排序，小的在前 |
+
+底层 REST：`GET/POST /api/admin/ports`、`PUT/DELETE /api/admin/ports/:id`。
+
+### Agent 侧：零配置
+
+Agent **无需任何额外配置**。每个心跳周期（`heartbeatIntervalSeconds`，默认 5s）Agent 会：
+
+1. 拉取 `GET /api/agent/ports` 获取当前端口清单（拉取失败时静默降级为空清单，不影响心跳）；
+2. 对每个端口做并行 TCP 探测（2s 超时）；
+3. 把 `ports:[{port, ok, latencyMs}]` 附在心跳里上报。
+
+心跳负载对端口字段**向后兼容**：旧版 Agent（不带 `ports`）照常工作，Center 端不会因缺字段报错。清单为空时 Agent 不上报端口结果。
+
+### 结果展示
+
+Agents 视图每行按端口显示徽章，颜色反映最近一次探测的往返延迟：
+
+| 徽章 | 含义 |
+|---|---|
+| 绿 | `ok=true` 且 `latencyMs < 100` |
+| 黄 | `ok=true` 且 `100 ≤ latencyMs < 500` |
+| 红 | `ok=false`（不可达）或 `latencyMs ≥ 500` |
+| 灰 `–` | 该端口暂无探测数据（Agent 尚未上报） |
+
+Center 在拼装 `GET /api/dashboard/agents` 的 `portStatuses` 时，只保留仍在 `system_ports` 清单中的端口——管理员删除某端口后，其历史探测行会在展示层被自动隐藏。
 
 ---
 
