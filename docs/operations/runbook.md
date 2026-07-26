@@ -120,6 +120,52 @@ agent 每 `discovery_interval_hours`（默认 4 小时）采集本地 DC 元数�
 
 admin 通过 `/admin/sites-catalog` 维护站点，通过 `/admin/dcs-catalog` 分配 DC 到站点。`/admin/site-replication-matrix` 页面展示选中站点的 DC×DC 复制矩阵，每 `site_matrix_refresh_seconds`（默认 10 秒）自动刷新。
 
+## 端口健康检查（Custom Port Healthcheck）
+
+Agent 除了心跳上报复制/拓扑数据外，还会对管理员在 center 维护的 TCP 端口清单做主动连通性探测（127.0.0.1，2s 超时），结果在 Agents 视图用彩色徽章展示。
+
+### 管理端口清单
+
+1. 用 admin 登录 → 侧栏「管理」下「端口健康检查」（路径 `/admin/ports`）
+2. 增删改 `port`（1-65535，唯一）/ `label`（展示名）/ `sort_order`（展示排序）
+3. Agent 在下次心跳时（默认 5s 内）会拉取新清单并自动生效
+
+底层 REST：`GET/POST /api/admin/ports`、`PUT/DELETE /api/admin/ports/:id`。
+
+### 查看探测结果
+
+- Agents 视图每行按端口显示徽章：绿 <100ms / 黄 100-500ms / 红 ≥500ms 或不可达 / 灰 `—` 无数据
+- REST：`GET /api/dashboard/agents`，每个 agent 的 `portStatuses: [{port, label, ok, latencyMs, lastCheckedAt}]`
+- 管理员从清单中删除某端口后，其历史探测行会在展示层自动隐藏（SQL `INNER JOIN system_ports`）
+
+### 验证 agent 在上报端口数据
+
+```powershell
+# 从中心服务器
+$t = (Invoke-WebRequest http://center:8080/api/auth/login `
+  -Method POST -ContentType 'application/json' `
+  -Body '{"username":"admin","password":"..."}').Content | ConvertFrom-Json
+(Invoke-WebRequest http://center:8080/api/dashboard/agents `
+  -Headers @{Authorization="Bearer $($t.token)"}).Content |
+  ConvertFrom-Json |
+  Select-Object agentId, @{N='ports';E={ $_.portStatuses.Count }}
+```
+
+每个 agent 应有非空 `portStatuses`（前提：system_ports 清单非空）。
+
+### 添加新端口的推荐流程
+
+1. 选 port：`Test-NetConnection -ComputerName <dc> -Port <port>` 在一台 DC 上确认业务在用
+2. 加进 `/admin/ports`（label 用业务名，如 `AD Web Services`）
+3. 等 30 秒，验证该 DC 在 Agents 视图显示绿/黄徽章
+4. 跨 DC 横向对比：所有 DC 同端口应在同一颜色段（绿/黄/红），如果某台 DC 长期红说明该 DC 上业务停或防火墙策略差异
+
+### 移除端口
+
+在 `/admin/ports` 删除即可——agent 不再探测，旧探测行不再展示（无后台清理 job，靠展示层 SQL `INNER JOIN` 过滤）。
+
+---
+
 ## 多数据库支持
 
 center 服务同时支持 MySQL 5.7+ 和 SQL Server 2014+，部署时二选一。在 `appsettings.json` 中通过 `db.dialect` 指定（首次启动的 `/init` 向导第 1 屏也会写入）；服务运行时不切换 dialect。

@@ -77,6 +77,36 @@ Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 200
 2. Check Windows Firewall on source DC allows inbound from destination subnet
 3. Check `dcdiag /test:rpc` on source DC
 
+### Symptom: 端口徽章全红
+
+**Likely causes:** 该端口业务确实停 / Windows 防火墙拦截 / 端口被其他进程占用
+
+**Steps:**
+1. 从该 DC 直接验证：`Test-NetConnection -ComputerName localhost -Port <port>`（应该是 True/False）
+2. 若 True 但 agent 报红：检查 `C:\addashboard\Logs\ADReplicationAgent-stderr.log` 看 `tcpProbe` 异常
+3. 若 False：业务停或服务没启，跟端口业务核对
+4. 跨 DC 对比：若只有某台 DC 报红，检查该 DC 的 Windows Firewall inbound 规则
+
+### Symptom: 端口徽章全灰 (—)
+
+**Likely cause:** Agent 还没上报端口数据，或 system_ports 清单为空
+
+**Steps:**
+1. 登录 admin → `/admin/ports`——若清单为空，先加要监控的端口
+2. 等 5s（agent 下一个心跳周期），Agents 视图应出现徽章
+3. 若清单非空但仍全灰：
+   - `GET /api/dashboard/agents` 的 `portStatuses` 应非空——查 agent 是否在跑：`Get-Service ADReplicationAgent`
+   - agent 日志看 `fetchPortList` 是否报错（401/网络/DNS）
+
+### Symptom: Agent 启动后没有任何端口数据
+
+**Likely cause:** agent 拉取端口清单失败（`fetchPortList` 永不抛错，所以 agent 不会因此退出）
+
+**Steps:**
+1. `Get-Content "C:\addashboard\Logs\ADReplicationAgent-stdout.log" -Tail 200` — 找 `fetchPortList` 相关错误
+2. 验证 center 端：`Invoke-WebRequest http://center:8080/api/agent/ports -Headers @{Authorization="Bearer <agentToken>"}`（用 `appsettings.json` 里的 agentToken）
+3. 401 → agentToken 不匹配；500 → center 端 DB 故障
+
 ### Symptom: 错误码 1311 (DNS)
 
 **Steps:**
