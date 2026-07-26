@@ -1,0 +1,39 @@
+# Git attribute normalization (line endings + binary detection)
+#
+# Goal: every text file in the repo stays LF on disk and in HEAD. PowerShell
+# scripts keep CRLF because Windows PS 5.1 parses scripts as ANSI/MBCS and
+# historically mishandles LF-only PS1 in some hosts (ISE, scheduled tasks).
+#
+# With `core.autocrlf=true` + this file, git:
+#   - commits text files normalized to LF (HEAD stays LF)
+#   - checks out text files as LF (no more perpetual "108 files dirty")
+#   - preserves CRLF only for files explicitly listed below
+
+# Default: normalize to LF on commit/checkout.
+* text=auto eol=lf
+
+# PowerShell + Windows scripts MUST stay CRLF.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.psd1  text eol=crlf
+
+# Binary: don't touch bytes, never diff.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.zip   binary
+*.tar   binary
+*.gz    binary
+*.exe   binary
+*.dll   binary
+*.pdb   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
