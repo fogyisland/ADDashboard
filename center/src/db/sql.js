@@ -102,6 +102,86 @@ const VARIANTS = {
         INNER JOIN system_ports sp ON aps.port = sp.port
         WHERE aps.agent_id IN (${placeholders})
         ORDER BY sp.sort_order, sp.port`
+    },
+    installedPackages: {
+      // Plugin system registry (migration 004). Upsert by `name`.
+      upsert: `INSERT INTO installed_packages
+        (name, version, type, manifest_json, enabled, params_json, installed_at, updated_at, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          version = VALUES(version),
+          type = VALUES(type),
+          manifest_json = VALUES(manifest_json),
+          enabled = VALUES(enabled),
+          params_json = VALUES(params_json),
+          updated_at = VALUES(updated_at),
+          source = VALUES(source)`,
+      list: `SELECT * FROM installed_packages ORDER BY name`,
+      listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
+      get: `SELECT * FROM installed_packages WHERE name = ?`,
+      delete: `DELETE FROM installed_packages WHERE name = ?`
+    },
+    metricGauge: {
+      upsertLatest: `INSERT INTO metric_gauge
+        (agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          ts = VALUES(ts),
+          value = VALUES(value),
+          unit = VALUES(unit),
+          threshold_warn = VALUES(threshold_warn),
+          threshold_crit = VALUES(threshold_crit)`,
+      listByAgent: (metricIdPlaceholder) =>
+        metricIdPlaceholder
+          ? `SELECT * FROM metric_gauge WHERE agent_id = ? AND metric_id = ?`
+          : `SELECT * FROM metric_gauge WHERE agent_id = ?`
+    },
+    metricCounter: {
+      upsertLatest: `INSERT INTO metric_counter
+        (agent_id, metric_id, ts, value, delta, unit)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          ts = VALUES(ts),
+          value = VALUES(value),
+          delta = VALUES(delta),
+          unit = VALUES(unit)`,
+      listByAgent: (metricIdPlaceholder) =>
+        metricIdPlaceholder
+          ? `SELECT * FROM metric_counter WHERE agent_id = ? AND metric_id = ?`
+          : `SELECT * FROM metric_counter WHERE agent_id = ?`
+    },
+    metricTimeseries: {
+      append: `INSERT INTO metric_timeseries
+        (agent_id, metric_id, ts, value, tags_json, unit)
+        VALUES (?, ?, ?, ?, ?, ?)`,
+      // Range query (agent_id + metric_id required; from/to optional).
+      // The caller pushes params in order: [agent_id, metric_id, from?, to?].
+      list: (includeRange) => {
+        const where = ['agent_id = ?', 'metric_id = ?'];
+        if (includeRange?.from) where.push('ts >= ?');
+        if (includeRange?.to) where.push('ts <= ?');
+        return `SELECT * FROM metric_timeseries WHERE ${where.join(' AND ')} ORDER BY ts ASC`;
+      }
+    },
+    metricStatus: {
+      upsertLatest: `INSERT INTO metric_status
+        (agent_id, metric_id, ts, status, message)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          ts = VALUES(ts),
+          status = VALUES(status),
+          message = VALUES(message)`,
+      listByAgent: (metricIdPlaceholder) =>
+        metricIdPlaceholder
+          ? `SELECT * FROM metric_status WHERE agent_id = ? AND metric_id = ?`
+          : `SELECT * FROM metric_status WHERE agent_id = ?`
+    },
+    packageRuns: {
+      insert: `INSERT INTO package_runs
+        (agent_id, package_name, started_at, finished_at, exit_code, stdout_preview, stderr_preview, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      // listRecent is built dynamically per call (LIMIT is integer-only);
+      // see center/src/db/sql/package-runs.js → packageRuns.listRecent.
     }
   },
   mssql: {
@@ -198,6 +278,106 @@ const VARIANTS = {
         INNER JOIN system_ports sp ON aps.port = sp.port
         WHERE aps.agent_id IN (${placeholders})
         ORDER BY sp.sort_order, sp.port`
+    },
+    installedPackages: {
+      upsert: `MERGE INTO installed_packages AS t
+        USING (SELECT
+          ? AS name, ? AS version, ? AS type, ? AS manifest_json, ? AS enabled,
+          ? AS params_json, ? AS installed_at, ? AS updated_at, ? AS source
+        ) AS s
+        ON t.name = s.name
+        WHEN MATCHED THEN UPDATE SET
+          version = s.version,
+          type = s.type,
+          manifest_json = s.manifest_json,
+          enabled = s.enabled,
+          params_json = s.params_json,
+          updated_at = s.updated_at,
+          source = s.source
+        WHEN NOT MATCHED THEN INSERT
+          (name, version, type, manifest_json, enabled, params_json, installed_at, updated_at, source)
+          VALUES
+          (s.name, s.version, s.type, s.manifest_json, s.enabled, s.params_json,
+           s.installed_at, s.updated_at, s.source)`,
+      list: `SELECT * FROM installed_packages ORDER BY name`,
+      listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
+      get: `SELECT * FROM installed_packages WHERE name = ?`,
+      delete: `DELETE FROM installed_packages WHERE name = ?`
+    },
+    metricGauge: {
+      upsertLatest: `MERGE INTO metric_gauge AS t
+        USING (SELECT
+          ? AS agent_id, ? AS metric_id, ? AS ts, ? AS value, ? AS unit,
+          ? AS threshold_warn, ? AS threshold_crit
+        ) AS s
+        ON t.agent_id = s.agent_id AND t.metric_id = s.metric_id
+        WHEN MATCHED THEN UPDATE SET
+          ts = s.ts,
+          value = s.value,
+          unit = s.unit,
+          threshold_warn = s.threshold_warn,
+          threshold_crit = s.threshold_crit
+        WHEN NOT MATCHED THEN INSERT
+          (agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit)
+          VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.unit, s.threshold_warn, s.threshold_crit)`,
+      listByAgent: (metricIdPlaceholder) =>
+        metricIdPlaceholder
+          ? `SELECT * FROM metric_gauge WHERE agent_id = ? AND metric_id = ?`
+          : `SELECT * FROM metric_gauge WHERE agent_id = ?`
+    },
+    metricCounter: {
+      upsertLatest: `MERGE INTO metric_counter AS t
+        USING (SELECT
+          ? AS agent_id, ? AS metric_id, ? AS ts, ? AS value, ? AS delta, ? AS unit
+        ) AS s
+        ON t.agent_id = s.agent_id AND t.metric_id = s.metric_id
+        WHEN MATCHED THEN UPDATE SET
+          ts = s.ts,
+          value = s.value,
+          delta = s.delta,
+          unit = s.unit
+        WHEN NOT MATCHED THEN INSERT
+          (agent_id, metric_id, ts, value, delta, unit)
+          VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.delta, s.unit)`,
+      listByAgent: (metricIdPlaceholder) =>
+        metricIdPlaceholder
+          ? `SELECT * FROM metric_counter WHERE agent_id = ? AND metric_id = ?`
+          : `SELECT * FROM metric_counter WHERE agent_id = ?`
+    },
+    metricTimeseries: {
+      append: `INSERT INTO metric_timeseries
+        (agent_id, metric_id, ts, value, tags_json, unit)
+        VALUES (?, ?, ?, ?, ?, ?)`,
+      list: (includeRange) => {
+        const where = ['agent_id = ?', 'metric_id = ?'];
+        if (includeRange?.from) where.push('ts >= ?');
+        if (includeRange?.to) where.push('ts <= ?');
+        return `SELECT * FROM metric_timeseries WHERE ${where.join(' AND ')} ORDER BY ts ASC`;
+      }
+    },
+    metricStatus: {
+      upsertLatest: `MERGE INTO metric_status AS t
+        USING (SELECT
+          ? AS agent_id, ? AS metric_id, ? AS ts, ? AS status, ? AS message
+        ) AS s
+        ON t.agent_id = s.agent_id AND t.metric_id = s.metric_id
+        WHEN MATCHED THEN UPDATE SET
+          ts = s.ts,
+          status = s.status,
+          message = s.message
+        WHEN NOT MATCHED THEN INSERT
+          (agent_id, metric_id, ts, status, message)
+          VALUES (s.agent_id, s.metric_id, s.ts, s.status, s.message)`,
+      listByAgent: (metricIdPlaceholder) =>
+        metricIdPlaceholder
+          ? `SELECT * FROM metric_status WHERE agent_id = ? AND metric_id = ?`
+          : `SELECT * FROM metric_status WHERE agent_id = ?`
+    },
+    packageRuns: {
+      insert: `INSERT INTO package_runs
+        (agent_id, package_name, started_at, finished_at, exit_code, stdout_preview, stderr_preview, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      // listRecent is built dynamically per call; mssql uses TOP <n> not LIMIT.
     }
   }
 };

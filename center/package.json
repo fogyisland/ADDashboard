@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/*.test.js tests/init/*.test.js tests/services/*.test.js tests/db/*.test.js tests/integration/*.test.js"
+    "test": "node --test tests/*.test.js tests/init/*.test.js tests/services/*.test.js tests/db/*.test.js tests/sql/*.test.js tests/integration/*.test.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
