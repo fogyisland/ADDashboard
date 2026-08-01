@@ -7,11 +7,13 @@
 //   2. rejects invalid manifest
 //   3. rejects name conflict
 //   4. upgrade replaces installed_packages row
-//   5. upgrade rejects type change
+//   5. upgrade rejects type change (manifest.type mismatch)
 //   6. uninstall removes row
 
-import { test, describe } from 'node:test';
+import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import AdmZip from 'adm-zip';
 import { buildSql } from '../../src/db/sql.js';
 import { installer } from '../../src/packages/installer.js';
@@ -86,6 +88,15 @@ function findCall(calls, predicate) {
 }
 
 describe('installer.installPackage', () => {
+  afterEach(() => {
+    // Clean up cache directories written by installPackage so test
+    // artifacts don't leak between runs.
+    fs.rmSync(path.join(process.cwd(), 'data', 'packages', 'test-mem'), {
+      recursive: true,
+      force: true
+    });
+  });
+
   test('installs valid ZIP', async () => {
     const db = makeMockDb();
     // The installer first checks if the package already exists; the GET
@@ -166,7 +177,7 @@ describe('installer.upgradePackage', () => {
     assert.deepEqual(r, { name: 'cpu-monitor', version: '1.1.0' });
 
     // Verify the upsert was issued with the new version while keeping the
-    // existing type (gauge) — i.e., type-change detection works correctly.
+    // existing type (gauge) — i.e., upgrade preserves type.
     const upsertCall = findCall(
       db._calls,
       (c) => /INSERT INTO installed_packages/i.test(c.sql) || /MERGE INTO installed_packages/i.test(c.sql)
@@ -175,6 +186,52 @@ describe('installer.upgradePackage', () => {
     assert.equal(upsertCall.params[0], 'cpu-monitor');
     assert.equal(upsertCall.params[1], '1.1.0');
     assert.equal(upsertCall.params[2], 'gauge');
+  });
+
+  test('upgrade rejects type change when manifest type differs', async () => {
+    const db = makeMockDb();
+    // GET returns the existing 1.0.0 gauge row.
+    db._addScript(/FROM installed_packages WHERE name = \?/i, {
+      rows: [{
+        name: 'cpu-monitor',
+        version: '1.0.0',
+        type: 'gauge',
+        manifest_json: JSON.stringify({ name: 'cpu-monitor', version: '1.0.0', type: 'gauge' }),
+        enabled: 1,
+        params_json: null,
+        source: 'local'
+      }]
+    });
+    const candidateManifest = {
+      name: 'cpu-monitor',
+      version: '1.1.0',
+      type: 'counter',  // <-- type change: gauge → counter
+      description: 'test',
+      agent: {
+        minVersion: '1.0.0',
+        script: 'collect.ps1',
+        intervalSec: 60,
+        timeoutMs: 30000
+      },
+      metrics: [{ key: 'm1', label: 'M1' }],
+      params: { schema: { type: 'object' }, required: [] },
+      widget: { type: 'builtin', component: 'GaugeTile' }
+    };
+    await assert.rejects(
+      () => installer.upgradePackage(db, { name: 'cpu-monitor', version: '1.1.0', manifest: candidateManifest }),
+      (err) => {
+        assert.equal(err.code, 'PKG_VALIDATION_FAILED');
+        assert.equal(err.status, 400);
+        assert.match(err.message, /type change not allowed/);
+        return true;
+      }
+    );
+    // No upsert should have been issued.
+    const upsertCall = findCall(
+      db._calls,
+      (c) => /INSERT INTO installed_packages/i.test(c.sql) || /MERGE INTO installed_packages/i.test(c.sql)
+    );
+    assert.equal(upsertCall, undefined, 'no upsert should be issued when type change is rejected');
   });
 
   test('upgrade rejects when package not found', async () => {
@@ -230,5 +287,43 @@ describe('installer.uninstallPackage', () => {
         return true;
       }
     );
+  });
+
+  test('purges metric_* rows + package_runs + cache dir when purgeMetrics=true', async () => {
+    const db = makeMockDb();
+    // Pre-populate the cache directory so we can verify it gets removed.
+    const cacheDir = path.join(process.cwd(), 'data', 'packages', 'test-mem', '1.0.0');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, 'manifest.json'), '{}');
+    fs.writeFileSync(path.join(cacheDir, 'collect.ps1'), 'Write-Output "x"');
+    assert.ok(fs.existsSync(cacheDir), 'cache dir should exist before uninstall');
+
+    db._addScript(/FROM installed_packages WHERE name = \?/i, {
+      rows: [{ name: 'test-mem', version: '1.0.0' }]
+    });
+    await installer.uninstallPackage(db, { name: 'test-mem', purgeMetrics: true });
+
+    // 4 metric_* DELETEs with metric_id LIKE '<name>.%'
+    const expectedTables = ['metric_gauge', 'metric_counter', 'metric_timeseries', 'metric_status'];
+    for (const table of expectedTables) {
+      const call = findCall(
+        db._calls,
+        (c) => new RegExp(`DELETE FROM ${table} WHERE metric_id LIKE \\?`, 'i').test(c.sql)
+      );
+      assert.ok(call, `expected DELETE FROM ${table} WHERE metric_id LIKE ?`);
+      assert.deepEqual(call.params, ['test-mem.%']);
+    }
+
+    // DELETE FROM package_runs WHERE package_name = ?
+    const deleteRuns = findCall(
+      db._calls,
+      (c) => /DELETE FROM package_runs WHERE package_name = \?/i.test(c.sql)
+    );
+    assert.ok(deleteRuns, 'expected DELETE FROM package_runs');
+    assert.deepEqual(deleteRuns.params, ['test-mem']);
+
+    // Cache dir should be gone.
+    const cacheParent = path.join(process.cwd(), 'data', 'packages', 'test-mem');
+    assert.ok(!fs.existsSync(cacheParent), 'cache directory should be removed after uninstall');
   });
 });

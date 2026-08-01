@@ -61,7 +61,7 @@ export const installer = {
     return { name: manifest.name, version: manifest.version };
   },
 
-  async upgradePackage(db, { name, version }) {
+  async upgradePackage(db, { name, version, manifest: candidateManifest }) {
     const existing = await installedPackages.get(db, name);
     if (!existing) throw new PkgError('PKG_NOT_FOUND', name);
     if (!version) throw new PkgError('PKG_VALIDATION_FAILED', 'version required');
@@ -73,16 +73,34 @@ export const installer = {
     }
     // Real download + validation lives in Task 5 (registry client). This
     // task only orchestrates the row update: caller is expected to have
-    // already fetched the new buffer and validated the manifest. We
-    // refresh the manifest field with the new version from `existing`
-    // (caller can re-write via Task 6 admin UI).
-    const newManifest = { ...existing.manifest, version };
+    // already fetched the new buffer and validated the manifest.
+    //
+    // If the caller provides a candidate manifest, enforce that the package
+    // type does not change across upgrades — gauge → counter (etc.) would
+    // silently corrupt persisted metric rows that share the metric_id
+    // namespace. The persisted manifest field is refreshed with the
+    // candidate (or, if omitted, with the new version field on the
+    // existing manifest).
+    let newManifest;
+    let resolvedType = existing.type;
+    if (candidateManifest) {
+      if (candidateManifest.type && candidateManifest.type !== existing.type) {
+        throw new PkgError(
+          'PKG_VALIDATION_FAILED',
+          `type change not allowed: existing=${existing.type} candidate=${candidateManifest.type}`
+        );
+      }
+      newManifest = { ...candidateManifest, name, version };
+      resolvedType = existing.type;
+    } else {
+      newManifest = { ...existing.manifest, version };
+    }
     await installedPackages.upsert(db, {
       name,
       version,
-      type: existing.type,        // type must not change across upgrades
+      type: resolvedType,        // type must not change across upgrades
       manifest: newManifest,
-      enabled: false,             // re-enable manually after upgrade
+      enabled: false,            // re-enable manually after upgrade
       params: existing.params,
       source: existing.source
     });
@@ -125,7 +143,15 @@ function parseBuffer(buffer) {
   const zip = new AdmZip(buffer);
   const manifestEntry = zip.getEntry('manifest.json');
   if (!manifestEntry) throw new PkgError('PKG_VALIDATION_FAILED', 'manifest.json missing');
-  const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      throw new PkgError('PKG_VALIDATION_FAILED', 'manifest.json is not valid JSON');
+    }
+    throw e;
+  }
   const scriptEntry = zip.getEntry(manifest.agent.script);
   if (!scriptEntry) throw new PkgError('PKG_VALIDATION_FAILED', `${manifest.agent.script} missing`);
   const scripts = { collect: scriptEntry.getData().toString('utf8') };
