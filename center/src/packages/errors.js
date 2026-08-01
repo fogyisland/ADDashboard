@@ -17,6 +17,8 @@ export class PkgError extends Error {
     return {
       PKG_INVALID_MANIFEST: 400,
       PKG_VALIDATION_FAILED: 400,
+      PKG_UNSUPPORTED_TYPE: 400,
+      PKG_UNSUPPORTED_VERSION: 400,
       PKG_NAME_CONFLICT: 409,
       PKG_NOT_FOUND: 404,
       PKG_AGENT_INCOMPATIBLE: 409,
