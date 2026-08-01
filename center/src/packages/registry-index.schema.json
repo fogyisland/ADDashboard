@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "required": ["version", "updatedAt", "packages"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "latestVersion", "type", "versions"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9-]+(\\.[a-z0-9-]+)*$" },
+          "latestVersion": { "type": "string" },
+          "type": { "enum": ["gauge", "counter", "timeseries", "status"] },
+          "description": { "type": "string" },
+          "author": { "type": "string" },
+          "license": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "icon": { "type": "string" },
+          "versions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["version", "package"],
+              "additionalProperties": false,
+              "properties": {
+                "version": { "type": "string" },
+                "releasedAt": { "type": "string", "format": "date-time" },
+                "package": { "type": "string" },
+                "size": { "type": "integer", "minimum": 0 },
+                "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

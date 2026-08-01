@@ -16,5 +16,8 @@
     "test": "npm run test:center && npm run test:agent && npm run test:frontend",
     "build:frontend": "npm run build --workspace=frontend",
     "start": "node scripts/start-prod.js"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
   }
 }
