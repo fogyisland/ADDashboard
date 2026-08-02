@@ -1,8 +1,6 @@
-// Admin-facing REST endpoints for the package system. Mounted at root in
-// server.js (same pattern as adminRouter) so that auth wiring happens in
-// the calling code, and these handlers focus on the package layer.
+// Admin-facing REST endpoints for the package system.
 //
-// Endpoints:
+// Endpoints (all require userAuth + admin:packages permission):
 //   GET    /api/admin/packages                       → list all installed
 //   GET    /api/admin/packages/:name                 → single pkg + recentRuns
 //   POST   /api/admin/packages/install               → install via buffer or
@@ -30,6 +28,8 @@ import { checkAll } from './compat.js';
 import { PkgError } from './errors.js';
 import { validateManifest } from './manifest.js';
 import { getCenterVersion } from '../config.js';
+import { userAuth } from '../auth/user-auth.js';
+import { requirePerm } from '../auth/rbac.js';
 
 function resolveBuffer(body) {
   // body.buffer can arrive as:
@@ -60,10 +60,18 @@ function candidateManifestFromBuffer(buffer) {
   return JSON.parse(manifestEntry.getData().toString('utf8'));
 }
 
-export function packageRouter({ db, getLogger, getRegistryUrl }) {
+export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
   const r = express.Router();
+  // Per-route auth (same pattern as adminRouter / agentRouter in src/routes).
+  // We do NOT rely on parent-router middleware inheritance because Express
+  // does not propagate per-route auth from a sibling Router onto another
+  // Router mounted at root.
+  const auth = [
+    userAuth({ secret: config.jwtSecret }),
+    requirePerm('admin:packages')
+  ];
 
-  r.get('/api/admin/packages', async (_req, res) => {
+  r.get('/api/admin/packages', auth, async (_req, res) => {
     try {
       const installed = await installedPackages.list(db);
       res.json({ packages: installed });
@@ -74,7 +82,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.get('/api/admin/packages/:name', async (req, res) => {
+  r.get('/api/admin/packages/:name', auth, async (req, res) => {
     try {
       const pkg = await installedPackages.get(db, req.params.name);
       if (!pkg) {
@@ -95,7 +103,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.post('/api/admin/packages/install', async (req, res) => {
+  r.post('/api/admin/packages/install', auth, async (req, res) => {
     const { source, packageRef, buffer: rawBuffer } = req.body || {};
     const buffer = resolveBuffer({ buffer: rawBuffer });
     try {
@@ -136,7 +144,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.post('/api/admin/packages/:name/upgrade', async (req, res) => {
+  r.post('/api/admin/packages/:name/upgrade', auth, async (req, res) => {
     const { name } = req.params;
     const { version } = req.body || {};
     try {
@@ -224,7 +232,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.post('/api/admin/packages/:name/enable', async (req, res) => {
+  r.post('/api/admin/packages/:name/enable', auth, async (req, res) => {
     try {
       await installer.setEnabled(db, { name: req.params.name, enabled: true });
       res.json({ ok: true });
@@ -240,7 +248,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.post('/api/admin/packages/:name/disable', async (req, res) => {
+  r.post('/api/admin/packages/:name/disable', auth, async (req, res) => {
     try {
       await installer.setEnabled(db, { name: req.params.name, enabled: false });
       res.json({ ok: true });
@@ -256,7 +264,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.delete('/api/admin/packages/:name', async (req, res) => {
+  r.delete('/api/admin/packages/:name', auth, async (req, res) => {
     try {
       const purgeMetrics = req.query.purgeMetrics === 'true';
       await installer.uninstallPackage(db, {
@@ -276,7 +284,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.put('/api/admin/packages/:name/params', async (req, res) => {
+  r.put('/api/admin/packages/:name/params', auth, async (req, res) => {
     try {
       const { params } = req.body || {};
       await installer.updateParams(db, { name: req.params.name, params });
@@ -288,7 +296,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl }) {
     }
   });
 
-  r.get('/api/admin/packages/registry/refresh', async (_req, res) => {
+  r.get('/api/admin/packages/registry/refresh', auth, async (_req, res) => {
     try {
       const registryUrl = await getRegistryUrl();
       if (!registryUrl) {

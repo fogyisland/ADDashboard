@@ -1,8 +1,9 @@
 // router.test.js — covers center/src/packages/router.js (admin endpoints).
-// Uses supertest against a fresh express app. JWT auth is bypassed here
-// because we mount the router directly (the real wiring in server.js
-// would put userAuth + requirePerm on top, but that's a separate
-// concern — the router just handles the package layer).
+// Uses supertest against a fresh express app. JWT auth is wired inside the
+// router (per-route userAuth + requirePerm('admin:packages')), so tests
+// must send a valid Bearer token to reach the handlers. The 401/403
+// regression tests confirm the wiring is in place — this was the security
+// regression that the reviewer flagged.
 //
 // Endpoints:
 //   GET    /api/admin/packages
@@ -24,7 +25,9 @@ import AdmZip from 'adm-zip';
 import { default as supertest } from 'supertest';
 import { buildMockDb } from '../helpers/db-mock.js';
 import { packageRouter } from '../../src/packages/router.js';
+import { signJwt } from '../../src/auth/jwt.js';
 
+const SECRET = 'test-secret-please-do-not-use-in-prod';
 const noopLogger = () => ({ info() {}, warn() {}, error() {}, debug() {} });
 
 // Stable registry URL — the RegistryClient constructor permits http only
@@ -37,9 +40,25 @@ function buildApp(db, opts = {}) {
   app.use(packageRouter({
     db,
     getLogger: noopLogger,
-    getRegistryUrl: opts.getRegistryUrl || (async () => null)
+    getRegistryUrl: opts.getRegistryUrl || (async () => null),
+    config: { jwtSecret: SECRET }
   }));
   return app;
+}
+
+// Admin token: '*' perm short-circuits requirePerm so all perms pass.
+function adminToken() {
+  return signJwt({ sub: 'u1', role: 'admin', permissions: ['*'] }, SECRET, 60);
+}
+
+// Operator token: read-only perm, missing admin:packages → 403 on every
+// endpoint. Mirrors the admin.test.js operatorToken() pattern.
+function operatorToken() {
+  return signJwt({ sub: 'u2', role: 'operator', permissions: ['read:dash'] }, SECRET, 60);
+}
+
+function adminAuth() {
+  return { Authorization: `Bearer ${adminToken()}` };
 }
 
 function buildFixtureZip({ name, version, type, centerVersion }) {
@@ -92,7 +111,7 @@ describe('admin /api/admin/packages', () => {
         }
       ]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).get('/api/admin/packages');
+      const r = await supertest(app).get('/api/admin/packages').set(adminAuth());
       assert.equal(r.status, 200);
       assert.ok(Array.isArray(r.body.packages));
       assert.equal(r.body.packages.length, 1);
@@ -106,7 +125,7 @@ describe('admin /api/admin/packages', () => {
         { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [] }
       ]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).get('/api/admin/packages/nope');
+      const r = await supertest(app).get('/api/admin/packages/nope').set(adminAuth());
       assert.equal(r.status, 404);
       assert.equal(r.body.error.code, 'PKG_NOT_FOUND');
     });
@@ -131,7 +150,7 @@ describe('admin /api/admin/packages', () => {
         }
       ]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).get('/api/admin/packages/a');
+      const r = await supertest(app).get('/api/admin/packages/a').set(adminAuth());
       assert.equal(r.status, 200);
       assert.equal(r.body.package.name, 'a');
       assert.ok(Array.isArray(r.body.recentRuns));
@@ -160,6 +179,7 @@ describe('admin /api/admin/packages', () => {
       const buffer = buildFixtureZip({ name: seedName, version: '1.0.0', type: 'gauge' });
       const r = await supertest(app)
         .post('/api/admin/packages/install')
+        .set(adminAuth())
         .send({ source: 'local', packageRef: seedName, buffer: buffer.toString('base64') });
       assert.equal(r.status, 200);
       assert.equal(r.body.ok, true);
@@ -193,6 +213,7 @@ describe('admin /api/admin/packages', () => {
 
       const r = await supertest(app)
         .post('/api/admin/packages/install')
+        .set(adminAuth())
         .send({ source: 'local', packageRef: 'bad', buffer: buffer.toString('base64') });
       assert.equal(r.status, 400);
       assert.equal(r.body.error.code, 'PKG_INVALID_MANIFEST');
@@ -210,6 +231,7 @@ describe('admin /api/admin/packages', () => {
       });
       const r = await supertest(app)
         .post('/api/admin/packages/install')
+        .set(adminAuth())
         .send({ source: 'local', packageRef: 'incompat', buffer: buffer.toString('base64') });
       assert.equal(r.status, 400);
       assert.equal(r.body.error.code, 'PKG_CENTER_INCOMPATIBLE');
@@ -234,6 +256,7 @@ describe('admin /api/admin/packages', () => {
       const buffer = buildFixtureZip({ name: 'exists', version: '1.0.0', type: 'gauge' });
       const r = await supertest(app)
         .post('/api/admin/packages/install')
+        .set(adminAuth())
         .send({ source: 'local', packageRef: 'exists', buffer: buffer.toString('base64') });
       assert.equal(r.status, 409);
       assert.equal(r.body.error.code, 'PKG_NAME_CONFLICT');
@@ -244,7 +267,7 @@ describe('admin /api/admin/packages', () => {
     test('enable toggles to true', async () => {
       const db = buildMockDb([]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).post('/api/admin/packages/foo/enable');
+      const r = await supertest(app).post('/api/admin/packages/foo/enable').set(adminAuth());
       assert.equal(r.status, 200);
       assert.equal(r.body.ok, true);
     });
@@ -252,7 +275,7 @@ describe('admin /api/admin/packages', () => {
     test('disable toggles to false', async () => {
       const db = buildMockDb([]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).post('/api/admin/packages/foo/disable');
+      const r = await supertest(app).post('/api/admin/packages/foo/disable').set(adminAuth());
       assert.equal(r.status, 200);
       assert.equal(r.body.ok, true);
     });
@@ -264,6 +287,7 @@ describe('admin /api/admin/packages', () => {
       const app = buildApp(db);
       const r = await supertest(app)
         .put('/api/admin/packages/foo/params')
+        .set(adminAuth())
         .send({ params: { threshold: 75 } });
       assert.equal(r.status, 200);
       assert.equal(r.body.ok, true);
@@ -278,7 +302,7 @@ describe('admin /api/admin/packages', () => {
         { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [{ name: 'foo', version: '1.0.0' }] }
       ]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).delete('/api/admin/packages/foo');
+      const r = await supertest(app).delete('/api/admin/packages/foo').set(adminAuth());
       assert.equal(r.status, 200);
       assert.equal(r.body.ok, true);
     });
@@ -288,7 +312,7 @@ describe('admin /api/admin/packages', () => {
         { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [{ name: 'foo', version: '1.0.0' }] }
       ]).standard();
       const app = buildApp(db);
-      const r = await supertest(app).delete('/api/admin/packages/foo?purgeMetrics=true');
+      const r = await supertest(app).delete('/api/admin/packages/foo?purgeMetrics=true').set(adminAuth());
       assert.equal(r.status, 200);
       assert.equal(r.body.ok, true);
     });
@@ -298,7 +322,7 @@ describe('admin /api/admin/packages', () => {
     test('400 when registry not configured', async () => {
       const db = buildMockDb([]).standard();
       const app = buildApp(db, { getRegistryUrl: async () => null });
-      const r = await supertest(app).get('/api/admin/packages/registry/refresh');
+      const r = await supertest(app).get('/api/admin/packages/registry/refresh').set(adminAuth());
       assert.equal(r.status, 400);
       assert.equal(r.body.error.code, 'PKG_VALIDATION_FAILED');
     });
@@ -310,9 +334,49 @@ describe('admin /api/admin/packages', () => {
       const app = buildApp(db, { getRegistryUrl: async () => null });
       const r = await supertest(app)
         .post('/api/admin/packages/foo/upgrade')
+        .set(adminAuth())
         .send({});
       assert.equal(r.status, 400);
       assert.equal(r.body.error.code, 'PKG_VALIDATION_FAILED');
+    });
+  });
+
+  // ---- AUTH WIRING (regression: must mirror adminRouter / agentRouter) ----
+
+  describe('AUTH WIRING', () => {
+    test('GET /packages: 401 when no Authorization header', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app).get('/api/admin/packages');
+      assert.equal(r.status, 401);
+    });
+
+    test('GET /packages: 403 for operator token (missing admin:packages perm)', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app)
+        .get('/api/admin/packages')
+        .set('Authorization', `Bearer ${operatorToken()}`);
+      assert.equal(r.status, 403);
+      assert.equal(r.body.need, 'admin:packages');
+    });
+
+    test('POST /packages/install: 401 when no Authorization header', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app)
+        .post('/api/admin/packages/install')
+        .send({ source: 'local', packageRef: 'x' });
+      assert.equal(r.status, 401);
+    });
+
+    test('DELETE /packages/foo: 403 for operator token (missing admin:packages perm)', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app)
+        .delete('/api/admin/packages/foo')
+        .set('Authorization', `Bearer ${operatorToken()}`);
+      assert.equal(r.status, 403);
     });
   });
 });

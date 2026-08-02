@@ -1,16 +1,13 @@
 // runner.test.js — covers center/src/packages/runner.js (agent endpoints)
 // against the mock db. Each test mounts the runner on a fresh Express
-// app with a stub agent-token middleware that injects req.agentId.
+// app with the REAL agentToken middleware wired inside the router. Tests
+// must send the matching `X-Agent-Token` header; the 401 regression test
+// confirms no agent can hit the endpoints without the token.
 //
 // Endpoints:
 //   GET  /api/agent/packages
 //   GET  /api/agent/packages/:name/script
 //   POST /api/agent/packages/report
-//
-// Backwards compat (per Task 7): the agent heartbeat endpoint accepts
-// (and ignores) a `packages` field. The runner doesn't touch that — it
-// only handles the package sync + report endpoints, which is what the
-// agent pulls.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,30 +19,21 @@ import { buildMockDb } from '../helpers/db-mock.js';
 import { packageRunner } from '../../src/packages/runner.js';
 
 const AGENT_ID = 'agent-1';
+const TEST_TOKEN = 'test-agent-token';
 
-function buildApp(db, agentId = AGENT_ID) {
+function buildApp(db, opts = {}) {
   const app = express();
   app.use(express.json());
-  // Stub agent-token middleware: trusts a header and stamps req.agentId.
-  // This matches the shape of the real agentToken() middleware enough to
-  // exercise the runner's req.agentId fallback (header injection path).
-  app.use((req, _res, next) => {
-    if (req.headers['x-agent-token'] === 'tok') {
-      req.agentId = agentId;
-    }
-    next();
-  });
-  // Gate like agentToken — only allow when token is present.
-  app.use('/api/agent/packages', (req, res, next) => {
-    if (!req.agentId) return res.status(401).json({ error: 'invalid agent token' });
-    next();
-  });
-  app.use(packageRunner({ db, getLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }) }));
+  app.use(packageRunner({
+    db,
+    getLogger: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+    config: { agentToken: opts.agentToken ?? TEST_TOKEN }
+  }));
   return app;
 }
 
 function authHeader() {
-  return { 'X-Agent-Token': 'tok', 'X-Agent-Id': AGENT_ID };
+  return { 'X-Agent-Token': TEST_TOKEN, 'X-Agent-Id': AGENT_ID };
 }
 
 // Pre-stage an enabled package with a real script on disk so the
@@ -153,11 +141,11 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('POST /packages/report ingests metrics and records runs', async () => {
-    // Two scripts need to be mocked for package_runs insert + metric_gauge
-    // upsert. The mock db returns `{ rows: [...], affectedRows: 1 }` for
-    // any unmatched query, so we just need to shape the matching scripts:
-    //   - installedPackages.get for `name = fixtureName`
-    //   - everything else falls through to the default.
+    // The mock db returns `{ rows: [...], affectedRows: 1 }` for any
+    // unmatched query, so the runner's package_runs INSERT +
+    // metric_gauge UPSERT fall through to the default shape. We use a
+    // recording pool to assert the runner actually issued those writes.
+    const records = [];
     const db = buildMockDb([
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
@@ -170,7 +158,7 @@ describe('agent /api/agent/packages', () => {
           params_json: null
         }]
       }
-    ]).standard();
+    ]).withRecording(records);
     const app = buildApp(db);
 
     const startedAt = '2026-07-30T12:00:00.000Z';
@@ -197,12 +185,28 @@ describe('agent /api/agent/packages', () => {
     //   - installedPackages.get → SELECT from installed_packages
     //   - packageRuns.insert    → INSERT INTO package_runs
     //   - metricGauge.upsertLatest → INSERT INTO metric_gauge
-    const calls = db._calls || [];
-    // Use the mock's records array — buildMockDb keeps it internally,
-    // but we can rely on its surface by re-building with recording.
+    // Verify the metric_gauge upsert fired with the right metric_id.
+    const gaugeUpsert = records.find(
+      (c) => /INSERT INTO\s+metric_gauge/i.test(c.sql)
+    );
+    assert.ok(gaugeUpsert, 'expected metric_gauge INSERT to fire');
+    // params: [agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit]
+    assert.equal(gaugeUpsert.params[0], AGENT_ID);
+    assert.equal(gaugeUpsert.params[1], `${fixtureName}.m1`);
+    assert.equal(gaugeUpsert.params[3], 80);
+
+    // And the package_runs INSERT should have fired with exitCode=0.
+    const runInsert = records.find(
+      (c) => /INSERT INTO\s+package_runs/i.test(c.sql)
+    );
+    assert.ok(runInsert, 'expected package_runs INSERT to fire');
+    assert.equal(runInsert.params[0], AGENT_ID);
+    assert.equal(runInsert.params[1], fixtureName);
+    assert.equal(runInsert.params[4], 0); // exitCode
   });
 
   test('POST /packages/report records the run even when error is set', async () => {
+    const records = [];
     const db = buildMockDb([
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
@@ -215,7 +219,7 @@ describe('agent /api/agent/packages', () => {
           params_json: null
         }]
       }
-    ]).standard();
+    ]).withRecording(records);
     const app = buildApp(db);
 
     const r = await supertest(app)
@@ -236,8 +240,12 @@ describe('agent /api/agent/packages', () => {
     assert.equal(r.status, 200);
     assert.equal(r.body.processed, 1);
     // No metric_gauge upsert should fire (no metrics payload when error).
-    // (Hard to assert directly without recording; the status + processed
-    // count above is the signal that the route completed.)
+    const gaugeUpsert = records.find((c) => /INSERT INTO\s+metric_gauge/i.test(c.sql));
+    assert.equal(gaugeUpsert, undefined, 'expected no metric_gauge insert on error');
+    // But the package_runs insert should still fire.
+    const runInsert = records.find((c) => /INSERT INTO\s+package_runs/i.test(c.sql));
+    assert.ok(runInsert, 'expected package_runs INSERT to fire even on error');
+    assert.equal(runInsert.params[4], 2); // exitCode
   });
 
   test('POST /packages/report rejects non-array runs', async () => {
@@ -284,5 +292,28 @@ describe('agent /api/agent/packages', () => {
     const app = buildApp(db);
     const r = await supertest(app).get('/api/agent/packages');
     assert.equal(r.status, 401);
+  });
+
+  // ---- AUTH WIRING (regression: real agentToken must gate endpoints) ----
+
+  describe('AUTH WIRING', () => {
+    test('POST /packages/report: 401 without X-Agent-Token header', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app)
+        .post('/api/agent/packages/report')
+        .set('X-Agent-Id', AGENT_ID)
+        .send({ runs: [] });
+      assert.equal(r.status, 401);
+    });
+
+    test('GET /packages/:name/script: 401 with wrong agent token', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app)
+        .get(`/api/agent/packages/${fixtureName}/script`)
+        .set('X-Agent-Token', 'wrong-token');
+      assert.equal(r.status, 401);
+    });
   });
 });

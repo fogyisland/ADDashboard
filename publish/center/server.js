@@ -82,21 +82,22 @@ process.on('unhandledRejection', (reason) => {
     app.use(agentRouter({ config: finalConfig, logger }));
     app.use(dashboardRouter({ config: finalConfig, logger }));
     app.use(adminRouter({ config: finalConfig, logger }));
-    // Package system routes (Task 6). adminRouter mounts /api/admin/*
-    // and agentRouter mounts /api/agent/* — both apply the right
-    // auth middlewares, so we just add the package routes inside the
-    // same scopes. The package routers expose their own endpoints
-    // (no auth knowledge required); they're mounted at the root of
-    // the same app so the existing prefixes still match.
+    // Package system routes (Task 6). Both routers apply their own
+    // per-route auth (userAuth+requirePerm for admin, agentToken for
+    // agent) — Express does not propagate per-route middleware from a
+    // sibling Router, so we wire the auth inside each package router
+    // factory and pass the config through.
     const pkgDb = getDb();
     app.use(packageRouter({
       db: pkgDb,
       getLogger: () => logger,
-      getRegistryUrl
+      getRegistryUrl,
+      config: finalConfig
     }));
     app.use(packageRunner({
       db: pkgDb,
-      getLogger: () => logger
+      getLogger: () => logger,
+      config: finalConfig
     }));
   }
 
