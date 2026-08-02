@@ -15,4 +15,19 @@ describe('PkgError.statusFor', () => {
     assert.equal(e.code, 'PKG_UNSUPPORTED_TYPE');
     assert.equal(e.name, 'PkgError');
   });
+  it('maps PKG_REGISTRY_UNREACHABLE to 502', () => {
+    assert.equal(PkgError.statusFor('PKG_REGISTRY_UNREACHABLE'), 502);
+  });
+  it('maps PKG_REGISTRY_INVALID to 502', () => {
+    assert.equal(PkgError.statusFor('PKG_REGISTRY_INVALID'), 502);
+  });
+  it('maps PKG_CHECKSUM_MISMATCH to 400', () => {
+    assert.equal(PkgError.statusFor('PKG_CHECKSUM_MISMATCH'), 400);
+  });
+  it('maps PKG_AGENT_INCOMPATIBLE to 400', () => {
+    assert.equal(PkgError.statusFor('PKG_AGENT_INCOMPATIBLE'), 400);
+  });
+  it('maps PKG_CENTER_INCOMPATIBLE to 400', () => {
+    assert.equal(PkgError.statusFor('PKG_CENTER_INCOMPATIBLE'), 400);
+  });
 });
