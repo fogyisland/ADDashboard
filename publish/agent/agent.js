@@ -8,6 +8,7 @@ import { runHealthChecks } from './src/healthcheck.js';
 import { fetchPortList } from './src/port-config-fetcher.js';
 import { openQueue } from './src/local-queue.js';
 import { createScheduler } from './src/scheduler.js';
+import { PackageManager } from './src/package-manager.js';
 
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || './appsettings.json';
 const config = loadConfig(configPath);
@@ -33,6 +34,19 @@ await refreshPortList();
 // trade-off as pollingIntervalMinutes. The scheduler ALSO sends heartbeats
 // after each collect cycle — they overlap intentionally so the center sees
 // liveness even when collect cycles are hours apart.
+// Constructed after `config` is loaded and the queue exists. Mirrors the
+// discovery-scheduler pattern: declare here, start() after scheduler.start(),
+// stop() in shutdown(). Initialised with dataDir from config so the package
+// cache and persisted report queue live under the agent's data directory.
+const packageManager = new PackageManager({
+  agentId: config.agentId,
+  agentVersion: '0.1.0',
+  centerBaseUrl: config.centerUrl,
+  agentToken: config.agentToken,
+  dataDir: config.agentDataDir,
+  logger
+});
+
 const heartbeat = startHeartbeat({
   intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
   payload: () => {
@@ -40,6 +54,10 @@ const heartbeat = startHeartbeat({
     if (Array.isArray(latestPortResults) && latestPortResults.length > 0) {
       p.ports = latestPortResults.map(x => ({ port: x.port, ok: x.ok, latencyMs: x.latencyMs }));
     }
+    p.packages = {
+      installed: packageManager.listLocal(),
+      pending: packageManager.reportBatch.length + packageManager.queue.length
+    };
     return p;
   },
   send: async (p) => { await postHeartbeat({ centerUrl: config.centerUrl, agentToken: config.agentToken, payload: p }); }
@@ -114,6 +132,7 @@ const scheduler = createScheduler({
 });
 
 scheduler.start();
+packageManager.start();
 logger.info({ agentId: config.agentId, centerUrl: config.centerUrl }, 'agent started');
 
 const shutdown = async (sig) => {
@@ -122,6 +141,7 @@ const shutdown = async (sig) => {
   discovery.stop();
   clearInterval(configRefresh);
   await scheduler.stop();
+  packageManager.stop();
   queue.close();
   process.exit(0);
 };

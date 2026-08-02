@@ -8,6 +8,7 @@ const DEFAULTS = {
   discoveryIntervalHours: 4,
   psDiscoveryScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-discovery.ps1',
   queueDbPath: 'C:\\addashboard\\Agent\\queue.db',
+  agentDataDir: 'C:\\addashboard\\Agent\\data',
   powerShellPath: 'powershell.exe',
   psScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-replication.ps1',
   healthCheckIntervalMs: 600_000
