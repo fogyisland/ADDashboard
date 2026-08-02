@@ -1,0 +1,323 @@
+// Admin-facing REST endpoints for the package system. Mounted at root in
+// server.js (same pattern as adminRouter) so that auth wiring happens in
+// the calling code, and these handlers focus on the package layer.
+//
+// Endpoints:
+//   GET    /api/admin/packages                       → list all installed
+//   GET    /api/admin/packages/:name                 → single pkg + recentRuns
+//   POST   /api/admin/packages/install               → install via buffer or
+//                                                      registry
+//   POST   /api/admin/packages/:name/upgrade         → upgrade via registry
+//   POST   /api/admin/packages/:name/enable          → setEnabled(true)
+//   POST   /api/admin/packages/:name/disable         → setEnabled(false)
+//   DELETE /api/admin/packages/:name?purgeMetrics=…  → uninstall
+//   PUT    /api/admin/packages/:name/params          → updateParams
+//   GET    /api/admin/packages/registry/refresh      → force-refresh registry
+//
+// All PkgError instances thrown by installer / registry / compat are
+// mapped to HTTP responses via the `statusFor` helper; everything else
+// falls back to 500 with `{ ok: false, error: { code, message } }`.
+
+import express from 'express';
+import AdmZip from 'adm-zip';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { installedPackages } from '../db/sql/installed-packages.js';
+import { packageRuns } from '../db/sql/package-runs.js';
+import { installer } from './installer.js';
+import { RegistryClient } from './registry.js';
+import { checkAll } from './compat.js';
+import { PkgError } from './errors.js';
+import { validateManifest } from './manifest.js';
+import { getCenterVersion } from '../config.js';
+
+function resolveBuffer(body) {
+  // body.buffer can arrive as:
+  //   - a Buffer (supertest/test paths)
+  //   - a JSON-encoded Buffer (express.json serialises it to
+  //     { type: 'Buffer', data: [..] } — re-hydrate)
+  //   - a base64 string (frontend uploads the file as base64)
+  if (!body) return null;
+  const b = body.buffer;
+  if (b == null) return null;
+  if (Buffer.isBuffer(b)) return b;
+  if (typeof b === 'string') return Buffer.from(b, 'base64');
+  if (b && b.type === 'Buffer' && Array.isArray(b.data)) {
+    return Buffer.from(b.data);
+  }
+  return null;
+}
+
+function candidateManifestFromBuffer(buffer) {
+  // Parse the package ZIP in-memory to extract the manifest. Reused by
+  // /upgrade so we can run checkAll() against the candidate before any
+  // row is touched.
+  const zip = new AdmZip(buffer);
+  const manifestEntry = zip.getEntry('manifest.json');
+  if (!manifestEntry) {
+    throw new PkgError('PKG_VALIDATION_FAILED', 'manifest.json missing');
+  }
+  return JSON.parse(manifestEntry.getData().toString('utf8'));
+}
+
+export function packageRouter({ db, getLogger, getRegistryUrl }) {
+  const r = express.Router();
+
+  r.get('/api/admin/packages', async (_req, res) => {
+    try {
+      const installed = await installedPackages.list(db);
+      res.json({ packages: installed });
+    } catch (e) {
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin packages list failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.get('/api/admin/packages/:name', async (req, res) => {
+    try {
+      const pkg = await installedPackages.get(db, req.params.name);
+      if (!pkg) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'PKG_NOT_FOUND', message: req.params.name }
+        });
+      }
+      const recentRuns = await packageRuns.listRecent(db, {
+        packageName: req.params.name,
+        limit: 20
+      });
+      res.json({ package: pkg, recentRuns });
+    } catch (e) {
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package get failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.post('/api/admin/packages/install', async (req, res) => {
+    const { source, packageRef, buffer: rawBuffer } = req.body || {};
+    const buffer = resolveBuffer({ buffer: rawBuffer });
+    try {
+      // When a buffer is supplied, run the compat check before we touch
+      // the DB. checkAll('*', …) skips the agent constraint (admin-side
+      // install only needs to satisfy the center version). When the caller
+      // doesn't supply a buffer, the registry path inside installPackage
+      // will download the package and validate; we skip the upfront check.
+      if (buffer) {
+        const candidate = candidateManifestFromBuffer(buffer);
+        const { valid } = validateManifest(candidate);
+        if (!valid) {
+          throw new PkgError('PKG_INVALID_MANIFEST', 'manifest failed validation');
+        }
+        const compat = checkAll(getCenterVersion(), '*', candidate);
+        if (!compat.ok) {
+          throw new PkgError(
+            compat.code || 'PKG_CENTER_INCOMPATIBLE',
+            compat.error || 'center incompat'
+          );
+        }
+      }
+      const result = await installer.installPackage(db, {
+        source,
+        packageRef,
+        buffer
+      });
+      res.json({ ok: true, data: result });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package install failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.post('/api/admin/packages/:name/upgrade', async (req, res) => {
+    const { name } = req.params;
+    const { version } = req.body || {};
+    try {
+      const registryUrl = await getRegistryUrl();
+      if (!registryUrl) {
+        return res.status(400).json({
+          ok: false,
+          error: { code: 'PKG_VALIDATION_FAILED', message: 'registry not configured' }
+        });
+      }
+      const registry = new RegistryClient({
+        baseUrl: registryUrl,
+        cacheDir: join(process.cwd(), 'data', 'registry-cache'),
+        logger: getLogger ? getLogger() : null
+      });
+      const idx = await registry.fetchIndex();
+      const pkgEntry = idx.packages.find((p) => p.name === name);
+      if (!pkgEntry) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'PKG_NOT_FOUND', message: name }
+        });
+      }
+      const targetVersion = version || pkgEntry.latestVersion;
+      const versionEntry = pkgEntry.versions.find((v) => v.version === targetVersion);
+      if (!versionEntry) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'PKG_NOT_FOUND', message: `version ${targetVersion}` }
+        });
+      }
+      const buffer = await registry.downloadPackage(name, versionEntry);
+
+      // Parse the candidate package from the buffer (registry path
+      // doesn't pass the buffer to installPackage; here we explicitly
+      // need it for the compat check).
+      const candidate = candidateManifestFromBuffer(buffer);
+      const { valid } = validateManifest(candidate);
+      if (!valid) {
+        throw new PkgError('PKG_INVALID_MANIFEST', 'manifest failed validation');
+      }
+      const compat = checkAll(getCenterVersion(), '*', candidate);
+      if (!compat.ok) {
+        throw new PkgError(
+          compat.code || 'PKG_CENTER_INCOMPATIBLE',
+          compat.error || 'center incompat'
+        );
+      }
+
+      // Step 1: write the new files to data/packages so the script is
+      // available to agents that pull after the upgrade.
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const cacheDir = path.join(process.cwd(), 'data', 'packages', name, targetVersion);
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const zip = new AdmZip(buffer);
+      const scriptEntry = zip.getEntry(candidate.agent.script);
+      if (!scriptEntry) {
+        throw new PkgError(
+          'PKG_VALIDATION_FAILED',
+          `${candidate.agent.script} missing`
+        );
+      }
+      fs.writeFileSync(path.join(cacheDir, 'manifest.json'), JSON.stringify(candidate, null, 2));
+      fs.writeFileSync(path.join(cacheDir, 'collect.ps1'), scriptEntry.getData().toString('utf8'));
+      fs.writeFileSync(path.join(cacheDir, 'content.sha256'), '');
+
+      // Step 2: delegate the row upsert to the installer. Pass the
+      // candidate manifest so type-stability is enforced.
+      const result = await installer.upgradePackage(db, {
+        name,
+        version: targetVersion,
+        manifest: candidate
+      });
+      res.json({ ok: true, data: result });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package upgrade failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.post('/api/admin/packages/:name/enable', async (req, res) => {
+    try {
+      await installer.setEnabled(db, { name: req.params.name, enabled: true });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package enable failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.post('/api/admin/packages/:name/disable', async (req, res) => {
+    try {
+      await installer.setEnabled(db, { name: req.params.name, enabled: false });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package disable failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.delete('/api/admin/packages/:name', async (req, res) => {
+    try {
+      const purgeMetrics = req.query.purgeMetrics === 'true';
+      await installer.uninstallPackage(db, {
+        name: req.params.name,
+        purgeMetrics
+      });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package uninstall failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.put('/api/admin/packages/:name/params', async (req, res) => {
+    try {
+      const { params } = req.body || {};
+      await installer.updateParams(db, { name: req.params.name, params });
+      res.json({ ok: true });
+    } catch (e) {
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package updateParams failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  r.get('/api/admin/packages/registry/refresh', async (_req, res) => {
+    try {
+      const registryUrl = await getRegistryUrl();
+      if (!registryUrl) {
+        return res.status(400).json({
+          ok: false,
+          error: { code: 'PKG_VALIDATION_FAILED', message: 'registry not configured' }
+        });
+      }
+      const registry = new RegistryClient({
+        baseUrl: registryUrl,
+        cacheDir: join(process.cwd(), 'data', 'registry-cache'),
+        logger: getLogger ? getLogger() : null
+      });
+      const idx = await registry.fetchIndex(true);
+      res.json({
+        ok: true,
+        data: { updatedAt: idx.updatedAt, packages: idx.packages.length }
+      });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin registry refresh failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  return r;
+}

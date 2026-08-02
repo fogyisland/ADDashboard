@@ -1,5 +1,5 @@
 import { createApp } from './src/app.js';
-import { loadConfigOrNull, defaultConfig } from './src/config.js';
+import { loadConfigOrNull, defaultConfig, getRegistryUrl } from './src/config.js';
 import { init, close, getDb } from './src/db/index.js';
 import { createLogger } from './src/logger.js';
 import { authRouter } from './src/routes/auth.js';
@@ -7,6 +7,8 @@ import { agentRouter } from './src/routes/agent.js';
 import { dashboardRouter } from './src/routes/dashboard.js';
 import { adminRouter } from './src/routes/admin.js';
 import { initRouter } from './src/init/router.js';
+import { packageRouter } from './src/packages/router.js';
+import { packageRunner } from './src/packages/runner.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
@@ -80,6 +82,22 @@ process.on('unhandledRejection', (reason) => {
     app.use(agentRouter({ config: finalConfig, logger }));
     app.use(dashboardRouter({ config: finalConfig, logger }));
     app.use(adminRouter({ config: finalConfig, logger }));
+    // Package system routes (Task 6). adminRouter mounts /api/admin/*
+    // and agentRouter mounts /api/agent/* — both apply the right
+    // auth middlewares, so we just add the package routes inside the
+    // same scopes. The package routers expose their own endpoints
+    // (no auth knowledge required); they're mounted at the root of
+    // the same app so the existing prefixes still match.
+    const pkgDb = getDb();
+    app.use(packageRouter({
+      db: pkgDb,
+      getLogger: () => logger,
+      getRegistryUrl
+    }));
+    app.use(packageRunner({
+      db: pkgDb,
+      getLogger: () => logger
+    }));
   }
 
   const server = app.listen(finalConfig.listenPort, () => {

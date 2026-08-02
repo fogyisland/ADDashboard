@@ -14,6 +14,10 @@ import { PkgError } from './errors.js';
 export function checkAgentCompat(agentVersion, manifest) {
   const range = manifest.agent?.minVersion;
   if (!range) return { ok: true }; // no constraint declared
+  // '*' is a sentinel meaning "no agent check requested" (used by admin
+  // install/upgrade paths where the agent isn't on hand yet). Don't
+  // error on it — just skip the constraint.
+  if (agentVersion === '*' || agentVersion == null) return { ok: true };
   if (!semver.valid(agentVersion)) {
     return { ok: false, error: `agent version ${agentVersion} is not valid SemVer` };
   }

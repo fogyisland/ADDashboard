@@ -1,5 +1,21 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { SUPPORTED_DIALECTS } from './db/sql.js';
+import { getDb } from './db/index.js';
+
+// Reads the center version from package.json at module load. Used by the
+// package router's compat checks (checkCenterCompat) so admin installs
+// reject manifests that require a newer center than the running build.
+const PKG_VERSION = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+let _centerVersion = '0.0.0';
+try {
+  _centerVersion = JSON.parse(PKG_VERSION).version || _centerVersion;
+} catch {
+  // fall through — leave as '0.0.0'
+}
+
+export function getCenterVersion() {
+  return _centerVersion;
+}
 
 const REQUIRED_BY_DIALECT = {
   mysql: ['db.mysql.host', 'db.mysql.database'],
@@ -62,4 +78,17 @@ export function defaultConfig() {
     env: 'prod',
     frontendDevProxy: null
   };
+}
+
+// Reads the package registry URL from the system_config table. Returns
+// null when the key is absent (no registry configured yet).
+//
+// Used by the admin REST endpoints in center/src/packages/router.js to
+// gate the /packages/registry/refresh and /packages/:name/upgrade routes.
+export async function getRegistryUrl() {
+  const db = getDb();
+  const { rows } = await db.query(
+    "SELECT config_value FROM system_config WHERE config_key = 'package_registry_url'"
+  );
+  return rows[0]?.config_value || null;
 }
