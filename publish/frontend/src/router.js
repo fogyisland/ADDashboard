@@ -16,6 +16,9 @@ import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixView from './views/admin/SiteReplicationMatrixView.vue';
 import PortsView from './views/admin/PortsView.vue';
+import PackagesView from './views/admin/PackagesView.vue';
+import PackageEditView from './views/admin/PackageEditView.vue';
+import RegistryView from './views/admin/RegistryView.vue';
 import InitWizardView from './views/init/InitWizardView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
@@ -37,6 +40,9 @@ const routes = [
   { path: '/admin/dcs-catalog', component: DcsCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/site-replication-matrix', component: SiteReplicationMatrixView, meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
+  { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },
+  { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },
+  { path: '/admin/packages/:name', component: PackageEditView, meta: { perm: 'admin:packages' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

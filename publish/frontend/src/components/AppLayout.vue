@@ -20,6 +20,7 @@
           <router-link to="/admin/dcs-catalog">AD 域控清单</router-link>
           <router-link to="/admin/site-replication-matrix">站点复制矩阵</router-link>
           <router-link to="/admin/ports">端口健康检查</router-link>
+          <router-link to="/admin/packages">包管理</router-link>
         </template>
       </nav>
     </aside>

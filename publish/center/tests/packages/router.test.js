@@ -328,6 +328,51 @@ describe('admin /api/admin/packages', () => {
     });
   });
 
+  describe('GET /packages/registry/list', () => {
+    test('400 when registry not configured', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db, { getRegistryUrl: async () => null });
+      const r = await supertest(app).get('/api/admin/packages/registry/list').set(adminAuth());
+      assert.equal(r.status, 400);
+      assert.equal(r.body.error.code, 'PKG_VALIDATION_FAILED');
+    });
+
+    test('returns cached index (uses fetchIndex without force)', async () => {
+      // Stub RegistryClient so we don't depend on real HTTP.
+      const { RegistryClient } = await import('../../src/packages/registry.js');
+      const original = RegistryClient.prototype.fetchIndex;
+      RegistryClient.prototype.fetchIndex = async function (_force) {
+        return {
+          updatedAt: '2026-08-02T00:00:00Z',
+          packages: [
+            { name: 'cpu-monitor', latestVersion: '1.0.0', type: 'gauge', description: 'CPU gauge', author: 'me', versions: [] },
+            { name: 'mem-monitor', latestVersion: '1.2.3', type: 'gauge', description: 'Mem gauge', author: 'me', versions: [] }
+          ]
+        };
+      };
+      try {
+        const db = buildMockDb([]).standard();
+        const app = buildApp(db, { getRegistryUrl: async () => REGISTRY_URL });
+        const r = await supertest(app).get('/api/admin/packages/registry/list').set(adminAuth());
+        assert.equal(r.status, 200);
+        assert.equal(r.body.url, REGISTRY_URL);
+        assert.equal(r.body.updatedAt, '2026-08-02T00:00:00Z');
+        assert.ok(Array.isArray(r.body.packages));
+        assert.equal(r.body.packages.length, 2);
+        assert.equal(r.body.packages[0].name, 'cpu-monitor');
+      } finally {
+        RegistryClient.prototype.fetchIndex = original;
+      }
+    });
+
+    test('401 when no Authorization header', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db, { getRegistryUrl: async () => REGISTRY_URL });
+      const r = await supertest(app).get('/api/admin/packages/registry/list');
+      assert.equal(r.status, 401);
+    });
+  });
+
   describe('POST /packages/:name/upgrade', () => {
     test('400 when registry not configured', async () => {
       const db = buildMockDb([]).standard();
