@@ -8,6 +8,7 @@
         <router-link to="/topology">复制拓扑</router-link>
         <router-link to="/errors">错误链路</router-link>
         <router-link to="/agents">Agent 列表</router-link>
+        <router-link to="/dashboard/metrics">指标看板</router-link>
         <template v-if="auth.isAdmin">
           <div class="divider">管理</div>
           <router-link to="/admin/users">用户</router-link>

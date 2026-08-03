@@ -20,6 +20,7 @@ import PackagesView from './views/admin/PackagesView.vue';
 import PackageEditView from './views/admin/PackageEditView.vue';
 import RegistryView from './views/admin/RegistryView.vue';
 import InitWizardView from './views/init/InitWizardView.vue';
+import MetricDashboardView from './views/MetricDashboardView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
 const routes = [
@@ -43,6 +44,7 @@ const routes = [
   { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/:name', component: PackageEditView, meta: { perm: 'admin:packages' } },
+  { path: '/dashboard/metrics', component: MetricDashboardView },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

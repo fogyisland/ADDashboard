@@ -3,6 +3,7 @@ import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { getDb } from '../db/index.js';
 import { listPortStatusesForAgents } from '../services/port-status.js';
+import { metricstore } from '../packages/metricstore.js';
 
 // Helpers ---------------------------------------------------------------
 
@@ -224,6 +225,77 @@ export function dashboardRouter({ config, logger }) {
       res.json({ site, dcs, links, siteRefreshSeconds });
     } catch (e) {
       logger.error({ err: e }, 'site-replication-matrix failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ---- Package metric dashboard (Task 9) ----
+  // Summary endpoint: returns the latest gauge/counter/status rows for all
+  // installed metric_*_latest tables. Filtering is done at the call site
+  // (metricstore.summary) by packageName/agentId/metricId.
+  r.get('/api/dashboard/metrics/summary', auth, async (req, res) => {
+    try {
+      const { packageName, agentId, metricId } = req.query;
+      const db = getDb();
+      // Resolve metricId filter: a single fully-qualified "<pkg>.<key>" or
+      // all metrics for a package (or all metrics overall when neither is
+      // given). The helper itself doesn't know about packageName prefix
+      // matching, so we expand to an exact-list per matching installed
+      // package and then call the helper per metric.
+      let rows = [];
+      if (metricId) {
+        rows = await metricstore.summary(db, { metricId, agentId: agentId || undefined });
+      } else if (packageName) {
+        const { installedPackages } = await import('../db/sql/installed-packages.js');
+        const pkg = await installedPackages.get(db, packageName);
+        if (pkg && Array.isArray(pkg.manifest?.metrics)) {
+          const all = await Promise.all(
+            pkg.manifest.metrics.map((m) =>
+              metricstore.summary(db, { metricId: `${packageName}.${m.key}`, agentId: agentId || undefined })
+            )
+          );
+          rows = all.flat();
+        }
+      } else {
+        rows = await metricstore.summary(db, { agentId: agentId || undefined });
+      }
+      res.json({ rows });
+    } catch (e) {
+      logger.error({ err: e }, 'dashboard metrics summary failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // Timeseries endpoint: requires metricId + agentId + from + to. The
+  // metricstore.timeseries() helper enforces non-empty from/to and returns
+  // a flat array of rows. We re-wrap as { points } for frontend consumption.
+  r.get('/api/dashboard/metrics/timeseries', auth, async (req, res) => {
+    const { metricId, agentId, from, to } = req.query;
+    if (!metricId) return res.status(400).json({ error: 'missing metricId' });
+    if (!agentId) return res.status(400).json({ error: 'missing agentId' });
+    try {
+      const db = getDb();
+      const fromTs = from ? new Date(from) : new Date(Date.now() - 3600 * 1000);
+      const toTs = to ? new Date(to) : new Date();
+      if (isNaN(fromTs.getTime()) || isNaN(toTs.getTime())) {
+        return res.status(400).json({ error: 'invalid from/to timestamp' });
+      }
+      const rows = await metricstore.timeseries(db, {
+        metricId,
+        agentId,
+        from: fromTs,
+        to: toTs
+      });
+      res.json({
+        points: rows.map((r) => ({
+          ts: toIso(r.ts),
+          value: Number(r.value),
+          tags: r.tags_json ?? null,
+          unit: r.unit ?? null
+        }))
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'dashboard metrics timeseries failed');
       res.status(500).json({ error: 'internal' });
     }
   });
