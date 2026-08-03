@@ -83,6 +83,74 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
     }
   });
 
+  // GET /api/admin/packages/registry/refresh — force-refresh registry.
+  // Registered BEFORE /:name to follow static-before-dynamic convention.
+  r.get('/api/admin/packages/registry/refresh', auth, async (_req, res) => {
+    try {
+      const registryUrl = await getRegistryUrl();
+      if (!registryUrl) {
+        return res.status(400).json({
+          ok: false,
+          error: { code: 'PKG_VALIDATION_FAILED', message: 'registry not configured' }
+        });
+      }
+      const registry = new RegistryClient({
+        baseUrl: registryUrl,
+        cacheDir: join(process.cwd(), 'data', 'registry-cache'),
+        logger: getLogger ? getLogger() : null
+      });
+      const idx = await registry.fetchIndex(true);
+      res.json({
+        ok: true,
+        data: { updatedAt: idx.updatedAt, packages: idx.packages.length }
+      });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin registry refresh failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
+  // GET /api/admin/packages/registry/list — list cached registry index.
+  // Reads the cached index.json without hitting the registry. Used by the
+  // frontend RegistryView to browse available packages. When no registry
+  // is configured we return an empty result (200) so the frontend can
+  // render a graceful "未配置" state instead of an error.
+  // Registered BEFORE /:name to follow static-before-dynamic convention.
+  r.get('/api/admin/packages/registry/list', auth, async (_req, res) => {
+    try {
+      const registryUrl = await getRegistryUrl();
+      if (!registryUrl) {
+        return res.json({ url: null, packages: [], updatedAt: null });
+      }
+      const registry = new RegistryClient({
+        baseUrl: registryUrl,
+        cacheDir: join(process.cwd(), 'data', 'registry-cache'),
+        logger: getLogger ? getLogger() : null
+      });
+      const idx = await registry.fetchIndex();
+      res.json({
+        url: registryUrl,
+        packages: idx.packages,
+        updatedAt: idx.updatedAt
+      });
+    } catch (e) {
+      if (e instanceof PkgError) {
+        return res
+          .status(e.status || 400)
+          .json({ ok: false, error: { code: e.code, message: e.message } });
+      }
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin registry list failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
   r.get('/api/admin/packages/:name', auth, async (req, res) => {
     try {
       const pkg = await installedPackages.get(db, req.params.name);
@@ -293,72 +361,6 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
     } catch (e) {
       const log = getLogger ? getLogger() : null;
       if (log) log.error({ err: e }, 'admin package updateParams failed');
-      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
-    }
-  });
-
-  r.get('/api/admin/packages/registry/refresh', auth, async (_req, res) => {
-    try {
-      const registryUrl = await getRegistryUrl();
-      if (!registryUrl) {
-        return res.status(400).json({
-          ok: false,
-          error: { code: 'PKG_VALIDATION_FAILED', message: 'registry not configured' }
-        });
-      }
-      const registry = new RegistryClient({
-        baseUrl: registryUrl,
-        cacheDir: join(process.cwd(), 'data', 'registry-cache'),
-        logger: getLogger ? getLogger() : null
-      });
-      const idx = await registry.fetchIndex(true);
-      res.json({
-        ok: true,
-        data: { updatedAt: idx.updatedAt, packages: idx.packages.length }
-      });
-    } catch (e) {
-      if (e instanceof PkgError) {
-        return res
-          .status(e.status || 400)
-          .json({ ok: false, error: { code: e.code, message: e.message } });
-      }
-      const log = getLogger ? getLogger() : null;
-      if (log) log.error({ err: e }, 'admin registry refresh failed');
-      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
-    }
-  });
-
-  // GET /api/admin/packages/registry/list — list cached registry index.
-  // Reads the cached index.json without hitting the registry. Used by the
-  // frontend RegistryView to browse available packages.
-  r.get('/api/admin/packages/registry/list', auth, async (_req, res) => {
-    try {
-      const registryUrl = await getRegistryUrl();
-      if (!registryUrl) {
-        return res.status(400).json({
-          ok: false,
-          error: { code: 'PKG_VALIDATION_FAILED', message: 'registry not configured' }
-        });
-      }
-      const registry = new RegistryClient({
-        baseUrl: registryUrl,
-        cacheDir: join(process.cwd(), 'data', 'registry-cache'),
-        logger: getLogger ? getLogger() : null
-      });
-      const idx = await registry.fetchIndex();
-      res.json({
-        url: registryUrl,
-        packages: idx.packages,
-        updatedAt: idx.updatedAt
-      });
-    } catch (e) {
-      if (e instanceof PkgError) {
-        return res
-          .status(e.status || 400)
-          .json({ ok: false, error: { code: e.code, message: e.message } });
-      }
-      const log = getLogger ? getLogger() : null;
-      if (log) log.error({ err: e }, 'admin registry list failed');
       res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
     }
   });

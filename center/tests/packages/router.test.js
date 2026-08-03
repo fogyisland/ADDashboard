@@ -329,12 +329,14 @@ describe('admin /api/admin/packages', () => {
   });
 
   describe('GET /packages/registry/list', () => {
-    test('400 when registry not configured', async () => {
+    test('returns empty result when registry not configured', async () => {
       const db = buildMockDb([]).standard();
       const app = buildApp(db, { getRegistryUrl: async () => null });
       const r = await supertest(app).get('/api/admin/packages/registry/list').set(adminAuth());
-      assert.equal(r.status, 400);
-      assert.equal(r.body.error.code, 'PKG_VALIDATION_FAILED');
+      assert.equal(r.status, 200);
+      assert.equal(r.body.url, null);
+      assert.deepEqual(r.body.packages, []);
+      assert.equal(r.body.updatedAt, null);
     });
 
     test('returns cached index (uses fetchIndex without force)', async () => {
@@ -422,6 +424,16 @@ describe('admin /api/admin/packages', () => {
         .delete('/api/admin/packages/foo')
         .set('Authorization', `Bearer ${operatorToken()}`);
       assert.equal(r.status, 403);
+    });
+
+    test('GET /packages/registry/list: 403 for operator token (missing admin:packages perm)', async () => {
+      const db = buildMockDb([]).standard();
+      const app = buildApp(db);
+      const r = await supertest(app)
+        .get('/api/admin/packages/registry/list')
+        .set('Authorization', `Bearer ${operatorToken()}`);
+      assert.equal(r.status, 403);
+      assert.equal(r.body.need, 'admin:packages');
     });
   });
 });
