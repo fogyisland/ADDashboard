@@ -14,9 +14,13 @@ import { PkgError } from './errors.js';
 export function checkAgentCompat(agentVersion, manifest) {
   const range = manifest.agent?.minVersion;
   if (!range) return { ok: true }; // no constraint declared
-  // '*' is a sentinel meaning "no agent check requested" (used by admin
-  // install/upgrade paths where the agent isn't on hand yet). Don't
-  // error on it — just skip the constraint.
+  // '*' is a sentinel meaning "skip the agent constraint check". Used by
+  // admin-side install/upgrade paths where the agent isn't on hand yet
+  // (see router.js: POST /api/admin/packages/install and /:name/upgrade,
+  // which call checkAll(centerVersion, '*', candidate) to validate only
+  // the center constraint before any DB writes). The agent-side check
+  // (agent pull / package sync) passes a real version — never '*'. Don't
+  // error on '*' or null; just skip the constraint.
   if (agentVersion === '*' || agentVersion == null) return { ok: true };
   if (!semver.valid(agentVersion)) {
     return { ok: false, error: `agent version ${agentVersion} is not valid SemVer` };
