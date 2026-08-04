@@ -160,7 +160,6 @@ async function loadMetrics() {
       const id = metricIdFor(m.key);
       const tsParams = { metricId: id, from, to };
       if (agentFilter.value !== 'all') tsParams.agentId = agentFilter.value;
-      else tsParams.agentId = 'all'; // server expects a value; use 'all' to mean "any"
       try {
         const tr = await axios.get('/api/dashboard/metrics/timeseries', { params: tsParams });
         const pts = Array.isArray(tr.data?.points) ? tr.data.points : [];
