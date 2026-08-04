@@ -23,6 +23,7 @@ export class PackageManager {
     scheduler,        // accepted for API parity with the brief, currently unused
     fetchJson,        // inject for tests; defaults to requestJson
     runScriptFn,      // inject for tests; defaults to runPackageScript
+    powerShellPath = 'powershell.exe',
     syncIntervalMs = 5 * 60_000,
     flushIntervalMs = 5_000
   }) {
@@ -32,6 +33,7 @@ export class PackageManager {
     this.agentToken = agentToken;
     this.dataDir = dataDir;
     this.logger = logger;
+    this.powerShellPath = powerShellPath;
     this.cacheDir = join(dataDir, 'packages');
     this.queueFile = join(dataDir, 'report-queue.json');
     this.syncIntervalMs = syncIntervalMs;
@@ -142,6 +144,7 @@ export class PackageManager {
       params,
       timeoutMs,
       logger: this.logger,
+      powerShellPath: this.powerShellPath,
       // Allow tests to inject their own spawnFn via PackageManager ctor in a
       // future change; for now runPackageScript uses node:child_process.spawn
       // directly with no injection.

@@ -13,12 +13,13 @@ export function runPackageScript({
   params,
   timeoutMs = 30000,
   logger,
-  spawnFn
+  spawnFn,
+  powerShellPath = 'powershell.exe'
 }) {
   const spawn = spawnFn || defaultSpawn;
   const startedAt = Date.now();
   return new Promise((resolve) => {
-    const child = spawn('powershell.exe', [
+    const child = spawn(powerShellPath, [
       '-NoProfile', '-ExecutionPolicy', 'Bypass',
       '-File', scriptPath,
     ], { windowsHide: true });

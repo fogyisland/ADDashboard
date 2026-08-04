@@ -44,7 +44,8 @@ const packageManager = new PackageManager({
   centerBaseUrl: config.centerUrl,
   agentToken: config.agentToken,
   dataDir: config.agentDataDir,
-  logger
+  logger,
+  powerShellPath: config.powerShellPath
 });
 
 const heartbeat = startHeartbeat({
