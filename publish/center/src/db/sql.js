@@ -38,7 +38,12 @@ const VARIANTS = {
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
       upsert: `INSERT INTO system_config (config_key, config_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP`,
-      setAgentToken: `INSERT INTO system_config (config_key, config_value) VALUES ('agent_token', ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP`
+      setAgentToken: `INSERT INTO system_config (config_key, config_value) VALUES ('agent_token', ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP`,
+      audit: {
+        write: 'INSERT INTO sys_config_audit (config_key, old_value, new_value, changed_by, change_type) VALUES (?, ?, ?, ?, ?)',
+        list: `SELECT a.id, a.config_key, a.old_value, a.new_value, a.changed_by, a.change_type, a.changed_at, u.username AS changed_by_username FROM sys_config_audit a LEFT JOIN sys_users u ON a.changed_by = u.id ORDER BY a.changed_at DESC, a.id DESC LIMIT 20`,
+        getById: 'SELECT id, config_key, old_value, new_value, changed_type FROM sys_config_audit WHERE id = ?'
+      }
     },
     audit: {
       write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
@@ -215,7 +220,12 @@ const VARIANTS = {
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
       upsert: `MERGE INTO system_config AS t USING (SELECT ? AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value)`,
-      setAgentToken: `MERGE INTO system_config AS t USING (SELECT 'agent_token' AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value)`
+      setAgentToken: `MERGE INTO system_config AS t USING (SELECT 'agent_token' AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value)`,
+      audit: {
+        write: 'INSERT INTO sys_config_audit (config_key, old_value, new_value, changed_by, change_type) VALUES (?, ?, ?, ?, ?)',
+        list: `SELECT TOP 20 a.id, a.config_key, a.old_value, a.new_value, a.changed_by, a.change_type, a.changed_at, u.username AS changed_by_username FROM sys_config_audit a LEFT JOIN sys_users u ON a.changed_by = u.id ORDER BY a.changed_at DESC, a.id DESC`,
+        getById: 'SELECT id, config_key, old_value, new_value, changed_type FROM sys_config_audit WHERE id = ?'
+      }
     },
     audit: {
       write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
