@@ -33,6 +33,33 @@
       @confirm="onConfirmSave"
       @cancel="showConfirm = false"
     />
+    <section v-if="audit.length" class="audit">
+      <h3>历史变更 (最近 20 条)</h3>
+      <table>
+        <thead><tr><th>键</th><th>旧值</th><th>新值</th><th>操作人</th><th>时间</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="row in audit" :key="row.id" class="audit-row">
+            <td><code>{{ row.configKey }}</code></td>
+            <td><code>{{ row.oldValue }}</code></td>
+            <td><code>{{ row.newValue }}</code></td>
+            <td>{{ row.changedByUsername || row.changedBy || '—' }}</td>
+            <td>{{ formatTs(row.changedAt) }}</td>
+            <td>
+              <button v-if="row.changeType !== 'ROLLBACK'" class="rollback" @click="onRollbackClick(row)">回滚</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    <ConfirmDialog
+      v-if="rollbackTarget"
+      title="确认回滚到旧值？"
+      :body="`回滚 ${rollbackTarget.configKey} 从 ${rollbackTarget.newValue} 到 ${rollbackTarget.oldValue}`"
+      confirm-label="确认回滚"
+      :danger="true"
+      @confirm="doRollback"
+      @cancel="rollbackTarget = null"
+    />
   </AppLayout>
 </template>
 
@@ -65,6 +92,8 @@ const saving = ref(false);
 const topLevelMsg = ref('');
 const showConfirm = ref(false);
 const confirmBody = ref('');
+const audit = ref([]);
+const rollbackTarget = ref(null);
 
 async function load() {
   const r = await adminApi.getConfig();
@@ -72,6 +101,38 @@ async function load() {
   current.value = { ...initial.value };
   markClean(current.value);
   validate(current.value);
+  await loadAudit();
+}
+
+async function loadAudit() {
+  try {
+    const r = await adminApi.getConfigAudit();
+    audit.value = r.data || [];
+  } catch (e) {
+    audit.value = [];
+  }
+}
+
+function formatTs(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s : d.toLocaleString();
+}
+
+function onRollbackClick(row) {
+  rollbackTarget.value = row;
+}
+
+async function doRollback() {
+  const row = rollbackTarget.value;
+  rollbackTarget.value = null;
+  if (!row) return;
+  try {
+    await adminApi.rollbackConfig(row.id);
+    await Promise.all([load(), loadAudit()]);
+  } catch (e) {
+    topLevelMsg.value = '回滚失败';
+  }
 }
 
 function onInput(k, v) {
@@ -140,4 +201,11 @@ button.save, button.cancel { padding: 6px 14px; border: 1px solid #1e293b; backg
 button.save:disabled, button.cancel:disabled { opacity: 0.5; cursor: not-allowed; }
 button.cancel { background: #0b1220; color: var(--text); }
 .msg { margin-left: 12px; color: var(--accent); }
+.audit { margin-top: 24px; }
+.audit h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+.audit table { width: 100%; border-collapse: collapse; background: var(--panel); }
+.audit th, .audit td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; vertical-align: top; }
+.audit th { background: #0b1220; color: var(--muted); font-size: 12px; }
+.audit code { font-size: 12px; color: var(--text); }
+.audit button.rollback { padding: 4px 10px; border: 1px solid #1e293b; background: var(--accent); color: #0b1220; border-radius: 3px; cursor: pointer; font-size: 12px; }
 </style>

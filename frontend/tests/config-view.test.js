@@ -7,13 +7,18 @@ import { adminApi } from '../src/api/admin.js';
 vi.mock('../src/api/admin.js', () => ({
   adminApi: {
     getConfig: vi.fn(),
-    updateConfig: vi.fn()
+    updateConfig: vi.fn(),
+    getConfigAudit: vi.fn().mockResolvedValue({ data: [] }),
+    rollbackConfig: vi.fn()
   }
 }));
 
 beforeEach(() => {
   adminApi.getConfig.mockReset();
   adminApi.updateConfig.mockReset();
+  adminApi.getConfigAudit.mockReset();
+  adminApi.getConfigAudit.mockResolvedValue({ data: [] });
+  adminApi.rollbackConfig.mockReset();
 });
 
 const SAMPLE = {
