@@ -56,13 +56,21 @@ test('POST /api/auth/login returns 200 with token + role for valid creds', async
   const app = express();
   app.use(express.json());
   const passwordHash = bcrypt.hashSync('correct-horse-battery-staple', 12);
+  // Mock must mirror production: SQL `users.findByUsername` returns the role
+  // as `role_name` (sql.js:25), NOT `role`. Earlier this test passed only
+  // because the mock used the wrong field name — masking a real bug where
+  // routes/auth.js referenced `user.role` (undefined) instead of `user.role_name`.
   _setDbForTest(buildMockDb({
-    'alice': { id: 1, username: 'alice', password_hash: passwordHash, status: 1, role: 'admin', permissions: ['*'] }
+    'alice': { id: 1, username: 'alice', password_hash: passwordHash, status: 1, role_name: 'admin', permissions: ['*'] }
   }));
   app.use(authRouter({ config: { jwtSecret: 'test-secret', agentToken: 'tok' }, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
   const res = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
   assert.equal(res.status, 200);
   assert.ok(res.body.token, 'response should contain a JWT token');
   assert.equal(res.body.user.username, 'alice');
-  assert.equal(res.body.user.role, 'admin');
+  assert.equal(res.body.user.role, 'admin', 'login response must surface role to frontend (drives auth.isAdmin + AppLayout topbar display)');
+  // JWT must also carry the role for backend authorization. Decoding the token
+  // proves routes/auth.js:17 reads user.role_name, not user.role.
+  const payload = JSON.parse(Buffer.from(res.body.token.split('.')[1], 'base64url').toString());
+  assert.equal(payload.role, 'admin', 'JWT must carry role for backend requireRole/requirePermission middleware');
 });

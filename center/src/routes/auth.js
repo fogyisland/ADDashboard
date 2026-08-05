@@ -14,9 +14,9 @@ export function authRouter({ config, logger }) {
       return res.status(401).json({ error: 'invalid credentials' });
     }
     await recordLogin(user.id);
-    const token = signJwt({ sub: user.id, role: user.role, permissions: user.permissions }, config.jwtSecret, 8 * 3600);
+    const token = signJwt({ sub: user.id, role: user.role_name, permissions: user.permissions }, config.jwtSecret, 8 * 3600);
     await writeAudit({ userId: user.id, action: 'login', target: username, payload: null }, logger);
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+    res.json({ token, user: { id: user.id, username: user.username, role: user.role_name } });
   });
   return r;
 }
