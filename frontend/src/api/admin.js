@@ -17,5 +17,7 @@ export const adminApi = {
   updateSite: (id, body) => api.put(`/api/admin/sites-catalog/${id}`, body),
   deleteSite: (id) => api.delete(`/api/admin/sites-catalog/${id}`),
   listDcsCatalog: () => api.get('/api/admin/dcs-catalog'),
-  assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId })
+  assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId }),
+  bulkImportSites: (rows) => api.post('/api/admin/sites-catalog/bulk', { rows }),
+  bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows })
 };

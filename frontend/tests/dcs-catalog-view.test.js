@@ -5,7 +5,8 @@ vi.mock('../src/api/admin.js', () => ({
   adminApi: {
     listSitesCatalog: vi.fn(() => Promise.resolve({ data: [] })),
     listDcsCatalog: vi.fn(() => Promise.resolve({ data: [] })),
-    assignDcSite: vi.fn(() => Promise.resolve({ data: { ok: true } }))
+    assignDcSite: vi.fn(() => Promise.resolve({ data: { ok: true } })),
+    bulkAssignDcs: vi.fn(() => Promise.resolve({ data: { assigned: 0, unassigned: 0, skipped: 0, errors: [] } }))
   }
 }));
 
@@ -16,6 +17,7 @@ beforeEach(() => {
   adminApi.listSitesCatalog.mockReset();
   adminApi.listDcsCatalog.mockReset();
   adminApi.assignDcSite.mockReset();
+  adminApi.bulkAssignDcs.mockReset();
 });
 
 test('DcsCatalogView renders DC rows with site name and role badges', async () => {
@@ -37,4 +39,20 @@ test('DcsCatalogView renders DC rows with site name and role badges', async () =
   expect(text).toContain('Beijing-Site');
   expect(text).toContain('DC-SH-01');
   expect(text).toContain('未分配');
+});
+
+test('DcsCatalogView: clicking 批量分配站点 opens BulkImportDialog', async () => {
+  adminApi.listSitesCatalog.mockResolvedValue({ data: [] });
+  adminApi.listDcsCatalog.mockResolvedValue({ data: [] });
+  const wrapper = mount(DcsCatalogView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  expect(wrapper.findAllComponents({ name: 'BulkImportDialog' }).length).toBe(0);
+  const buttons = wrapper.findAll('button');
+  const bulkBtn = buttons.find(b => b.text() === '批量分配站点');
+  expect(bulkBtn).toBeTruthy();
+  await bulkBtn.trigger('click');
+  await flushPromises();
+  expect(wrapper.findAllComponents({ name: 'BulkImportDialog' }).length).toBe(1);
 });

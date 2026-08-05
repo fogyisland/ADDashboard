@@ -6,7 +6,8 @@ vi.mock('../src/api/admin.js', () => ({
     listSitesCatalog: vi.fn(() => Promise.resolve({ data: [] })),
     createSite: vi.fn(() => Promise.resolve({ data: { id: 99 } })),
     updateSite: vi.fn(() => Promise.resolve({ data: { ok: true } })),
-    deleteSite: vi.fn(() => Promise.resolve({ data: { ok: true } }))
+    deleteSite: vi.fn(() => Promise.resolve({ data: { ok: true } })),
+    bulkImportSites: vi.fn(() => Promise.resolve({ data: { imported: 0, skipped: 0, errors: [] } }))
   }
 }));
 
@@ -18,6 +19,7 @@ beforeEach(() => {
   adminApi.createSite.mockReset();
   adminApi.updateSite.mockReset();
   adminApi.deleteSite.mockReset();
+  adminApi.bulkImportSites.mockReset();
 });
 
 test('SitesCatalogView renders rows from listSitesCatalog', async () => {
@@ -36,4 +38,19 @@ test('SitesCatalogView renders rows from listSitesCatalog', async () => {
   expect(text).toContain('Shanghai-Site');
   expect(text).toContain('BJ');
   expect(text).toContain('3');
+});
+
+test('SitesCatalogView: clicking 批量导入 opens BulkImportDialog', async () => {
+  adminApi.listSitesCatalog.mockResolvedValue({ data: [] });
+  const wrapper = mount(SitesCatalogView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  expect(wrapper.findAllComponents({ name: 'BulkImportDialog' }).length).toBe(0);
+  const buttons = wrapper.findAll('button');
+  const bulkBtn = buttons.find(b => b.text() === '批量导入');
+  expect(bulkBtn).toBeTruthy();
+  await bulkBtn.trigger('click');
+  await flushPromises();
+  expect(wrapper.findAllComponents({ name: 'BulkImportDialog' }).length).toBe(1);
 });

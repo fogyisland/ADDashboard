@@ -16,10 +16,10 @@
 import { buildSql } from '../../src/db/sql.js';
 
 export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
-  function lookup(sql) {
+  function lookup(sql, params) {
     for (const s of scripts) {
       if (s.match.test(sql)) {
-        const rows = typeof s.rows === 'function' ? s.rows() : s.rows;
+        const rows = typeof s.rows === 'function' ? s.rows(params) : s.rows;
         return Array.isArray(rows) ? rows : [];
       }
     }
@@ -43,7 +43,7 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
       const script = findScript(sql);
       if (script?.throwOnExecute) throw script.throwOnExecute;
       if (script?.onExecute) script.onExecute(sql, params);
-      const rows = lookup(sql);
+      const rows = lookup(sql, params);
       // For INSERT/MERGE/UPDATE/DELETE we report affectedRows=1 so routes that
       // guard on `affectedRows === 0 -> 404` see "row affected". Tests that
       // need to assert "no rows touched" override at the call site.
@@ -58,7 +58,7 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
   function makeQuery(records) {
     return async function query(sql, params = []) {
       if (records) records.push({ sql, params: [...params] });
-      return { rows: lookup(sql) };
+      return { rows: lookup(sql, params) };
     };
   }
   function build({ records } = {}) {
