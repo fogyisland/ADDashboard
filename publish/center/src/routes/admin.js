@@ -23,7 +23,13 @@ const CAML_MAP = new Map([
   ['site_name', 'siteName'],
   ['region_code', 'regionCode'],
   ['is_hub', 'isHub'],
-  ['sort_order', 'sortOrder']
+  ['sort_order', 'sortOrder'],
+  ['old_value', 'oldValue'],
+  ['new_value', 'newValue'],
+  ['change_type', 'changeType'],
+  ['changed_at', 'changedAt'],
+  ['changed_by', 'changedBy'],
+  ['changed_by_username', 'changedByUsername']
 ]);
 
 function camelRow(row) {
@@ -167,6 +173,17 @@ export function adminRouter({ config, logger }) {
       res.json({ ok: true, auditCount: auditRows.length });
     } catch (e) {
       logger.error({ err: e }, 'admin config update failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.get('/api/admin/config/audit', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.config.audit.list);
+      res.json(rows.map(camelRow));
+    } catch (e) {
+      logger.error({ err: e }, 'admin config audit list failed');
       res.status(500).json({ error: 'internal' });
     }
   });
