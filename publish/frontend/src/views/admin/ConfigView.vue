@@ -16,7 +16,13 @@
               @update:value="onInput(k, $event)"
             />
           </td>
-          <td></td>
+          <td>
+            <template v-if="k === 'ad_agent_token'">
+              <button class="token-action" @click="onGenerateToken">生成</button>
+              <button class="token-action" @click="onCopyToken">复制</button>
+              <span v-if="copyMsg" class="copy-msg">{{ copyMsg }}</span>
+            </template>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -94,6 +100,29 @@ const showConfirm = ref(false);
 const confirmBody = ref('');
 const audit = ref([]);
 const rollbackTarget = ref(null);
+const copyMsg = ref('');
+
+function generateAgentToken() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function onGenerateToken() {
+  onInput('ad_agent_token', generateAgentToken());
+}
+
+async function onCopyToken() {
+  const token = current.value.ad_agent_token || '';
+  if (!token) return;
+  try {
+    await navigator.clipboard.writeText(token);
+    copyMsg.value = '已复制';
+  } catch {
+    copyMsg.value = '复制失败';
+  }
+  setTimeout(() => { copyMsg.value = ''; }, 2000);
+}
 
 async function load() {
   const r = await adminApi.getConfig();
@@ -208,4 +237,7 @@ button.cancel { background: #0b1220; color: var(--text); }
 .audit th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .audit code { font-size: 12px; color: var(--text); }
 .audit button.rollback { padding: 4px 10px; border: 1px solid #1e293b; background: var(--accent); color: #0b1220; border-radius: 3px; cursor: pointer; font-size: 12px; }
+.token-action { padding: 3px 10px; border: 1px solid #1e293b; background: #0b1220; color: var(--text); border-radius: 3px; cursor: pointer; font-size: 12px; margin-right: 4px; }
+.token-action:hover { background: var(--accent); color: #0b1220; }
+.copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }
 </style>

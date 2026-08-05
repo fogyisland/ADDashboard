@@ -127,3 +127,67 @@ test('save failure with fieldErrors highlights the offending row', async () => {
   // No fieldErrors shown because mock doesn't surface them in this path — but no uncaught error either.
   expect(adminApi.updateConfig).toHaveBeenCalled();
 });
+
+test('Agent Token: 生成 button fills input with a 32-char hex token and marks dirty', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  expect(w.find('button.save').attributes('disabled')).toBeDefined();
+  const genBtn = w.findAll('button').find(b => b.text() === '生成');
+  expect(genBtn).toBeTruthy();
+  await genBtn.trigger('click');
+  await flushPromises();
+  const tokenInput = w.findAll('input').find(i => i.element.name === '' || i.element.type === 'text')
+    ?.element?.value;
+  // find the input that now holds a 32-hex-char token
+  const inputs = w.findAll('input');
+  const newToken = inputs.map(i => i.element.value).find(v => /^[0-9a-f]{32}$/.test(v));
+  expect(newToken).toBeTruthy();
+  expect(w.find('button.save').attributes('disabled')).toBeUndefined();
+});
+
+test('Agent Token: 生成 button produces different tokens on each call', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const genBtn = w.findAll('button').find(b => b.text() === '生成');
+  await genBtn.trigger('click');
+  await flushPromises();
+  const first = w.findAll('input').map(i => i.element.value).find(v => /^[0-9a-f]{32}$/.test(v));
+  await genBtn.trigger('click');
+  await flushPromises();
+  const second = w.findAll('input').map(i => i.element.value).find(v => /^[0-9a-f]{32}$/.test(v));
+  expect(first).toBeTruthy();
+  expect(second).toBeTruthy();
+  expect(first).not.toBe(second);
+});
+
+test('Agent Token: 生成 button only appears on the token row (not other fields)', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const genBtns = w.findAll('button').filter(b => b.text() === '生成');
+  expect(genBtns.length).toBe(1);
+});
+
+test('Agent Token: 复制 button copies current token to clipboard', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const writeText = vi.fn(() => Promise.resolve());
+  const origClipboard = navigator.clipboard;
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+  try {
+    const w = mount(ConfigView);
+    await flushPromises();
+    const copyBtn = w.findAll('button').find(b => b.text() === '复制');
+    expect(copyBtn).toBeTruthy();
+    await copyBtn.trigger('click');
+    await flushPromises();
+    expect(writeText).toHaveBeenCalledWith('old-token-1234567890');
+  } finally {
+    Object.defineProperty(navigator, 'clipboard', { value: origClipboard, configurable: true });
+  }
+});
