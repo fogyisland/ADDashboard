@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { _setDbForTest } from '../../src/db/index.js';
 import { buildSql } from '../../src/db/sql.js';
 import { findByUsername, authenticate } from '../../src/services/users.js';

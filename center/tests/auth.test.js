@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { authRouter } from '../src/routes/auth.js';
 import { default as supertest } from 'supertest';
 import { _setDbForTest } from '../src/db/index.js';

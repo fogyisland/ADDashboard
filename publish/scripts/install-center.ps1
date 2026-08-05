@@ -28,6 +28,49 @@ Write-Step "install-center: $InstallPath (deployment only — wizard handles app
 # 0. Ensure NSSM is available locally (downloads to <projectRoot>/nssm/ on first run)
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
+# Idempotent node_modules install: hash-checked against package.json+package-lock.json.
+# Reinstalls when the source deps change (added/removed/upgraded) or node_modules is missing.
+# Writes the new hash to <InstallPath>\.install-hash after a successful install.
+function Ensure-CenterNodeModules {
+  param(
+    [Parameter(Mandatory)] [string]$InstallPath,
+    [Parameter(Mandatory)] [string]$SrcDir
+  )
+  $hashFile = Join-Path $InstallPath '.install-hash'
+  $srcPkg = Join-Path $SrcDir 'package.json'
+  $srcLock = Join-Path $SrcDir 'package-lock.json'
+  $newHash = ''
+  if (Test-Path $srcPkg) {
+    $newHash += (Get-FileHash -Algorithm SHA256 -Path $srcPkg).Hash
+  }
+  if (Test-Path $srcLock) {
+    $newHash += (Get-FileHash -Algorithm SHA256 -Path $srcLock).Hash
+  }
+  $oldHash = if (Test-Path $hashFile) { Get-Content -Path $hashFile -Raw -ErrorAction SilentlyContinue } else { '' }
+  $needsInstall = -not (Test-Path (Join-Path $InstallPath 'node_modules'))
+  if (-not $needsInstall -and $newHash -ne '' -and $newHash -ne $oldHash) {
+    $needsInstall = $true
+    $reason = 'deps changed (package.json or package-lock.json hash differs)'
+  } elseif (-not $needsInstall) {
+    $reason = 'up-to-date'
+  } else {
+    $reason = 'node_modules missing'
+  }
+  if ($needsInstall) {
+    Write-Step "installing center node_modules ($reason)"
+    if (Test-Path (Join-Path $InstallPath 'node_modules')) {
+      Remove-Item -Path (Join-Path $InstallPath 'node_modules') -Recurse -Force
+    }
+    Push-Location $InstallPath
+    try { npm install --omit=dev } finally { Pop-Location }
+    if ($newHash -ne '') {
+      Set-Content -Path $hashFile -Value $newHash -NoNewline
+    }
+  } else {
+    Write-Info "center node_modules up-to-date"
+  }
+}
+
 # Set log directory inside the NSSM module's own $Script: scope — module
 # functions can't see the caller's $Script:LogDir, so we have to push the
 # value across explicitly via the module's setter. Same value is held in
@@ -59,21 +102,13 @@ if (-not $InPlace) {
   # 4. Copy center files
   $srcDir = Join-Path $projectRoot 'center'
   Copy-Item -Path (Join-Path $srcDir '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
-  if (-not (Test-Path (Join-Path $InstallPath 'node_modules'))) {
-    Write-Step "installing center node_modules"
-    Push-Location $InstallPath
-    try { npm install --omit=dev } finally { Pop-Location }
-  }
+  Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   Copy-Item -Path (Join-Path $distPath '*') -Destination (Join-Path $InstallPath 'dist') -Recurse -Force
 } else {
   # In-place: only install node_modules if missing; build dist if missing.
   $node = (Get-Command node.exe -ErrorAction Stop).Source
   Write-Info "node: $node"
-  if (-not (Test-Path (Join-Path $InstallPath 'node_modules'))) {
-    Write-Step "installing center node_modules (in-place)"
-    Push-Location $InstallPath
-    try { npm install --omit=dev } finally { Pop-Location }
-  }
+  Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   $distPath = Join-Path $InstallPath 'dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
     Write-Step "building frontend (in-place)"

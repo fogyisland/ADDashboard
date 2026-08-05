@@ -1,4 +1,4 @@
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { getDb } from '../db/index.js';
 
 // Decode the comma-separated permissions string produced by GROUP_CONCAT (mysql)

@@ -170,3 +170,81 @@ Describe 'install-center service recovery' {
     }
   }
 }
+
+Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
+  # Regression guard for the "only install if node_modules missing" bug. The
+  # old guard skipped npm install when node_modules already existed, leaving
+  # users on stale deps after a package.json bump (e.g. bcrypt→bcryptjs).
+  # Ensure-CenterNodeModules must hash package.json+package-lock.json and
+  # reinstall whenever the hash changes.
+  BeforeAll {
+    $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
+    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts') 'install-center.ps1'
+    $script:srcContent = Get-Content $script:installCenterPath -Raw
+    $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
+  }
+
+  It 'defines the Ensure-CenterNodeModules function' {
+    $script:srcContent | Should -Match 'function Ensure-CenterNodeModules'
+  }
+
+  It 'takes mandatory -InstallPath and -SrcDir string parameters' {
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:installCenterPath, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Ensure-CenterNodeModules' }, $true)
+    $fn | Should -Not -BeNullOrEmpty 'Ensure-CenterNodeModules function must be defined'
+    $params = $fn[0].Body.ParamBlock.Parameters
+    ($params | Where-Object { $_.Name.VariablePath.UserPath -eq 'InstallPath' }) | Should -Not -BeNullOrEmpty
+    ($params | Where-Object { $_.Name.VariablePath.UserPath -eq 'SrcDir' }) | Should -Not -BeNullOrEmpty
+    # Confirm the Mandatory attribute text appears immediately above InstallPath in source.
+    $script:srcContent | Should -Match '\[Parameter\(Mandatory\)\]\s*\[string\]\$InstallPath'
+    $script:srcContent | Should -Match '\[Parameter\(Mandatory\)\]\s*\[string\]\$SrcDir'
+  }
+
+  It 'computes SHA256 hash of package.json + package-lock.json' {
+    $script:srcContent | Should -Match 'Get-FileHash\s+-Algorithm\s+SHA256'
+    $script:srcContent | Should -Match 'package\.json'
+    $script:srcContent | Should -Match 'package-lock\.json'
+  }
+
+  It 'compares against stored .install-hash in InstallPath' {
+    # The function reads .install-hash via Get-Content and references both files explicitly.
+    $script:srcContent | Should -Match '\.install-hash'
+    $script:srcContent | Should -Match 'Get-Content\s+-Path\s+\$hashFile'
+  }
+
+  It 'triggers reinstall when new hash differs from stored hash' {
+    $script:srcContent | Should -Match '\$newHash\s+-ne\s+\$oldHash'
+  }
+
+  It 'writes the new .install-hash after a successful install' {
+    $script:srcContent | Should -Match 'Set-Content\s+-Path\s+\$hashFile'
+  }
+
+  It 'deletes node_modules before reinstalling when deps change' {
+    $script:srcContent | Should -Match 'Remove-Item\s+-Path\s+\(Join-Path\s+\$InstallPath\s+''node_modules''\)\s+-Recurse\s+-Force'
+  }
+
+  It 'is called from both install branches (replacing the old "if not node_modules" guard)' {
+    $script:srcContent | Should -Match 'Ensure-CenterNodeModules\s+-InstallPath\s+\$InstallPath\s+-SrcDir\s+\$srcDir'
+    # Regression guard: the old broken guard must be gone.
+    $script:srcContent | Should -Not -Match "if\s*\(\s*-not\s+\(Test-Path\s+\(Join-Path\s+\$InstallPath\s+'node_modules'\)\)\)"
+  }
+
+  It 'mirror sync: function block identical in publish/scripts/install-center.ps1' {
+    $extractBlock = {
+      param($content)
+      $start = $content.IndexOf("function Ensure-CenterNodeModules")
+      if ($start -lt 0) { return '' }
+      $rest = $content.Substring($start)
+      $lines = $rest.Split("`n")
+      $endLine = -1
+      for ($i = 0; $i -lt $lines.Length; $i++) {
+        if ($i -gt 0 -and $lines[$i] -match '^\}') { $endLine = $i; break }
+      }
+      return ($lines[0..$endLine] -join "`n")
+    }
+    $srcBlock = & $extractBlock $script:srcContent
+    $pubBlock = & $extractBlock $script:pubContent
+    $pubBlock | Should -Be $srcBlock 'publish/scripts/install-center.ps1 mirror must match scripts/install-center.ps1 exactly.'
+  }
+}
