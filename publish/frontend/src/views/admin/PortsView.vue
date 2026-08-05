@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>端口健康检查</h2>
     <p class="hint">每个 Agent 都会探测下列端口（127.0.0.1 TCP connect，2s 超时）。新增/删除大约 10 分钟内自动生效。</p>
     <button class="new-btn" @click="openCreate">+ 新增端口</button>
@@ -35,12 +35,12 @@
         <span v-if="msg" class="msg">{{ msg }}</span>
       </div>
     </div>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { portsApi } from '../../api/ports.js';
 
 const rows = ref([]);

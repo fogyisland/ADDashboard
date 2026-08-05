@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>审计日志</h2>
     <table class="t">
       <thead><tr><th>时间</th><th>用户</th><th>动作</th><th>目标</th><th>详情</th></tr></thead>
@@ -13,12 +13,12 @@
         </tr>
       </tbody>
     </table>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 const rows = ref([]);
 async function load() { rows.value = (await adminApi.getAudit(200)).data; }

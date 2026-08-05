@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <div v-if="loading" class="loading">加载中...</div>
     <div v-else-if="loadError" class="error">加载失败: {{ loadError }}</div>
     <div v-else-if="pkg" class="package-edit-view">
@@ -66,14 +66,14 @@
         </table>
       </section>
     </div>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import axios from 'axios';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { usePackagesStore } from '../../stores/packages.js';
 
 const route = useRoute();

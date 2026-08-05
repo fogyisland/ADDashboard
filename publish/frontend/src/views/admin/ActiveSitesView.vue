@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>正在复制的站点</h2>
     <p class="hint">从最近 <code>ad_replication_status</code> 中派生的站点列表, 反映 Agent 实际观察到拓扑。</p>
     <table class="t">
@@ -21,12 +21,12 @@
         <tr v-if="!sites.length"><td colspan="4" class="empty">暂无数据 — Agent 首次上报后会显示</td></tr>
       </tbody>
     </table>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 const sites = ref([]);
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
