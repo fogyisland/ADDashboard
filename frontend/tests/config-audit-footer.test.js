@@ -15,8 +15,7 @@ vi.mock('../src/api/admin.js', () => ({
 
 const SAMPLE = {
   polling_interval_minutes: '5', latency_threshold_minutes: '60', heartbeat_interval_seconds: '10',
-  history_enabled: '1', ad_agent_token: 'old-token-1234567890',
-  center_public_host: 'ad.example.com', center_public_port: '443'
+  history_enabled: '1', ad_agent_token: 'old-token-1234567890'
 };
 const AUDIT = [
   { id: 1, configKey: 'polling_interval_minutes', oldValue: '5', newValue: '7', changeType: 'UPDATE', changedByUsername: 'admin', changedAt: '2026-08-05T10:00:00Z' },

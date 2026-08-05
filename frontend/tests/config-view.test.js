@@ -26,9 +26,7 @@ const SAMPLE = {
   latency_threshold_minutes: '60',
   heartbeat_interval_seconds: '10',
   history_enabled: '1',
-  ad_agent_token: 'old-token-1234567890',
-  center_public_host: 'ad.example.com',
-  center_public_port: '443'
+  ad_agent_token: 'old-token-1234567890'
 };
 
 test('loads config and renders rows on mount', async () => {
@@ -36,7 +34,7 @@ test('loads config and renders rows on mount', async () => {
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   const w = mount(ConfigView);
   await flushPromises();
-  expect(w.findAll('input').length).toBeGreaterThanOrEqual(7);
+  expect(w.findAll('input').length).toBeGreaterThanOrEqual(5);
 });
 
 test('save button disabled when no edits (not dirty)', async () => {
@@ -63,18 +61,17 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   expect(w.find('button.save').attributes('disabled')).toBeDefined(); // back to clean
 });
 
-test('edit risky field shows confirm dialog; cancel aborts save', async () => {
+test('edit risky field (ad_agent_token) shows confirm dialog; cancel aborts save', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
-  // center_public_host is the 6th field
+  // ad_agent_token is the 5th field (index 4)
   const inputs = w.findAll('input');
-  await inputs[5].setValue('new.example.com');
+  await inputs[4].setValue('new-token-1234567890');
   await w.find('button.save').trigger('click');
   await flushPromises();
-  // dialog visible
   expect(w.findComponent({ name: 'ConfirmDialog' }).exists() || w.find('.dialog').exists()).toBe(true);
   await w.find('button.cancel').trigger('click');
   await flushPromises();
@@ -88,12 +85,12 @@ test('edit risky field shows confirm dialog; confirm proceeds with save', async 
   const w = mount(ConfigView);
   await flushPromises();
   const inputs = w.findAll('input');
-  await inputs[5].setValue('new.example.com');
+  await inputs[4].setValue('new-token-1234567890');
   await w.find('button.save').trigger('click');
   await flushPromises();
   await w.find('button.confirm').trigger('click');
   await flushPromises();
-  expect(adminApi.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ center_public_host: 'new.example.com' }));
+  expect(adminApi.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ ad_agent_token: 'new-token-1234567890' }));
 });
 
 test('cancel button restores the snapshot', async () => {

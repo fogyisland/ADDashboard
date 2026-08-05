@@ -1,8 +1,5 @@
 import { ref, computed } from 'vue';
 
-const HOST_RE = /^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
-const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
-
 const RULES = {
   polling_interval_minutes: (v) => {
     const n = Number(v);
@@ -20,23 +17,7 @@ const RULES = {
     return null;
   },
   history_enabled: (v) => (v === '0' || v === '1') ? null : '只能填 0 或 1',
-  ad_agent_token: (v) => (v && String(v).length >= 16) ? null : 'Token 至少 16 字符',
-  center_public_host: (v) => {
-    if (!v || typeof v !== 'string' || !v.trim()) return '主机名不合法';
-    const s = v.trim();
-    if (IPV4_RE.test(s)) {
-      const parts = s.split('.').map(Number);
-      if (parts.some((p) => p < 0 || p > 255)) return '主机名不合法';
-      return null;
-    }
-    if (HOST_RE.test(s)) return null;
-    return '主机名不合法';
-  },
-  center_public_port: (v) => {
-    const n = Number(v);
-    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1 || n > 65535) return '端口必须在 1-65535 之间';
-    return null;
-  }
+  ad_agent_token: (v) => (v && String(v).length >= 16) ? null : 'Token 至少 16 字符'
 };
 
 export function useConfigValidation(initialErrors = {}) {
