@@ -188,6 +188,29 @@ export function adminRouter({ config, logger }) {
     }
   });
 
+  r.post('/api/admin/config/rollback', auth, async (req, res) => {
+    try {
+      const auditId = Number(req.body?.auditId);
+      if (!Number.isInteger(auditId) || auditId <= 0) return res.status(400).json({ error: 'auditId required' });
+      const db = getDb();
+      let result = null;
+      await db.transaction(async (tx) => {
+        const { rows } = await tx.query(db.sql.config.audit.getById, [auditId]);
+        if (rows.length === 0) { result = { notFound: true }; return; }
+        const audit = rows[0];
+        await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [audit.old_value, audit.config_key]);
+        await tx.execute(db.sql.config.audit.write, [audit.config_key, audit.new_value, audit.old_value, req.user?.sub ?? null, 'ROLLBACK']);
+        result = { configKey: audit.config_key, newValue: audit.old_value };
+      });
+      if (!result) return res.status(500).json({ error: 'internal' });
+      if (result.notFound) return res.status(404).json({ error: 'audit not found' });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      logger.error({ err: e }, 'admin config rollback failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   r.get('/api/admin/audit', auth, async (req, res) => {
     try {
       let limit = Number(req.query.limit ?? 200);
