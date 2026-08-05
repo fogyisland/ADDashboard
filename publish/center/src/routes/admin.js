@@ -312,6 +312,46 @@ export function adminRouter({ config, logger }) {
     }
   });
 
+  r.post('/api/admin/sites-catalog/bulk', auth, async (req, res) => {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+    if (!rows) return res.status(400).json({ error: 'rows array required' });
+    if (rows.length === 0) return res.status(400).json({ error: 'rows array empty' });
+    const errors = [];
+    let imported = 0;
+    let skipped = 0;
+    try {
+      const db = getDb();
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i] || {};
+        const siteName = (r.siteName || '').trim();
+        if (!siteName) {
+          errors.push({ rowIndex: i, siteName: '', reason: 'siteName is required' });
+          skipped++;
+          continue;
+        }
+        const isHubVal = r.isHub === true || r.isHub === 1 || r.isHub === '1' || r.isHub === 'true' || r.isHub === 'yes' ? 1 : 0;
+        await db.execute(db.sql.sites.upsert, [
+          siteName,
+          r.regionCode ?? null,
+          isHubVal,
+          r.description ?? null
+        ]);
+        imported++;
+      }
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'bulk_import_sites',
+        target: 'ad_sites',
+        payload: { imported, skipped, total: rows.length },
+        logger
+      });
+      res.json({ ok: true, imported, skipped, errors });
+    } catch (e) {
+      logger.error({ err: e }, 'sites-catalog bulk import failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   // ----- DCs Catalog -----
   r.get('/api/admin/dcs-catalog', auth, async (_req, res) => {
     try {
@@ -341,6 +381,59 @@ export function adminRouter({ config, logger }) {
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog site assign failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.post('/api/admin/dcs-catalog/bulk-assign', auth, async (req, res) => {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+    if (!rows) return res.status(400).json({ error: 'rows array required' });
+    if (rows.length === 0) return res.status(400).json({ error: 'rows array empty' });
+    const errors = [];
+    let assigned = 0;
+    let unassigned = 0;
+    let skipped = 0;
+    try {
+      const db = getDb();
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i] || {};
+        const dcName = (r.dcName || '').trim();
+        if (!dcName) {
+          errors.push({ rowIndex: i, dcName: '', reason: 'dcName is required' });
+          skipped++;
+          continue;
+        }
+        const siteName = (r.siteName || '').trim();
+        if (!siteName) {
+          await db.execute(db.sql.dcs.assignSiteUnbind, [dcName]);
+          unassigned++;
+          continue;
+        }
+        const { rows: siteRows } = await db.query(db.sql.sites.findByName, [siteName]);
+        if (siteRows.length === 0) {
+          errors.push({ rowIndex: i, dcName, reason: `site "${siteName}" not found` });
+          skipped++;
+          continue;
+        }
+        const siteId = siteRows[0].site_id;
+        const { affectedRows } = await db.execute(db.sql.dcs.assignSite, [siteId, dcName]);
+        if (affectedRows === 0) {
+          errors.push({ rowIndex: i, dcName, reason: `dc "${dcName}" not discovered (agent has not reported it yet)` });
+          skipped++;
+          continue;
+        }
+        assigned++;
+      }
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'bulk_assign_dc_sites',
+        target: 'ad_dcs',
+        payload: { assigned, unassigned, skipped, total: rows.length },
+        logger
+      });
+      res.json({ ok: true, assigned, unassigned, skipped, errors });
+    } catch (e) {
+      logger.error({ err: e }, 'dcs-catalog bulk assign failed');
       res.status(500).json({ error: 'internal' });
     }
   });

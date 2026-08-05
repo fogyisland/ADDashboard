@@ -7,6 +7,8 @@ export const adminApi = {
   listRoles: () => api.get('/api/admin/roles'),
   getConfig: () => api.get('/api/admin/config'),
   updateConfig: (body) => api.put('/api/admin/config', body),
+  getConfigAudit: () => api.get('/api/admin/config/audit'),
+  rollbackConfig: (auditId) => api.post('/api/admin/config/rollback', { auditId }),
   getAudit: (limit = 200) => api.get(`/api/admin/audit?limit=${limit}`),
   listSites: () => api.get('/api/admin/sites'),
   listDcs: () => api.get('/api/admin/dcs'),
@@ -15,5 +17,7 @@ export const adminApi = {
   updateSite: (id, body) => api.put(`/api/admin/sites-catalog/${id}`, body),
   deleteSite: (id) => api.delete(`/api/admin/sites-catalog/${id}`),
   listDcsCatalog: () => api.get('/api/admin/dcs-catalog'),
-  assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId })
+  assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId }),
+  bulkImportSites: (rows) => api.post('/api/admin/sites-catalog/bulk', { rows }),
+  bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows })
 };

@@ -2,6 +2,9 @@
   <AdminLayout>
     <h2>AD 域控清单</h2>
     <p class="hint">权威 DC 列表 — agent 自动上报元数据, 站点分配由 admin 手动设置。</p>
+    <div class="actions">
+      <button class="bulk" @click="openBulk">批量分配站点</button>
+    </div>
     <table class="t">
       <thead>
         <tr>
@@ -33,21 +36,50 @@
         <tr v-if="!dcs.length"><td colspan="6" class="empty">暂无 DC — 等待 agent 上报 discovery</td></tr>
       </tbody>
     </table>
+    <BulkImportDialog
+      v-if="bulkOpen"
+      title="批量分配站点"
+      :columns="bulkColumns"
+      :submit="submitBulk"
+      @close="bulkOpen = false"
+      @done="onBulkDone"
+    />
   </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
+import BulkImportDialog from '../../components/BulkImportDialog.vue';
 import { adminApi } from '../../api/admin.js';
 
 const sites = ref([]);
 const dcs = ref([]);
+const bulkOpen = ref(false);
+
+const bulkColumns = [
+  { key: 'dcName', label: 'DC 名', required: true, aliases: ['dc_name', 'DcName', 'DomainController', 'DC 名'] },
+  { key: 'siteName', label: '所属站点 (留空=未分配)', required: false, aliases: ['site_name', 'SiteName', '所属站点', 'site'] }
+];
 
 async function load() {
   const [s, d] = await Promise.all([adminApi.listSitesCatalog(), adminApi.listDcsCatalog()]);
   sites.value = s.data || [];
   dcs.value = d.data || [];
+}
+
+function openBulk() { bulkOpen.value = true; }
+
+async function submitBulk(rows) {
+  const r = await adminApi.bulkAssignDcs(rows);
+  return r.data || {};
+}
+
+async function onBulkDone(result) {
+  if ((result.assigned || 0) + (result.unassigned || 0) > 0) {
+    await load();
+    bulkOpen.value = false;
+  }
 }
 
 async function onAssign(dc, siteId) {
@@ -62,7 +94,9 @@ onMounted(load);
 </script>
 
 <style scoped>
-.t { width: 100%; border-collapse: collapse; background: var(--panel); }
+.t { width: 100%; border-collapse: collapse; background: var(--panel); margin-top: 12px; }
+.actions { display: flex; gap: 8px; margin-top: 12px; }
+.bulk { background: var(--accent); color: white; }
 .t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; }
 .t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .t select { background: #0b1220; color: var(--text); border: 1px solid #1e293b; padding: 4px; border-radius: 3px; }
