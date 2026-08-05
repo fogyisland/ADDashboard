@@ -84,7 +84,7 @@ test('PackageEditView fetches /api/admin/packages/:name and renders metadata + m
   axios.get.mockResolvedValueOnce({ data: { package: PKG, recentRuns: RUNS } });
   makeStore();
   const wrapper = mount(PackageEditView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(axios.get).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor');
@@ -106,7 +106,7 @@ test('PackageEditView shows error state when fetch fails', async () => {
   axios.get.mockRejectedValueOnce(new Error('boom'));
   makeStore();
   const wrapper = mount(PackageEditView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(wrapper.text()).toContain('boom');
@@ -116,7 +116,7 @@ test('PackageEditView 保存 params triggers store.updateParams with parsed JSON
   axios.get.mockResolvedValueOnce({ data: { package: PKG, recentRuns: RUNS } });
   const store = makeStore();
   const wrapper = mount(PackageEditView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
@@ -141,7 +141,7 @@ test('PackageEditView 保存 with invalid JSON does not call store.updateParams'
   axios.get.mockResolvedValueOnce({ data: { package: PKG, recentRuns: RUNS } });
   const store = makeStore();
   const wrapper = mount(PackageEditView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 

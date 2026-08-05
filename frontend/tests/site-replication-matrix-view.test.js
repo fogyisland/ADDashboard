@@ -39,7 +39,7 @@ test('SiteReplicationMatrixView renders site dropdown and refetches on interval'
   });
 
   const wrapper = mount(SiteReplicationMatrixView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(wrapper.text()).toContain('Beijing-Site');
@@ -61,7 +61,7 @@ test('SiteReplicationMatrixView clears interval on unmount', async () => {
 
   const clearSpy = vi.spyOn(global, 'clearInterval');
   const wrapper = mount(SiteReplicationMatrixView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   wrapper.unmount();

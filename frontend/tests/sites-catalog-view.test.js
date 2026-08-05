@@ -28,7 +28,7 @@ test('SitesCatalogView renders rows from listSitesCatalog', async () => {
     ]
   });
   const wrapper = mount(SitesCatalogView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const text = wrapper.text();

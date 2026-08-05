@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <div class="packages-view">
       <header class="toolbar">
         <h2>包管理</h2>
@@ -58,12 +58,12 @@
         </tbody>
       </table>
     </div>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { usePackagesStore } from '../../stores/packages.js';
 
 const store = usePackagesStore();

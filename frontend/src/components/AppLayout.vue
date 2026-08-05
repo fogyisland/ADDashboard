@@ -9,26 +9,15 @@
         <router-link to="/errors">错误链路</router-link>
         <router-link to="/agents">Agent 列表</router-link>
         <router-link to="/dashboard/metrics">指标看板</router-link>
-        <template v-if="auth.isAdmin">
-          <div class="divider">管理</div>
-          <router-link to="/admin/users">用户</router-link>
-          <router-link to="/admin/roles">角色</router-link>
-          <router-link to="/admin/sites">正在复制的站点</router-link>
-          <router-link to="/admin/dcs">正在复制的域控</router-link>
-          <router-link to="/admin/config">系统配置</router-link>
-          <router-link to="/admin/audit">审计日志</router-link>
-          <router-link to="/admin/sites-catalog">AD 站点清单</router-link>
-          <router-link to="/admin/dcs-catalog">AD 域控清单</router-link>
-          <router-link to="/admin/site-replication-matrix">站点复制矩阵</router-link>
-          <router-link to="/admin/ports">端口健康检查</router-link>
-          <router-link to="/admin/packages">包管理</router-link>
-        </template>
       </nav>
     </aside>
     <main>
       <header class="topbar">
         <span>{{ auth.user?.username }} <small>({{ auth.user?.role }})</small></span>
-        <button @click="logout">退出</button>
+        <div class="topbar-actions">
+          <button v-if="auth.isAdmin" class="admin-entry" @click="router.push('/admin/users')">管理</button>
+          <button @click="logout">退出</button>
+        </div>
       </header>
       <section class="content">
         <slot />
@@ -52,8 +41,12 @@ function logout() { auth.logout(); router.push('/login'); }
 .sidebar nav { display: flex; flex-direction: column; gap: 6px; }
 .sidebar a { padding: 8px 10px; border-radius: 4px; color: var(--text); }
 .sidebar a.router-link-active, .sidebar a:hover { background: #1e293b; }
-.divider { font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
 main { display: flex; flex-direction: column; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid #1e293b; }
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.topbar-actions button { padding: 6px 14px; border: 1px solid #1e293b; border-radius: 3px; cursor: pointer; }
+.topbar-actions .admin-entry { background: var(--accent); color: #0b1220; }
+.topbar-actions .admin-entry:hover { filter: brightness(1.1); }
+.topbar-actions button:not(.admin-entry) { background: #0b1220; color: var(--text); }
 .content { padding: 20px; overflow: auto; }
 </style>

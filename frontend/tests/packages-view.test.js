@@ -54,7 +54,7 @@ beforeEach(() => {
 test('PackagesView renders rows from store.installed', async () => {
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(store.fetchInstalled).toHaveBeenCalled();
@@ -70,7 +70,7 @@ test('PackagesView renders rows from store.installed', async () => {
 test('PackagesView install flow: clicking toggle calls store.enable on disabled row', async () => {
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   // mem-monitor is disabled (enabled=0) — toggle button should call store.enable
@@ -86,7 +86,7 @@ test('PackagesView install flow: clicking toggle calls store.enable on disabled 
 test('PackagesView disable flow: clicking 停用 calls store.disable on enabled row', async () => {
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   // cpu-monitor is enabled (enabled=1) — toggle button should call store.disable
@@ -102,7 +102,7 @@ test('PackagesView uninstall flow: confirm + click calls store.uninstall', async
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const buttons = wrapper.findAll('button');
@@ -119,7 +119,7 @@ test('PackagesView uninstall: cancel on confirm does NOT call store.uninstall', 
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const buttons = wrapper.findAll('button');
@@ -133,7 +133,7 @@ test('PackagesView uninstall: cancel on confirm does NOT call store.uninstall', 
 test('PackagesView upgrade flow: clicking 升级 calls store.upgrade', async () => {
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const buttons = wrapper.findAll('button');
@@ -147,7 +147,7 @@ test('PackagesView upgrade flow: clicking 升级 calls store.upgrade', async () 
 test('PackagesView refreshRegistry button calls store.refreshRegistry', async () => {
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const buttons = wrapper.findAll('button');
@@ -161,7 +161,7 @@ test('PackagesView refreshRegistry button calls store.refreshRegistry', async ()
 test('PackagesView upload triggers store.install with source=local and base64 buffer', async () => {
   const store = makeStore();
   const wrapper = mount(PackagesView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 

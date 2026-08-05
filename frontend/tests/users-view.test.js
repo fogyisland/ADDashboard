@@ -47,7 +47,7 @@ async function mountWith(users, roles) {
   const wrapper = mount(UsersView, {
     global: {
       stubs: {
-        AppLayout: { template: '<div><slot /></div>' }
+        AdminLayout: { template: '<div><slot /></div>' }
       }
     }
   });

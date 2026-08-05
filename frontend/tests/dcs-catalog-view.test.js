@@ -29,7 +29,7 @@ test('DcsCatalogView renders DC rows with site name and role badges', async () =
     ]
   });
   const wrapper = mount(DcsCatalogView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const text = wrapper.text();

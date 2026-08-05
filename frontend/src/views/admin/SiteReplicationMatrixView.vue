@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>站点复制矩阵</h2>
     <div class="controls">
       <label>站点:
@@ -46,12 +46,12 @@
       last_success={{ fmt(selectedLink.lastSuccessTime) }}
       duration={{ selectedLink.durationMinutes }}min
     </div>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
 import { adminApi } from '../../api/admin.js';
 

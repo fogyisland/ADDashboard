@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>角色与权限</h2>
     <table class="t">
       <thead><tr><th>ID</th><th>名称</th><th>权限</th></tr></thead>
@@ -10,12 +10,12 @@
         </tr>
       </tbody>
     </table>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 const roles = ref([]);
 onMounted(async () => { roles.value = (await adminApi.listRoles()).data; });

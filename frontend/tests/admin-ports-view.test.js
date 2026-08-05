@@ -28,7 +28,7 @@ test('PortsView lists rows from portsApi.list', async () => {
     ]
   });
   const wrapper = mount(PortsView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   const text = wrapper.text();
@@ -43,7 +43,7 @@ test('PortsView create flow calls portsApi.create and reloads', async () => {
   portsApi.create.mockResolvedValue({ data: { id: 99 } });
 
   const wrapper = mount(PortsView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
@@ -70,7 +70,7 @@ test('PortsView edit flow calls portsApi.update and reloads', async () => {
   portsApi.update.mockResolvedValue({ data: { ok: true } });
 
   const wrapper = mount(PortsView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
@@ -98,7 +98,7 @@ test('PortsView delete flow calls portsApi.remove after confirm', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
   const wrapper = mount(PortsView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
@@ -116,7 +116,7 @@ test('PortsView save error surfaces server message and does not close modal', as
   });
 
   const wrapper = mount(PortsView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 

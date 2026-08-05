@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>系统配置</h2>
     <table class="t">
       <thead><tr><th>键</th><th>值</th><th>说明</th></tr></thead>
@@ -60,12 +60,12 @@
       @confirm="doRollback"
       @cancel="rollbackTarget = null"
     />
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted, computed } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import ConfigFieldRow from './ConfigFieldRow.vue';
 import ConfirmDialog from './ConfirmDialog.vue';
 import { adminApi } from '../../api/admin.js';

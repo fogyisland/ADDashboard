@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>正在复制的域控</h2>
     <p class="hint">从 Agent 报告 <code>ad_replication_status</code> 中派生的 DC 列表。</p>
     <table class="t">
@@ -23,12 +23,12 @@
         <tr v-if="!dcs.length"><td colspan="5" class="empty">暂无数据 — Agent 首次上报后会显示</td></tr>
       </tbody>
     </table>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 const dcs = ref([]);
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }

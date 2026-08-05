@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <div class="registry-view">
       <header class="toolbar">
         <h2>Registry 浏览</h2>
@@ -47,12 +47,12 @@
         </tbody>
       </table>
     </div>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { usePackagesStore } from '../../stores/packages.js';
 
 const store = usePackagesStore();

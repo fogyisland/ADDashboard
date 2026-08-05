@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>AD 域控清单</h2>
     <p class="hint">权威 DC 列表 — agent 自动上报元数据, 站点分配由 admin 手动设置。</p>
     <table class="t">
@@ -33,12 +33,12 @@
         <tr v-if="!dcs.length"><td colspan="6" class="empty">暂无 DC — 等待 agent 上报 discovery</td></tr>
       </tbody>
     </table>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 
 const sites = ref([]);

@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>AD 站点清单</h2>
     <p class="hint">权威站点列表 — 由 admin 手动维护, DC 通过 ad_dcs.site_id 关联。</p>
     <button @click="openCreate">+ 新建站点</button>
@@ -23,12 +23,12 @@
       </tbody>
     </table>
     <SiteEditModal v-if="editing" :site="editing" @save="onSave" @cancel="editing = null" />
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import SiteEditModal from '../../components/SiteEditModal.vue';
 import { adminApi } from '../../api/admin.js';
 

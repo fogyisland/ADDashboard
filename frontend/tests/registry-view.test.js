@@ -66,7 +66,7 @@ beforeEach(() => {
 test('RegistryView renders registry packages table on mount', async () => {
   const store = makeStore();
   const wrapper = mount(RegistryView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(store.fetchRegistryIndex).toHaveBeenCalled();
@@ -81,7 +81,7 @@ test('RegistryView renders registry packages table on mount', async () => {
 test('RegistryView displays registry URL when configured', async () => {
   makeStore();
   const wrapper = mount(RegistryView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(wrapper.text()).toContain('http://127.0.0.1:9999');
@@ -90,7 +90,7 @@ test('RegistryView displays registry URL when configured', async () => {
 test('RegistryView install: clicking 安装 calls store.install with source=registry:URL packageRef=name', async () => {
   const store = makeStore();
   const wrapper = mount(RegistryView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
@@ -111,7 +111,7 @@ test('RegistryView install: clicking 安装 calls store.install with source=regi
 test('RegistryView refresh button calls store.refreshRegistry then refetches', async () => {
   const store = makeStore();
   const wrapper = mount(RegistryView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   // Initial fetchRegistryIndex called once on mount
@@ -130,7 +130,7 @@ test('RegistryView shows error message when fetch fails', async () => {
   const store = makeStore();
   store.fetchRegistryIndex.mockRejectedValueOnce(new Error('registry down'));
   const wrapper = mount(RegistryView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(wrapper.text()).toContain('registry down');
@@ -142,7 +142,7 @@ test('RegistryView empty state when registry has no packages', async () => {
     url: 'http://x', packages: [], updatedAt: '2026-08-02T00:00:00Z'
   });
   const wrapper = mount(RegistryView, {
-    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
   expect(wrapper.text()).toContain('空');
