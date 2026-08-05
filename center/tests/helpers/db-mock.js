@@ -25,9 +25,24 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
     }
     return [];
   }
+  // Returns the script whose match matches `sql`, or null. Used to inspect
+  // script-level props (throwOnExecute/onExecute/capture) that aren't part of
+  // the row-matching contract.
+  function findScript(sql) {
+    for (const s of scripts) {
+      if (s.match.test(sql)) return s;
+    }
+    return null;
+  }
   function makeExec(records) {
     return async function execute(sql, params = []) {
       if (records) records.push({ sql, params: [...params] });
+      // Script-level side-effects: throwOnExecute takes precedence (lets tests
+      // assert the transaction-rollback path); onExecute fires after a normal
+      // match so tests can capture params for assertions.
+      const script = findScript(sql);
+      if (script?.throwOnExecute) throw script.throwOnExecute;
+      if (script?.onExecute) script.onExecute(sql, params);
       const rows = lookup(sql);
       // For INSERT/MERGE/UPDATE/DELETE we report affectedRows=1 so routes that
       // guard on `affectedRows === 0 -> 404` see "row affected". Tests that

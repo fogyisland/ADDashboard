@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
-import { getConfig, setConfig } from '../services/config.js';
+import { getConfig, setConfig, getConfigMap } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
 import { getDb } from '../db/index.js';
@@ -143,17 +143,28 @@ export function adminRouter({ config, logger }) {
   r.put('/api/admin/config', auth, async (req, res) => {
     try {
       const updates = req.body || {};
-      for (const [k, v] of Object.entries(updates)) {
-        await setConfig(k, v);
-      }
+      const db = getDb();
+      const auditRows = [];
+      await db.transaction(async (tx) => {
+        const before = await getConfigMap();
+        for (const [k, v] of Object.entries(updates)) {
+          await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [v == null ? null : String(v), k]);
+          const oldVal = before[k] ?? null;
+          const newVal = v == null ? null : String(v);
+          if (String(oldVal) !== String(newVal)) {
+            await tx.execute(db.sql.config.audit.write, [k, oldVal, newVal, req.user?.sub ?? null, 'UPDATE']);
+            auditRows.push({ key: k, old: oldVal, new: newVal });
+          }
+        }
+      });
       await writeAudit({
         userId: req.user?.sub ?? null,
         action: 'update_config',
         target: 'system_config',
-        payload: updates,
+        payload: { ...updates, _audit: auditRows },
         logger
       });
-      res.json({ ok: true });
+      res.json({ ok: true, auditCount: auditRows.length });
     } catch (e) {
       logger.error({ err: e }, 'admin config update failed');
       res.status(500).json({ error: 'internal' });

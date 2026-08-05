@@ -289,20 +289,23 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
 test('PUT /api/admin/config: 200 updates multiple keys', async () => {
   let updateCount = 0;
   const { buildSql } = await import('../src/db/sql.js');
+  // Need a working tx shim — the new handler does UPDATEs inside
+  // db.transaction(async tx => { tx.execute(...) }), so the transaction
+  // wrapper must thread a tx object that exposes execute/query.
+  const txExecute = async (sql, params = []) => {
+    if (/UPDATE\s+system_config/i.test(sql) || /MERGE\s+INTO\s+system_config/i.test(sql)) {
+      updateCount++;
+      return { rows: [], affectedRows: 1, insertId: undefined };
+    }
+    return { rows: [], affectedRows: 0, insertId: undefined };
+  };
+  const txQuery = async () => ({ rows: [] });
   const db = {
     dialect: 'mysql',
     sql: buildSql('mysql'),
-    async execute(sql, params = []) {
-      if (/UPDATE\s+system_config/i.test(sql) || /MERGE\s+INTO\s+system_config/i.test(sql)) {
-        updateCount++;
-        return { rows: [], affectedRows: 1, insertId: undefined };
-      }
-      return { rows: [], affectedRows: 0, insertId: undefined };
-    },
-    async query(sql, params = []) {
-      return { rows: [] };
-    },
-    async transaction() {},
+    async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
+    async query() { return { rows: [] }; },
+    async transaction(work) { return work({ execute: txExecute, query: txQuery }); },
     async healthcheck() {},
     async close() {}
   };

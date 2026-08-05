@@ -12,6 +12,14 @@ export async function getConfig() {
   return out;
 }
 
+export async function getConfigMap() {
+  const db = getDb();
+  const { rows } = await db.query(db.sql.config.getAll);
+  const out = {};
+  for (const row of rows) out[row.config_key] = row.config_value;
+  return out;
+}
+
 export async function setConfig(key, value) {
   const db = getDb();
   // Per-key UPDATE kept inline (config table has only a few rows; one round-trip per key is fine).
