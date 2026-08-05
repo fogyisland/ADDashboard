@@ -247,4 +247,18 @@ Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
     $pubBlock = & $extractBlock $script:pubContent
     $pubBlock | Should -Be $srcBlock 'publish/scripts/install-center.ps1 mirror must match scripts/install-center.ps1 exactly.'
   }
+
+  It 'defines $srcDir at script scope BEFORE the if (-not $InPlace) branch (regression guard)' {
+    # Bug fixed 2026-08-05: Ensure-CenterNodeModules was called in both branches
+    # but $srcDir was only assigned inside the non-InPlace branch. With -InPlace,
+    # $srcDir was empty and Ensure-CenterNodeModules's mandatory -SrcDir param
+    # threw ParameterArgumentValidationErrorEmptyStringNotAllowed, breaking
+    # the green-bundle start.bat path. Guard: $srcDir must be defined at the
+    # script scope before the if (-not $InPlace) block.
+    $srcDirIdx = $script:srcContent.IndexOf('$srcDir = Join-Path $projectRoot ''center''')
+    $ifIdx = $script:srcContent.IndexOf('if (-not $InPlace)')
+    $srcDirIdx | Should -BeGreaterThan -1 '$srcDir assignment must exist'
+    $ifIdx | Should -BeGreaterThan -1 'if (-not $InPlace) branch must exist'
+    $srcDirIdx | Should -BeLessThan $ifIdx '$srcDir must be defined BEFORE the if (-not $InPlace) branch so both install paths see it.'
+  }
 }

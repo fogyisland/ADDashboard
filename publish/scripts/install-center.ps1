@@ -81,6 +81,7 @@ Set-NssmLogDir $Script:LogDir
 
 # When -InPlace, skip file copy / dist mirror / npm install of the install target.
 # node_modules is still installed if missing (green-bundle first-time setup).
+$srcDir = Join-Path $projectRoot 'center'
 if (-not $InPlace) {
   # 1. Ensure directories
   @($InstallPath, "$InstallPath\dist") | ForEach-Object {
@@ -100,7 +101,6 @@ if (-not $InPlace) {
   }
 
   # 4. Copy center files
-  $srcDir = Join-Path $projectRoot 'center'
   Copy-Item -Path (Join-Path $srcDir '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
   Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   Copy-Item -Path (Join-Path $distPath '*') -Destination (Join-Path $InstallPath 'dist') -Recurse -Force
