@@ -83,12 +83,10 @@ const descriptions = {
   latency_threshold_minutes: '复制延迟告警阈值 (分钟)',
   heartbeat_interval_seconds: 'Agent 心跳间隔 (秒), 默认 5, 越短越快感知掉线',
   history_enabled: '是否写入历史快照 (0/1)',
-  ad_agent_token: 'Agent 共享 Token',
-  center_public_host: '对外域名/IP (给 Agent / 用户访问用)',
-  center_public_port: '对外端口'
+  ad_agent_token: 'Agent 共享 Token'
 };
-const numericFields = ['polling_interval_minutes', 'latency_threshold_minutes', 'heartbeat_interval_seconds', 'center_public_port'];
-const RISKY_FIELDS = ['ad_agent_token', 'center_public_host', 'center_public_port'];
+const numericFields = ['polling_interval_minutes', 'latency_threshold_minutes', 'heartbeat_interval_seconds'];
+const RISKY_FIELDS = ['ad_agent_token'];
 
 const initial = ref({});
 const { current, snapshot, dirty, markClean, reset } = useDirtyState({});

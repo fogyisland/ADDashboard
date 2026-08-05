@@ -41,11 +41,5 @@ IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'latency_threshold
 IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'history_enabled')
   INSERT INTO system_config (config_key, config_value, description) VALUES ('history_enabled', '0', 'Append to ad_replication_history (0/1)');
 
-IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'center_public_host')
-  INSERT INTO system_config (config_key, config_value, description) VALUES ('center_public_host', NULL, '对外访问域名/IP, 如 ad-dashboard.contoso.com 或 10.1.2.3');
-
-IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'center_public_port')
-  INSERT INTO system_config (config_key, config_value, description) VALUES ('center_public_port', NULL, '对外访问端口, 如 443(HTTPS) / 80(HTTP)');
-
 IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'heartbeat_interval_seconds')
   INSERT INTO system_config (config_key, config_value, description) VALUES ('heartbeat_interval_seconds', '5', 'Agent 心跳间隔 (秒), 越短越快感知离线, 默认 5');
