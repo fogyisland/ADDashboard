@@ -5,6 +5,9 @@ import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 
 function rowParams(row) {
+  // The 4 counter fields are populated only for the __dc_summary__ self-loop
+  // entry emitted by collect-replication.ps1; all other entries pass NULL.
+  const isSummary = row.naming_context === '__dc_summary__';
   return [
     toMysqlDatetime(row.collectedAt),
     row.agentId,
@@ -16,7 +19,11 @@ function rowParams(row) {
     toMysqlDatetime(row.lastSuccessTime),
     toMysqlDatetime(row.lastAttemptTime),
     row.statusCode,
-    row.errorMessage ?? null
+    row.errorMessage ?? null,
+    isSummary ? (row.usersCount ?? null)  : null,
+    isSummary ? (row.groupsCount ?? null) : null,
+    isSummary ? (row.gposCount ?? null)   : null,
+    isSummary ? (row.lockedCount ?? null) : null
   ];
 }
 

@@ -6,12 +6,15 @@ import { authRouter } from './src/routes/auth.js';
 import { agentRouter } from './src/routes/agent.js';
 import { dashboardRouter } from './src/routes/dashboard.js';
 import { adminRouter } from './src/routes/admin.js';
+import { dcsRouter } from './src/routes/dcs.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { packageRunner } from './src/packages/runner.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
+import { userAuth } from './src/auth/user-auth.js';
+import { requirePerm } from './src/auth/rbac.js';
 
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || './appsettings.json';
 const installPath = installPathFromConfigPath(configPath);
@@ -82,6 +85,14 @@ process.on('unhandledRejection', (reason) => {
     app.use(agentRouter({ config: finalConfig, logger }));
     app.use(dashboardRouter({ config: finalConfig, logger }));
     app.use(adminRouter({ config: finalConfig, logger }));
+    // DC summary endpoint (Task 4). Mirrors the adminRouter's per-route
+    // [userAuth, requirePerm('admin:users')] middleware — the router
+    // factory accepts the same auth deps so the per-route chain is
+    // identical to other admin read endpoints.
+    app.use(dcsRouter({
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requirePerm: (perm) => requirePerm(perm)
+    }));
     // Package system routes (Task 6). Both routers apply their own
     // per-route auth (userAuth+requirePerm for admin, agentToken for
     // agent) — Express does not propagate per-route middleware from a

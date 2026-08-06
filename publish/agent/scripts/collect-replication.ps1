@@ -31,6 +31,63 @@ function ConvertTo-UtcIso {
   return $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
 }
 
+function Get-DcCounters {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ComputerName
+  )
+
+  $counters = [ordered]@{
+    UsersCount  = $null
+    GroupsCount = $null
+    GposCount   = $null
+    LockedCount = $null
+  }
+
+  # Each counter is isolated: a failure here must not break replication
+  # collection or other counters. $ErrorActionPreference stays 'Continue'
+  # so unexpected throwables are still caught below.
+
+  try {
+    if (-not (Get-Module -Name ActiveDirectory -ListAvailable)) {
+      throw "ActiveDirectory module not available"
+    }
+    if (-not (Get-Module -Name ActiveDirectory)) {
+      Import-Module ActiveDirectory -ErrorAction Stop
+    }
+    $counters.UsersCount = (Get-ADUser -Filter * -Server $ComputerName | Measure-Object).Count
+  } catch {
+    [Console]::Error.WriteLine("usersCount failed: $($_.Exception.Message)")
+  }
+
+  try {
+    if (-not (Get-Module -Name ActiveDirectory)) {
+      Import-Module ActiveDirectory -ErrorAction Stop
+    }
+    $counters.GroupsCount = (Get-ADGroup -Filter * -Server $ComputerName | Measure-Object).Count
+  } catch {
+    [Console]::Error.WriteLine("groupsCount failed: $($_.Exception.Message)")
+  }
+
+  try {
+    $counters.GposCount = (Get-GPO -All | Measure-Object).Count
+  } catch {
+    [Console]::Error.WriteLine("gposCount failed: $($_.Exception.Message)")
+  }
+
+  try {
+    if (-not (Get-Module -Name ActiveDirectory)) {
+      Import-Module ActiveDirectory -ErrorAction Stop
+    }
+    $counters.LockedCount = (Search-ADAccount -LockedOut -Server $ComputerName | Measure-Object).Count
+  } catch {
+    [Console]::Error.WriteLine("lockedCount failed: $($_.Exception.Message)")
+  }
+
+  return [PSCustomObject]$counters
+}
+
 function Get-ReplicationSnapshot {
   [CmdletBinding()]
   param(
@@ -114,6 +171,28 @@ function Get-ReplicationSnapshot {
       $entries += $entry
     }
   }
+
+  # DC summary card counters — emitted as a self-loop entry so the data
+  # rides on the same replication ingest path. Naming context 'META' is
+  # already used by the meta-failure entry above; '__dc_summary__' is the
+  # canonical marker for "this row holds the 4 card counters".
+  $counters = Get-DcCounters -ComputerName $ComputerName
+  $summaryEntry = [PSCustomObject]@{
+    SourceDc        = $ComputerName
+    DestDc          = $ComputerName
+    SourceSite      = $snapshot.Site
+    DestSite        = $null
+    NamingContext   = '__dc_summary__'
+    LastSuccessTime = $snapshot.CollectedAt
+    LastAttemptTime = $snapshot.CollectedAt
+    StatusCode      = 0
+    ErrorMessage    = $null
+    UsersCount      = $counters.UsersCount
+    GroupsCount     = $counters.GroupsCount
+    GposCount       = $counters.GposCount
+    LockedCount     = $counters.LockedCount
+  }
+  $entries += $summaryEntry
 
   $snapshot.Entries = $entries
   return $snapshot
