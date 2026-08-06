@@ -201,3 +201,30 @@ test('splitSqlStatements parses migration 008 mssql (1 guarded CREATE TABLE bloc
   assert.match(stmts[0], /uq_lockout_dc_record/i);
   assert.match(stmts[0], /CREATE INDEX ix_lockout_occurred/i);
 });
+
+test('splitSqlStatements parses migration 009 mysql (schema_migrations: 1 CREATE TABLE IF NOT EXISTS)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/009-schema-migrations.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // MySQL: single CREATE TABLE IF NOT EXISTS statement
+  assert.strictEqual(stmts.length, 1, `expected 1 statement, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.match(stmts[0], /CREATE TABLE IF NOT EXISTS schema_migrations/i);
+  assert.match(stmts[0], /checksum\s+CHAR\(64\)/i);
+  assert.match(stmts[0], /status\s+VARCHAR\(16\)\s+NOT NULL\s+DEFAULT 'applied'/i);
+  // Secondary index on status
+  assert.match(stmts[0], /KEY ix_schema_migrations_status\s+\(status\)/i);
+});
+
+test('splitSqlStatements parses migration 009 mssql (schema_migrations: 1 IF/BEGIN/END block)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/mssql/009-schema-migrations.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // MSSQL: IF OBJECT_ID guard wraps CREATE TABLE + CREATE INDEX into 1 logical
+  // block. BEGIN/END depth tracker treats the IF...BEGIN...END block as one
+  // statement, which is what the schema-applier expects when applying it.
+  assert.strictEqual(stmts.length, 1, `expected 1 statement, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.match(stmts[0], /IF OBJECT_ID\('schema_migrations', 'U'\)\s+IS NULL/i);
+  assert.match(stmts[0], /CREATE TABLE schema_migrations/i);
+  // Verify key schema columns are inside the block (single-statement smoke test)
+  assert.match(stmts[0], /checksum\s+CHAR\(64\)/i);
+  // Secondary index lives inside the BEGIN/END block too
+  assert.match(stmts[0], /CREATE INDEX ix_schema_migrations_status/i);
+});
