@@ -67,7 +67,7 @@ The AD Replication Dashboard ships SQL migration files in `db/migrations/{mysql,
                   │
                   │ backfillMigrations (init wizard)
                   │
-                  │ bootstrap (server startup, see §5)
+                  │ bootstrap (server startup, see "Components → center/src/init/schema-applier.js")
 ```
 
 The `schema-applier.js` module grows by exactly one exported function (`backfillMigrations`) and one exported function for server-side bootstrap (`bootstrapMigrations`). The init wizard and the admin service share `splitSqlStatements` (already exported).
@@ -138,10 +138,11 @@ export function createMigrationsService({ db, logger, getRepoRoot })
    - If `status='failed'` → allow retry; will overwrite the row.
    - If no row → fresh apply.
 4. `splitSqlStatements(content)`.
-5. **Best-effort transaction**: open `db.transaction(work)`. Inside, `for each stmt: await db.execute(stmt, [])`. On throw, transaction aborts (rollback for DML; MySQL DDL silently commits but the row insert below still aborts).
-6. On success: insert/update `schema_migrations` row with `status='applied'`, `executionMs=<elapsed>`, `checksum=<sha256>`, `appliedBy=<user>`.
-7. On failure: insert/update `schema_migrations` row with `status='failed'`, `errorMessage=<err.message>`, `executionMs=<elapsed>`.
-8. Return `{ ok, version, status, executionMs, errorMessage? }`.
+5. **Best-effort transaction** wrapping the migration statements: open `db.transaction(work)`. Inside, `for each stmt: await db.execute(stmt, [])`. On throw, transaction aborts (rollback for DML; MySQL DDL silently commits but the schema_migrations row insert below still aborts the tracking row).
+6. **Outside** the transaction (separate execute call):
+   - On success: INSERT/UPDATE `schema_migrations` row with `status='applied'`, `executionMs=<elapsed>`, `checksum=<sha256>`, `appliedBy=<user>`. Use `ON DUPLICATE KEY UPDATE` (MySQL) / `MERGE` (MSSQL) so retry-on-failed overwrites the existing row.
+   - On failure: INSERT/UPDATE `schema_migrations` row with `status='failed'`, `errorMessage=<err.message>`, `executionMs=<elapsed>`.
+7. Return `{ ok, version, status, executionMs, errorMessage? }`.
 
 `dryRunMigration(version)`:
 1. Resolve file path; 404 if missing.
@@ -183,7 +184,7 @@ Two new exports:
 
 ### Frontend
 
-**`frontend/src/views/admin/SchemaMigrationsView.vue`** (new): see §6.
+**`frontend/src/views/admin/SchemaMigrationsView.vue`** (new): see "Frontend layout" below.
 
 **`frontend/src/api/migrations.js`** (new):
 ```js
@@ -246,9 +247,9 @@ type ResetResult = { ok: true; deleted: number };
 
 ## Testing
 
-**Backend (center)**, +14 tests:
+**Backend (center)**, +20 tests:
 
-`center/tests/migrations-service.test.js` (new, 8 tests):
+`center/tests/migrations-service.test.js` (new, 10 tests):
 - `list returns applied status for tracked versions`
 - `list returns pending status for untracked files`
 - `list detects checksum mismatch when file edited after apply`
@@ -269,7 +270,7 @@ type ResetResult = { ok: true; deleted: number };
 `center/tests/init/bootstrap-migrations.test.js` (new, 1 test):
 - `bootstrap creates schema_migrations table + backfills existing files on first run`
 
-**Init wizard extension**:
+**Init wizard extension (+2 tests)**:
 - `center/tests/init/schema-applier.test.js` (+1 test): `backfill inserts all migration files as status=applied with applied_by='system-init'`
 - `center/tests/init/router.test.js` (+1 test): `db/apply calls applyAll THEN backfillMigrations in order`
 
@@ -278,6 +279,8 @@ type ResetResult = { ok: true; deleted: number };
 - `renders table with applied + pending rows`
 - `pending row shows [Dry-run] [应用]; applied row shows only [查看]`
 - `click [应用] → calls applyMigration + refreshes list`
+
+**Test totals**: backend 10 + 4 + 1 + 1 + 1 = **+17**. Frontend **+3**. Combined **+20** new tests.
 
 ## Migration Order
 
@@ -340,15 +343,13 @@ Fresh deployments:
 - `center/tests/migrations-router.test.js`
 - `center/tests/init/bootstrap-migrations.test.js`
 
-**Modified (4):**
+**Modified (6):**
 - `center/src/init/schema-applier.js` (add `backfillMigrations` + `bootstrapMigrations`)
 - `center/src/init/router.js` (call `backfillMigrations` after `applyAll`)
 - `center/src/db/index.js` (call `bootstrapMigrations` after driver init)
 - `center/server.js` (mount `schemaMigrationsRouter`)
 - `frontend/src/router.js` (add `/admin/migrations` route)
 - `frontend/src/components/AppLayout.vue` (add nav link)
-
-(The "Modified" count is 6 — listed for accuracy; the count grew as I reviewed.)
 
 ## Publish Mirror
 
