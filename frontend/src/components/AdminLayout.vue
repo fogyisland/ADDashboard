@@ -69,6 +69,7 @@ main { display: flex; flex-direction: column; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid #1e293b; }
 .content { padding: 20px; overflow: auto; }
 .nav-group { margin-bottom: 8px; }
+.nav-group { display: flex; flex-direction: column; gap: 6px; }
 .nav-group-title {
   font-weight: 600;
   color: var(--muted);
