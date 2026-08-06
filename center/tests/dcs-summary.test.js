@@ -161,3 +161,51 @@ test('GET /api/dcs/summary partnersCount reflects same-cycle count from subquery
   assert.equal(res.body[1].dcHost, 'DC02');
   assert.equal(res.body[1].partnersCount, 5);
 });
+
+test('GET /api/dcs/summary partnersCount query uses db.sql.replication.partnersCount with [dcHost, 5, collectedAt, 5, collectedAt]', async () => {
+  // Records every execute/query so we can assert the route calls
+  // db.sql.replication.partnersCount with the expected bind params
+  // ([dcHost, WINDOW_MINUTES, collectedAt, WINDOW_MINUTES, collectedAt]).
+  const records = [];
+  const db = buildMockDb([
+    {
+      match: /SELECT\s+source_dc\s*,\s*users_count\s*,\s*groups_count\s*,\s*gpos_count\s*,\s*locked_count\s*,\s*collected_at\s+FROM\s*\(/is,
+      rows: [
+        { source_dc: 'DC01', users_count: 100, groups_count: 30, gpos_count: 5, locked_count: 2, collected_at: new Date('2026-08-06T10:00:00Z') }
+      ]
+    },
+    {
+      match: /COUNT\(\*\)\s+AS\s+c\s+FROM\s+ad_replication_status/i,
+      rows: [{ c: 7 }]
+    },
+    { match: /FROM\s+ad_dcs\s+d/i, rows: [] }
+  ]).withRecording(records);
+  _setDbForTest(db);
+
+  const expectedPartnersSql = db.sql.replication.partnersCount;
+  const expectedCollectedAt = new Date('2026-08-06T10:00:00Z');
+
+  const res = await supertest(buildApp())
+    .get('/api/dcs/summary')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.length, 1);
+  assert.equal(res.body[0].dcHost, 'DC01');
+  assert.equal(res.body[0].partnersCount, 7);
+
+  // Find the partnersCount call among recorded queries.
+  const partnersCall = records.find((r) => r.sql === expectedPartnersSql);
+  assert.ok(partnersCall, 'expected the route to call db.sql.replication.partnersCount');
+  assert.equal(partnersCall.params.length, 5,
+    `expected 5 bind params, got ${partnersCall.params.length}: ${JSON.stringify(partnersCall.params)}`);
+  assert.equal(partnersCall.params[0], 'DC01', 'params[0] must be dcHost');
+  assert.equal(partnersCall.params[1], 5, 'params[1] must be WINDOW_MINUTES (5)');
+  // params[2] is collectedAt — compare via getTime() because the route
+  // passes the same Date object through; deepEqual on Date works but be
+  // explicit for clarity.
+  assert.equal(partnersCall.params[2].getTime(), expectedCollectedAt.getTime(),
+    'params[2] must be collectedAt');
+  assert.equal(partnersCall.params[3], 5, 'params[3] must be WINDOW_MINUTES (5)');
+  assert.equal(partnersCall.params[4].getTime(), expectedCollectedAt.getTime(),
+    'params[4] must be collectedAt');
+});

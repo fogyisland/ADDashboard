@@ -38,3 +38,31 @@ test('latestSummaryPerDc query exists for both dialects and filters by __dc_summ
     assert.match(sql.replication.latestSummaryPerDc, /ad_replication_status/i);
   }
 });
+
+test('partnersCount query exists for both dialects with dialect-specific time-shift syntax', () => {
+  // MySQL must use INTERVAL ? MINUTE; MSSQL must use DATEADD(MINUTE, ...).
+  // Both must filter out __dc_summary__ and bind 5 params (dcHost, window,
+  // collectedAt, window, collectedAt) so the route's bind array matches.
+  const mysqlSql = buildSql('mysql');
+  assert.ok(mysqlSql.replication.partnersCount, 'mysql: partnersCount missing');
+  assert.match(mysqlSql.replication.partnersCount,
+    /INTERVAL\s+\?\s+MINUTE/i,
+    'mysql partnersCount must use INTERVAL ? MINUTE');
+  assert.match(mysqlSql.replication.partnersCount, /__dc_summary__/);
+  const mysqlPlaceholders = (mysqlSql.replication.partnersCount.match(/\?/g) || []).length;
+  assert.strictEqual(mysqlPlaceholders, 5,
+    `mysql partnersCount must have 5 ? placeholders, got ${mysqlPlaceholders}`);
+
+  const mssqlSql = buildSql('mssql');
+  assert.ok(mssqlSql.replication.partnersCount, 'mssql: partnersCount missing');
+  assert.match(mssqlSql.replication.partnersCount,
+    /DATEADD\s*\(\s*MINUTE\s*,/i,
+    'mssql partnersCount must use DATEADD(MINUTE, ...)');
+  assert.doesNotMatch(mssqlSql.replication.partnersCount,
+    /INTERVAL\s+\?\s+MINUTE/i,
+    'mssql partnersCount must NOT use MySQL INTERVAL syntax');
+  assert.match(mssqlSql.replication.partnersCount, /__dc_summary__/);
+  const mssqlPlaceholders = (mssqlSql.replication.partnersCount.match(/\?/g) || []).length;
+  assert.strictEqual(mssqlPlaceholders, 5,
+    `mssql partnersCount must have 5 ? placeholders, got ${mssqlPlaceholders}`);
+});

@@ -12,6 +12,11 @@ import { getDb } from '../db/index.js';
 //   - Auth: requires [userAuth, requirePerm('admin:users')] — same as other admin
 //     read endpoints.
 
+// Same-cycle window (minutes) for the partnersCount subquery. Cheap approx —
+// we don't need exact same-tick matching, just "partners that reported around
+// the same time as this summary". Adjust here if you change the policy.
+const WINDOW_MINUTES = 5;
+
 export function dcsRouter({ requireAuth, requirePerm }) {
   const r = Router();
   const auth = [requireAuth, requirePerm('admin:users')];
@@ -65,15 +70,14 @@ export function dcsRouter({ requireAuth, requirePerm }) {
         });
       }
 
-      // Count replication partners per DC from the same cycle (within ±5 min
-      // of this summary's collected_at). Cheap and good enough — we don't
-      // need exact same-tick matching.
+      // Count replication partners per DC from the same cycle (within
+      // WINDOW_MINUTES of this summary's collected_at). Cheap and good enough —
+      // we don't need exact same-tick matching. SQL is dialect-aware via the
+      // db.sql.replication registry (MySQL uses INTERVAL, MSSQL uses DATEADD).
       for (const card of out) {
         const partnersRes = await db.query(
-          `SELECT COUNT(*) AS c FROM ad_replication_status
-            WHERE source_dc = ? AND naming_context <> '__dc_summary__'
-              AND collected_at BETWEEN ? - INTERVAL 5 MINUTE AND ? + INTERVAL 5 MINUTE`,
-          [card.dcHost, card.collectedAt, card.collectedAt]
+          db.sql.replication.partnersCount,
+          [card.dcHost, WINDOW_MINUTES, card.collectedAt, WINDOW_MINUTES, card.collectedAt]
         );
         card.partnersCount = Number(partnersRes.rows[0]?.c ?? 0);
       }
