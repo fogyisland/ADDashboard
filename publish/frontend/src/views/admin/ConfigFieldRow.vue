@@ -1,6 +1,5 @@
 <template>
   <div class="row">
-    <code>{{ fieldKey }}</code>
     <input
       :type="type"
       :value="value"
@@ -15,7 +14,6 @@
 
 <script setup>
 defineProps({
-  fieldKey: { type: String, required: true },
   value: { type: [String, Number], default: '' },
   error: { type: String, default: '' },
   description: { type: String, default: '' },

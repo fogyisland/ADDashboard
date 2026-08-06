@@ -11,7 +11,6 @@
           </td>
           <td>
             <ConfigFieldRow
-              :field-key="k"
               :value="v"
               :error="errors[k] || ''"
               :description="descriptions[k] || ''"
