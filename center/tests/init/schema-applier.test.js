@@ -176,3 +176,28 @@ test('splitSqlStatements parses migration 007 mssql (4 guarded ADD COLUMN statem
   assert.ok(stmts.every(s => /ALTER TABLE ad_replication_status/i.test(s)));
   assert.ok(stmts.every(s => /INFORMATION_SCHEMA\.COLUMNS/.test(s)));
 });
+
+test('splitSqlStatements parses migration 008 mysql (1 CREATE TABLE)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/008-lockout-events.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // MySQL: 1 CREATE TABLE statement
+  assert.strictEqual(stmts.length, 1, `expected 1 statement, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.match(stmts[0], /CREATE TABLE IF NOT EXISTS ad_lockout_events/i);
+  assert.match(stmts[0], /uq_lockout_dc_record/i);
+  assert.match(stmts[0], /event_record_id\s+BIGINT/i);
+  assert.match(stmts[0], /target_user_name/);
+});
+
+test('splitSqlStatements parses migration 008 mssql (1 guarded CREATE TABLE block)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/mssql/008-lockout-events.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // MSSQL: IF OBJECT_ID guard wraps CREATE TABLE + CREATE INDEX statements
+  // into 1 logical block. The parser keeps IF/BEGIN/END as a single statement.
+  assert.strictEqual(stmts.length, 1, `expected 1 statement, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.match(stmts[0], /IF OBJECT_ID\('ad_lockout_events', 'U'\)/i);
+  assert.match(stmts[0], /CREATE TABLE ad_lockout_events/i);
+  assert.match(stmts[0], /event_record_id\s+BIGINT/i);
+  // Verify the unique constraint and at least one index are inside the block
+  assert.match(stmts[0], /uq_lockout_dc_record/i);
+  assert.match(stmts[0], /CREATE INDEX ix_lockout_occurred/i);
+});
