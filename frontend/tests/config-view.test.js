@@ -210,3 +210,24 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   expect(rawKeys).toContain('ad_agent_token');
   expect(labels.length).toBe(rawKeys.length);
 });
+
+test('audit section: configKey column renders Chinese label as primary + raw key as small secondary code', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getConfigAudit.mockResolvedValue({
+    data: [
+      { id: 1, configKey: 'polling_interval_minutes', oldValue: '5', newValue: '7', changedByUsername: 'admin', changedAt: '2026-08-06T08:00:00Z', changeType: 'UPDATE' },
+      { id: 2, configKey: 'ad_agent_token', oldValue: 'old-token-1234567890', newValue: 'new-token-1234567890', changedByUsername: 'admin', changedAt: '2026-08-06T08:05:00Z', changeType: 'UPDATE' }
+    ]
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  // Audit rows use the same .key-label / .raw-key pair shape as the main table.
+  const labels = w.findAll('.audit-row .key-label').map(el => el.text());
+  const rawKeys = w.findAll('.audit-row .raw-key').map(el => el.text());
+  expect(labels).toContain('采集周期');
+  expect(labels).toContain('Agent 令牌');
+  expect(rawKeys).toContain('polling_interval_minutes');
+  expect(rawKeys).toContain('ad_agent_token');
+  expect(labels.length).toBe(rawKeys.length);
+});

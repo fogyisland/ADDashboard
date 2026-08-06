@@ -47,7 +47,10 @@
         <thead><tr><th>键</th><th>旧值</th><th>新值</th><th>操作人</th><th>时间</th><th></th></tr></thead>
         <tbody>
           <tr v-for="row in audit" :key="row.id" class="audit-row">
-            <td><code>{{ row.configKey }}</code></td>
+            <td>
+              <div class="key-label">{{ labels[row.configKey] || row.configKey }}</div>
+              <code class="raw-key">{{ row.configKey }}</code>
+            </td>
             <td><code>{{ row.oldValue }}</code></td>
             <td><code>{{ row.newValue }}</code></td>
             <td>{{ row.changedByUsername || row.changedBy || '—' }}</td>
