@@ -51,22 +51,23 @@
 
 - [ ] **Step 1: Create the test file with 8 failing tests**
 
-Write `center/tests/verify-marker.test.js`:
+Write `center/tests/verify-marker.test.js` using **`node:test` + `node:assert/strict`** (matching center's existing test runner — `npm test` runs `node --test`, NOT vitest):
 
 ```js
-import { test, expect } from 'vitest';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { parseVerifyMarker } from '../src/init/verify-marker.js';
 
 test('parses single table marker', () => {
   const sql = '-- verify: table sys_config_audit\nCREATE TABLE foo (...);';
-  expect(parseVerifyMarker(sql)).toEqual([
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
     { kind: 'table', name: 'sys_config_audit' }
   ]);
 });
 
 test('parses single column marker', () => {
   const sql = '-- verify: column ad_dcs.is_pdc\nALTER TABLE ...;';
-  expect(parseVerifyMarker(sql)).toEqual([
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
     { kind: 'column', name: 'ad_dcs.is_pdc' }
   ]);
 });
@@ -78,7 +79,7 @@ test('parses multiple markers in same file', () => {
     '-- verify: column ad_dcs.is_gc',
     'CREATE TABLE bar (...);'
   ].join('\n');
-  expect(parseVerifyMarker(sql)).toEqual([
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
     { kind: 'column', name: 'ad_sites.description' },
     { kind: 'column', name: 'ad_dcs.is_gc' }
   ]);
@@ -86,7 +87,7 @@ test('parses multiple markers in same file', () => {
 
 test('returns empty array for SQL with no markers', () => {
   const sql = 'CREATE TABLE foo (id INT);\nINSERT INTO foo VALUES (1);';
-  expect(parseVerifyMarker(sql)).toEqual([]);
+  assert.deepStrictEqual(parseVerifyMarker(sql), []);
 });
 
 test('stops scanning after 50 lines', () => {
@@ -95,7 +96,7 @@ test('stops scanning after 50 lines', () => {
   for (let i = 0; i < 50; i++) lines.push(`-- comment line ${i}`);
   lines.push('-- verify: table should_not_be_seen');
   const sql = lines.join('\n');
-  expect(parseVerifyMarker(sql)).toEqual([]);
+  assert.deepStrictEqual(parseVerifyMarker(sql), []);
 });
 
 test('ignores markers inside block comments', () => {
@@ -106,21 +107,21 @@ test('ignores markers inside block comments', () => {
     '-- verify: table outside_comment',
     'CREATE TABLE foo;'
   ].join('\n');
-  expect(parseVerifyMarker(sql)).toEqual([
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
     { kind: 'table', name: 'outside_comment' }
   ]);
 });
 
 test('case-insensitive verify keyword', () => {
   const sql = '-- VERIFY: TABLE sys_config_audit\n';
-  expect(parseVerifyMarker(sql)).toEqual([
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
     { kind: 'table', name: 'sys_config_audit' }
   ]);
 });
 
 test('whitespace tolerant between tokens', () => {
   const sql = '--   verify:    table   sys_config_audit   \n';
-  expect(parseVerifyMarker(sql)).toEqual([
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
     { kind: 'table', name: 'sys_config_audit' }
   ]);
 });
@@ -128,8 +129,8 @@ test('whitespace tolerant between tokens', () => {
 
 - [ ] **Step 2: Run tests — verify all 8 fail**
 
-Run: `cd center && npx vitest run tests/verify-marker.test.js`
-Expected: All 8 tests FAIL with "parseVerifyMarker is not a function" (module doesn't exist yet).
+Run: `cd center && npm test -- tests/verify-marker.test.js`
+Expected: All 8 tests FAIL with "Cannot find module '../src/init/verify-marker.js'" (or similar — module doesn't exist yet).
 
 - [ ] **Step 3: Implement parseVerifyMarker**
 
@@ -185,7 +186,7 @@ export function parseVerifyMarker(sql) {
 
 - [ ] **Step 4: Run tests — verify all 8 pass**
 
-Run: `cd center && npx vitest run tests/verify-marker.test.js`
+Run: `cd center && npm test -- tests/verify-marker.test.js`
 Expected: All 8 tests PASS.
 
 - [ ] **Step 5: Run full center test suite — verify no regressions**
@@ -216,7 +217,7 @@ git commit -m "feat(center): parseVerifyMarker — extract verify: markers from 
 
 - [ ] **Step 1: Add 3 failing tests for verifyMarkers to verify-marker.test.js**
 
-Append to `center/tests/verify-marker.test.js`:
+Append to `center/tests/verify-marker.test.js` (continue using **`node:test` + `node:assert/strict`** syntax — `assert.deepStrictEqual` for objects, `assert.equal` / `assert.ok` for primitives):
 
 ```js
 import { verifyMarkers } from '../src/init/verify-marker.js';
@@ -260,15 +261,15 @@ test('verifyMarkers: all present → ok=true, missing=[]', async () => {
   const db = mockDb({ presentTables: new Set(['sys_config_audit']) });
   const markers = [{ kind: 'table', name: 'sys_config_audit' }];
   const result = await verifyMarkers(db, markers, 'mysql');
-  expect(result).toEqual({ ok: true, missing: [] });
+  assert.deepStrictEqual(result, { ok: true, missing: [] });
 });
 
-test('verifyMarkers: one table missing → ok=false, missing=[\'table X\']', async () => {
+test('verifyMarkers: one table missing → ok=false, missing=[table X]', async () => {
   const db = mockDb({ presentTables: new Set() });
   const markers = [{ kind: 'table', name: 'sys_config_audit' }];
   const result = await verifyMarkers(db, markers, 'mysql');
-  expect(result.ok).toBe(false);
-  expect(result.missing).toEqual(['table sys_config_audit']);
+  assert.equal(result.ok, false);
+  assert.deepStrictEqual(result.missing, ['table sys_config_audit']);
 });
 
 test('verifyMarkers: mixed kinds, column missing → ok=false, column missing in list', async () => {
@@ -281,16 +282,16 @@ test('verifyMarkers: mixed kinds, column missing → ok=false, column missing in
     { kind: 'column', name: 'ad_dcs.is_pdc' }
   ];
   const result = await verifyMarkers(db, markers, 'mysql');
-  expect(result.ok).toBe(false);
-  expect(result.missing).toContain('column ad_dcs.is_pdc');
-  expect(result.missing).not.toContain('table sys_config_audit');
+  assert.equal(result.ok, false);
+  assert.ok(result.missing.includes('column ad_dcs.is_pdc'));
+  assert.ok(!result.missing.includes('table sys_config_audit'));
 });
 ```
 
 - [ ] **Step 2: Run tests — verify the 3 new ones fail**
 
-Run: `cd center && npx vitest run tests/verify-marker.test.js`
-Expected: The original 8 pass (parseVerifyMarker works). The 3 new tests fail with "verifyMarkers is not a function".
+Run: `cd center && npm test -- tests/verify-marker.test.js`
+Expected: The original 8 pass (parseVerifyMarker works). The 3 new tests fail with "verifyMarkers is not a function" / module not exporting it.
 
 - [ ] **Step 3: Add `db.sql.probe` block to both dialects in db/sql.js**
 
@@ -357,7 +358,7 @@ export async function verifyMarkers(db, markers, dialect) {
 
 - [ ] **Step 5: Run verify-marker tests — verify all 11 pass**
 
-Run: `cd center && npx vitest run tests/verify-marker.test.js`
+Run: `cd center && npm test -- tests/verify-marker.test.js`
 Expected: All 11 tests pass (8 parseVerifyMarker + 3 verifyMarkers).
 
 - [ ] **Step 6: Run full center test suite — verify no regressions**
@@ -387,10 +388,11 @@ git commit -m "feat(center): verifyMarkers probes DB via db.sql.probe, both dial
 
 - [ ] **Step 1: Create backfill-verify.test.js with 6 failing tests**
 
-Write `center/tests/backfill-verify.test.js`:
+Write `center/tests/backfill-verify.test.js` using **`node:test` + `node:assert/strict`** (NOT vitest — `npm test` runs `node --test`):
 
 ```js
-import { test, expect, beforeEach } from 'vitest';
+import { test, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -455,9 +457,9 @@ test('all markers present → all rows backfilled', async () => {
     upserts
   });
   const result = await backfillMigrations('mysql', db, { repoRoot, logger: silentLogger });
-  expect(result.count).toBe(2);
-  expect(result.skipped).toEqual([]);
-  expect(upserts.length).toBe(2);
+  assert.equal(result.count, 2);
+  assert.deepStrictEqual(result.skipped, []);
+  assert.equal(upserts.length, 2);
 });
 
 test('005 marker missing → skip 005 with warn, others backfilled', async () => {
@@ -474,14 +476,14 @@ test('005 marker missing → skip 005 with warn, others backfilled', async () =>
     repoRoot,
     logger: { warn: (...args) => warns.push(args) }
   });
-  expect(result.count).toBe(1);
-  expect(result.skipped).toHaveLength(1);
-  expect(result.skipped[0].version).toBe('005');
-  expect(result.skipped[0].missing).toContain('table sys_config_audit');
-  expect(warns.length).toBe(1);
+  assert.equal(result.count, 1);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.skipped[0].version, '005');
+  assert.ok(result.skipped[0].missing.includes('table sys_config_audit'));
+  assert.equal(warns.length, 1);
   // 005 was skipped → only 001 was upserted
   const upsertedVersions = upserts.map(u => u.params[0]);
-  expect(upsertedVersions).toEqual(['001']);
+  assert.deepStrictEqual(upsertedVersions, ['001']);
 });
 
 test('file without markers is backfilled without probe', async () => {
@@ -489,9 +491,9 @@ test('file without markers is backfilled without probe', async () => {
   const upserts = [];
   const db = buildMockDb({ upserts });
   const result = await backfillMigrations('mysql', db, { repoRoot, logger: silentLogger });
-  expect(result.count).toBe(1);
-  expect(result.skipped).toEqual([]);
-  expect(upserts.length).toBe(1);
+  assert.equal(result.count, 1);
+  assert.deepStrictEqual(result.skipped, []);
+  assert.equal(upserts.length, 1);
 });
 
 test('multiple markers on same file, one missing → skip entire file', async () => {
@@ -507,18 +509,18 @@ test('multiple markers on same file, one missing → skip entire file', async ()
     presentColumns: new Set(['ad_sites.description'])  // ad_dcs.is_pdc missing
   });
   const result = await backfillMigrations('mysql', db, { repoRoot, logger: silentLogger });
-  expect(result.count).toBe(0);
-  expect(result.skipped).toHaveLength(1);
-  expect(result.skipped[0].missing).toContain('column ad_dcs.is_pdc');
+  assert.equal(result.count, 0);
+  assert.equal(result.skipped.length, 1);
+  assert.ok(result.skipped[0].missing.includes('column ad_dcs.is_pdc'));
 });
 
 test('returns { count, skipped } shape', async () => {
   makeFile('001', 'sites', '-- verify: column ad_sites.description\nALTER TABLE ...');
   const db = buildMockDb({ presentColumns: new Set(['ad_sites.description']) });
   const result = await backfillMigrations('mysql', db, { repoRoot, logger: silentLogger });
-  expect(result).toHaveProperty('count');
-  expect(result).toHaveProperty('skipped');
-  expect(Array.isArray(result.skipped)).toBe(true);
+  assert.ok('count' in result);
+  assert.ok('skipped' in result);
+  assert.ok(Array.isArray(result.skipped));
 });
 
 test('009 is backfilled via marker (no circular skip)', async () => {
@@ -529,15 +531,15 @@ test('009 is backfilled via marker (no circular skip)', async () => {
     upserts
   });
   const result = await backfillMigrations('mysql', db, { repoRoot, logger: silentLogger });
-  expect(result.count).toBe(1);
-  expect(upserts.length).toBe(1);
-  expect(upserts[0].params[0]).toBe('009');  // version is first upsert param
+  assert.equal(result.count, 1);
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0].params[0], '009');  // version is first upsert param
 });
 ```
 
 - [ ] **Step 2: Run tests — verify all 6 fail**
 
-Run: `cd center && npx vitest run tests/backfill-verify.test.js`
+Run: `cd center && npm test -- tests/backfill-verify.test.js`
 Expected: All 6 tests FAIL (backfillMigrations still uses the old blind-upert path; return type is `number`, not `{count, skipped}`; 009 is hard-skipped).
 
 - [ ] **Step 3: Modify backfillMigrations in schema-applier.js**
@@ -643,7 +645,7 @@ Note: the `if (f.startsWith('009-')) continue;` is GONE — 009 is now handled b
 
 - [ ] **Step 4: Run backfill-verify tests — verify all 6 pass**
 
-Run: `cd center && npx vitest run tests/backfill-verify.test.js`
+Run: `cd center && npm test -- tests/backfill-verify.test.js`
 Expected: All 6 tests PASS.
 
 - [ ] **Step 5: Run full center test suite — verify no regressions**
@@ -656,7 +658,7 @@ Expected: All 445 (431 + 8 + 3 + 6 — minus the existing `admin.test.js` and `m
 Run: `cd center && grep -rln "backfillMigrations" tests/`
 
 For each test file that calls `backfillMigrations` and asserts on the result:
-- If the assertion is `expect(result).toBe(N)` or `expect(typeof result).toBe('number')`, change to `expect(result.count).toBe(N)`.
+- If the assertion uses `node:assert/strict` like `assert.equal(result, N)` or `assert.strictEqual(typeof result, 'number')`, change to `assert.equal(result.count, N)`.
 - If the test does not read the return value (e.g., just calls it for side effects), no change.
 
 Common pattern: tests in `center/tests/schema-applier.test.js` or `center/tests/bootstrap-migrations.test.js` (if they exist) will be affected. Update them in place.
