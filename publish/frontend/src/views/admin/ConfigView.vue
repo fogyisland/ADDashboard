@@ -5,7 +5,10 @@
       <thead><tr><th>键</th><th>值</th><th>说明</th></tr></thead>
       <tbody>
         <tr v-for="(v, k) in current" :key="k">
-          <td><code>{{ k }}</code></td>
+          <td>
+            <div class="key-label">{{ labels[k] || k }}</div>
+            <code class="raw-key">{{ k }}</code>
+          </td>
           <td>
             <ConfigFieldRow
               :field-key="k"
@@ -84,6 +87,16 @@ const descriptions = {
   heartbeat_interval_seconds: 'Agent 心跳间隔 (秒), 默认 5, 越短越快感知掉线',
   history_enabled: '是否写入历史快照 (0/1)',
   ad_agent_token: 'Agent 共享 Token'
+};
+// Chinese labels shown as the primary key caption in the config table.
+// Raw snake_case stays visible underneath as <code class="raw-key"> for users
+// who need to map UI back to DB / API / audit logs.
+const labels = {
+  polling_interval_minutes: '采集周期',
+  latency_threshold_minutes: '延迟阈值',
+  heartbeat_interval_seconds: '心跳间隔',
+  history_enabled: '历史快照',
+  ad_agent_token: 'Agent Token'
 };
 const numericFields = ['polling_interval_minutes', 'latency_threshold_minutes', 'heartbeat_interval_seconds'];
 const RISKY_FIELDS = ['ad_agent_token'];
@@ -238,4 +251,6 @@ button.cancel { background: #0b1220; color: var(--text); }
 .token-action { padding: 3px 10px; border: 1px solid #1e293b; background: #0b1220; color: var(--text); border-radius: 3px; cursor: pointer; font-size: 12px; margin-right: 4px; }
 .token-action:hover { background: var(--accent); color: #0b1220; }
 .copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }
+.key-label { font-weight: 600; color: var(--text); }
+.raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
 </style>

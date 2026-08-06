@@ -138,3 +138,33 @@ test('applyAll mysql createDatabase option issues CREATE DATABASE', async () => 
   const sqls = calls.map(c => c.sql);
   assert.ok(sqls.some(s => /CREATE DATABASE IF NOT EXISTS `ad_test`/i.test(s)));
 });
+
+test('splitSqlStatements parses migration 006 (drop center_public_host/port)', () => {
+  // 006 is a single DELETE statement guarded by IN (...) — covers the
+  // stock single-semicolon-terminated case for both dialects, and ensures
+  // the migration file still parses if the user adds more cleanup rows later.
+  const mysqlSql = readFileSync(join(__dirname, '../../../db/migrations/006-drop-public-host-port.sql'), 'utf8');
+  const mysqlStmts = splitSqlStatements(mysqlSql);
+  assert.strictEqual(mysqlStmts.length, 1);
+  assert.match(mysqlStmts[0], /DELETE FROM system_config/i);
+  assert.match(mysqlStmts[0], /center_public_host/);
+  assert.match(mysqlStmts[0], /center_public_port/);
+
+  const mssqlSql = readFileSync(join(__dirname, '../../../db/migrations/mssql/006-drop-public-host-port.sql'), 'utf8');
+  const mssqlStmts = splitSqlStatements(mssqlSql);
+  assert.strictEqual(mssqlStmts.length, 1);
+  assert.match(mssqlStmts[0], /DELETE FROM system_config/i);
+});
+
+test('applyAll applies migration 006: emits DELETE for center_public_host/port', async () => {
+  // The full applyAll pipeline (schema + seed + every migration) must run
+  // migration 006. We don't run a full integration; we just verify the DELETE
+  // hits db.execute during applyAll. Idempotency is the migration's own job.
+  const calls = [];
+  const db = buildMockDb().withRecording(calls);
+  await applyAll('mysql', db, { repoRoot: process.cwd() + '/..' });
+  const sqls = calls.map(c => c.sql);
+  const delete006 = sqls.find(s => /DELETE FROM system_config/i.test(s) &&
+    /center_public_host/.test(s) && /center_public_port/.test(s));
+  assert.ok(delete006, 'migration 006 DELETE should be applied');
+});

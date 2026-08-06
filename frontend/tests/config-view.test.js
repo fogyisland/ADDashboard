@@ -188,3 +188,25 @@ test('Agent Token: 复制 button copies current token to clipboard', async () =>
     Object.defineProperty(navigator, 'clipboard', { value: origClipboard, configurable: true });
   }
 });
+
+test('renders Chinese label primary + raw snake_case key as small secondary code', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const labels = w.findAll('.key-label').map(el => el.text());
+  const rawKeys = w.findAll('.raw-key').map(el => el.text());
+  // Primary label is Chinese, raw key still visible for DB / API mapping
+  expect(labels).toContain('采集周期');
+  expect(labels).toContain('延迟阈值');
+  expect(labels).toContain('心跳间隔');
+  expect(labels).toContain('历史快照');
+  expect(labels).toContain('Agent Token');
+  // Every raw key still in snake_case, paired with its label
+  expect(rawKeys).toContain('polling_interval_minutes');
+  expect(rawKeys).toContain('latency_threshold_minutes');
+  expect(rawKeys).toContain('heartbeat_interval_seconds');
+  expect(rawKeys).toContain('history_enabled');
+  expect(rawKeys).toContain('ad_agent_token');
+  expect(labels.length).toBe(rawKeys.length);
+});
