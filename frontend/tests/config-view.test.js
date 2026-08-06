@@ -201,7 +201,7 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   expect(labels).toContain('延迟阈值');
   expect(labels).toContain('心跳间隔');
   expect(labels).toContain('历史快照');
-  expect(labels).toContain('Agent Token');
+  expect(labels).toContain('Agent 令牌');
   // Every raw key still in snake_case, paired with its label
   expect(rawKeys).toContain('polling_interval_minutes');
   expect(rawKeys).toContain('latency_threshold_minutes');

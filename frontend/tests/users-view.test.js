@@ -112,6 +112,65 @@ test('UsersView create flow: clicking + 新建, filling, then 保存 calls creat
   expect(sent).not.toHaveProperty('role_id');
 });
 
+async function openResetFor(wrapper, username) {
+  const row = wrapper.findAll('tr').find((r) => r.text().includes(username));
+  const btn = row.findAll('button').find((b) => b.text() === '重置密码');
+  expect(btn).toBeTruthy();
+  await btn.trigger('click');
+  await flushPromises();
+  return wrapper.find('.reset-modal');
+}
+
+test('UsersView reset flow: 重置密码 opens a modal scoped to the clicked user', async () => {
+  const wrapper = await mountWith(makeUsers(), makeRoles());
+  const modal = await openResetFor(wrapper, 'bob');
+  expect(modal.exists()).toBe(true);
+  expect(modal.text()).toContain('bob');
+});
+
+test('UsersView reset flow: password shorter than 8 chars is rejected without calling updateUser', async () => {
+  const wrapper = await mountWith(makeUsers(), makeRoles());
+  const modal = await openResetFor(wrapper, 'bob');
+  const inputs = modal.findAll('input');
+  await inputs[0].setValue('short12');
+  await inputs[1].setValue('short12');
+  await modal.findAll('button').find((b) => b.text() === '确认重置').trigger('click');
+  await flushPromises();
+
+  expect(adminApi.updateUser).not.toHaveBeenCalled();
+  expect(modal.text()).toContain('至少 8 位');
+});
+
+test('UsersView reset flow: mismatched confirmation is rejected without calling updateUser', async () => {
+  const wrapper = await mountWith(makeUsers(), makeRoles());
+  const modal = await openResetFor(wrapper, 'bob');
+  const inputs = modal.findAll('input');
+  await inputs[0].setValue('goodpassword');
+  await inputs[1].setValue('otherpassword');
+  await modal.findAll('button').find((b) => b.text() === '确认重置').trigger('click');
+  await flushPromises();
+
+  expect(adminApi.updateUser).not.toHaveBeenCalled();
+  expect(modal.text()).toContain('两次输入不一致');
+});
+
+test('UsersView reset flow: valid password calls updateUser with only { password } for that user', async () => {
+  const wrapper = await mountWith(makeUsers(), makeRoles());
+  const modal = await openResetFor(wrapper, 'bob');
+  const inputs = modal.findAll('input');
+  await inputs[0].setValue('goodpassword');
+  await inputs[1].setValue('goodpassword');
+  await modal.findAll('button').find((b) => b.text() === '确认重置').trigger('click');
+  await flushPromises();
+
+  expect(adminApi.updateUser).toHaveBeenCalledTimes(1);
+  const [userId, body] = adminApi.updateUser.mock.calls[0];
+  expect(userId).toBe(2);
+  expect(body).toEqual({ password: 'goodpassword' });
+  // Modal closes on success
+  expect(wrapper.find('.reset-modal').exists()).toBe(false);
+});
+
 test('UsersView delete flow: clicking 删除 and confirming calls deleteUser with user id', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const wrapper = await mountWith(makeUsers(), makeRoles());

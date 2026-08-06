@@ -85,7 +85,11 @@ const descriptions = {
   latency_threshold_minutes: '复制延迟告警阈值 (分钟)',
   heartbeat_interval_seconds: 'Agent 心跳间隔 (秒), 默认 5, 越短越快感知掉线',
   history_enabled: '是否写入历史快照 (0/1)',
-  ad_agent_token: 'Agent 共享 Token'
+  ad_agent_token: 'Agent 共享令牌',
+  discovery_interval_hours: '站点/域控拓扑发现周期 (小时)',
+  site_matrix_refresh_seconds: '站点复制矩阵页面自动刷新间隔 (秒)',
+  center_public_host: '中心站对外访问地址 (已废弃, 由 nginx 负责)',
+  center_public_port: '中心站对外访问端口 (已废弃, 由 nginx 负责)'
 };
 // Chinese labels shown as the primary key caption in the config table.
 // Raw snake_case stays visible underneath as <code class="raw-key"> for users
@@ -95,9 +99,20 @@ const labels = {
   latency_threshold_minutes: '延迟阈值',
   heartbeat_interval_seconds: '心跳间隔',
   history_enabled: '历史快照',
-  ad_agent_token: 'Agent Token'
+  ad_agent_token: 'Agent 令牌',
+  discovery_interval_hours: '拓扑发现周期',
+  site_matrix_refresh_seconds: '站点矩阵刷新间隔',
+  center_public_host: '中心站对外地址',
+  center_public_port: '中心站对外端口'
 };
-const numericFields = ['polling_interval_minutes', 'latency_threshold_minutes', 'heartbeat_interval_seconds'];
+const numericFields = [
+  'polling_interval_minutes',
+  'latency_threshold_minutes',
+  'heartbeat_interval_seconds',
+  'discovery_interval_hours',
+  'site_matrix_refresh_seconds',
+  'center_public_port'
+];
 const RISKY_FIELDS = ['ad_agent_token'];
 
 const initial = ref({});

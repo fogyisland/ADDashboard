@@ -15,6 +15,7 @@
           <td>{{ fmt(u.lastLoginAt) }}</td>
           <td>
             <button @click="openEdit(u)">编辑</button>
+            <button @click="openReset(u)">重置密码</button>
             <button class="danger" @click="del(u)">删除</button>
           </td>
         </tr>
@@ -37,6 +38,19 @@
         </div>
       </div>
     </div>
+    <div v-if="resetting" class="modal-bg" @click.self="closeReset">
+      <div class="modal reset-modal">
+        <h3>重置密码 — {{ resetting.username }}</h3>
+        <label>新密码 <input v-model="newPassword" type="password" autocomplete="new-password" /></label>
+        <label>确认新密码 <input v-model="confirmPassword" type="password" autocomplete="new-password" /></label>
+        <p v-if="resetError" class="err">{{ resetError }}</p>
+        <p class="hint">重置后该用户需用新密码重新登录。</p>
+        <div class="actions">
+          <button @click="doReset">确认重置</button>
+          <button @click="closeReset">取消</button>
+        </div>
+      </div>
+    </div>
   </AdminLayout>
 </template>
 
@@ -45,6 +59,10 @@ import { ref, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 const users = ref([]); const roles = ref([]); const editing = ref(null);
+const resetting = ref(null);
+const newPassword = ref('');
+const confirmPassword = ref('');
+const resetError = ref('');
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 async function load() { users.value = (await adminApi.listUsers()).data; roles.value = (await adminApi.listRoles()).data; }
 function openCreate() { editing.value = { username: '', password: '', role_id: roles.value[0]?.id, status: 1 }; }
@@ -55,6 +73,26 @@ async function save() {
   editing.value = null; await load();
 }
 async function del(u) { if (confirm(`确认删除 ${u.username}？`)) { await adminApi.deleteUser(u.id); await load(); } }
+
+function openReset(u) {
+  resetting.value = { id: u.id, username: u.username };
+  newPassword.value = '';
+  confirmPassword.value = '';
+  resetError.value = '';
+}
+function closeReset() { resetting.value = null; }
+async function doReset() {
+  // Same floor the init wizard enforces when creating the first admin.
+  if (newPassword.value.length < 8) { resetError.value = '密码至少 8 位'; return; }
+  if (newPassword.value !== confirmPassword.value) { resetError.value = '两次输入不一致'; return; }
+  try {
+    // Only send password — roleId/status omitted so the backend COALESCE keeps them.
+    await adminApi.updateUser(resetting.value.id, { password: newPassword.value });
+    closeReset();
+  } catch (e) {
+    resetError.value = '重置失败，请重试';
+  }
+}
 onMounted(load);
 </script>
 
@@ -68,4 +106,6 @@ onMounted(load);
 .modal { background: var(--panel); padding: 24px; border-radius: 8px; min-width: 360px; display: flex; flex-direction: column; gap: 10px; }
 .modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .actions { display: flex; gap: 8px; margin-top: 8px; }
+.reset-modal .err { color: var(--red); font-size: 12px; margin: 0; }
+.reset-modal .hint { color: var(--muted); font-size: 12px; margin: 0; }
 </style>
