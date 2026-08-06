@@ -206,6 +206,24 @@ const VARIANTS = {
                   AND (? = '' OR caller_computer_name = ?)
                 ORDER BY occurred_at ASC
                 LIMIT 500`
+    },
+    schemaMigrations: {
+      list: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations',
+      findByVersion: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations WHERE version = ?',
+      upsert: `INSERT INTO schema_migrations
+        (version, description, type, script, checksum, applied_at, execution_ms, applied_by, status, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          description   = VALUES(description),
+          type          = VALUES(type),
+          script        = VALUES(script),
+          checksum      = VALUES(checksum),
+          applied_at    = VALUES(applied_at),
+          execution_ms  = VALUES(execution_ms),
+          applied_by    = VALUES(applied_by),
+          status        = VALUES(status),
+          error_message = VALUES(error_message)`,
+      deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
     }
   },
   mssql: {
@@ -433,6 +451,31 @@ const VARIANTS = {
                   AND (? = '' OR dc_name = ?)
                   AND (? = '' OR caller_computer_name = ?)
                 ORDER BY occurred_at ASC`
+    },
+    schemaMigrations: {
+      list: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations',
+      findByVersion: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations WHERE version = ?',
+      upsert: `MERGE INTO schema_migrations AS t
+        USING (SELECT
+          ? AS version, ? AS description, ? AS type, ? AS script, ? AS checksum,
+          ? AS applied_at, ? AS execution_ms, ? AS applied_by, ? AS status, ? AS error_message
+        ) AS s
+        ON t.version = s.version
+        WHEN MATCHED THEN UPDATE SET
+          description   = s.description,
+          type          = s.type,
+          script        = s.script,
+          checksum      = s.checksum,
+          applied_at    = s.applied_at,
+          execution_ms  = s.execution_ms,
+          applied_by    = s.applied_by,
+          status        = s.status,
+          error_message = s.error_message
+        WHEN NOT MATCHED THEN INSERT
+          (version, description, type, script, checksum, applied_at, execution_ms, applied_by, status, error_message)
+          VALUES
+          (s.version, s.description, s.type, s.script, s.checksum, s.applied_at, s.execution_ms, s.applied_by, s.status, s.error_message);`,
+      deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
     }
   }
 };
