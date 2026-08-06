@@ -88,6 +88,49 @@ function Get-DcCounters {
   return [PSCustomObject]$counters
 }
 
+function Get-LockoutEvents {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ComputerName
+  )
+
+  # ComputerName is accepted for symmetry with Get-DcCounters but is
+  # intentionally unused inside the function body: PS 5.1's
+  # Get-WinEvent -FilterHashtable form does not accept -ComputerName
+  # (only the non-Hashtable form does). The agent runs locally on each
+  # DC, so reading the local Security log is sufficient. If remote
+  # collection is added later, switch to
+  # Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{...}
+  # on pwsh 7+ only.
+  $events = @()
+  try {
+    $start = (Get-Date).AddMinutes(-15)
+    $raw = Get-WinEvent -FilterHashtable @{
+      LogName   = 'Security'
+      Id        = 4740
+      StartTime = $start
+    } -ErrorAction Stop
+    foreach ($e in $raw) {
+      $xml = [xml]$e.ToXml()
+      $ed  = $xml.Event.EventData
+      $events += [PSCustomObject]@{
+        EventRecordId      = [int64]$e.RecordId
+        OccurredAt         = (ConvertTo-UtcIso -Value $e.TimeCreated)
+        TargetUserName     = [string]$ed.Data[0].'#text'
+        SubjectUserName    = [string]$ed.Data[1].'#text'
+        SubjectDomain      = [string]$ed.Data[2].'#text'
+        CallerComputerName = [string]$ed.Data[3].'#text'
+      }
+    }
+  } catch {
+    [Console]::Error.WriteLine("lockoutEvents failed: $($_.Exception.Message)")
+  }
+  # The comma operator forces PowerShell to emit the array even when empty
+  # — without it, an empty $events collapses to $null on return.
+  return ,$events
+}
+
 function Get-ReplicationSnapshot {
   [CmdletBinding()]
   param(
@@ -193,6 +236,15 @@ function Get-ReplicationSnapshot {
     LockedCount     = $counters.LockedCount
   }
   $entries += $summaryEntry
+
+  # Lockout troubleshooting — append the last 15 min of Security event 4740
+  # (user account locked out) from the local Security log. Travels as a
+  # top-level snapshot field (not as an Entry, because these aren't
+  # replication rows). The center's UNIQUE(dc_name, event_record_id) gives
+  # us idempotent ingest — the agent is stateless across cycles.
+  $LockoutEvents = Get-LockoutEvents -ComputerName $ComputerName
+  $snapshot | Add-Member -NotePropertyName LockoutEvents `
+                        -NotePropertyValue $LockoutEvents
 
   $snapshot.Entries = $entries
   return $snapshot

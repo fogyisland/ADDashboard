@@ -7,6 +7,7 @@ import { agentRouter } from './src/routes/agent.js';
 import { dashboardRouter } from './src/routes/dashboard.js';
 import { adminRouter } from './src/routes/admin.js';
 import { dcsRouter } from './src/routes/dcs.js';
+import { lockoutRouter } from './src/routes/lockout.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { packageRunner } from './src/packages/runner.js';
@@ -90,6 +91,12 @@ process.on('unhandledRejection', (reason) => {
     // factory accepts the same auth deps so the per-route chain is
     // identical to other admin read endpoints.
     app.use(dcsRouter({
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requirePerm: (perm) => requirePerm(perm)
+    }));
+    // Lockout troubleshooting — multi-filter search across ad_lockout_events.
+    // Same auth contract as dcsRouter: per-route [userAuth, requirePerm('admin:users')].
+    app.use(lockoutRouter({
       requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
       requirePerm: (perm) => requirePerm(perm)
     }));

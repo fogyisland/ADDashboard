@@ -22,7 +22,7 @@ import RegistryView from './views/admin/RegistryView.vue';
 import InitWizardView from './views/init/InitWizardView.vue';
 import MetricDashboardView from './views/MetricDashboardView.vue';
 import ServersOverviewView from './views/ServersOverviewView.vue';
-import LockoutPlaceholderView from './views/LockoutPlaceholderView.vue';
+import LockoutTroubleshootingView from './views/LockoutTroubleshootingView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
 const routes = [
@@ -48,7 +48,7 @@ const routes = [
   { path: '/admin/packages/:name', component: PackageEditView, meta: { perm: 'admin:packages' } },
   { path: '/dashboard/metrics', component: MetricDashboardView },
   { path: '/servers-overview', component: ServersOverviewView },
-  { path: '/lockout-troubleshooting', component: LockoutPlaceholderView },
+  { path: '/lockout-troubleshooting', component: LockoutTroubleshootingView },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

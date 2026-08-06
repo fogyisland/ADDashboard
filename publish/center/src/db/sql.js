@@ -190,6 +190,22 @@ const VARIANTS = {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       // listRecent is built dynamically per call (LIMIT is integer-only);
       // see center/src/db/sql/package-runs.js → packageRuns.listRecent.
+    },
+    lockout: {
+      upsertEvent: `INSERT INTO ad_lockout_events
+        (occurred_at, collected_at, agent_id, dc_name, event_record_id,
+         target_user_name, subject_user_name, subject_domain, caller_computer_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE collected_at = VALUES(collected_at)`,
+      search: `SELECT occurred_at, dc_name, target_user_name, subject_user_name,
+                      subject_domain, caller_computer_name
+                 FROM ad_lockout_events
+                WHERE occurred_at >= ?
+                  AND (? = '' OR target_user_name = ?)
+                  AND (? = '' OR dc_name = ?)
+                  AND (? = '' OR caller_computer_name = ?)
+                ORDER BY occurred_at ASC
+                LIMIT 500`
     }
   },
   mssql: {
@@ -394,6 +410,29 @@ const VARIANTS = {
         (agent_id, package_name, started_at, finished_at, exit_code, stdout_preview, stderr_preview, error)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       // listRecent is built dynamically per call; mssql uses TOP <n> not LIMIT.
+    },
+    lockout: {
+      upsertEvent: `MERGE INTO ad_lockout_events AS t
+        USING (SELECT
+          ? AS occurred_at, ? AS collected_at, ? AS agent_id, ? AS dc_name, ? AS event_record_id,
+          ? AS target_user_name, ? AS subject_user_name, ? AS subject_domain, ? AS caller_computer_name
+        ) AS s
+        ON t.dc_name = s.dc_name AND t.event_record_id = s.event_record_id
+        WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at
+        WHEN NOT MATCHED THEN INSERT
+          (occurred_at, collected_at, agent_id, dc_name, event_record_id,
+           target_user_name, subject_user_name, subject_domain, caller_computer_name)
+          VALUES
+          (s.occurred_at, s.collected_at, s.agent_id, s.dc_name, s.event_record_id,
+           s.target_user_name, s.subject_user_name, s.subject_domain, s.caller_computer_name);`,
+      search: `SELECT TOP 500 occurred_at, dc_name, target_user_name, subject_user_name,
+                      subject_domain, caller_computer_name
+                 FROM ad_lockout_events
+                WHERE occurred_at >= ?
+                  AND (? = '' OR target_user_name = ?)
+                  AND (? = '' OR dc_name = ?)
+                  AND (? = '' OR caller_computer_name = ?)
+                ORDER BY occurred_at ASC`
     }
   }
 };

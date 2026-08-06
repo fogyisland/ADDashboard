@@ -66,6 +66,35 @@ export function agentRouter({ config, logger }) {
         data.map(row => ({ ...row, agentId, collectedAt })),
         { appendHistory: historyEnabled }
       );
+
+      // Lockout troubleshooting — persist Security event 4740 records from the
+      // last 15 minutes on each DC. Server-side UNIQUE(dc_name, event_record_id)
+      // gives us idempotent ingest; per-event failures are logged but don't fail
+      // the whole snapshot.
+      const lockoutEvents = Array.isArray(req.body?.lockoutEvents) ? req.body.lockoutEvents : [];
+      if (lockoutEvents.length > 0) {
+        // Reuse the `db` already declared at the top of this try-block.
+        const dbc = toMysqlDatetime(collectedAt);
+        const dcName = String(agentId);
+        for (const ev of lockoutEvents) {
+          try {
+            await db.execute(db.sql.lockout.upsertEvent, [
+              toMysqlDatetime(ev.occurredAt),
+              dbc,
+              String(agentId),
+              dcName,
+              Number(ev.eventRecordId),
+              String(ev.targetUserName ?? ''),
+              ev.subjectUserName != null ? String(ev.subjectUserName) : null,
+              ev.subjectDomain != null ? String(ev.subjectDomain) : null,
+              ev.callerComputerName != null ? String(ev.callerComputerName) : null
+            ]);
+          } catch (e) {
+            req.log?.warn?.({ err: e.message, agentId, eventRecordId: ev.eventRecordId }, 'lockout event persist failed');
+          }
+        }
+      }
+
       const { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds } = await getAgentConfig();
       res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds } });
     } catch (e) {
