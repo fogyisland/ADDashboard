@@ -4,16 +4,15 @@
       <router-link to="/" class="back">← 返回看板</router-link>
       <h3>AD Dashboard · 管理</h3>
       <nav>
-        <router-link to="/admin/users">用户</router-link>
-        <router-link to="/admin/roles">角色</router-link>
-        <router-link to="/admin/config">系统配置</router-link>
-        <router-link to="/admin/audit">审计日志</router-link>
-        <router-link to="/admin/sites-catalog">AD 站点清单</router-link>
-        <router-link to="/admin/dcs-catalog">AD 域控清单</router-link>
-        <router-link to="/admin/site-replication-matrix">站点复制矩阵</router-link>
-        <router-link to="/admin/ports">端口健康检查</router-link>
-        <router-link to="/admin/packages">包管理</router-link>
-        <router-link to="/admin/migrations">迁移管理</router-link>
+        <details v-for="g in groups" :key="g.title" open class="nav-group">
+          <summary class="nav-group-title">{{ g.title }}</summary>
+          <router-link
+            v-for="i in g.items"
+            :key="i.path"
+            :to="i.path"
+            class="nav-link"
+          >{{ i.label }}</router-link>
+        </details>
       </nav>
     </aside>
     <main>
@@ -34,6 +33,27 @@ import { useAuthStore } from '../stores/auth.js';
 const auth = useAuthStore();
 const router = useRouter();
 function logout() { auth.logout(); router.push('/login'); }
+
+const groups = [
+  { title: '账号管理', items: [
+    { label: '用户',     path: '/admin/users' },
+    { label: '角色',     path: '/admin/roles' }
+  ]},
+  { title: '目录管理', items: [
+    { label: 'AD 站点清单', path: '/admin/sites-catalog' },
+    { label: 'AD 域控清单', path: '/admin/dcs-catalog' }
+  ]},
+  { title: '监控运维', items: [
+    { label: '站点复制矩阵', path: '/admin/site-replication-matrix' },
+    { label: '端口健康检查', path: '/admin/ports' },
+    { label: '包管理',     path: '/admin/packages' }
+  ]},
+  { title: '系统设置', items: [
+    { label: '系统配置', path: '/admin/config' },
+    { label: '审计日志', path: '/admin/audit' },
+    { label: '迁移管理', path: '/admin/migrations' }
+  ]}
+];
 </script>
 
 <style scoped>
@@ -48,4 +68,23 @@ function logout() { auth.logout(); router.push('/login'); }
 main { display: flex; flex-direction: column; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid #1e293b; }
 .content { padding: 20px; overflow: auto; }
+.nav-group { margin-bottom: 8px; }
+.nav-group-title {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.nav-group-title::-webkit-details-marker { display: none; }
+.nav-group-title::before {
+  content: '▸';
+  display: inline-block;
+  width: 14px;
+  margin-right: 4px;
+  transition: transform .15s;
+}
+details[open] .nav-group-title::before { transform: rotate(90deg); }
 </style>
