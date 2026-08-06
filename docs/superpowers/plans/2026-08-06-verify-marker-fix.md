@@ -29,11 +29,12 @@
 - **Mismatch behavior**: `logger.warn({file, version, missing}, 'verify markers missing — skipping backfill')` + skip the file; other files continue. NO throw, NO halt.
 - **009 circular skip removed**: `if (f.startsWith('009-')) continue;` in `backfillMigrations` must be DELETED. 009's marker probes the table 009 itself just created (in bootstrap path) — passes naturally.
 - **`backfillMigrations` return type changes**: `number` → `{ count: number, skipped: Array<{file, version, missing: string[]}> }`. Callers (`bootstrapMigrations` + init wizard) don't read the return value — ABI change is source-compatible.
-- **`db.sql.probe.{table, column}` SQL** (mysql + mssql both):
+- **`db.sql.probe.{table, column}` SQL** (mysql + mssql both, flat at the dialect-resolved registry root — NOT nested under dialect since `db.sql` is already resolved by `buildSql()` at boot):
   - mysql `probe.table`: `SELECT 1 AS ok FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`
   - mysql `probe.column`: `SELECT 1 AS ok FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`
   - mssql `probe.table`: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?`
   - mssql `probe.column`: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?`
+- **`verifyMarkers` signature**: `verifyMarkers(db, markers)` — NO `dialect` parameter. The `db.sql` facade is already dialect-resolved at `db.init()` time (`db/index.js:27 calls buildSql(dialect)`), so the dialect is baked into `db.sql.probe.{table,column}` strings. Adding a `dialect` param would recreate a runtime bug: calling `db.sql[dialect].probe` returns `undefined`, throwing `Cannot read properties of undefined (reading 'probe')` and being silently swallowed by the non-fatal try/catch in `db/index.js:43-47` — exactly the bug class this plan exists to kill.
 - **Mirror to publish/**: 4 source files (`center/src/init/verify-marker.js`, `center/src/db/sql.js`, `center/src/init/schema-applier.js`) + 8 migration files (`db/migrations/001,002,003,004,005,007,008,009-*.sql`; 006 stays as-is). No mirror for tests or for `center/src/init/verify-marker.js`'s siblings.
 - **No frontend / router / package.json changes.** No new npm dependencies.
 
@@ -213,7 +214,7 @@ git commit -m "feat(center): parseVerifyMarker — extract verify: markers from 
 
 **Interfaces:**
 - Consumes (from T1): `parseVerifyMarker` returns `Marker[]`
-- Produces: `verifyMarkers(db, markers, dialect)` returns `Promise<{ ok: boolean, missing: string[] }>` where `missing` is human-readable like `'table sys_config_audit'` or `'column ad_dcs.is_pdc'`. `db.sql.<dialect>.probe.table` and `db.sql.<dialect>.probe.column` are new SQL string properties.
+- Produces: `verifyMarkers(db, markers)` returns `Promise<{ ok: boolean, missing: string[] }>` where `missing` is human-readable like `'table sys_config_audit'` or `'column ad_dcs.is_pdc'`. `db.sql.probe.table` and `db.sql.probe.column` are new SQL string properties (flat at the dialect-resolved registry root — NOT nested under dialect, since `db.sql` is already dialect-resolved by `buildSql()` at boot).
 
 - [ ] **Step 1: Add 3 failing tests for verifyMarkers to verify-marker.test.js**
 
@@ -221,59 +222,51 @@ Append to `center/tests/verify-marker.test.js` (continue using **`node:test` + `
 
 ```js
 import { verifyMarkers } from '../src/init/verify-marker.js';
+import { buildSql } from '../src/db/sql.js';
 
-// Build a mock db that responds to probe SQL. verifyMarkers reads
-// db.sql[dialect].probe.{table,column} to obtain the SQL strings — so
-// the mock must provide that structure even though it doesn't use the
-// SQL text directly (it matches by regex on the query() side).
-function mockDb({ presentTables = new Set(), presentColumns = new Set() } = {}) {
+// IMPORTANT: db.sql is the already dialect-resolved registry built by
+// buildSql() at db.init() time (see src/db/index.js:27), so the live facade
+// is FLAT: db.sql.probe.{table,column} — NOT db.sql[dialect].probe. Mocks
+// must use the real buildSql() output so wiring mistakes fail the test
+// instead of passing against hand-written SQL that production never sees.
+function mockDb(dialect, { presentTables = new Set(), presentColumns = new Set() } = {}) {
+  const sql = buildSql(dialect);
+  const calls = [];
   return {
-    sql: {
-      mysql: {
-        probe: {
-          table:  'SELECT 1 AS ok FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1',
-          column: 'SELECT 1 AS ok FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
-        }
-      },
-      mssql: {
-        probe: {
-          table:  'SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?',
-          column: 'SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = ? AND COLUMN_NAME = ?'
-        }
+    dialect,
+    sql,
+    calls,
+    query: (text, params) => {
+      calls.push({ text, params });
+      if (text === sql.probe.table) {
+        return Promise.resolve({ rows: presentTables.has(params[0]) ? [{ ok: 1 }] : [] });
       }
-    },
-    query: (sql, params) => {
-      // Match by SQL string fragment (the actual SQL is dialect-aware).
-      if (/FROM\s+information_schema\.TABLES/i.test(sql) || /INFORMATION_SCHEMA\.TABLES/.test(sql)) {
-        const table = params[0];
-        return Promise.resolve({ rows: presentTables.has(table) ? [{ ok: 1 }] : [] });
-      }
-      if (/FROM\s+information_schema\.COLUMNS/i.test(sql) || /INFORMATION_SCHEMA\.COLUMNS/.test(sql)) {
+      if (text === sql.probe.column) {
         const colKey = `${params[0]}.${params[1]}`;
         return Promise.resolve({ rows: presentColumns.has(colKey) ? [{ ok: 1 }] : [] });
       }
-      return Promise.resolve({ rows: [] });
+      throw new Error(`unexpected probe SQL: ${text}`);
     }
   };
 }
 
 test('verifyMarkers: all present → ok=true, missing=[]', async () => {
-  const db = mockDb({ presentTables: new Set(['sys_config_audit']) });
+  const db = mockDb('mysql', { presentTables: new Set(['sys_config_audit']) });
   const markers = [{ kind: 'table', name: 'sys_config_audit' }];
-  const result = await verifyMarkers(db, markers, 'mysql');
+  const result = await verifyMarkers(db, markers);
   assert.deepStrictEqual(result, { ok: true, missing: [] });
 });
 
 test('verifyMarkers: one table missing → ok=false, missing=[table X]', async () => {
-  const db = mockDb({ presentTables: new Set() });
+  const db = mockDb('mysql', { presentTables: new Set() });
   const markers = [{ kind: 'table', name: 'sys_config_audit' }];
-  const result = await verifyMarkers(db, markers, 'mysql');
+  const result = await verifyMarkers(db, markers);
   assert.equal(result.ok, false);
   assert.deepStrictEqual(result.missing, ['table sys_config_audit']);
 });
 
 test('verifyMarkers: mixed kinds, column missing → ok=false, column missing in list', async () => {
-  const db = mockDb({
+  const db = mockDb('mysql', {
     presentTables: new Set(['sys_config_audit']),
     presentColumns: new Set()  // ad_dcs.is_pdc missing
   });
@@ -281,10 +274,45 @@ test('verifyMarkers: mixed kinds, column missing → ok=false, column missing in
     { kind: 'table', name: 'sys_config_audit' },
     { kind: 'column', name: 'ad_dcs.is_pdc' }
   ];
-  const result = await verifyMarkers(db, markers, 'mysql');
+  const result = await verifyMarkers(db, markers);
   assert.equal(result.ok, false);
   assert.ok(result.missing.includes('column ad_dcs.is_pdc'));
   assert.ok(!result.missing.includes('table sys_config_audit'));
+});
+
+test('verifyMarkers: column marker splits name into [table, column] params', async () => {
+  const db = mockDb('mysql', { presentColumns: new Set(['ad_dcs.is_pdc']) });
+  const result = await verifyMarkers(db, [{ kind: 'column', name: 'ad_dcs.is_pdc' }]);
+  assert.equal(result.ok, true);
+  assert.deepStrictEqual(db.calls[0].params, ['ad_dcs', 'is_pdc']);
+});
+
+test('verifyMarkers: works against mssql probe SQL too', async () => {
+  const db = mockDb('mssql', {
+    presentTables: new Set(['schema_migrations']),
+    presentColumns: new Set()
+  });
+  const result = await verifyMarkers(db, [
+    { kind: 'table', name: 'schema_migrations' },
+    { kind: 'column', name: 'ad_dcs.is_pdc' }
+  ]);
+  assert.equal(result.ok, false);
+  assert.deepStrictEqual(result.missing, ['column ad_dcs.is_pdc']);
+});
+
+test('verifyMarkers: empty marker list → ok=true without querying', async () => {
+  const db = mockDb('mysql');
+  const result = await verifyMarkers(db, []);
+  assert.deepStrictEqual(result, { ok: true, missing: [] });
+  assert.equal(db.calls.length, 0);
+});
+
+test('verifyMarkers: unqualified column marker is reported missing, not probed', async () => {
+  const db = mockDb('mysql');
+  const result = await verifyMarkers(db, [{ kind: 'column', name: 'is_pdc' }]);
+  assert.equal(result.ok, false);
+  assert.deepStrictEqual(result.missing, ['column is_pdc (malformed)']);
+  assert.equal(db.calls.length, 0);
 });
 ```
 
@@ -326,16 +354,20 @@ For the `mssql` block, after its `schemaMigrations` block, add:
 Append to `center/src/init/verify-marker.js`:
 
 ```js
-// Probes each marker against the live DB. Returns {ok, missing}.
+// Probes each marker against the live DB. Returns {ok, missing}, where
 // `missing` is a human-readable array like ['table sys_config_audit',
-// 'column ad_dcs.is_pdc']. Missing-element order matches marker order.
+// 'column ad_dcs.is_pdc'] in marker order.
 //
-// For kind='table'  → uses db.sql.<dialect>.probe.table  with params [name]
-// For kind='column' → uses db.sql.<dialect>.probe.column with params [table, col]
-//                    (the column marker name is '<table>.<col>' — split on first '.')
-export async function verifyMarkers(db, markers, dialect) {
+// IMPORTANT: db.sql is the already dialect-resolved registry built by
+// buildSql() at db.init() time — so probe SQL lives at db.sql.probe (flat),
+// NOT db.sql[dialect].probe. The dialect is baked into the SQL strings.
+//
+//   kind='table'  -> probe.table  with params [name]
+//   kind='column' -> probe.column with params [table, column]
+//                    (the marker name is '<table>.<column>', split on first '.')
+export async function verifyMarkers(db, markers) {
+  const probe = db.sql.probe;
   const missing = [];
-  const probe = db.sql[dialect].probe;
   for (const m of markers) {
     if (m.kind === 'table') {
       const { rows } = await db.query(probe.table, [m.name]);
@@ -343,12 +375,12 @@ export async function verifyMarkers(db, markers, dialect) {
     } else if (m.kind === 'column') {
       const dot = m.name.indexOf('.');
       if (dot < 0) {
+        // A column marker without a table qualifier can't be probed. Treat it
+        // as missing so the migration is skipped rather than blindly backfilled.
         missing.push(`column ${m.name} (malformed)`);
         continue;
       }
-      const table = m.name.slice(0, dot);
-      const col = m.name.slice(dot + 1);
-      const { rows } = await db.query(probe.column, [table, col]);
+      const { rows } = await db.query(probe.column, [m.name.slice(0, dot), m.name.slice(dot + 1)]);
       if (!rows || rows.length === 0) missing.push(`column ${m.name}`);
     }
   }
@@ -356,10 +388,10 @@ export async function verifyMarkers(db, markers, dialect) {
 }
 ```
 
-- [ ] **Step 5: Run verify-marker tests — verify all 11 pass**
+- [ ] **Step 5: Run verify-marker tests — verify all 15 pass**
 
 Run: `cd center && npm test -- tests/verify-marker.test.js`
-Expected: All 11 tests pass (8 parseVerifyMarker + 3 verifyMarkers).
+Expected: All 15 tests pass (8 parseVerifyMarker + 7 verifyMarkers).
 
 - [ ] **Step 6: Run full center test suite — verify no regressions**
 
@@ -618,7 +650,7 @@ export async function backfillMigrations(dialect, db, opts = {}) {
     // /api/admin/migrations list surfaces it as pending.
     const markers = parseVerifyMarker(content);
     if (markers.length > 0) {
-      const { ok, missing } = await verifyMarkers(db, markers, dialect);
+      const { ok, missing } = await verifyMarkers(db, markers);
       if (!ok) {
         logger.warn?.({ file: f, version, missing }, 'verify markers missing — skipping backfill');
         skipped.push({ file: f, version, missing });
