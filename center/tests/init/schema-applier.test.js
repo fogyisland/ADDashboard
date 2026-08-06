@@ -237,19 +237,24 @@ test('backfillMigrations inserts all migration files as status=applied with appl
   const upsertCalls = [];
   const db = {
     dialect: 'mysql',
-    sql: { schemaMigrations: { upsert: 'UPSERT' } },
+    sql: {
+      schemaMigrations: { upsert: 'UPSERT' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN' }
+    },
     execute: async (sql, params) => {
       if (sql === 'UPSERT') upsertCalls.push(params);
       return { rows: [], affectedRows: 1 };
     },
-    query: async () => ({ rows: [] })
+    query: async () => ({ rows: [{ ok: 1 }] })
   };
   // repoRoot is the real project root, so backfill reads db/migrations/*.sql
-  const count = await backfillMigrations('mysql', db, { repoRoot });
-  // 001-008 must all be recorded; 009 is skipped (it creates the table itself).
+  const result = await backfillMigrations('mysql', db, { repoRoot });
+  // 001-009 must all be recorded (009 now handles itself via its own verify
+  // marker — the test mock returns rows for every probe, so all migrations
+  // are backfilled).
   assert.ok(upsertCalls.length >= 8, `expected >= 8 upsert calls, got ${upsertCalls.length}`);
-  assert.equal(count, upsertCalls.length);
-  assert.ok(!upsertCalls.some(p => p[0] === '009'), '009 must not be backfilled');
+  assert.equal(result.count, upsertCalls.length);
+  assert.deepStrictEqual(result.skipped, []);
   for (const p of upsertCalls) {
     // Param order mirrors the upsert column list in src/db/sql.js:
     // (version, description, type, script, checksum, applied_at,
@@ -268,10 +273,14 @@ test('backfillMigrations is idempotent and returns 0 when the migrations dir is 
   const { backfillMigrations } = await import('../../src/init/schema-applier.js');
   const db = {
     dialect: 'mysql',
-    sql: { schemaMigrations: { upsert: 'UPSERT' } },
+    sql: {
+      schemaMigrations: { upsert: 'UPSERT' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN' }
+    },
     execute: async () => ({ rows: [], affectedRows: 1 }),
     query: async () => ({ rows: [] })
   };
-  const count = await backfillMigrations('mysql', db, { repoRoot: join(__dirname, 'no-such-repo') });
-  assert.equal(count, 0);
+  const result = await backfillMigrations('mysql', db, { repoRoot: join(__dirname, 'no-such-repo') });
+  assert.equal(result.count, 0);
+  assert.deepStrictEqual(result.skipped, []);
 });
