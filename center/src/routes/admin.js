@@ -224,30 +224,6 @@ export function adminRouter({ config, logger }) {
     }
   });
 
-  // ----- Sites (derived from ad_replication_status) -----
-  r.get('/api/admin/sites', auth, async (_req, res) => {
-    try {
-      const db = getDb();
-      const { rows } = await db.query(db.sql.sites.listDistinct);
-      res.json(rows.map(camelRow));
-    } catch (e) {
-      logger.error({ err: e }, 'admin sites list failed');
-      res.status(500).json({ error: 'internal' });
-    }
-  });
-
-  // ----- DCs (derived from ad_replication_status) -----
-  r.get('/api/admin/dcs', auth, async (_req, res) => {
-    try {
-      const db = getDb();
-      const { rows } = await db.query(db.sql.dcs.listDistinct);
-      res.json(rows.map(camelRow));
-    } catch (e) {
-      logger.error({ err: e }, 'admin dcs list failed');
-      res.status(500).json({ error: 'internal' });
-    }
-  });
-
   // ----- Sites Catalog -----
   r.get('/api/admin/sites-catalog', auth, async (_req, res) => {
     try {

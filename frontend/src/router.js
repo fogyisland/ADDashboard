@@ -10,8 +10,6 @@ import UsersView from './views/admin/UsersView.vue';
 import RolesView from './views/admin/RolesView.vue';
 import ConfigView from './views/admin/ConfigView.vue';
 import AuditView from './views/admin/AuditView.vue';
-import SitesView from './views/admin/ActiveSitesView.vue';
-import DcsView from './views/admin/ActiveDcsView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixView from './views/admin/SiteReplicationMatrixView.vue';
@@ -37,8 +35,6 @@ const routes = [
   { path: '/admin/roles', component: RolesView, meta: { perm: 'admin:users' } },
   { path: '/admin/config', component: ConfigView, meta: { perm: 'admin:users' } },
   { path: '/admin/audit', component: AuditView, meta: { perm: 'admin:users' } },
-  { path: '/admin/sites', component: SitesView, meta: { perm: 'admin:users' } },
-  { path: '/admin/dcs', component: DcsView, meta: { perm: 'admin:users' } },
   { path: '/admin/sites-catalog', component: SitesCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/dcs-catalog', component: DcsCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/site-replication-matrix', component: SiteReplicationMatrixView, meta: { perm: 'admin:users' } },

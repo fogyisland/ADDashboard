@@ -10,7 +10,9 @@ vi.mock('../src/api/dcs.js', () => ({
   getDcSummary: vi.fn(() => Promise.resolve({ data: [] }))
 }));
 vi.mock('../src/api/admin.js', () => ({
-  adminApi: { listSites: vi.fn(() => Promise.resolve({ data: [] })) }
+  adminApi: {
+    listSitesCatalog: vi.fn(() => Promise.resolve({ data: [] }))
+  }
 }));
 
 const SAMPLE = [
@@ -27,8 +29,8 @@ function makeRouter() {
 
 beforeEach(() => {
   getDcSummary.mockReset();
-  adminApi.listSites.mockReset();
-  adminApi.listSites.mockResolvedValue({ data: [] });
+  adminApi.listSitesCatalog.mockReset();
+  adminApi.listSitesCatalog.mockResolvedValue({ data: [] });
 });
 
 test('renders skeleton while loading', async () => {
@@ -52,13 +54,16 @@ test('renders cards after data loads', async () => {
 
 test('site filter change re-fetches with new siteId', async () => {
   setActivePinia(createPinia());
-  adminApi.listSites.mockResolvedValue({ data: [{ id: 1, site_name: 'SiteA' }, { id: 2, site_name: 'SiteB' }] });
+  adminApi.listSitesCatalog.mockResolvedValue({ data: [{ id: 1, siteName: 'SiteA' }, { id: 2, siteName: 'SiteB' }] });
   getDcSummary.mockResolvedValue({ data: SAMPLE });
   const w = mount(ServersOverviewView, { global: { plugins: [makeRouter()] } });
   await flushPromises();
   expect(getDcSummary).toHaveBeenCalledWith(null); // initial call: all sites
   const select = w.find('select.site-filter');
   expect(select.exists()).toBe(true);
+  // Verify the dropdown shows Chinese site-name labels from the catalog
+  expect(select.text()).toContain('SiteA');
+  expect(select.text()).toContain('SiteB');
   // Set siteId to 1 (SiteA)
   await select.setValue('1');
   await flushPromises();

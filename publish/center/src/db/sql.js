@@ -54,7 +54,6 @@ const VARIANTS = {
     sites: {
       listAll: 'SELECT site, region_code, is_hub FROM ad_sites',
       listCatalog: `SELECT s.site_id AS id, s.site_name AS siteName, s.region_code AS regionCode, s.is_hub AS isHub, s.description, s.created_at AS createdAt, s.updated_at AS updatedAt, (SELECT COUNT(*) FROM ad_dcs d WHERE d.site_id = s.site_id) AS dcCount FROM ad_sites s ORDER BY s.site_name`,
-      listDistinct: `SELECT site AS name, COUNT(*) AS link_count, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, MAX(collected_at) AS last_seen FROM (SELECT source_site AS site, status_code, collected_at FROM ad_replication_status WHERE source_site IS NOT NULL UNION ALL SELECT dest_site, status_code, collected_at FROM ad_replication_status WHERE dest_site IS NOT NULL) t GROUP BY site ORDER BY site`,
       findByName: 'SELECT site_id FROM ad_sites WHERE site_name = ?',
       create: 'INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?)',
       upsert: `INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE region_code = VALUES(region_code), is_hub = VALUES(is_hub), description = VALUES(description)`,
@@ -65,7 +64,6 @@ const VARIANTS = {
     },
     dcs: {
       listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
-      listDistinct: `SELECT dc AS name, site, COUNT(*) AS link_count, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, MAX(collected_at) AS last_seen FROM (SELECT source_dc AS dc, source_site AS site, status_code, collected_at FROM ad_replication_status WHERE source_dc IS NOT NULL UNION ALL SELECT dest_dc, dest_site, status_code, collected_at FROM ad_replication_status WHERE dest_dc IS NOT NULL) t GROUP BY dc, site ORDER BY dc, site`,
       assignSite: 'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
       assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?'
     },
@@ -273,7 +271,6 @@ const VARIANTS = {
     sites: {
       listAll: 'SELECT site, region_code, is_hub FROM ad_sites',
       listCatalog: `SELECT s.site_id AS id, s.site_name AS siteName, s.region_code AS regionCode, s.is_hub AS isHub, s.description, s.created_at AS createdAt, s.updated_at AS updatedAt, (SELECT COUNT(*) FROM ad_dcs d WHERE d.site_id = s.site_id) AS dcCount FROM ad_sites s ORDER BY s.site_name`,
-      listDistinct: `SELECT site AS name, COUNT(*) AS link_count, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, MAX(collected_at) AS last_seen FROM (SELECT source_site AS site, status_code, collected_at FROM ad_replication_status WHERE source_site IS NOT NULL UNION ALL SELECT dest_site, status_code, collected_at FROM ad_replication_status WHERE dest_site IS NOT NULL) t GROUP BY site ORDER BY site`,
       findByName: 'SELECT site_id FROM ad_sites WHERE site_name = ?',
       create: 'INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?)',
       upsert: `MERGE INTO ad_sites AS t USING (SELECT ? AS site_name, ? AS region_code, ? AS is_hub, ? AS description) AS s ON t.site_name = s.site_name WHEN MATCHED THEN UPDATE SET region_code = s.region_code, is_hub = s.is_hub, description = s.description WHEN NOT MATCHED THEN INSERT (site_name, region_code, is_hub, description) VALUES (s.site_name, s.region_code, s.is_hub, s.description); SELECT @@ROWCOUNT AS rc`,
@@ -284,7 +281,6 @@ const VARIANTS = {
     },
     dcs: {
       listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
-      listDistinct: `SELECT dc AS name, site, COUNT(*) AS link_count, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, MAX(collected_at) AS last_seen FROM (SELECT source_dc AS dc, source_site AS site, status_code, collected_at FROM ad_replication_status WHERE source_dc IS NOT NULL UNION ALL SELECT dest_dc, dest_site, status_code, collected_at FROM ad_replication_status WHERE dest_dc IS NOT NULL) t GROUP BY dc, site ORDER BY dc, site`,
       assignSite: 'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
       assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?'
     },

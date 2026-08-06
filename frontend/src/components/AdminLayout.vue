@@ -6,8 +6,6 @@
       <nav>
         <router-link to="/admin/users">用户</router-link>
         <router-link to="/admin/roles">角色</router-link>
-        <router-link to="/admin/sites">正在复制的站点</router-link>
-        <router-link to="/admin/dcs">正在复制的域控</router-link>
         <router-link to="/admin/config">系统配置</router-link>
         <router-link to="/admin/audit">审计日志</router-link>
         <router-link to="/admin/sites-catalog">AD 站点清单</router-link>

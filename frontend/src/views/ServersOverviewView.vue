@@ -4,7 +4,7 @@
       <h2>服务器总览</h2>
       <select v-model="siteId" class="site-filter" :disabled="loading">
         <option value="">全部站点</option>
-        <option v-for="s in sites" :key="s.id" :value="s.id">{{ s.site_name }}</option>
+        <option v-for="s in sites" :key="s.id" :value="s.id">{{ s.siteName }}</option>
       </select>
       <button class="retry" @click="load" :disabled="loading">刷新</button>
     </div>
@@ -57,7 +57,10 @@ async function load() {
 
 async function loadSites() {
   try {
-    const r = await adminApi.listSites();
+    // Use the catalog endpoint (ad_sites table) — the older derived-from-status
+    // endpoint was removed because "sites currently replicating" carries no
+    // operational meaning (sites always participate in replication in AD).
+    const r = await adminApi.listSitesCatalog();
     sites.value = r.data || [];
   } catch (e) {
     sites.value = [];

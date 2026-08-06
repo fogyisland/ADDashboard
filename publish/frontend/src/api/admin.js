@@ -10,8 +10,6 @@ export const adminApi = {
   getConfigAudit: () => api.get('/api/admin/config/audit'),
   rollbackConfig: (auditId) => api.post('/api/admin/config/rollback', { auditId }),
   getAudit: (limit = 200) => api.get(`/api/admin/audit?limit=${limit}`),
-  listSites: () => api.get('/api/admin/sites'),
-  listDcs: () => api.get('/api/admin/dcs'),
   listSitesCatalog: () => api.get('/api/admin/sites-catalog'),
   createSite: (body) => api.post('/api/admin/sites-catalog', body),
   updateSite: (id, body) => api.put(`/api/admin/sites-catalog/${id}`, body),
