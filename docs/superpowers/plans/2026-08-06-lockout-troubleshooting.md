@@ -218,10 +218,12 @@ test('Get-LockoutEvents uses Get-WinEvent -FilterHashtable Security Id=4740 with
   assert.match(src, /LogName\s*=\s*'Security'/);
   assert.match(src, /Id\s*=\s*4740/);
   // The lookback window equals the polling interval (15 min default).
-  // The literal AddMinutes(-15) is the canonical expression — if the
-  // config moves, this expression must move with it.
-  assert.match(src, /StartTime\s*=\s*\(Get-Date\)\.AddMinutes\(-15\)/,
-    'expected StartTime = (Get-Date).AddMinutes(-15) — the lookback MUST match the polling interval');
+  // Accept either the inline form or assignment to $start — both are fine.
+  // The contract is that SOME reference to AddMinutes(-15) exists, paired
+  // with a StartTime= line in the hashtable.
+  assert.match(src, /\(Get-Date\)\.AddMinutes\(-15\)/,
+    'expected (Get-Date).AddMinutes(-15) somewhere — the lookback MUST match the polling interval');
+  assert.match(src, /StartTime\s*=/);
 });
 
 test('Get-LockoutEvents block is wrapped in try/catch (per-block fault isolation)', () => {
@@ -453,16 +455,12 @@ import supertest from 'supertest';
 import { agentRouter } from '../src/routes/agent.js';
 import { _setDbForTest } from '../src/db/index.js';
 import { buildMockDb } from './helpers/db-mock.js';
-import { signJwt } from '../src/auth/jwt.js';
 
-const SECRET = 'test-secret';
-function agentToken() { return signJwt({ sub: 'a1', role: 'agent' }, SECRET, 60); }
-
-function buildApp() {
+function buildApp({ agentTokenValue = 'test-token' } = {}) {
   const a = express();
   a.use(express.json());
   return a.use(agentRouter({
-    config: { agentToken: 'test-token', jwtSecret: SECRET },
+    config: { agentToken: agentTokenValue },
     logger: { info() {}, warn() {}, error() {}, debug() {} }
   }));
 }
@@ -470,13 +468,14 @@ function buildApp() {
 test('POST /api/agent/report persists lockoutEvents via db.sql.lockout.upsertEvent', async () => {
   const records = [];
   const db = buildMockDb().withRecording(records);
-  // Pre-populate the data route so it doesn't blow up — replication data
-  // can be empty array, but we still need the route to recognize it.
+  // data:[] is allowed by the existing validation; replication upsert is a
+  // no-op on empty array. buildMockDb.standard() returns empty rows for any
+  // unmatched query, so getConfig() returns {} and history_enabled is false.
   _setDbForTest(db);
 
-  const res = await supertest(buildApp())
+  const res = await supertest(buildApp({ agentTokenValue: 'test-token' }))
     .post('/api/agent/report')
-    .set('Authorization', `Bearer ${agentToken()}`)
+    .set('X-Agent-Token', 'test-token')
     .send({
       agentId: 'DC01',
       collectedAt: '2026-08-06T10:00:00.000Z',
@@ -539,7 +538,7 @@ In `center/src/routes/agent.js`, modify the existing `/api/agent/report` handler
   // the whole snapshot.
   const lockoutEvents = Array.isArray(req.body?.lockoutEvents) ? req.body.lockoutEvents : [];
   if (lockoutEvents.length > 0) {
-    const db = getDb();
+    // Reuse the `db` already declared at the top of this try-block.
     const dbc = toMysqlDatetime(collectedAt);
     const dcName = String(agentId);
     for (const ev of lockoutEvents) {
