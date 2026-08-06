@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <AdminLayout>
     <h2>数据库迁移管理</h2>
     <p class="hint">当前数据库方言: <strong>{{ dialect }}</strong></p>
 
@@ -77,12 +77,12 @@
         <button @click="modalDryRun = null">关闭</button>
       </div>
     </div>
-  </AppLayout>
+  </AdminLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import AppLayout from '../../components/AppLayout.vue';
+import AdminLayout from '../../components/AdminLayout.vue';
 import { listMigrations, applyMigration, dryRunMigration, resetMigration } from '../../api/migrations.js';
 
 const rows = ref([]);

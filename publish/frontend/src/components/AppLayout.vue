@@ -8,7 +8,6 @@
         <router-link to="/topology">复制拓扑</router-link>
         <router-link to="/errors">错误链路</router-link>
         <router-link to="/agents">Agent 列表</router-link>
-        <router-link v-if="auth.isAdmin" to="/admin/migrations">迁移管理</router-link>
         <router-link to="/dashboard/metrics">指标看板</router-link>
         <router-link to="/servers-overview">服务器总览</router-link>
       </nav>
