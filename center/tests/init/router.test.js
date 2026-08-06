@@ -9,7 +9,8 @@ function makeApp({
   applyResult = { schema: [], seed: [], migrations: [] },
   adminResult = { id: 1, username: 'admin' },
   writeConfigFn = ({ path }) => ({ ok: true, path }),
-  createAdminFn = async () => adminResult
+  createAdminFn = async () => adminResult,
+  depOverrides = {}
 } = {}) {
   const app = express();
   app.use(express.json());
@@ -25,7 +26,9 @@ function makeApp({
       writeConfig: writeConfigFn,
       getWizardFacade: async () => ({ execute: async () => dbTestResult, query: async () => dbTestResult, close: async () => {} }),
       closeWizardFacade: async () => {},
-      writeMarker: async () => {}
+      writeMarker: async () => {},
+      backfillMigrations: async () => 0,
+      ...depOverrides
     }
   }));
   return app;
@@ -84,6 +87,39 @@ test('POST /api/init/db/apply applies schema + seed + migrations', async () => {
   const r = await call(app, 'POST', '/api/init/db/apply', { dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }, createDatabase: false });
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(r.body.schema, ['s1']);
+});
+
+test('db/apply calls applyAll THEN backfillMigrations in order', async () => {
+  // Order is load-bearing: applyAll runs migration 009, which creates the
+  // schema_migrations table that backfillMigrations writes into. Backfilling
+  // first would hit a missing table.
+  const callOrder = [];
+  const app = makeApp({
+    depOverrides: {
+      applyAll: async () => { callOrder.push('applyAll'); return { schema: [], seed: [], migrations: [] }; },
+      backfillMigrations: async () => { callOrder.push('backfillMigrations'); }
+    }
+  });
+  const r = await call(app, 'POST', '/api/init/db/apply', {
+    dialect: 'mysql',
+    connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+    createDatabase: false
+  });
+  assert.strictEqual(r.status, 200);
+  assert.deepStrictEqual(callOrder, ['applyAll', 'backfillMigrations']);
+});
+
+test('db/apply returns 500 when backfillMigrations fails', async () => {
+  const app = makeApp({
+    depOverrides: { backfillMigrations: async () => { throw new Error('backfill boom'); } }
+  });
+  const r = await call(app, 'POST', '/api/init/db/apply', {
+    dialect: 'mysql',
+    connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+    createDatabase: false
+  });
+  assert.strictEqual(r.status, 500);
+  assert.match(r.body.error, /backfill boom/);
 });
 
 test('POST /api/init/admin/create returns 409 on AdminConflictError', async () => {

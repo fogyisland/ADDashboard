@@ -1,7 +1,7 @@
 import express from 'express';
 import { withOneShotFacade } from './db-tester.js';
 import { getWizardFacade, closeWizardFacade } from './wizard-facade.js';
-import { applyAll } from './schema-applier.js';
+import { applyAll, backfillMigrations } from './schema-applier.js';
 import { createAdmin, AdminConflictError } from './admin-creator.js';
 import { writeConfig } from './config-writer.js';
 import { writeMarker } from './marker.js';
@@ -18,7 +18,8 @@ function canonicalize(p) {
 export function initRouter({ logger, configPath, installPath, getNeedsInit, _deps = null }) {
   const deps = _deps ?? {
     withOneShotFacade, applyAll, createAdmin, writeConfig,
-    getWizardFacade, closeWizardFacade, writeMarker
+    getWizardFacade, closeWizardFacade, writeMarker,
+    backfillMigrations
   };
   const r = express.Router();
 
@@ -58,6 +59,11 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
       const params = canonicalize(connParams);
       const db = await deps.getWizardFacade(dialect, params);
       const applied = await deps.applyAll(dialect, db, { createDatabase: !!createDatabase, databaseName: params.database });
+      // applyAll just ran every file in db/migrations (including 009, which
+      // creates schema_migrations). Record them all as applied so the admin
+      // Schema Migrations page doesn't show a fresh install as fully pending.
+      // Must run after applyAll — the table does not exist before it.
+      await deps.backfillMigrations(dialect, db);
       res.json(applied);
     } catch (e) {
       logger.error({ err: e.message }, 'init db apply failed');

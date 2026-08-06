@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { splitSqlStatements } from '../../src/init/schema-applier.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+// Repo root, resolved from this file rather than process.cwd() so the test
+// works regardless of which directory `node --test` was launched from.
+const repoRoot = join(__dirname, '../../..');
 
 test('splitSqlStatements splits on ; followed by newline', () => {
   const sql = 'CREATE TABLE a (id INT);\nCREATE TABLE b (id INT);\n';
@@ -227,4 +230,48 @@ test('splitSqlStatements parses migration 009 mssql (schema_migrations: 1 IF/BEG
   assert.match(stmts[0], /checksum\s+CHAR\(64\)/i);
   // Secondary index lives inside the BEGIN/END block too
   assert.match(stmts[0], /CREATE INDEX ix_schema_migrations_status/i);
+});
+
+test('backfillMigrations inserts all migration files as status=applied with applied_by=system-init', async () => {
+  const { backfillMigrations } = await import('../../src/init/schema-applier.js');
+  const upsertCalls = [];
+  const db = {
+    dialect: 'mysql',
+    sql: { schemaMigrations: { upsert: 'UPSERT' } },
+    execute: async (sql, params) => {
+      if (sql === 'UPSERT') upsertCalls.push(params);
+      return { rows: [], affectedRows: 1 };
+    },
+    query: async () => ({ rows: [] })
+  };
+  // repoRoot is the real project root, so backfill reads db/migrations/*.sql
+  const count = await backfillMigrations('mysql', db, { repoRoot });
+  // 001-008 must all be recorded; 009 is skipped (it creates the table itself).
+  assert.ok(upsertCalls.length >= 8, `expected >= 8 upsert calls, got ${upsertCalls.length}`);
+  assert.equal(count, upsertCalls.length);
+  assert.ok(!upsertCalls.some(p => p[0] === '009'), '009 must not be backfilled');
+  for (const p of upsertCalls) {
+    // Param order mirrors the upsert column list in src/db/sql.js:
+    // (version, description, type, script, checksum, applied_at,
+    //  execution_ms, applied_by, status, error_message)
+    assert.equal(p[2], 'sql');           // type
+    assert.match(p[3], /^\d{3}-.*\.sql$/); // script = filename
+    assert.match(p[4], /^[0-9a-f]{64}$/);  // checksum = sha256 hex
+    assert.equal(p[6], 0);               // execution_ms
+    assert.equal(p[7], 'system-init');   // applied_by
+    assert.equal(p[8], 'applied');       // status
+    assert.equal(p[9], null);            // error_message
+  }
+});
+
+test('backfillMigrations is idempotent and returns 0 when the migrations dir is absent', async () => {
+  const { backfillMigrations } = await import('../../src/init/schema-applier.js');
+  const db = {
+    dialect: 'mysql',
+    sql: { schemaMigrations: { upsert: 'UPSERT' } },
+    execute: async () => ({ rows: [], affectedRows: 1 }),
+    query: async () => ({ rows: [] })
+  };
+  const count = await backfillMigrations('mysql', db, { repoRoot: join(__dirname, 'no-such-repo') });
+  assert.equal(count, 0);
 });

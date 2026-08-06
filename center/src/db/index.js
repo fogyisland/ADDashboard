@@ -8,6 +8,7 @@ import { buildSql, SUPPORTED_DIALECTS } from './sql.js';
 import { createMysqlDriver } from './drivers/mysql.js';
 import { createMssqlDriver } from './drivers/mssql.js';
 import { DbError } from './errors.js';
+import { bootstrapMigrations } from '../init/schema-applier.js';
 
 let state = null;
 
@@ -34,6 +35,16 @@ export async function init(config) {
     close: async () => { try { await driver.close(); } catch (e) { throw DbError.wrap(e); } }
   };
   state = { db, driver };
+  // Create schema_migrations + backfill on deployments upgrading from pre-009
+  // code. No-op once the table exists. Deliberately non-fatal: migration
+  // *tracking* must never stop the server from serving. A hard failure here
+  // (e.g. the DB user lacks CREATE TABLE) would bubble out of init() and make
+  // server.js drop a working install back into the init wizard.
+  try {
+    await bootstrapMigrations(dialect, db);
+  } catch (e) {
+    console.error(`schema_migrations bootstrap failed (non-fatal): ${e.message}`);
+  }
   return db;
 }
 

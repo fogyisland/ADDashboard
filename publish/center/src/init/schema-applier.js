@@ -5,6 +5,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 export function splitSqlStatements(sql) {
   const out = [];
@@ -150,4 +151,74 @@ export async function applyAll(dialect, db, opts = {}) {
   }
 
   return applied;
+}
+
+function sha256(s) { return createHash('sha256').update(s).digest('hex'); }
+
+// Record every migration file on disk as already-applied. Used by two paths:
+//   1. the init wizard, right after applyAll() ran every file for real;
+//   2. bootstrapMigrations(), when an existing deployment first gains the
+//      schema_migrations table and its pre-009 history has to be reconstructed.
+// Both cases mean "these files are already in the DB", hence applied_by
+// 'system-init' and execution_ms 0 — we did not time the original run.
+// Idempotent: the upsert keys on `version`, so re-running is a no-op update.
+export async function backfillMigrations(dialect, db, opts = {}) {
+  const repoRoot = opts.repoRoot ?? join(process.cwd(), '..');
+  const dir = resolveMigrationsDir(repoRoot, dialect);
+  if (!existsSync(dir)) return 0;
+  const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+  const appliedAt = new Date().toISOString();
+  let count = 0;
+  for (const f of files) {
+    // Skip 009 itself — it is the migration that creates schema_migrations,
+    // so backfilling a row for it from inside that same table is circular.
+    // The admin list still surfaces it by reading the filesystem.
+    if (f.startsWith('009-')) continue;
+    const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+    if (!m) continue;
+    const version = m[1];
+    const description = m[2];
+    const content = readFileSync(join(dir, f), 'utf8');
+    const checksum = sha256(content);
+    // Param order matches the upsert column list in db/sql.js:
+    // (version, description, type, script, checksum, applied_at,
+    //  execution_ms, applied_by, status, error_message)
+    await db.execute(db.sql.schemaMigrations.upsert, [
+      version, description, 'sql', f, checksum,
+      appliedAt, 0, 'system-init', 'applied', null
+    ]);
+    count++;
+  }
+  return count;
+}
+
+// Probe SQL for "does schema_migrations exist?". MSSQL has no LIMIT clause,
+// so the two dialects need different shapes.
+function existsProbeSql(dialect) {
+  return dialect === 'mssql'
+    ? 'SELECT TOP 1 1 AS ok FROM schema_migrations'
+    : 'SELECT 1 AS ok FROM schema_migrations LIMIT 1';
+}
+
+// Ensure schema_migrations exists and reflects the migrations already on disk.
+// Called from db.init() on every server start, so it must be cheap and
+// idempotent:
+//   - table present (the common case, incl. fresh init-wizard installs where
+//     applyAll already ran 009) -> one SELECT, then return;
+//   - table absent (a deployment upgrading from pre-009 code) -> apply the 009
+//     file, then backfill 001-008 as applied.
+export async function bootstrapMigrations(dialect, db, opts = {}) {
+  try {
+    await db.query(existsProbeSql(dialect), []);
+    return; // table exists; nothing to bootstrap
+  } catch {
+    // Table doesn't exist — fall through to create + backfill.
+  }
+  const repoRoot = opts.repoRoot ?? join(process.cwd(), '..');
+  const migrationFile = resolveSqlPath(repoRoot, 'migrations', dialect, '009-schema-migrations.sql');
+  // A deployment can legitimately ship without db/migrations (runtime-only
+  // bundles). Nothing to bootstrap from, so leave the DB untouched.
+  if (!existsSync(migrationFile)) return;
+  await applyFile(db, migrationFile); // idempotent: CREATE TABLE IF NOT EXISTS / IF OBJECT_ID guard
+  await backfillMigrations(dialect, db, { repoRoot });
 }
