@@ -42,6 +42,7 @@ const routes = [
   { path: '/admin/sites-catalog', component: SitesCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/dcs-catalog', component: DcsCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/site-replication-matrix', component: SiteReplicationMatrixView, meta: { perm: 'admin:users' } },
+  { path: '/admin/migrations', component: () => import('./views/admin/SchemaMigrationsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
   { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },
