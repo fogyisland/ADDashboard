@@ -8,6 +8,7 @@ import { dashboardRouter } from './src/routes/dashboard.js';
 import { adminRouter } from './src/routes/admin.js';
 import { dcsRouter } from './src/routes/dcs.js';
 import { lockoutRouter } from './src/routes/lockout.js';
+import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { packageRunner } from './src/packages/runner.js';
@@ -99,6 +100,14 @@ process.on('unhandledRejection', (reason) => {
     app.use(lockoutRouter({
       requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
       requirePerm: (perm) => requirePerm(perm)
+    }));
+    // Schema migrations admin (list/apply/dry-run/reset). Same auth contract
+    // as dcsRouter and lockoutRouter: per-route [userAuth, requirePerm('admin:users')].
+    app.use(schemaMigrationsRouter({
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requirePerm: (perm) => requirePerm(perm),
+      logger,
+      getRepoRoot: () => process.cwd()
     }));
     // Package system routes (Task 6). Both routers apply their own
     // per-route auth (userAuth+requirePerm for admin, agentToken for

@@ -1,0 +1,88 @@
+import { Router } from 'express';
+import { getDb } from '../db/index.js';
+import { writeAudit as defaultWriteAudit } from '../services/audit.js';
+import { createMigrationsService as defaultCreateService } from '../services/migrations.js';
+
+export function schemaMigrationsRouter({ requireAuth, requirePerm, logger, getRepoRoot, _deps = null }) {
+  const deps = _deps ?? {
+    createMigrationsService: defaultCreateService,
+    writeAudit: defaultWriteAudit
+  };
+
+  // Helper: only call getDb() when using the real default service. Tests inject
+  // a mock via _deps.createMigrationsService that doesn't need a DB, and
+  // getDb() throws when no DB is initialized.
+  function getService() {
+    if (deps.createMigrationsService === defaultCreateService) {
+      const db = getDb();
+      return defaultCreateService({ db, logger, getRepoRoot });
+    }
+    return deps.createMigrationsService({ logger, getRepoRoot });
+  }
+
+  const r = Router();
+  const auth = [requireAuth, requirePerm('admin:users')];
+
+  r.get('/api/admin/migrations', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const dialect = deps.createMigrationsService === defaultCreateService ? getDb().dialect : null;
+      const rows = await service.listMigrations(dialect);
+      res.json(rows);
+    } catch (e) {
+      logger.error({ err: e.message }, 'list migrations failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.post('/api/admin/migrations/:version/apply', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const appliedBy = (req.body && req.body.appliedBy) || req.user?.username || req.user?.sub || 'unknown';
+      const result = await service.applyMigration(req.params.version, { appliedBy });
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'apply_migration',
+        target: 'schema_migrations',
+        payload: { version: result.version, status: result.status, executionMs: result.executionMs }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'apply migration failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  r.post('/api/admin/migrations/:version/dry-run', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const result = await service.dryRunMigration(req.params.version);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'dry-run migration failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  r.post('/api/admin/migrations/:version/reset', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const result = await service.resetFailedMigration(req.params.version);
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'reset_failed_migration',
+        target: 'schema_migrations',
+        payload: { version: req.params.version, deleted: result.deleted }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'reset migration failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  return r;
+}
