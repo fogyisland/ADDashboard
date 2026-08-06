@@ -222,6 +222,16 @@ const VARIANTS = {
           status        = VALUES(status),
           error_message = VALUES(error_message)`,
       deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
+    },
+    // Existence probes for migration verify markers. Returns one row when the
+    // artifact exists, zero rows when it doesn't. Scoped to the connection's
+    // own database so a same-named table in another schema can't false-positive.
+    probe: {
+      table: `SELECT 1 AS ok FROM information_schema.TABLES
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
+      column: `SELECT 1 AS ok FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`
     }
   },
   mssql: {
@@ -472,6 +482,14 @@ const VARIANTS = {
           VALUES
           (s.version, s.description, s.type, s.script, s.checksum, s.applied_at, s.execution_ms, s.applied_by, s.status, s.error_message);`,
       deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
+    },
+    // Existence probes for migration verify markers. Returns one row when the
+    // artifact exists, zero rows when it doesn't. INFORMATION_SCHEMA views are
+    // already scoped to the connection's current database in MSSQL.
+    probe: {
+      table: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?`,
+      column: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_NAME = ? AND COLUMN_NAME = ?`
     }
   }
 };

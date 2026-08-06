@@ -72,3 +72,31 @@ test('mssql: portStatus.upsertOne uses MERGE with USING (VALUES)', () => {
   assert.match(sql, /MERGE INTO ad_agent_port_status/i);
   assert.match(sql, /USING \(SELECT \? AS agent_id, \? AS port/i);
 });
+
+// --- probe (verify-marker existence checks) ---
+
+test('mysql: probe.table scopes to the current database, 1 placeholder', () => {
+  const sql = buildSql('mysql').probe.table;
+  assert.match(sql, /information_schema\.TABLES/i);
+  assert.match(sql, /TABLE_SCHEMA = DATABASE\(\)/);
+  assert.match(sql, /LIMIT 1/);
+  assert.strictEqual((sql.match(/\?/g) || []).length, 1);
+});
+
+test('mysql: probe.column takes [table, column], 2 placeholders', () => {
+  const sql = buildSql('mysql').probe.column;
+  assert.match(sql, /information_schema\.COLUMNS/i);
+  assert.match(sql, /TABLE_NAME = \?/);
+  assert.match(sql, /COLUMN_NAME = \?/);
+  assert.strictEqual((sql.match(/\?/g) || []).length, 2);
+});
+
+test('mssql: probe uses TOP 1 instead of LIMIT', () => {
+  const probe = buildSql('mssql').probe;
+  assert.match(probe.table, /SELECT TOP 1/i);
+  assert.match(probe.column, /SELECT TOP 1/i);
+  assert.doesNotMatch(probe.table, /LIMIT/i);
+  assert.doesNotMatch(probe.column, /LIMIT/i);
+  assert.strictEqual((probe.table.match(/\?/g) || []).length, 1);
+  assert.strictEqual((probe.column.match(/\?/g) || []).length, 2);
+});

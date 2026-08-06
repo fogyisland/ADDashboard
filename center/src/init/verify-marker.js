@@ -43,3 +43,36 @@ export function parseVerifyMarker(sql) {
   }
   return out;
 }
+
+// Probes each marker against the live DB. Returns {ok, missing}, where
+// `missing` is a human-readable array like ['table sys_config_audit',
+// 'column ad_dcs.is_pdc'] in marker order.
+//
+// `db.sql` is the already dialect-resolved registry built by buildSql() at
+// db.init() time, so the probe SQL is read from db.sql.probe — the dialect is
+// baked into the strings, not selected here.
+//
+//   kind='table'  -> probe.table  with params [name]
+//   kind='column' -> probe.column with params [table, column]
+//                    (the marker name is '<table>.<column>', split on first '.')
+export async function verifyMarkers(db, markers) {
+  const probe = db.sql.probe;
+  const missing = [];
+  for (const m of markers) {
+    if (m.kind === 'table') {
+      const { rows } = await db.query(probe.table, [m.name]);
+      if (!rows || rows.length === 0) missing.push(`table ${m.name}`);
+    } else if (m.kind === 'column') {
+      const dot = m.name.indexOf('.');
+      if (dot < 0) {
+        // A column marker without a table qualifier can't be probed. Treat it
+        // as missing so the migration is skipped rather than blindly backfilled.
+        missing.push(`column ${m.name} (malformed)`);
+        continue;
+      }
+      const { rows } = await db.query(probe.column, [m.name.slice(0, dot), m.name.slice(dot + 1)]);
+      if (!rows || rows.length === 0) missing.push(`column ${m.name}`);
+    }
+  }
+  return { ok: missing.length === 0, missing };
+}
