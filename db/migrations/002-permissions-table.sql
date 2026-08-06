@@ -1,3 +1,5 @@
+-- verify: table role_permissions
+
 -- AD Dashboard migration 002: replace JSON-encoded sys_roles.permissions with
 -- the role_permissions relational table (third normal form).
 --

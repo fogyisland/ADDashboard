@@ -1,3 +1,6 @@
+-- verify: table system_ports
+-- verify: table ad_agent_port_status
+
 -- AD Dashboard migration 003: add system_ports (admin-curated port list) and
 -- ad_agent_port_status (latest per-port probe result per agent). Idempotent.
 -- For MySQL 8+.
