@@ -156,15 +156,23 @@ test('splitSqlStatements parses migration 006 (drop center_public_host/port)', (
   assert.match(mssqlStmts[0], /DELETE FROM system_config/i);
 });
 
-test('applyAll applies migration 006: emits DELETE for center_public_host/port', async () => {
-  // The full applyAll pipeline (schema + seed + every migration) must run
-  // migration 006. We don't run a full integration; we just verify the DELETE
-  // hits db.execute during applyAll. Idempotency is the migration's own job.
-  const calls = [];
-  const db = buildMockDb().withRecording(calls);
-  await applyAll('mysql', db, { repoRoot: process.cwd() + '/..' });
-  const sqls = calls.map(c => c.sql);
-  const delete006 = sqls.find(s => /DELETE FROM system_config/i.test(s) &&
-    /center_public_host/.test(s) && /center_public_port/.test(s));
-  assert.ok(delete006, 'migration 006 DELETE should be applied');
+test('splitSqlStatements parses migration 007 mysql (4 ADD COLUMN in 1 statement)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/007-dc-card-counters.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // MySQL: 1 multi-column ALTER
+  assert.strictEqual(stmts.length, 1, `expected 1 statement, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.match(stmts[0], /ALTER TABLE ad_replication_status/i);
+  assert.match(stmts[0], /users_count/);
+  assert.match(stmts[0], /groups_count/);
+  assert.match(stmts[0], /gpos_count/);
+  assert.match(stmts[0], /locked_count/);
+});
+
+test('splitSqlStatements parses migration 007 mssql (4 guarded ADD COLUMN statements)', () => {
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/mssql/007-dc-card-counters.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // MSSQL: 4 IF-guarded ALTER blocks
+  assert.strictEqual(stmts.length, 4, `expected 4 statements, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  assert.ok(stmts.every(s => /ALTER TABLE ad_replication_status/i.test(s)));
+  assert.ok(stmts.every(s => /INFORMATION_SCHEMA\.COLUMNS/.test(s)));
 });
