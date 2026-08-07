@@ -29,6 +29,19 @@ async function refreshPortList() {
 // Initial refresh on startup, before any heartbeat fires.
 await refreshPortList();
 
+// Center-configured heartbeat / report ports. Refreshed every 5min alongside
+// the existing config refresh; null = no override (use centerUrl verbatim).
+let cachedPorts = { heartbeatPort: null, reportPort: null };
+
+async function refreshAgentPorts() {
+  const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
+  if (r.ok && r.data) {
+    cachedPorts.heartbeatPort = Number(r.data.heartbeatPort) || null;
+    cachedPorts.reportPort    = Number(r.data.reportPort)    || null;
+  }
+}
+await refreshAgentPorts();
+
 // Standalone liveness heartbeat. Interval is read from config at startup;
 // changing it via center config requires restarting the agent process — same
 // trade-off as pollingIntervalMinutes. The scheduler ALSO sends heartbeats
@@ -61,7 +74,14 @@ const heartbeat = startHeartbeat({
     };
     return p;
   },
-  send: async (p) => { await postHeartbeat({ centerUrl: config.centerUrl, agentToken: config.agentToken, payload: p }); }
+  send: async (p) => {
+    await postHeartbeat({
+      centerUrl: config.centerUrl,
+      agentToken: config.agentToken,
+      port: cachedPorts.heartbeatPort,
+      payload: p
+    });
+  }
 });
 
 // Site/DCs topology discovery. Runs the PowerShell topology script on a long
@@ -93,6 +113,7 @@ const discovery = startDiscoveryScheduler({
 // service restart. Acceptable trade-off; a runtime restart would require
 // recreating pollTimer / discovery scheduler.
 const configRefresh = setInterval(async () => {
+  await refreshAgentPorts();  // ← new line
   const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
   if (r.ok && r.data?.pollingIntervalMinutes) {
     config.pollingIntervalMinutes = Number(r.data.pollingIntervalMinutes);
@@ -107,7 +128,12 @@ const scheduler = createScheduler({
   logger,
   queue,
   collect: () => runCollector({ powerShellPath: config.powerShellPath, psScriptPath: config.psScriptPath }),
-  send: (snap) => postReport({ centerUrl: config.centerUrl, agentToken: config.agentToken, snapshot: snap }),
+  send: (snap) => postReport({
+    centerUrl: config.centerUrl,
+    agentToken: config.agentToken,
+    port: cachedPorts.reportPort,
+    snapshot: snap
+  }),
   sendHeartbeat: (extra) => {
     const payload = { agentId: config.agentId, agentVersion: '0.1.0', ...extra };
     if (Array.isArray(latestPortResults) && latestPortResults.length > 0) {
@@ -116,6 +142,7 @@ const scheduler = createScheduler({
     return postHeartbeat({
       centerUrl: config.centerUrl,
       agentToken: config.agentToken,
+      port: cachedPorts.heartbeatPort,
       payload
     });
   },

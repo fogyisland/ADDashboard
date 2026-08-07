@@ -32,6 +32,14 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
   });
 }
 
+// Build base URL: if `port` is truthy, strip trailing :digits from centerUrl
+// and append the override port. Otherwise return centerUrl as-is.
+function baseUrl({ centerUrl, port }) {
+  const trimmed = String(centerUrl).replace(/\/+$/, '');
+  if (!port) return trimmed;
+  return trimmed.replace(/:\d+$/, '') + ':' + Number(port);
+}
+
 // PS script emits entries in PascalCase (SourceDc, DestDc, ...); center's
 // upsertStatus reads camelCase (sourceDc, destDc, ...). Convert at this boundary.
 function toCamelEntry(e) {
@@ -49,25 +57,25 @@ function toCamelEntry(e) {
   };
 }
 
-export function postReport({ centerUrl, agentToken, snapshot }) {
+export function postHeartbeat({ centerUrl, agentToken, port, payload }) {
   return requestJson({
     method: 'POST',
-    url: `${centerUrl}/api/agent/report`,
+    url: `${baseUrl({ centerUrl, port })}/api/agent/heartbeat`,
+    headers: { 'X-Agent-Token': agentToken },
+    body: payload,
+  });
+}
+
+export function postReport({ centerUrl, agentToken, port, snapshot }) {
+  return requestJson({
+    method: 'POST',
+    url: `${baseUrl({ centerUrl, port })}/api/agent/report`,
     headers: { 'X-Agent-Token': agentToken },
     body: {
       agentId: snapshot.AgentId ?? snapshot.agentId,
       collectedAt: snapshot.CollectedAt ?? snapshot.collectedAt,
       data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []
-    }
-  });
-}
-
-export function postHeartbeat({ centerUrl, agentToken, payload }) {
-  return requestJson({
-    method: 'POST',
-    url: `${centerUrl}/api/agent/heartbeat`,
-    headers: { 'X-Agent-Token': agentToken },
-    body: payload
+    },
   });
 }
 
