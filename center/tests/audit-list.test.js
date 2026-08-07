@@ -77,10 +77,7 @@ test('GET /api/admin/audit: userId / from / to compose into WHERE', async () => 
   assert.ok(capturedParams.includes('2026-08-07'));
 });
 
-test('GET /api/admin/audit: pagination — page 2 binds size=100 and offset=100 as the last two params', async () => {
-  // Dialect-agnostic: do NOT assert on SQL syntax (MySQL uses LIMIT ? OFFSET ?,
-  // MSSQL uses OFFSET ? ROWS FETCH NEXT ? ROWS ONLY). Assert on the bound
-  // parameters instead, which encode the same pagination semantic in both.
+test('GET /api/admin/audit: pagination binds semantic size/offset order for MySQL', async () => {
   let capturedParams = [];
   const db = buildMockDb([
     {
@@ -94,12 +91,31 @@ test('GET /api/admin/audit: pagination — page 2 binds size=100 and offset=100 
   ]).standard();
   _setDbForTest(db);
   const r = await supertest(buildApp())
-    .get('/api/admin/audit?page=2&size=100')
+    .get('/api/admin/audit?page=3&size=50')
     .set('Authorization', `Bearer ${adminToken()}`);
   assert.equal(r.status, 200);
-  // The list query binds [whereParams..., size, offset]; offset = (page-1)*size = 100.
-  const tail = capturedParams.slice(-2);
-  assert.deepEqual(tail, [100, 100]);
+  assert.deepEqual(capturedParams.slice(-2), [50, 100]);
+});
+
+test('GET /api/admin/audit: MSSQL pagination binds offset then size', async () => {
+  let capturedSql = '', capturedParams = [];
+  const db = buildMockDb([
+    {
+      match: /FROM audit_logs/i, capture: true,
+      onQuery: (sql, params) => {
+        capturedSql = sql; capturedParams = params;
+        if (/COUNT/i.test(sql)) return { rows: [{ total: 200 }] };
+        return { rows: [] };
+      }
+    }
+  ], { dialect: 'mssql' }).standard();
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .get('/api/admin/audit?page=3&size=50')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.match(capturedSql, /OFFSET \? ROWS FETCH NEXT \? ROWS ONLY/);
+  assert.deepEqual(capturedParams.slice(-2), [100, 50]);
 });
 
 test('GET /api/admin/audit: payload column returns parsed JSON object', async () => {

@@ -49,16 +49,18 @@ const VARIANTS = {
     },
     audit: {
       write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
-      // SELECT for paginated listing — service calls `list(where)` and binds
-      // [size, offset] in the order expected by each dialect's pagination
-      // tail (mysql: LIMIT ? OFFSET ?, mssql: OFFSET ? ROWS FETCH NEXT ?).
-      list: (where) => `SELECT a.id, a.user_id AS userId, a.action, a.target, a.payload,
+      // SELECT for paginated listing. The dialect owns both pagination syntax
+      // and parameter order: callers pass semantic (size, offset) values.
+      list: (where) => ({
+        sql: `SELECT a.id, a.user_id AS userId, a.action, a.target, a.payload,
                 a.created_at AS createdAt, u.username AS username
          FROM audit_logs a
          LEFT JOIN sys_users u ON a.user_id = u.id
          ${where}
          ORDER BY a.created_at DESC, a.id DESC
          LIMIT ? OFFSET ?`,
+        listParams: (whereParams, size, offset) => [...whereParams, size, offset]
+      }),
       count: `SELECT COUNT(*) AS total FROM audit_logs a`,
       // Placeholder count is built dynamically by the caller so any category
       // (any number of actions) round-trips without losing the bound-param
@@ -290,16 +292,18 @@ const VARIANTS = {
     },
     audit: {
       write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
-      // SELECT for paginated listing — service calls `list(where)` and binds
-      // [size, offset] in the order expected by each dialect's pagination
-      // tail (mysql: LIMIT ? OFFSET ?, mssql: OFFSET ? ROWS FETCH NEXT ?).
-      list: (where) => `SELECT a.id, a.user_id AS userId, a.action, a.target, a.payload,
+      // SELECT for paginated listing. The dialect owns both pagination syntax
+      // and parameter order: callers pass semantic (size, offset) values.
+      list: (where) => ({
+        sql: `SELECT a.id, a.user_id AS userId, a.action, a.target, a.payload,
                 a.created_at AS createdAt, u.username AS username
          FROM audit_logs a
          LEFT JOIN sys_users u ON a.user_id = u.id
          ${where}
          ORDER BY a.created_at DESC, a.id DESC
          OFFSET ? ROWS FETCH NEXT ? ROWS ONLY`,
+        listParams: (whereParams, size, offset) => [...whereParams, offset, size]
+      }),
       count: `SELECT COUNT(*) AS total FROM audit_logs a`,
       badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`
     },

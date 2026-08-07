@@ -59,8 +59,9 @@ export async function listAudit({ category, actions, severities, userId, from, t
   const { rows: countRows } = await db.query(`${db.sql.audit.count} ${where}`, params);
   const total = Number(countRows[0].total);
   const offset = (page - 1) * size;
-  const listParams = [...params, size, offset];
-  const { rows } = await db.query(db.sql.audit.list(where), listParams);
+  const listQuery = db.sql.audit.list(where);
+  const listParams = listQuery.listParams(params, size, offset);
+  const { rows } = await db.query(listQuery.sql, listParams);
   return {
     rows: rows.map(r => ({
       id: r.id,

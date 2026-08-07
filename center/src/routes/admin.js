@@ -270,6 +270,7 @@ export function adminRouter({ config, logger }) {
       if (probe.total > EXPORT_CAP) {
         return res.status(413).json({ error: `导出行数 ${probe.total} 超过上限 ${EXPORT_CAP}，请先用过滤器缩小范围` });
       }
+      // The export cap is enforced by the probe above; the fetch intentionally bypasses the list-route size limit.
       const full = await listAudit({ ...opts, page: 1, size: EXPORT_CAP + 1 });
       const ts = formatTsForFilename(new Date());
       const filename = `audit-${category || 'all'}-${ts}.${format}`;

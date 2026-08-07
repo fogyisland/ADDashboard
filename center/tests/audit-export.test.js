@@ -13,12 +13,23 @@ function buildApp() {
   const a = express(); a.use(express.json());
   return a.use(adminRouter({ config: { jwtSecret: SECRET }, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
 }
-
 const SAMPLE_ROW = {
   id: 1, user_id: 1, username: 'admin', action: 'login_failed',
   target: null, payload: '{"ip":"1.2.3.4"}',
   created_at: new Date('2026-08-06T10:00:00Z')
 };
+
+function exportDb(dialect = 'mysql') {
+  return buildMockDb([
+    {
+      match: /FROM audit_logs/i, capture: true,
+      onQuery: (sql) => {
+        if (/COUNT/i.test(sql)) return { rows: [{ total: 1 }] };
+        return { rows: [SAMPLE_ROW] };
+      }
+    }
+  ], { dialect }).standard();
+}
 
 test('GET /api/admin/audit/export?format=json: returns application/json array, content-disposition matches audit-security-*.json', async () => {
   const db = buildMockDb([
@@ -43,17 +54,16 @@ test('GET /api/admin/audit/export?format=json: returns application/json array, c
   assert.equal(body[0].action, 'login_failed');
 });
 
+test('GET /api/admin/audit/export?format=json: MSSQL returns one row', async () => {
+  _setDbForTest(exportDb('mssql'));
+  const r = await supertest(buildApp())
+    .get('/api/admin/audit/export?format=json&category=security')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(JSON.parse(r.text).map(row => row.action), ['login_failed']);
+});
 test('GET /api/admin/audit/export?format=csv: header line + data rows, content-type text/csv', async () => {
-  const db = buildMockDb([
-    {
-      match: /FROM audit_logs/i, capture: true,
-      onQuery: (sql) => {
-        if (/COUNT/i.test(sql)) return { rows: [{ total: 1 }] };
-        return { rows: [SAMPLE_ROW] };
-      }
-    }
-  ]).standard();
-  _setDbForTest(db);
+  _setDbForTest(exportDb());
   const r = await supertest(buildApp())
     .get('/api/admin/audit/export?format=csv')
     .set('Authorization', `Bearer ${adminToken()}`);

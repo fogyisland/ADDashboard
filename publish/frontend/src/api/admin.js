@@ -21,7 +21,7 @@ export const adminApi = {
     if (to) q.set('to', to);
     return api.get(`/api/admin/audit?${q.toString()}`);
   },
-  getAuditBadge: (category) => api.get(`/api/admin/audit/badge?category=${encodeURIComponent(category)}`),
+  getAuditBadge: async (category) => (await api.get(`/api/admin/audit/badge?category=${encodeURIComponent(category)}`)).data,
   exportAudit: async (format, filters = {}) => {
     const q = new URLSearchParams();
     q.set('format', format);

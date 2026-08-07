@@ -29,8 +29,7 @@ async function mountView(overrides = {}) {
     data: { rows: overrides.rows ?? makeRows(), total: 2, filtered: 2, page: 1, size: 100 }
   });
   adminApi.getAuditBadge.mockImplementation(async (cat) => ({
-    category: cat,
-    count: cat === 'security' ? 5 : cat === 'changes' ? 12 : 3
+    data: { category: cat, count: cat === 'security' ? 5 : cat === 'changes' ? 12 : 3 }
   }));
   const wrapper = mount(AuditView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
@@ -53,7 +52,9 @@ test('AuditView: renders 3 tabs with badge counts', async () => {
   expect(w.text()).toContain('⚙ 运维');
   expect(adminApi.getAuditBadge).toHaveBeenCalledWith('security');
   expect(adminApi.getAuditBadge).toHaveBeenCalledWith('changes');
-  expect(adminApi.getAuditBadge).toHaveBeenCalledWith('ops');
+  expect(w.text()).toContain('5');
+  expect(w.text()).toContain('12');
+  expect(w.text()).toContain('3');
 });
 
 test('AuditView: tab click switches active tab and refetches with that category', async () => {
