@@ -20,19 +20,19 @@ describe('adminApi surface', () => {
     api.delete.mockClear();
   });
 
-  test('adminApi is an object with all 8 expected keys', () => {
+  test('adminApi is an object with all expected keys', () => {
     expect(typeof adminApi).toBe('object');
     expect(adminApi).not.toBeNull();
-    const keys = ['listUsers', 'createUser', 'updateUser', 'deleteUser', 'listRoles', 'getConfig', 'updateConfig', 'getAudit'];
+    const keys = ['listUsers', 'createUser', 'updateUser', 'deleteUser', 'listRoles', 'getConfig', 'updateConfig', 'getAudit', 'getAuditBadge', 'exportAudit'];
     for (const k of keys) {
       expect(adminApi).toHaveProperty(k);
       expect(typeof adminApi[k]).toBe('function');
     }
   });
 
-  test('getAudit(500) calls api.get with /api/admin/audit?limit=500', async () => {
-    await adminApi.getAudit(500);
-    expect(api.get).toHaveBeenCalledWith('/api/admin/audit?limit=500');
+  test('getAudit({category,size}) calls api.get with /api/admin/audit?category=&page=1&size=100', async () => {
+    await adminApi.getAudit({ category: 'security', size: 100 });
+    expect(api.get).toHaveBeenCalledWith('/api/admin/audit?category=security&page=1&size=100');
   });
 
   test('updateUser(7, {roleId: 2, status: 1}) calls api.put with /api/admin/users/7 and the body', async () => {
