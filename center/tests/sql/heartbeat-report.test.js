@@ -148,24 +148,36 @@ test('db.sql.heartbeat reportSummaryFor returns only MAX(collected_at) rows', as
   }
 });
 
-test('db.sql.heartbeat latestReportEntries parses and caps output at 100', async (t) => {
+test('db.sql.heartbeat latestReportEntries returns only the latest snapshot and caps it at 100', async (t) => {
   const conn = await openTestConnection(t);
   if (!conn) return;
 
   const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const agentId = `__t_hb_detail_${suffix}`;
   const sourceDc = `__t_hb_src_${suffix}`;
+  const oldAt = new Date('2026-08-07T10:00:00Z');
+  const latestAt = new Date('2026-08-07T11:00:00Z');
   try {
     const values = [];
     const placeholders = [];
+    for (let i = 0; i < 105; i++) {
+      placeholders.push('(?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 0, NULL)');
+      values.push(
+        latestAt,
+        agentId,
+        sourceDc,
+        `__t_hb_latest_${suffix}_${String(i).padStart(3, '0')}`,
+        `latest-${suffix}-${i}`
+      );
+    }
     for (let i = 0; i < 101; i++) {
       placeholders.push('(?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, 0, NULL)');
       values.push(
-        new Date(Date.UTC(2026, 7, 7, 11, 0, i)),
+        oldAt,
         agentId,
         sourceDc,
-        `__t_hb_dest_${suffix}_${i}`,
-        `nc-${suffix}-${i}`
+        `__t_hb_old_${suffix}_${String(i).padStart(3, '0')}`,
+        `old-${suffix}-${i}`
       );
     }
     await conn.execute(
@@ -176,15 +188,19 @@ test('db.sql.heartbeat latestReportEntries parses and caps output at 100', async
       values
     );
 
-    const sql = sqlRegistry.latestReportEntries(agentId, '2026-08-07T00:00:00.000Z', 100);
-    const [rows] = await conn.query(sql, [agentId, new Date('2026-08-07T00:00:00Z')]);
+    const since = new Date('2026-08-07T00:00:00Z');
+    const params = [agentId, agentId, since];
+    assert.equal(params.length, 3);
+    const sql = sqlRegistry.latestReportEntries(agentId, since.toISOString(), 100);
+    const [rows] = await conn.query(sql, params);
     assert.equal(rows.length, 100);
-    assert.equal(rows[0].dest_dc, `__t_hb_dest_${suffix}_100`);
-    // Guard against the Task 6 collectedAt regression: latestReportEntries must
-    // select collected_at so the service can surface a non-null collectedAt.
-    assert.ok(rows[0].collected_at, 'rows[0].collected_at must be a non-null Date');
-    assert.ok(rows[0].collected_at instanceof Date, 'rows[0].collected_at must be a Date instance');
-    assert.equal(rows[0].collected_at.getTime(), new Date(Date.UTC(2026, 7, 7, 11, 0, 100)).getTime());
+    assert.ok(rows.every((row) => row.collected_at instanceof Date));
+    assert.ok(rows.every((row) => row.collected_at.getTime() === latestAt.getTime()));
+    assert.ok(rows.every((row) => row.dest_dc.includes(`__t_hb_latest_${suffix}_`)));
+    assert.deepEqual(
+      rows.map((row) => row.dest_dc),
+      [...rows].map((row) => row.dest_dc).sort()
+    );
   } finally {
     await conn.execute('DELETE FROM ad_replication_status WHERE agent_id = ?', [agentId]).catch(() => {});
     await conn.end();

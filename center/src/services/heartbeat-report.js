@@ -65,11 +65,12 @@ export const heartbeatReportService = {
   async getLatestReportDetail(agentId, db = null) {
     const conn = db ?? getDb();
     const since = new Date(Date.now() - REPORT_SUMMARY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
-    const { rows } = await conn.query(conn.sql.heartbeat.latestReportEntries(agentId, since, REPORT_DETAIL_LIMIT));
+    const query = conn.sql.heartbeat.latestReportEntries(agentId, since, REPORT_DETAIL_LIMIT);
+    const { rows } = await conn.query(query, [agentId, agentId, since]);
     if (!rows.length) {
       return { agentId, collectedAt: null, entries: [] };
     }
-    // The SQL already orders by collected_at DESC; rows[0] is the newest row.
+    // The SQL constrains rows to one snapshot, so every row has this timestamp.
     const collectedAt = toIsoOrNull(rows[0].collected_at);
     return {
       agentId,

@@ -120,8 +120,12 @@ const VARIANTS = {
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                 status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
-         WHERE agent_id = ? AND collected_at >= ?
-         ORDER BY collected_at DESC
+         WHERE agent_id = ?
+           AND collected_at = (
+             SELECT MAX(collected_at) FROM ad_replication_status
+             WHERE agent_id = ? AND collected_at >= ?
+           )
+         ORDER BY source_dc, dest_dc
          LIMIT ${Number(limit)}`
     },
     ports: {
@@ -384,11 +388,16 @@ const VARIANTS = {
          ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
          ORDER BY s.source_dc, s.dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
-        `SELECT TOP (?) collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
+        `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                  status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
-         WHERE agent_id = ? AND collected_at >= ?
-         ORDER BY collected_at DESC`
+         WHERE agent_id = ?
+           AND collected_at = (
+             SELECT TOP 1 collected_at FROM ad_replication_status
+             WHERE agent_id = ? AND collected_at >= ?
+             ORDER BY collected_at DESC
+           )
+         ORDER BY source_dc, dest_dc`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',

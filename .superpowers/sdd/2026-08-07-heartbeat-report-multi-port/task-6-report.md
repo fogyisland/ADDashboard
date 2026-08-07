@@ -178,3 +178,26 @@ Commit `c371618`: 9 files changed, 747 insertions(+), 19 deletions(-).
 ### New concerns
 
 - `TEST_MYSQL_URL` was not available in this environment, so seeded live-MySQL execution could not run locally. The SQL tests are present and will execute automatically in an environment that provides the variable; dialect-portability assertions still run without it.
+
+## Final fix (whole-branch review I-2)
+
+### What changed
+
+- `center/src/db/sql.js:119-129,386-401` — rewrote both dialects of `latestReportEntries` to select only rows at the latest `collected_at` within the lookback window, order same-snapshot rows by `source_dc, dest_dc`, and retain the MySQL 100-row cap. The implementation uses MySQL `MAX(collected_at)` and MSSQL `TOP 1 ... ORDER BY collected_at DESC` subqueries without window functions.
+- `center/src/services/heartbeat-report.js:68-74` — executes the helper with three bind parameters, `[agentId, agentId, since]`, and documents that every returned row belongs to one snapshot.
+- `center/tests/sql/heartbeat-report.test.js:151-211` — seeds older and latest snapshots, verifies only latest-snapshot rows are returned, verifies the 100-row cap and deterministic ordering, and asserts the three-parameter query signature.
+- `center/tests/admin-heartbeat-report.test.js:125-157` — updated the SQL mock for the correlated-subquery shape and asserted the service passes exactly three parameters with the agent ID duplicated.
+- `publish/center/src/db/sql.js:119-129,386-401` — mirrored from the center source.
+
+### Tests run
+
+- `node --test "D:/ToolDevelop/ADDashboard/center/tests/sql/heartbeat-report.test.js" "D:/ToolDevelop/ADDashboard/center/tests/admin-heartbeat-report.test.js"` — 11 tests / 8 pass / 0 fail / 3 skipped (`TEST_MYSQL_URL` unset).
+- `npm test` — center: 516 tests / 496 pass / 0 fail / 20 skipped; agent: 52 pass / 0 fail; frontend: 210 pass / 0 fail.
+
+### Mirror confirmation
+
+- `git diff --no-index -- "D:/ToolDevelop/ADDashboard/center/src/db/sql.js" "D:/ToolDevelop/ADDashboard/publish/center/src/db/sql.js"` — empty diff (exit 0); mirror confirmed.
+
+### Concerns
+
+- The live-MySQL snapshot/cap test remains skipped locally because `TEST_MYSQL_URL` is not set; always-running portability and service/mock tests pass.

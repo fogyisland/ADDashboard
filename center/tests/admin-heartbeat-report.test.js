@@ -129,10 +129,14 @@ test('report-detail: returns entries for the most recent collected_at (capped at
   for (let i = 0; i < 3; i++) {
     entries.push(fakeReplicationRow({ source_dc: `src${i}`, dest_dc: `dst${i}` }));
   }
+  const queryParams = [];
   const db = buildMockDb([
     {
-      match: /SELECT\s+collected_at\s*,\s*source_dc\s*,\s*dest_dc\s*,\s*source_site\s*,\s*dest_site\s*,\s*naming_context\s*,\s*status_code\s*,\s*error_message\s*,\s*last_success_time\s*,\s*last_attempt_time\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
-      rows: entries
+      match: /SELECT\s+collected_at\s*,\s*source_dc\s*,\s*dest_dc\s*,\s*source_site\s*,\s*dest_site\s*,\s*naming_context\s*,\s*status_code\s*,\s*error_message\s*,\s*last_success_time\s*,\s*last_attempt_time\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?\s+AND\s+collected_at\s*=\s*\(\s*SELECT\s+(?:MAX\s*\(\s*collected_at\s*\)|TOP\s+1\s+collected_at)\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?\s+AND\s+collected_at\s*>=\s*\?/is,
+      onQuery: (sql, params) => {
+        queryParams.push(...params);
+        return { rows: entries };
+      }
     }
   ]).standard();
   _setDbForTest(db);
@@ -148,6 +152,8 @@ test('report-detail: returns entries for the most recent collected_at (capped at
   assert.ok(res.body.entries.length <= 100);
   assert.equal(res.body.entries[0].sourceDc, 'src0');
   assert.equal(res.body.entries[0].destDc, 'dst0');
+  assert.equal(queryParams.length, 3);
+  assert.deepEqual(queryParams.slice(0, 2), ['dc01', 'dc01']);
 });
 
 test('GET /api/admin/heartbeat-report/agents: 401 without token', async () => {
