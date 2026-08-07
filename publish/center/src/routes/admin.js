@@ -248,6 +248,46 @@ export function adminRouter({ config, logger }) {
     }
   });
 
+  const EXPORT_CAP = 50000;
+
+  r.get('/api/admin/audit/export', auth, async (req, res) => {
+    try {
+      const { listAudit } = await import('../services/audit.js');
+      const format = req.query.format;
+      if (format !== 'json' && format !== 'csv') {
+        return res.status(400).json({ error: 'format must be json or csv' });
+      }
+      const { category, action, severity, userId, from, to } = req.query;
+      const opts = {
+        category,
+        actions: action ? String(action).split(',') : undefined,
+        severities: severity ? String(severity).split(',') : undefined,
+        userId: userId ? Number(userId) : undefined,
+        from, to
+      };
+      // Probe total first (page 1, size 1) — reuses listAudit's filter SQL.
+      const probe = await listAudit({ ...opts, page: 1, size: 1 });
+      if (probe.total > EXPORT_CAP) {
+        return res.status(413).json({ error: `导出行数 ${probe.total} 超过上限 ${EXPORT_CAP}，请先用过滤器缩小范围` });
+      }
+      const full = await listAudit({ ...opts, page: 1, size: EXPORT_CAP + 1 });
+      const ts = formatTsForFilename(new Date());
+      const filename = `audit-${category || 'all'}-${ts}.${format}`;
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      if (format === 'json') {
+        res.setHeader('Content-Type', 'application/json');
+        res.send(JSON.stringify(full.rows, null, 2));
+      } else {
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.send(toCsv(full.rows));
+      }
+    } catch (e) {
+      if (e.httpStatus === 400) return res.status(400).json({ error: e.message });
+      logger.error({ err: e }, 'admin audit export failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   // ----- Sites Catalog -----
   r.get('/api/admin/sites-catalog', auth, async (_req, res) => {
     try {
@@ -491,4 +531,31 @@ export function adminRouter({ config, logger }) {
   });
 
   return r;
+}
+
+function formatTsForFilename(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function toCsv(rows) {
+  const headers = ['时间 (UTC+8)', '用户名', '动作', '目标', '严重性', '类别', 'payload(json)'];
+  const esc = v => {
+    if (v == null) return '';
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.join(',')];
+  for (const r of rows) {
+    lines.push([
+      esc(new Date(r.createdAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })),
+      esc(r.username),
+      esc(r.actionLabel),
+      esc(r.target),
+      esc(r.severity),
+      esc(r.category),
+      esc(r.payload)
+    ].join(','));
+  }
+  return lines.join('\n');
 }
