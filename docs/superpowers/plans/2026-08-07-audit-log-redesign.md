@@ -539,13 +539,16 @@ test('GET /api/admin/audit: userId / from / to compose into WHERE', async () => 
   assert.ok(capturedParams.includes('2026-08-07'));
 });
 
-test('GET /api/admin/audit: pagination — page 2 emits LIMIT ? OFFSET ?', async () => {
-  let capturedSql = '', capturedParams = [];
+test('GET /api/admin/audit: pagination — page 2 binds size=100 and offset=100 as the last two params', async () => {
+  // Dialect-agnostic: do NOT assert on SQL syntax (MySQL uses LIMIT ? OFFSET ?,
+  // MSSQL uses OFFSET ? ROWS FETCH NEXT ? ROWS ONLY). Assert on the bound
+  // parameters instead, which encode the same pagination semantic in both.
+  let capturedParams = [];
   const db = buildMockDb([
     {
       match: /FROM audit_logs/i, capture: true,
       onQuery: (sql, params) => {
-        capturedSql = sql; capturedParams = params;
+        capturedParams = params;
         if (/COUNT/i.test(sql)) return { rows: [{ total: 200 }] };
         return { rows: [] };
       }
@@ -556,8 +559,7 @@ test('GET /api/admin/audit: pagination — page 2 emits LIMIT ? OFFSET ?', async
     .get('/api/admin/audit?page=2&size=100')
     .set('Authorization', `Bearer ${adminToken()}`);
   assert.equal(r.status, 200);
-  assert.match(capturedSql, /LIMIT\s+\?\s+OFFSET\s+\?/);
-  // params end with [size=100, offset=100]
+  // The list query binds [whereParams..., size, offset]; offset = (page-1)*size = 100.
   const tail = capturedParams.slice(-2);
   assert.deepEqual(tail, [100, 100]);
 });
