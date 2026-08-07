@@ -17,7 +17,7 @@ const VARIANTS = {
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC LIMIT ?`,
       listBySite: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC LIMIT ?`,
-      latestSummaryPerDc: `SELECT source_dc, users_count, groups_count, gpos_count, locked_count, collected_at FROM (SELECT source_dc, users_count, groups_count, gpos_count, locked_count, collected_at, ROW_NUMBER() OVER (PARTITION BY source_dc ORDER BY collected_at DESC) AS rn FROM ad_replication_status WHERE naming_context = '__dc_summary__') t WHERE rn = 1 ORDER BY source_dc`,
+      latestSummaryPerDc: `SELECT t1.source_dc, t1.users_count, t1.groups_count, t1.gpos_count, t1.locked_count, t1.collected_at FROM ad_replication_status t1 WHERE t1.naming_context = '__dc_summary__' AND t1.collected_at = (SELECT MAX(t2.collected_at) FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.naming_context = '__dc_summary__') ORDER BY t1.source_dc`,
       partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN ? - INTERVAL ? MINUTE AND ? + INTERVAL ? MINUTE`
     },
     discovery: {

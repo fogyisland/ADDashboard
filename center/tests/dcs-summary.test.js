@@ -37,7 +37,7 @@ test('GET /api/dcs/summary returns empty array when no summary rows', async () =
 test('GET /api/dcs/summary returns one row per DC from latestSummaryPerDc', async () => {
   const db = buildMockDb([
     {
-      match: /SELECT\s+source_dc\s*,\s*users_count\s*,\s*groups_count\s*,\s*gpos_count\s*,\s*locked_count\s*,\s*collected_at\s+FROM\s*\(/is,
+      match: /SELECT\s+(?:\w+\.)?source_dc\s*,\s*(?:\w+\.)?users_count\s*,\s*(?:\w+\.)?groups_count\s*,\s*(?:\w+\.)?gpos_count\s*,\s*(?:\w+\.)?locked_count\s*,\s*(?:\w+\.)?collected_at\s+FROM\s+/is,
       rows: [
         { source_dc: 'DC01', users_count: 100, groups_count: 30, gpos_count: 5, locked_count: 2, collected_at: new Date('2026-08-06T10:00:00Z') },
         { source_dc: 'DC02', users_count: 110, groups_count: 31, gpos_count: 6, locked_count: 0, collected_at: new Date('2026-08-06T10:00:00Z') }
@@ -73,7 +73,7 @@ test('GET /api/dcs/summary?siteId=1 filters out DCs not in that site', async () 
   // siteId=1 filter must drop DC02.
   const db = buildMockDb([
     {
-      match: /SELECT\s+source_dc\s*,\s*users_count\s*,\s*groups_count\s*,\s*gpos_count\s*,\s*locked_count\s*,\s*collected_at\s+FROM\s*\(/is,
+      match: /SELECT\s+(?:\w+\.)?source_dc\s*,\s*(?:\w+\.)?users_count\s*,\s*(?:\w+\.)?groups_count\s*,\s*(?:\w+\.)?gpos_count\s*,\s*(?:\w+\.)?locked_count\s*,\s*(?:\w+\.)?collected_at\s+FROM\s+/is,
       rows: [
         { source_dc: 'DC01', users_count: 100, groups_count: 30, gpos_count: 5, locked_count: 2, collected_at: new Date('2026-08-06T10:00:00Z') },
         { source_dc: 'DC02', users_count: 110, groups_count: 31, gpos_count: 6, locked_count: 0, collected_at: new Date('2026-08-06T10:00:00Z') }
@@ -131,7 +131,7 @@ test('GET /api/dcs/summary partnersCount reflects same-cycle count from subquery
   // SELECT shape.
   const db = buildMockDb([
     {
-      match: /SELECT\s+source_dc\s*,\s*users_count\s*,\s*groups_count\s*,\s*gpos_count\s*,\s*locked_count\s*,\s*collected_at\s+FROM\s*\(/is,
+      match: /SELECT\s+(?:\w+\.)?source_dc\s*,\s*(?:\w+\.)?users_count\s*,\s*(?:\w+\.)?groups_count\s*,\s*(?:\w+\.)?gpos_count\s*,\s*(?:\w+\.)?locked_count\s*,\s*(?:\w+\.)?collected_at\s+FROM\s+/is,
       rows: [
         { source_dc: 'DC01', users_count: 100, groups_count: 30, gpos_count: 5, locked_count: 2, collected_at: new Date('2026-08-06T10:00:00Z') },
         { source_dc: 'DC02', users_count: 110, groups_count: 31, gpos_count: 6, locked_count: 0, collected_at: new Date('2026-08-06T10:00:00Z') }
@@ -169,7 +169,7 @@ test('GET /api/dcs/summary partnersCount query uses db.sql.replication.partnersC
   const records = [];
   const db = buildMockDb([
     {
-      match: /SELECT\s+source_dc\s*,\s*users_count\s*,\s*groups_count\s*,\s*gpos_count\s*,\s*locked_count\s*,\s*collected_at\s+FROM\s*\(/is,
+      match: /SELECT\s+(?:\w+\.)?source_dc\s*,\s*(?:\w+\.)?users_count\s*,\s*(?:\w+\.)?groups_count\s*,\s*(?:\w+\.)?gpos_count\s*,\s*(?:\w+\.)?locked_count\s*,\s*(?:\w+\.)?collected_at\s+FROM\s+/is,
       rows: [
         { source_dc: 'DC01', users_count: 100, groups_count: 30, gpos_count: 5, locked_count: 2, collected_at: new Date('2026-08-06T10:00:00Z') }
       ]
