@@ -70,6 +70,7 @@ main { display: flex; flex-direction: column; }
 .content { padding: 20px; overflow: auto; }
 .nav-group { margin-bottom: 8px; }
 .nav-group { display: flex; flex-direction: column; gap: 6px; }
+.nav-link { display: block; }
 .nav-group-title {
   font-weight: 600;
   color: var(--muted);
