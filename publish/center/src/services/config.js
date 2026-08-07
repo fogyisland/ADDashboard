@@ -41,6 +41,9 @@ export async function getAgentConfig() {
     latencyThresholdMinutes: Number(all.latency_threshold_minutes || 180),
     heartbeatIntervalSeconds: Number(all.heartbeat_interval_seconds || 5),
     discoveryIntervalHours: Number(all.discovery_interval_hours || 4),
-    agentToken: all.agent_token ?? null
+    agentToken: all.agent_token ?? null,
+    heartbeatPort: Number(all.heartbeat_port) || 8081,
+    reportPort: Number(all.report_port) || 8082,
+    heartbeatStaleSeconds: Number(all.heartbeat_stale_seconds) || 15
   };
 }

@@ -71,6 +71,55 @@ test('getAgentConfig defaults discoveryIntervalHours to 4 when missing', async (
   assert.equal(cfg.discoveryIntervalHours, 4);
 });
 
+test('getAgentConfig defaults ports + stale-seconds when keys missing', async () => {
+  const db = buildMockDb([
+    {
+      match: /FROM\s+system_config/i,
+      rows: [
+        { config_key: 'polling_interval_minutes', config_value: '15' },
+        { config_key: 'agent_token', config_value: 'tok' }
+      ]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const cfg = await getAgentConfig();
+  assert.strictEqual(cfg.heartbeatPort, 8081);
+  assert.strictEqual(cfg.reportPort, 8082);
+  assert.strictEqual(cfg.heartbeatStaleSeconds, 15);
+});
+
+test('getAgentConfig reads heartbeat_port/report_port/heartbeat_stale_seconds from config', async () => {
+  const db = buildMockDb([
+    {
+      match: /FROM\s+system_config/i,
+      rows: [
+        { config_key: 'heartbeat_port', config_value: '9001' },
+        { config_key: 'report_port', config_value: '9002' },
+        { config_key: 'heartbeat_stale_seconds', config_value: '30' }
+      ]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const cfg = await getAgentConfig();
+  assert.strictEqual(cfg.heartbeatPort, 9001);
+  assert.strictEqual(cfg.reportPort, 9002);
+  assert.strictEqual(cfg.heartbeatStaleSeconds, 30);
+});
+
+test('getAgentConfig non-numeric heartbeat_port coerces to 8081', async () => {
+  const db = buildMockDb([
+    {
+      match: /FROM\s+system_config/i,
+      rows: [
+        { config_key: 'heartbeat_port', config_value: 'abc' }
+      ]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const cfg = await getAgentConfig();
+  assert.strictEqual(cfg.heartbeatPort, 8081);
+});
+
 test('loadConfigOrNull returns null when file is missing', () => {
   assert.strictEqual(loadConfigOrNull('./does-not-exist.json'), null);
 });
