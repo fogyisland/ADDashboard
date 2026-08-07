@@ -152,6 +152,7 @@ const scheduler = createScheduler({
       centerUrl: config.centerUrl,
       agentToken: config.agentToken,
       hostname: config.agentId,
+      heartbeatPort: cachedPorts.heartbeatPort,
       ports: cachedPortList.map(p => p.port)
     });
     if (Array.isArray(r.ports)) latestPortResults = r.ports;

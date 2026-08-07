@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import http from 'node:http';
 import { runHealthChecks, tcpProbe } from '../src/healthcheck.js';
 
 test('runHealthChecks returns adModule boolean', async () => {
@@ -55,6 +56,23 @@ test('runHealthChecks aggregates port results', async () => {
   }
 });
 
+test('runHealthChecks threads heartbeatPort to center probe', async () => {
+  let recorded = false;
+  const srv = http.createServer(() => { recorded = true; });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const centerPort = srv.address().port;
+  try {
+    await runHealthChecks({
+      centerUrl: `http://127.0.0.1:${centerPort}`,
+      agentToken: 'x',
+      hostname: 'test-host',
+      heartbeatPort: 8081
+    });
+    assert.strictEqual(recorded, false);
+  } finally {
+    await new Promise(r => srv.close(r));
+  }
+});
 test('runHealthChecks returns ports:[] when no ports supplied', async () => {
   const out = await runHealthChecks({
     centerUrl: 'http://nonexistent.invalid',

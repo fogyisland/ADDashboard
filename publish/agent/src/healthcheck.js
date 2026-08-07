@@ -20,9 +20,9 @@ function checkDomain() {
   return /OK/.test(r.stdout || '');
 }
 
-async function checkCenter(centerUrl, agentToken) {
+async function checkCenter(centerUrl, agentToken, heartbeatPort = undefined) {
   try {
-    const r = await postHeartbeat({ centerUrl, agentToken, payload: { agentId: '__healthcheck__' } });
+    const r = await postHeartbeat({ centerUrl, agentToken, port: heartbeatPort, payload: { agentId: '__healthcheck__' } });
     return r.ok;
   } catch {
     return false;
@@ -57,10 +57,10 @@ export function tcpProbe(host, port, timeoutMs = 2000) {
 // Note: the plan's interface block listed a `logger` parameter but the impl
 // snippet does not use it. We follow the impl snippet — logger is intentionally
 // omitted; errors here are swallowed silently.
-export async function runHealthChecks({ centerUrl, agentToken, hostname, ports = [] }) {
+export async function runHealthChecks({ centerUrl, agentToken, hostname, heartbeatPort = undefined, ports = [] }) {
   const adModule = checkAdModule();
   const domain = checkDomain();
-  const center = await checkCenter(centerUrl, agentToken);
+  const center = await checkCenter(centerUrl, agentToken, heartbeatPort);
 
   // Probe all ports concurrently; bounded at 2s wall time regardless of count.
   const probes = await Promise.all(
