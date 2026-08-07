@@ -429,6 +429,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { backfillMigrations } from '../src/init/schema-applier.js';
+import { buildSql } from '../src/db/sql.js';
 
 let repoRoot;
 let migrationsDir;
@@ -441,24 +442,22 @@ beforeEach(() => {
 
 // Build a mock DB that records executed upserts and answers probe queries
 // based on a configurable set of "present" tables/columns.
+//
+// IMPORTANT: db.sql is the already dialect-resolved registry built by
+// buildSql() at db.init() time (see src/db/index.js:27), so the live facade
+// is FLAT: db.sql.probe.{table,column} and db.sql.schemaMigrations.upsert —
+// NOT db.sql[dialect].{probe,schemaMigrations}. Mocks must use the real
+// buildSql() output for the probe SQL strings so wiring mistakes fail the
+// test instead of passing against hand-written SQL that production never sees.
 function buildMockDb({ presentTables = new Set(), presentColumns = new Set(), upserts = [] } = {}) {
+  const sql = buildSql('mysql');
   return {
-    sql: {
-      mysql: {
-        schemaMigrations: {
-          upsert: 'INSERT INTO schema_migrations ... ON DUPLICATE KEY UPDATE ...'
-        },
-        probe: {
-          table: 'SELECT 1 AS ok FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1',
-          column: 'SELECT 1 AS ok FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
-        }
-      }
-    },
-    query: (sql, params) => {
-      if (/FROM\s+information_schema\.TABLES/i.test(sql)) {
+    sql,
+    query: (text, params) => {
+      if (text === sql.probe.table) {
         return Promise.resolve({ rows: presentTables.has(params[0]) ? [{ ok: 1 }] : [] });
       }
-      if (/FROM\s+information_schema\.COLUMNS/i.test(sql)) {
+      if (text === sql.probe.column) {
         const key = `${params[0]}.${params[1]}`;
         return Promise.resolve({ rows: presentColumns.has(key) ? [{ ok: 1 }] : [] });
       }
