@@ -28,8 +28,12 @@ async function mountView(overrides = {}) {
   adminApi.getAudit.mockResolvedValue({
     data: { rows: overrides.rows ?? makeRows(), total: 2, filtered: 2, page: 1, size: 100 }
   });
+  // Mock returns the UNWRAPPED shape: adminApi.getAuditBadge in src/api/admin.js
+  // already does `(await api.get(...)).data`, so the mock that REPLACES that
+  // function must return what the real function returns — i.e. the data itself,
+  // not an axios response wrapper.
   adminApi.getAuditBadge.mockImplementation(async (cat) => ({
-    data: { category: cat, count: cat === 'security' ? 5 : cat === 'changes' ? 12 : 3 }
+    category: cat, count: cat === 'security' ? 5 : cat === 'changes' ? 12 : 3
   }));
   const wrapper = mount(AuditView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
