@@ -23,7 +23,7 @@ export const heartbeatReportService = {
     const conn = db ?? getDb();
     const { rows: agents } = await conn.query(conn.sql.heartbeat.agentsList);
     const since = new Date(Date.now() - REPORT_SUMMARY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
-    const heartbeatStaleSeconds = await this._staleSeconds(conn);
+    const heartbeatStaleSeconds = await this._staleSeconds();
     return {
       agents: await Promise.all(agents.map(async (row) => ({
         agentId: row.agent_id,
@@ -42,7 +42,7 @@ export const heartbeatReportService = {
     const conn = db ?? getDb();
     const { rows: dcs } = await conn.query(conn.sql.heartbeat.dcsList);
     const since = new Date(Date.now() - REPORT_SUMMARY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
-    const heartbeatStaleSeconds = await this._staleSeconds(conn);
+    const heartbeatStaleSeconds = await this._staleSeconds();
     return {
       agents: await Promise.all(dcs.map(async (row) => ({
         agentId: row.agent_id,
@@ -116,7 +116,7 @@ export const heartbeatReportService = {
     };
   },
 
-  async _staleSeconds(_conn) {
+  async _staleSeconds() {
     const cfg = await getConfig();
     return Number(cfg.heartbeat_stale_seconds) || 15;
   }

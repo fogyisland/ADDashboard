@@ -46,6 +46,7 @@ const groups = [
   { title: '监控运维', items: [
     { label: '站点复制矩阵', path: '/admin/site-replication-matrix' },
     { label: '端口健康检查', path: '/admin/ports' },
+    { label: '心跳与报告', path: '/admin/heartbeat-report' },
     { label: '包管理',     path: '/admin/packages' }
   ]},
   { title: '系统设置', items: [
