@@ -75,7 +75,7 @@ Add two indexes so tab / user / time queries stay fast as the table grows:
 - `KEY ix_audit_action_time (action, created_at)` — for the tab-category filter (action IN list) + ordering.
 - `KEY ix_audit_user_time (user_id, created_at)` — for per-user drill-downs.
 
-Both created with `IF NOT EXISTS` (MySQL) / existence-check pattern (MSSQL).
+Both created with `IF NOT EXISTS` (MySQL — note: requires MySQL 8.0.29+, so we instead use the migration-001 dynamic-SQL procedure pattern that works on 5.7+) / existence-check pattern (MSSQL).
 
 ### API Changes
 
