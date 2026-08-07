@@ -79,9 +79,13 @@ process.on('unhandledRejection', (reason) => {
   const finalConfig = config ?? defaultConfig();
 
   const app = createApp({ config: finalConfig, db, logger, needsInit });
+  // initRouter is mounted in BOTH modes. The /status endpoint is intentionally
+  // reachable in normal mode so the frontend router's `beforeEach` can probe
+  // init state without 404 noise. Other init routes stay guarded by the
+  // router's internal getNeedsInit() check (only /status is always exposed).
+  app.use('/api/init', initRouter({ logger, configPath, installPath, getNeedsInit: () => needsInit }));
   if (needsInit) {
     logger.info('init mode: serving /api/init/* and /init');
-    app.use('/api/init', initRouter({ logger, configPath, installPath, getNeedsInit: () => needsInit }));
   } else {
     app.use(authRouter({ config: finalConfig, logger }));
     app.use(agentRouter({ config: finalConfig, logger }));
