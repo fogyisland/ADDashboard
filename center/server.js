@@ -11,6 +11,7 @@ import { adminRouter } from './src/routes/admin.js';
 import { dcsRouter } from './src/routes/dcs.js';
 import { lockoutRouter } from './src/routes/lockout.js';
 import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
+import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { packageRunner } from './src/packages/runner.js';
@@ -192,6 +193,13 @@ await ((async () => {
       requirePerm: (perm) => requirePerm(perm),
       logger,
       getRepoRoot: () => process.cwd()
+    }));
+    // Heartbeat/Report admin aggregator (Task 6). Read-only per-agent view
+    // joining ad_agent_heartbeat with the latest ad_replication_status
+    // snapshot. Same auth contract as the other admin read endpoints above.
+    app.use(heartbeatReportRouter({
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requirePerm: (perm) => requirePerm(perm)
     }));
     // Package system routes (Task 6). Both routers apply their own
     // per-route auth (userAuth+requirePerm for admin, agentToken for

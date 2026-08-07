@@ -96,7 +96,33 @@ const VARIANTS = {
       refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
     },
     heartbeat: {
-      upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = CURRENT_TIMESTAMP, agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size)`
+      upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = CURRENT_TIMESTAMP, agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size)`,
+      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
+             FROM ad_agent_heartbeat h
+             ORDER BY h.agent_id`,
+      dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
+                 d.dc_name, d.ip_address, d.os_version, d.is_pdc,
+                 s.site_name, s.region_code
+          FROM ad_agent_heartbeat h
+          LEFT JOIN ad_dcs d ON d.dc_name = h.agent_id
+          LEFT JOIN ad_sites s ON s.site_id = d.site_id
+          ORDER BY h.agent_id`,
+      reportSummaryFor: (agentId, sinceIso) =>
+        `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
+         FROM ad_replication_status s
+         INNER JOIN (
+           SELECT MAX(collected_at) AS max_collected
+           FROM ad_replication_status
+           WHERE agent_id = ? AND collected_at >= ?
+         ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
+         ORDER BY s.source_dc, s.dest_dc`,
+      latestReportEntries: (agentId, sinceIso, limit) =>
+        `SELECT source_dc, dest_dc, source_site, dest_site, naming_context,
+                status_code, error_message, last_success_time, last_attempt_time
+         FROM ad_replication_status
+         WHERE agent_id = ? AND collected_at >= ?
+         ORDER BY collected_at DESC
+         LIMIT ${Number(limit)}`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
@@ -336,7 +362,33 @@ const VARIANTS = {
       refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
     },
     heartbeat: {
-      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size)`
+      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size)`,
+      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
+             FROM ad_agent_heartbeat h
+             ORDER BY h.agent_id`,
+      dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
+                 d.dc_name, d.ip_address, d.os_version, d.is_pdc,
+                 s.site_name, s.region_code
+          FROM ad_agent_heartbeat h
+          LEFT JOIN ad_dcs d ON d.dc_name = h.agent_id
+          LEFT JOIN ad_sites s ON s.site_id = d.site_id
+          ORDER BY h.agent_id`,
+      reportSummaryFor: (agentId, sinceIso) =>
+        `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
+         FROM ad_replication_status s
+         INNER JOIN (
+           SELECT TOP 1 collected_at AS max_collected
+           FROM ad_replication_status
+           WHERE agent_id = ? AND collected_at >= ?
+           ORDER BY collected_at DESC
+         ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
+         ORDER BY s.source_dc, s.dest_dc`,
+      latestReportEntries: (agentId, sinceIso, limit) =>
+        `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, naming_context,
+                 status_code, error_message, last_success_time, last_attempt_time
+         FROM ad_replication_status
+         WHERE agent_id = ? AND collected_at >= ?
+         ORDER BY collected_at DESC`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
