@@ -58,6 +58,12 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
   function makeQuery(records) {
     return async function query(sql, params = []) {
       if (records) records.push({ sql, params: [...params] });
+      // Mirror the execute-path hook so tests can capture/inspect SELECT
+      // params without needing a recording array. onQuery takes precedence
+      // over row lookup — handlers can return `{ rows }` directly to assert
+      // shape without polluting scripts.rows.
+      const script = findScript(sql);
+      if (script?.onQuery) return script.onQuery(sql, params);
       return { rows: lookup(sql, params) };
     };
   }

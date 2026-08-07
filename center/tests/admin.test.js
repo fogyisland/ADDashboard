@@ -321,26 +321,31 @@ test('PUT /api/admin/config: 200 updates multiple keys', async () => {
 
 // ----- AUDIT -----
 
-test('GET /api/admin/audit?limit=5: 200 returns at most 5 rows', async () => {
+test('GET /api/admin/audit?size=5: 200 returns at most 5 rows in .rows array', async () => {
   const db = buildMockDb([
     {
       match: /FROM\s+audit_logs/i,
-      rows: [
-        { id: 1, user_id: 1, action: 'login', target: 'alice', payload: null, created_at: new Date() },
-        { id: 2, user_id: 1, action: 'create_user', target: 'bob', payload: '{"x":1}', created_at: new Date() }
-      ]
+      onQuery: (sql, params) => {
+        if (/COUNT/i.test(sql)) return { rows: [{ total: 2 }] };
+        // size=5 with offset=0 → returns both rows; pagination contract
+        // is enforced by LIMIT, not by the count of rows here.
+        return { rows: [
+          { id: 1, user_id: 1, username: 'admin', action: 'login', target: 'alice', payload: null, created_at: new Date(), userId: 1, createdAt: new Date() },
+          { id: 2, user_id: 1, username: 'admin', action: 'create_user', target: 'bob', payload: '{"x":1}', created_at: new Date(), userId: 1, createdAt: new Date() }
+        ] };
+      }
     }
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get('/api/admin/audit?limit=5')
+    .get('/api/admin/audit?size=5')
     .set('Authorization', `Bearer ${adminToken()}`);
   assert.equal(r.status, 200);
-  assert.ok(Array.isArray(r.body));
-  assert.ok(r.body.length <= 5);
-  assert.equal(r.body[0].userId, 1);
-  assert.equal(r.body[0].action, 'login');
+  assert.ok(Array.isArray(r.body.rows));
+  assert.ok(r.body.rows.length <= 5);
+  assert.equal(r.body.rows[0].userId, 1);
+  assert.equal(r.body.rows[0].action, 'login');
 });
 
 // ----- DB ERROR PATH -----

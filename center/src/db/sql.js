@@ -49,7 +49,17 @@ const VARIANTS = {
     },
     audit: {
       write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
-      list: 'SELECT id, user_id, action, target, payload, created_at FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT ?'
+      // Base SELECT — service appends WHERE / ORDER BY / LIMIT / OFFSET dynamically.
+      // LEFT JOIN to resolve username; service nullifies when user is missing.
+      list: `SELECT a.id, a.user_id AS userId, a.action, a.target, a.payload,
+                a.created_at AS createdAt, u.username AS username
+         FROM audit_logs a
+         LEFT JOIN sys_users u ON a.user_id = u.id`,
+      count: `SELECT COUNT(*) AS total FROM audit_logs a`,
+      // Placeholder count is built dynamically by the caller so any category
+      // (any number of actions) round-trips without losing the bound-param
+      // pattern that the mssql driver wrapper expects.
+      badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`
     },
     sites: {
       listAll: 'SELECT site, region_code, is_hub FROM ad_sites',
@@ -276,7 +286,15 @@ const VARIANTS = {
     },
     audit: {
       write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
-      list: 'SELECT TOP (?) id, user_id, action, target, payload, created_at FROM audit_logs ORDER BY created_at DESC, id DESC'
+      // Base SELECT — service appends WHERE / ORDER BY / OFFSET / FETCH NEXT
+      // dynamically. mssql uses OFFSET ? ROWS FETCH NEXT ? ROWS ONLY rather
+      // than LIMIT/OFFSET, so pagination lives in service-layer SQL tail.
+      list: `SELECT a.id, a.user_id AS userId, a.action, a.target, a.payload,
+                a.created_at AS createdAt, u.username AS username
+         FROM audit_logs a
+         LEFT JOIN sys_users u ON a.user_id = u.id`,
+      count: `SELECT COUNT(*) AS total FROM audit_logs a`,
+      badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`
     },
     sites: {
       listAll: 'SELECT site, region_code, is_hub FROM ad_sites',

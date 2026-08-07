@@ -213,13 +213,37 @@ export function adminRouter({ config, logger }) {
 
   r.get('/api/admin/audit', auth, async (req, res) => {
     try {
-      let limit = Number(req.query.limit ?? 200);
-      if (!Number.isFinite(limit) || limit <= 0) limit = 200;
-      if (limit > 1000) limit = 1000;
-      const rows = await (await import('../services/audit.js')).listAudit(limit);
-      res.json(rows.map(camelRow));
+      const { listAudit } = await import('../services/audit.js');
+      const { category, action, severity, userId, from, to, page = 1, size = 100 } = req.query;
+      const pageNum = Number(page);
+      const sizeNum = Number(size);
+      if (!Number.isInteger(pageNum) || pageNum < 1) return res.status(400).json({ error: 'invalid page' });
+      if (!Number.isInteger(sizeNum) || sizeNum < 1 || sizeNum > 100) return res.status(400).json({ error: 'size must be 1..100' });
+      const result = await listAudit({
+        category,
+        actions: action ? String(action).split(',') : undefined,
+        severities: severity ? String(severity).split(',') : undefined,
+        userId: userId ? Number(userId) : undefined,
+        from, to,
+        page: pageNum,
+        size: sizeNum
+      });
+      res.json(result);
     } catch (e) {
+      if (e.httpStatus === 400) return res.status(400).json({ error: e.message });
       logger.error({ err: e }, 'admin audit list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.get('/api/admin/audit/badge', auth, async (req, res) => {
+    try {
+      const { getAuditBadge } = await import('../services/audit.js');
+      const count = await getAuditBadge(req.query.category);
+      res.json({ category: req.query.category, count });
+    } catch (e) {
+      if (e.httpStatus === 400) return res.status(400).json({ error: e.message });
+      logger.error({ err: e }, 'admin audit badge failed');
       res.status(500).json({ error: 'internal' });
     }
   });
