@@ -180,6 +180,11 @@ test('db.sql.heartbeat latestReportEntries parses and caps output at 100', async
     const [rows] = await conn.query(sql, [agentId, new Date('2026-08-07T00:00:00Z')]);
     assert.equal(rows.length, 100);
     assert.equal(rows[0].dest_dc, `__t_hb_dest_${suffix}_100`);
+    // Guard against the Task 6 collectedAt regression: latestReportEntries must
+    // select collected_at so the service can surface a non-null collectedAt.
+    assert.ok(rows[0].collected_at, 'rows[0].collected_at must be a non-null Date');
+    assert.ok(rows[0].collected_at instanceof Date, 'rows[0].collected_at must be a Date instance');
+    assert.equal(rows[0].collected_at.getTime(), new Date(Date.UTC(2026, 7, 7, 11, 0, 100)).getTime());
   } finally {
     await conn.execute('DELETE FROM ad_replication_status WHERE agent_id = ?', [agentId]).catch(() => {});
     await conn.end();

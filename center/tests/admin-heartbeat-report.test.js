@@ -131,7 +131,7 @@ test('report-detail: returns entries for the most recent collected_at (capped at
   }
   const db = buildMockDb([
     {
-      match: /SELECT\s+source_dc\s*,\s*dest_dc\s*,\s*source_site\s*,\s*dest_site\s*,\s*naming_context\s*,\s*status_code\s*,\s*error_message\s*,\s*last_success_time\s*,\s*last_attempt_time\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
+      match: /SELECT\s+collected_at\s*,\s*source_dc\s*,\s*dest_dc\s*,\s*source_site\s*,\s*dest_site\s*,\s*naming_context\s*,\s*status_code\s*,\s*error_message\s*,\s*last_success_time\s*,\s*last_attempt_time\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
       rows: entries
     }
   ]).standard();

@@ -117,7 +117,7 @@ const VARIANTS = {
          ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
          ORDER BY s.source_dc, s.dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
-        `SELECT source_dc, dest_dc, source_site, dest_site, naming_context,
+        `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                 status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
          WHERE agent_id = ? AND collected_at >= ?
@@ -384,7 +384,7 @@ const VARIANTS = {
          ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
          ORDER BY s.source_dc, s.dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
-        `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, naming_context,
+        `SELECT TOP (?) collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                  status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
          WHERE agent_id = ? AND collected_at >= ?
