@@ -16,6 +16,7 @@
       <button data-test="tab-agent" :class="{active: tab==='agent'}" @click="tab='agent'">按 Agent</button>
       <button data-test="tab-dc"    :class="{active: tab==='dc'}"    @click="tab='dc'">按 DC</button>
     </div>
+    <div v-if="error" class="error-banner" data-test="error-banner">{{ error }}</div>
     <h3>心跳表</h3>
     <table class="t">
       <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th v-if="tab==='dc'">站点</th><th>最新心跳时间</th><th>延迟</th></tr></thead>
@@ -27,7 +28,7 @@
           <td>{{ formatRelative(row.lastHeartbeatAt) }}</td>
           <td>{{ formatLatency(row.lastHeartbeatAt) }}</td>
         </tr>
-        <tr v-if="!rows.length"><td colspan="5" class="empty">暂无 Agent — 等待心跳上报</td></tr>
+        <tr v-if="!rows.length"><td :colspan="tab === 'dc' ? 5 : 4" class="empty">暂无 Agent — 等待心跳上报</td></tr>
       </tbody>
     </table>
 
@@ -43,6 +44,7 @@
           <td v-if="row.reportSummary">{{ row.reportSummary.successCount }} / {{ row.reportSummary.totalLinks }}</td>
           <td v-else>—</td>
         </tr>
+        <tr v-if="!rows.length"><td colspan="4" class="empty">暂无报告 — 等待心跳上报</td></tr>
       </tbody>
     </table>
 
@@ -68,6 +70,7 @@ const heartbeatStaleSeconds = ref(15);
 const refreshIntervalSeconds = ref(5);
 const drawerAgentId = ref(null);
 const drawerPayload = ref(null);
+const error = ref(null);
 let timer = null;
 
 const rows = computed(() => tab.value === 'agent' ? agentsRows.value : dcsRows.value);
@@ -76,7 +79,8 @@ function statusOf(row) {
   if (!row.lastHeartbeatAt) return 'never';
   const gap = (Date.now() - new Date(row.lastHeartbeatAt).getTime()) / 1000;
   if (gap <= heartbeatStaleSeconds.value) return 'green';
-  if (gap <= 60) return 'yellow';
+  // Yellow band: up to 4× the stale threshold. Keeps the band visible even when heartbeat_stale_seconds > 60.
+  if (gap <= heartbeatStaleSeconds.value * 4) return 'yellow';
   return 'red';
 }
 function statusLabel(row) {
@@ -101,14 +105,20 @@ function formatLatency(s) {
 }
 
 async function load() {
-  if (tab.value === 'agent') {
-    const r = await heartbeatReportApi.listAgents();
-    agentsRows.value = r.data?.agents || [];
-    heartbeatStaleSeconds.value = r.data?.heartbeatStaleSeconds || 15;
-  } else {
-    const r = await heartbeatReportApi.listDcs();
-    dcsRows.value = r.data?.agents || [];
-    heartbeatStaleSeconds.value = r.data?.heartbeatStaleSeconds || 15;
+  try {
+    if (tab.value === 'agent') {
+      const r = await heartbeatReportApi.listAgents();
+      agentsRows.value = r.data?.agents || [];
+      heartbeatStaleSeconds.value = r.data?.heartbeatStaleSeconds || 15;
+    } else {
+      const r = await heartbeatReportApi.listDcs();
+      dcsRows.value = r.data?.agents || [];
+      heartbeatStaleSeconds.value = r.data?.heartbeatStaleSeconds || 15;
+    }
+    error.value = null;
+  } catch (e) {
+    // Keep last good rows so the table still shows data; surface the error to the operator.
+    error.value = e?.message || '加载失败';
   }
 }
 function startTimer() {
@@ -123,11 +133,18 @@ function stopTimer() {
 async function openDrawer(row) {
   drawerAgentId.value = row.agentId;
   drawerPayload.value = null;
-  const r = await heartbeatReportApi.getDetail(row.agentId);
-  drawerPayload.value = r.data;
+  try {
+    const r = await heartbeatReportApi.getDetail(row.agentId);
+    drawerPayload.value = r.data;
+  } catch (e) {
+    drawerPayload.value = null;
+    error.value = e?.message || '加载详情失败';
+  }
 }
 
-onMounted(() => { load().then(startTimer); });
+onMounted(async () => {
+  try { await load(); } catch {} finally { startTimer(); }
+});
 onBeforeUnmount(stopTimer);
 watch(tab, () => load());
 watch(refreshIntervalSeconds, startTimer);
@@ -146,6 +163,7 @@ watch(refreshIntervalSeconds, startTimer);
 .dot.red    { background: #ef4444; }
 .dot.never  { background: #6b7280; }
 .empty { text-align: center; color: var(--muted); padding: 24px; }
+.error-banner { background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; padding: 10px 14px; margin: 12px 0; border-radius: 4px; font-size: 13px; }
 .header { display: flex; justify-content: space-between; align-items: center; }
 .refresh-toggle { color: var(--muted); font-size: 13px; }
 .refresh-toggle select { background: #0b1220; color: var(--text); border: 1px solid #1e293b; padding: 4px 8px; }
