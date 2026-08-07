@@ -62,9 +62,20 @@ test('GET /api/init/status returns needsInit=true when in init mode', async () =
   assert.strictEqual(r.body.needsInit, true);
 });
 
-test('GET /api/init/status returns 404 when not in init mode', async () => {
+test('GET /api/init/status returns needsInit=false in normal mode (no 404)', async () => {
+  // Status is intentionally mounted BEFORE the init-mode guard so the frontend
+  // router's `beforeEach` can probe init state without producing 404 noise on
+  // every page load. Returns 200 with {needsInit: false} instead of 404.
   const app = makeApp({ needsInit: false });
   const r = await call(app, 'GET', '/api/init/status');
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.needsInit, false);
+});
+
+test('GET /api/init/status is the only init route reachable in normal mode', async () => {
+  // Other init routes stay guarded — only /status is always reachable.
+  const app = makeApp({ needsInit: false });
+  const r = await call(app, 'POST', '/api/init/db/test', { dialect: 'mysql', host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' });
   assert.strictEqual(r.status, 404);
 });
 

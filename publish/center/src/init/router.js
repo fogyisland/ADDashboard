@@ -23,14 +23,19 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
   };
   const r = express.Router();
 
+  // Status endpoint is intentionally mounted BEFORE the init-mode guard so the
+  // frontend router's `beforeEach` can probe init state without producing a
+  // 404 noise on every page load. In init mode returns {needsInit: true},
+  // in normal mode returns {needsInit: false}. Other init endpoints below stay
+  // guarded — only /status is always reachable.
+  r.get('/status', (req, res) => {
+    res.json({ needsInit: !!getNeedsInit() });
+  });
+
   // Guard: 404 unless in init mode (avoids leaking wizard existence)
   r.use((req, res, next) => {
     if (!getNeedsInit()) return res.status(404).json({ error: 'not found' });
     next();
-  });
-
-  r.get('/status', (req, res) => {
-    res.json({ needsInit: true });
   });
 
   r.post('/db/test', async (req, res) => {
