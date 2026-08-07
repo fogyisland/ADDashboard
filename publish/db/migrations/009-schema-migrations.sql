@@ -1,3 +1,5 @@
+-- verify: table schema_migrations
+
 -- 009-schema-migrations.sql
 -- Track which SQL migrations have been applied to the current DB.
 -- Server-side tracking enables the admin "Schema Migrations" page to:

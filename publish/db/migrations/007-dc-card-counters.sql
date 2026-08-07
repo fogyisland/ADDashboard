@@ -1,3 +1,8 @@
+-- verify: column ad_replication_status.users_count
+-- verify: column ad_replication_status.groups_count
+-- verify: column ad_replication_status.gpos_count
+-- verify: column ad_replication_status.locked_count
+
 -- 007-dc-card-counters.sql
 -- Add 4 summary counter columns to ad_replication_status for the per-DC
 -- card overview. Populated by a self-loop entry with naming_context =

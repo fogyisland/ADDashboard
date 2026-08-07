@@ -1,3 +1,5 @@
+-- verify: table sys_config_audit
+
 -- 005-sys-config-audit.sql
 CREATE TABLE IF NOT EXISTS sys_config_audit (
   id INT PRIMARY KEY AUTO_INCREMENT,

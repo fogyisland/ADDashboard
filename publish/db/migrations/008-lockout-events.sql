@@ -1,3 +1,5 @@
+-- verify: table ad_lockout_events
+
 -- 008-lockout-events.sql
 -- Lockout troubleshooting feature: persist Windows Security event 4740
 -- (user account locked out) from every DC. Server-side dedup on

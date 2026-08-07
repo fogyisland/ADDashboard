@@ -1,3 +1,10 @@
+-- verify: table installed_packages
+-- verify: table metric_gauge
+-- verify: table metric_counter
+-- verify: table metric_timeseries
+-- verify: table metric_status
+-- verify: table package_runs
+
 -- AD Dashboard migration 004: package system (6 new tables).
 -- Adds tables for the v2 plugin system:
 --   installed_packages: registry of packages installed on this center

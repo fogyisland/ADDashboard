@@ -6,6 +6,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { parseVerifyMarker, verifyMarkers } from './verify-marker.js';
 
 export function splitSqlStatements(sql) {
   const out = [];
@@ -165,21 +166,34 @@ function sha256(s) { return createHash('sha256').update(s).digest('hex'); }
 export async function backfillMigrations(dialect, db, opts = {}) {
   const repoRoot = opts.repoRoot ?? join(process.cwd(), '..');
   const dir = resolveMigrationsDir(repoRoot, dialect);
-  if (!existsSync(dir)) return 0;
+  if (!existsSync(dir)) return { count: 0, skipped: [] };
   const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
   const appliedAt = new Date().toISOString();
+  const logger = opts.logger ?? console;
   let count = 0;
+  const skipped = [];
   for (const f of files) {
-    // Skip 009 itself — it is the migration that creates schema_migrations,
-    // so backfilling a row for it from inside that same table is circular.
-    // The admin list still surfaces it by reading the filesystem.
-    if (f.startsWith('009-')) continue;
     const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
     if (!m) continue;
     const version = m[1];
-    const description = m[2];
     const content = readFileSync(join(dir, f), 'utf8');
+
+    // If the file declares verify markers, probe the DB — only backfill the
+    // row when every marker is present. A missing marker means the migration
+    // was never actually applied to this DB; warn + skip so the admin
+    // /api/admin/migrations list surfaces it as pending.
+    const markers = parseVerifyMarker(content);
+    if (markers.length > 0) {
+      const { ok, missing } = await verifyMarkers(db, markers);
+      if (!ok) {
+        logger.warn?.({ file: f, version, missing }, 'verify markers missing — skipping backfill');
+        skipped.push({ file: f, version, missing });
+        continue;
+      }
+    }
+
     const checksum = sha256(content);
+    const description = m[2];
     // Param order matches the upsert column list in db/sql.js:
     // (version, description, type, script, checksum, applied_at,
     //  execution_ms, applied_by, status, error_message)
@@ -189,7 +203,7 @@ export async function backfillMigrations(dialect, db, opts = {}) {
     ]);
     count++;
   }
-  return count;
+  return { count, skipped };
 }
 
 // Probe SQL for "does schema_migrations exist?". MSSQL has no LIMIT clause,
