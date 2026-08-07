@@ -1,18 +1,16 @@
 import { test, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
-vi.mock('axios', () => {
-  return {
-    default: {
-      get: vi.fn(),
-      post: vi.fn(),
-      put: vi.fn(),
-      delete: vi.fn()
-    }
-  };
-});
+vi.mock('../src/api/client.js', () => ({
+  default: {
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn()
+  }
+}));
 
-import axios from 'axios';
+import api from '../src/api/client.js';
 import { usePackagesStore } from '../src/stores/packages.js';
 
 function makeInstalled() {
@@ -24,14 +22,14 @@ function makeInstalled() {
 
 beforeEach(() => {
   setActivePinia(createPinia());
-  axios.get.mockReset();
-  axios.post.mockReset();
-  axios.put.mockReset();
-  axios.delete.mockReset();
+  api.get.mockReset();
+  api.post.mockReset();
+  api.put.mockReset();
+  api.delete.mockReset();
 });
 
 test('fetchInstalled populates state.installed', async () => {
-  axios.get.mockResolvedValueOnce({ data: { packages: makeInstalled() } });
+  api.get.mockResolvedValueOnce({ data: { packages: makeInstalled() } });
   const store = usePackagesStore();
   await store.fetchInstalled();
   expect(store.installed).toHaveLength(2);
@@ -41,7 +39,7 @@ test('fetchInstalled populates state.installed', async () => {
 
 test('fetchInstalled sets loading during request', async () => {
   let resolveFn;
-  axios.get.mockReturnValueOnce(new Promise((r) => { resolveFn = () => r({ data: { packages: [] } }); }));
+  api.get.mockReturnValueOnce(new Promise((r) => { resolveFn = () => r({ data: { packages: [] } }); }));
   const store = usePackagesStore();
   const p = store.fetchInstalled();
   expect(store.loading).toBe(true);
@@ -51,67 +49,67 @@ test('fetchInstalled sets loading during request', async () => {
 });
 
 test('install posts to /api/admin/packages/install and refetches', async () => {
-  axios.post.mockResolvedValueOnce({ data: { ok: true } });
-  axios.get.mockResolvedValueOnce({ data: { packages: makeInstalled() } });
+  api.post.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: makeInstalled() } });
   const store = usePackagesStore();
   await store.install({ source: 'local', packageRef: 'foo.zip', buffer: 'BASE64' });
-  expect(axios.post).toHaveBeenCalledWith('/api/admin/packages/install', {
+  expect(api.post).toHaveBeenCalledWith('/api/admin/packages/install', {
     source: 'local', packageRef: 'foo.zip', buffer: 'BASE64'
   });
-  expect(axios.get).toHaveBeenCalledWith('/api/admin/packages');
+  expect(api.get).toHaveBeenCalledWith('/api/admin/packages');
   expect(store.installed).toHaveLength(2);
 });
 
 test('enable posts to /api/admin/packages/:name/enable and refetches', async () => {
-  axios.post.mockResolvedValueOnce({ data: { ok: true } });
-  axios.get.mockResolvedValueOnce({ data: { packages: [] } });
+  api.post.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
   const store = usePackagesStore();
   await store.enable('cpu-monitor');
-  expect(axios.post).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/enable');
+  expect(api.post).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/enable');
 });
 
 test('disable posts to /api/admin/packages/:name/disable and refetches', async () => {
-  axios.post.mockResolvedValueOnce({ data: { ok: true } });
-  axios.get.mockResolvedValueOnce({ data: { packages: [] } });
+  api.post.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
   const store = usePackagesStore();
   await store.disable('cpu-monitor');
-  expect(axios.post).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/disable');
+  expect(api.post).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/disable');
 });
 
 test('uninstall deletes /api/admin/packages/:name with purgeMetrics flag', async () => {
-  axios.delete.mockResolvedValueOnce({ data: { ok: true } });
-  axios.get.mockResolvedValueOnce({ data: { packages: [] } });
+  api.delete.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
   const store = usePackagesStore();
   await store.uninstall('cpu-monitor', true);
-  expect(axios.delete).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor', { params: { purgeMetrics: true } });
+  expect(api.delete).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor', { params: { purgeMetrics: true } });
 });
 
 test('uninstall defaults purgeMetrics to false', async () => {
-  axios.delete.mockResolvedValueOnce({ data: { ok: true } });
-  axios.get.mockResolvedValueOnce({ data: { packages: [] } });
+  api.delete.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
   const store = usePackagesStore();
   await store.uninstall('cpu-monitor');
-  expect(axios.delete).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor', { params: { purgeMetrics: false } });
+  expect(api.delete).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor', { params: { purgeMetrics: false } });
 });
 
 test('upgrade posts to /api/admin/packages/:name/upgrade', async () => {
-  axios.post.mockResolvedValueOnce({ data: { ok: true, data: {} } });
-  axios.get.mockResolvedValueOnce({ data: { packages: [] } });
+  api.post.mockResolvedValueOnce({ data: { ok: true, data: {} } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
   const store = usePackagesStore();
   await store.upgrade('cpu-monitor', '1.2.0');
-  expect(axios.post).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/upgrade', { version: '1.2.0' });
+  expect(api.post).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/upgrade', { version: '1.2.0' });
 });
 
 test('updateParams puts to /api/admin/packages/:name/params and refetches', async () => {
-  axios.put.mockResolvedValueOnce({ data: { ok: true } });
-  axios.get.mockResolvedValueOnce({ data: { packages: [] } });
+  api.put.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
   const store = usePackagesStore();
   await store.updateParams('cpu-monitor', { threshold: 80 });
-  expect(axios.put).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/params', { params: { threshold: 80 } });
+  expect(api.put).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/params', { params: { threshold: 80 } });
 });
 
 test('fetchRegistryIndex returns data from /api/admin/packages/registry/list', async () => {
-  axios.get.mockResolvedValueOnce({
+  api.get.mockResolvedValueOnce({
     data: { url: 'http://x', packages: [{ name: 'cpu' }], updatedAt: '2026-08-02T00:00:00Z' }
   });
   const store = usePackagesStore();
@@ -121,9 +119,9 @@ test('fetchRegistryIndex returns data from /api/admin/packages/registry/list', a
 });
 
 test('refreshRegistry hits /api/admin/packages/registry/refresh', async () => {
-  axios.get.mockResolvedValueOnce({ data: { ok: true, data: { updatedAt: 'x', packages: 5 } } });
+  api.get.mockResolvedValueOnce({ data: { ok: true, data: { updatedAt: 'x', packages: 5 } } });
   const store = usePackagesStore();
   await store.refreshRegistry();
-  expect(axios.get).toHaveBeenCalledWith('/api/admin/packages/registry/refresh');
+  expect(api.get).toHaveBeenCalledWith('/api/admin/packages/registry/refresh');
   expect(store.registryCache.fetchedAt).toBeTruthy();
 });
