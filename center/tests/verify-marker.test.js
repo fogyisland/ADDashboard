@@ -102,14 +102,14 @@ function mockDb(dialect, { presentTables = new Set(), presentColumns = new Set()
 test('verifyMarkers: all present → ok=true, missing=[]', async () => {
   const db = mockDb('mysql', { presentTables: new Set(['sys_config_audit']) });
   const markers = [{ kind: 'table', name: 'sys_config_audit' }];
-  const result = await verifyMarkers(db, markers, 'mysql');
+  const result = await verifyMarkers(db, markers);
   assert.deepStrictEqual(result, { ok: true, missing: [] });
 });
 
 test('verifyMarkers: one table missing → ok=false, missing=[table X]', async () => {
   const db = mockDb('mysql', { presentTables: new Set() });
   const markers = [{ kind: 'table', name: 'sys_config_audit' }];
-  const result = await verifyMarkers(db, markers, 'mysql');
+  const result = await verifyMarkers(db, markers);
   assert.equal(result.ok, false);
   assert.deepStrictEqual(result.missing, ['table sys_config_audit']);
 });
@@ -123,7 +123,7 @@ test('verifyMarkers: mixed kinds, column missing → ok=false, column missing in
     { kind: 'table', name: 'sys_config_audit' },
     { kind: 'column', name: 'ad_dcs.is_pdc' }
   ];
-  const result = await verifyMarkers(db, markers, 'mysql');
+  const result = await verifyMarkers(db, markers);
   assert.equal(result.ok, false);
   assert.ok(result.missing.includes('column ad_dcs.is_pdc'));
   assert.ok(!result.missing.includes('table sys_config_audit'));
@@ -131,7 +131,7 @@ test('verifyMarkers: mixed kinds, column missing → ok=false, column missing in
 
 test('verifyMarkers: column marker splits name into [table, column] params', async () => {
   const db = mockDb('mysql', { presentColumns: new Set(['ad_dcs.is_pdc']) });
-  const result = await verifyMarkers(db, [{ kind: 'column', name: 'ad_dcs.is_pdc' }], 'mysql');
+  const result = await verifyMarkers(db, [{ kind: 'column', name: 'ad_dcs.is_pdc' }]);
   assert.equal(result.ok, true);
   assert.deepStrictEqual(db.calls[0].params, ['ad_dcs', 'is_pdc']);
 });
@@ -144,21 +144,21 @@ test('verifyMarkers: works against mssql probe SQL too', async () => {
   const result = await verifyMarkers(db, [
     { kind: 'table', name: 'schema_migrations' },
     { kind: 'column', name: 'ad_dcs.is_pdc' }
-  ], 'mssql');
+  ]);
   assert.equal(result.ok, false);
   assert.deepStrictEqual(result.missing, ['column ad_dcs.is_pdc']);
 });
 
 test('verifyMarkers: empty marker list → ok=true without querying', async () => {
   const db = mockDb('mysql');
-  const result = await verifyMarkers(db, [], 'mysql');
+  const result = await verifyMarkers(db, []);
   assert.deepStrictEqual(result, { ok: true, missing: [] });
   assert.equal(db.calls.length, 0);
 });
 
 test('verifyMarkers: unqualified column marker is reported missing, not probed', async () => {
   const db = mockDb('mysql');
-  const result = await verifyMarkers(db, [{ kind: 'column', name: 'is_pdc' }], 'mysql');
+  const result = await verifyMarkers(db, [{ kind: 'column', name: 'is_pdc' }]);
   assert.equal(result.ok, false);
   assert.deepStrictEqual(result.missing, ['column is_pdc (malformed)']);
   assert.equal(db.calls.length, 0);
