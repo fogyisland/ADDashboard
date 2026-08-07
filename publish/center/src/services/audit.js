@@ -60,10 +60,7 @@ export async function listAudit({ category, actions, severities, userId, from, t
   const total = Number(countRows[0].total);
   const offset = (page - 1) * size;
   const listParams = [...params, size, offset];
-  const { rows } = await db.query(
-    `${db.sql.audit.list} ${where} ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`,
-    listParams
-  );
+  const { rows } = await db.query(db.sql.audit.list(where), listParams);
   return {
     rows: rows.map(r => ({
       id: r.id,
