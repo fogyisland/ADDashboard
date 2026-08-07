@@ -1,3 +1,5 @@
+-- verify: table sys_config_audit
+
 -- 005-sys-config-audit.sql (MSSQL)
 IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='sys_config_audit' AND xtype='U')
 CREATE TABLE sys_config_audit (

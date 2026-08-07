@@ -1,3 +1,16 @@
+-- verify: column ad_sites.description
+-- verify: column ad_sites.created_at
+-- verify: column ad_sites.updated_at
+-- verify: column ad_dcs.when_created
+-- verify: column ad_dcs.is_gc
+-- verify: column ad_dcs.is_rid_master
+-- verify: column ad_dcs.is_schema_master
+-- verify: column ad_dcs.is_domain_naming_master
+-- verify: column ad_dcs.is_infrastructure_master
+-- verify: column ad_dcs.site_hint
+-- verify: column ad_dcs.discovered_at
+-- verify: column ad_dcs.discovered_by_agent_id
+
 -- AD Dashboard DC/Site Discovery migration (SQL Server 2014+)
 -- Applies after 01-tables.sql + 02-seed-roles.sql.
 -- For upgrade-from-pre-1.x deployments only: fresh installs already include

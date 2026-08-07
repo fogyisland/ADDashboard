@@ -1,3 +1,6 @@
+-- verify: table system_ports
+-- verify: table ad_agent_port_status
+
 -- AD Dashboard migration 003: MSSQL flavor. Idempotent.
 -- Bit + DATETIME2 instead of TINYINT(1) + DATETIME(3).
 

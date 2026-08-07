@@ -1,3 +1,5 @@
+-- verify: table schema_migrations
+
 -- 009-schema-migrations.sql (MSSQL)
 -- See mysql counterpart for semantics. Uses DATETIME2 (not DATETIME) per
 -- project convention; IF OBJECT_ID guard follows db/schema/mssql/01-tables.sql pattern.

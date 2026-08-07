@@ -1,3 +1,10 @@
+-- verify: table installed_packages
+-- verify: table metric_gauge
+-- verify: table metric_counter
+-- verify: table metric_timeseries
+-- verify: table metric_status
+-- verify: table package_runs
+
 -- AD Dashboard migration 004: package system (MSSQL flavor).
 -- 6 new tables for the v2 plugin system.
 -- Idempotent via IF OBJECT_ID('dbo.<table>', 'U') IS NULL.

@@ -1,3 +1,5 @@
+-- verify: table ad_lockout_events
+
 -- 008-lockout-events.sql (MSSQL)
 -- MSSQL doesn't support CREATE TABLE IF NOT EXISTS — use the project's
 -- established IF OBJECT_ID guard pattern (same as db/schema/mssql/01-tables.sql).
