@@ -244,7 +244,7 @@ git commit -m "feat(audit): audit-classifier policy module with frozen action/ca
 - Create: `db/migrations/mssql/010-audit-logs-json.sql`
 - Create: `db/migrations/011-audit-logs-indexes.sql`
 - Create: `db/migrations/mssql/011-audit-logs-indexes.sql`
-- Create: `center/tests/audit-migration.test.js`
+- Create: `center/tests/sql/audit-migration.test.js` (follows the `tests/sql/migration-004.test.js` convention for DB-guarded migration tests)
 
 **Interfaces:**
 - Consumes: existing `audit_logs` table from `db/schema/01-tables.sql` — `payload TEXT NULL`, plus indexes `ix_audit_time (created_at)`.
@@ -255,7 +255,7 @@ git commit -m "feat(audit): audit-classifier policy module with frozen action/ca
 
 - [ ] **Step 1: Write the failing migration tests**
 
-`center/tests/audit-migration.test.js`:
+`center/tests/sql/audit-migration.test.js`:
 ```js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -428,7 +428,7 @@ cp db/migrations/011-audit-logs-indexes.sql      publish/db/migrations/011-audit
 cp db/migrations/mssql/011-audit-logs-indexes.sql publish/db/migrations/mssql/011-audit-logs-indexes.sql
 git add db/migrations/010-audit-logs-json.sql db/migrations/mssql/010-audit-logs-json.sql \
         db/migrations/011-audit-logs-indexes.sql db/migrations/mssql/011-audit-logs-indexes.sql \
-        center/tests/audit-migration.test.js \
+        center/tests/sql/audit-migration.test.js \
         publish/db/migrations/010-audit-logs-json.sql publish/db/migrations/mssql/010-audit-logs-json.sql \
         publish/db/migrations/011-audit-logs-indexes.sql publish/db/migrations/mssql/011-audit-logs-indexes.sql
 git commit -m "feat(db): migration 010 (payload JSON) + 011 (action/user indexes), both dialects"
