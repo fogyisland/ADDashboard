@@ -269,6 +269,21 @@ const VARIANTS = {
           error_message = VALUES(error_message)`,
       deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
     },
+    // Port self-probe state (migration 012). One row per port_role, upserted
+    // at 1 Hz by the probe service. getAll backs /api/probe and the admin
+    // monitor panel; upsertRow is the single-row writer.
+    probeState: {
+      getAll: 'SELECT port_role, status, latency_ms, last_probe_at, last_up_at, consecutive_failures FROM probe_state ORDER BY port_role',
+      upsertRow: (portRole, status, latencyMs, lastProbeAt, lastUpAt, consecutiveFailures) =>
+        `INSERT INTO probe_state (port_role, status, latency_ms, last_probe_at, last_up_at, consecutive_failures)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           status = VALUES(status),
+           latency_ms = VALUES(latency_ms),
+           last_probe_at = VALUES(last_probe_at),
+           last_up_at = VALUES(last_up_at),
+           consecutive_failures = VALUES(consecutive_failures)`
+    },
     // Existence probes for migration verify markers. Returns one row when the
     // artifact exists, zero rows when it doesn't. Scoped to the connection's
     // own database so a same-named table in another schema can't false-positive.
@@ -572,6 +587,24 @@ const VARIANTS = {
           VALUES
           (s.version, s.description, s.type, s.script, s.checksum, s.applied_at, s.execution_ms, s.applied_by, s.status, s.error_message);`,
       deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
+    },
+    // Port self-probe state (migration 012). MSSQL uses MERGE for atomic
+    // upsert (no native ON DUPLICATE KEY). Uses ? placeholders — db.execute
+    // remaps ? -> @pN for MSSQL.
+    probeState: {
+      getAll: 'SELECT port_role, status, latency_ms, last_probe_at, last_up_at, consecutive_failures FROM probe_state ORDER BY port_role',
+      upsertRow: (portRole, status, latencyMs, lastProbeAt, lastUpAt, consecutiveFailures) =>
+        `MERGE INTO probe_state AS t
+         USING (SELECT ? AS port_role, ? AS status, ? AS latency_ms, ? AS last_probe_at, ? AS last_up_at, ? AS consecutive_failures) AS s
+         ON t.port_role = s.port_role
+         WHEN MATCHED THEN UPDATE SET
+           status = s.status,
+           latency_ms = s.latency_ms,
+           last_probe_at = s.last_probe_at,
+           last_up_at = s.last_up_at,
+           consecutive_failures = s.consecutive_failures
+         WHEN NOT MATCHED THEN INSERT (port_role, status, latency_ms, last_probe_at, last_up_at, consecutive_failures)
+           VALUES (s.port_role, s.status, s.latency_ms, s.last_probe_at, s.last_up_at, s.consecutive_failures)`
     },
     // Existence probes for migration verify markers. Returns one row when the
     // artifact exists, zero rows when it doesn't. INFORMATION_SCHEMA views are
