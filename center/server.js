@@ -13,6 +13,7 @@ import { dcsRouter } from './src/routes/dcs.js';
 import { lockoutRouter } from './src/routes/lockout.js';
 import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
 import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
+import { createProbeLoop } from './src/services/probe.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { packageRunner } from './src/packages/runner.js';
@@ -184,6 +185,11 @@ await ((async () => {
 
   const apps = buildServerApps({ config: finalConfig, db, logger, needsInit, systemConfig });
 
+  // Declared at module scope so the normal-mode bootstrap below can assign
+  // it and the normal-mode shutdown handler can stop it. The init-mode
+  // branch never starts a probe loop (no DB) and so leaves this as null.
+  let probeLoop = null;
+
   const app = apps.webApp;
   // initRouter is mounted in BOTH modes. The /status endpoint is intentionally
   // reachable in normal mode so the frontend router's `beforeEach` can probe
@@ -279,8 +285,40 @@ await ((async () => {
         { role: 'report',    app: apps.reportApp,    port: apps.ports.report }
       ]
     });
+    // Start the 1 Hz self-probe loop now that all three ports are listening.
+    // probe_state is owned by migration 012 (Task 1); the loop will surface
+    // a clear error and halt if the table is missing.
+    probeLoop = createProbeLoop({
+      db: getDb(),
+      ports: apps.ports,
+      logger,
+      writeAudit
+    });
+    probeLoop.start();
+    // Bootstrap watchdog: 30 s after startup, if no probe write has landed
+    // (all rows still stale or uninitialized), emit a one-shot audit warning
+    // so the operator can see in the audit log that the loop is wedged. The
+    // .unref() prevents this timer from keeping the process alive during
+    // shutdown.
+    setTimeout(() => {
+      getDb().query(getDb().sql.probeState.getAll).then(({ rows }) => {
+        const allStale = rows.every(r => {
+          if (!r.last_probe_at) return true;
+          return (Date.now() - new Date(r.last_probe_at).getTime()) > 30000;
+        });
+        if (allStale) {
+          writeAudit({
+            action: 'probe_loop_watchdog',
+            target: 'probe_state',
+            payload: { warning: 'no probe write in 30s after startup' }
+          }).catch(() => {});
+          logger.error('probe loop watchdog: no probe write in 30s');
+        }
+      }).catch(() => {});
+    }, 30000).unref();
     const shutdown = async (sig) => {
       logger.info({ sig }, 'shutting down');
+      try { await probeLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'probe stop failed'); }
       await closeAll(servers, logger);
       try { await closeWizardFacade(); } catch {}
       try { await close(); } catch {}
