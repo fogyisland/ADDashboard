@@ -24,6 +24,12 @@ agent/queue.db-wal
 # Dev-only Chrome DevTools redirect helper (local debugging)
 scripts/cdp-redirect.js
 
+# Dev-only JWT minter for local smoke tests (hardcoded dev secret; see scripts/sign-token.mjs)
+scripts/sign-token.mjs
+
+# Runtime dev data (SQLite databases, plugin test fixtures)
+data/
+
 # NSSM binary downloaded by Ensure-Nssm.ps1 (auto-installed on first deploy)
 nssm/
 nssm.zip
