@@ -12,6 +12,21 @@
         </select>
       </div>
     </div>
+    <section class="probe-panel" data-test="probe-panel">
+      <h3>中心端口</h3>
+      <table class="probe-t">
+        <thead><tr><th>状态</th><th>端口</th><th>详情</th><th>最近探针</th></tr></thead>
+        <tbody>
+          <tr v-for="role in PROBE_ROLES" :key="role" :data-test="'probe-row'" :data-role="role" :data-status="probeStatusOf(role)">
+            <td><span :class="['dot', probeStatusOf(role)]"></span> {{ probeLabel(role, probeRows[role]) }}</td>
+            <td>{{ portLabel(role) }}</td>
+            <td>{{ probeRows[role]?.status || '—' }} · {{ probeRows[role]?.latencyMs ?? '—' }}ms</td>
+            <td>{{ formatRelative(probeRows[role]?.lastProbeAt) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="nowCenterProbeStale" class="probe-stale-banner" data-test="probe-stale-banner">⚠ 中心自我探针已 30s 未更新 — 监控可能失联</div>
+    </section>
     <div class="tabs">
       <button data-test="tab-agent" :class="{active: tab==='agent'}" @click="tab='agent'">按 Agent</button>
       <button data-test="tab-dc"    :class="{active: tab==='dc'}"    @click="tab='dc'">按 DC</button>
@@ -73,6 +88,48 @@ const drawerPayload = ref(null);
 const error = ref(null);
 let timer = null;
 
+// Center port self-probe panel (Task 7)
+const PROBE_ROLES = ['web', 'heartbeat', 'report'];
+const PROBE_PORT_LABEL = { web: 'Web :8080', heartbeat: '心跳 :8081', report: '报告 :8082' };
+const probeRows = ref({ web: null, heartbeat: null, report: null });
+const nowCenterProbeStale = ref(false);
+
+function probeStatusOf(role) {
+  const row = probeRows.value[role];
+  if (!row) return 'yellow';
+  if (nowCenterProbeStale.value) return 'red';
+  if (row.status === 'unknown') return 'yellow';
+  if (row.status === 'degraded') {
+    if ((row.consecutiveFailures ?? 0) >= 3) return 'red';
+    return 'yellow';
+  }
+  if (row.status === 'healthy') {
+    if (!row.lastProbeAt) return 'yellow';
+    const gap = (Date.now() - new Date(row.lastProbeAt).getTime()) / 1000;
+    if (gap > 60) return 'red';
+    if (gap > 30) return 'yellow';
+    return 'green';
+  }
+  return 'yellow';
+}
+function probeLabel(role, row) {
+  if (!row) return '未知';
+  if (nowCenterProbeStale.value) return '监控自身失联';
+  if (row.status === 'unknown') return '启动中';
+  if (row.status === 'degraded') {
+    const n = row.consecutiveFailures ?? 0;
+    return n >= 3 ? `down · 连续失败 ${n} 次` : `异常 · 连续失败 ${n} 次`;
+  }
+  if (row.status === 'healthy') {
+    if (!row.lastProbeAt) return '正常 · 探针未更新';
+    return `正常 · ${row.latencyMs ?? '?'}ms`;
+  }
+  return '未知';
+}
+function portLabel(role) {
+  return PROBE_PORT_LABEL[role] || role;
+}
+
 const rows = computed(() => tab.value === 'agent' ? agentsRows.value : dcsRows.value);
 
 function statusOf(row) {
@@ -114,6 +171,15 @@ async function load() {
       const r = await heartbeatReportApi.listDcs();
       dcsRows.value = r.data?.agents || [];
       heartbeatStaleSeconds.value = r.data?.heartbeatStaleSeconds || 15;
+    }
+    // Probe status is best-effort: surface staleness separately, don't let it
+    // blow up the main tables.
+    try {
+      const pr = await heartbeatReportApi.getProbeStatus();
+      probeRows.value = pr.data?.probes || {};
+      nowCenterProbeStale.value = !!pr.data?.nowCenterProbeStale;
+    } catch (e) {
+      console.warn('probe fetch failed:', e?.message);
     }
     error.value = null;
   } catch (e) {
@@ -170,4 +236,10 @@ watch(refreshIntervalSeconds, startTimer);
 .drawer-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; justify-content: flex-end; z-index: 100; }
 .drawer { background: var(--panel); padding: 20px; width: 600px; max-width: 100%; height: 100vh; overflow: auto; }
 .drawer pre { background: #0b1220; padding: 12px; border-radius: 3px; font-size: 11px; max-height: 70vh; overflow: auto; }
+.probe-panel { margin-bottom: 16px; padding: 12px; background: var(--panel); border: 1px solid #1e293b; border-radius: 4px; }
+.probe-panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+.probe-t { width: 100%; border-collapse: collapse; }
+.probe-t th, .probe-t td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 13px; }
+.probe-t th { background: #0b1220; color: var(--muted); font-size: 12px; }
+.probe-stale-banner { margin-top: 8px; padding: 8px 12px; background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; border-radius: 3px; font-size: 12px; }
 </style>
