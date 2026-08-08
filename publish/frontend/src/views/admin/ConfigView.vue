@@ -17,6 +17,7 @@
               :type="numericFields.includes(k) ? 'number' : 'text'"
               @update:value="onInput(k, $event)"
             />
+            <span v-if="k === 'listenPort' && initial.restartRequired?.listenPort" class="restart-badge" title="保存后值已生效，需重启 center 后生效。重启后此标记消失。">⚠ 待重启</span>
           </td>
           <td>
             <template v-if="k === 'ad_agent_token'">
@@ -92,7 +93,10 @@ const descriptions = {
   discovery_interval_hours: '站点/域控拓扑发现周期 (小时)',
   site_matrix_refresh_seconds: '站点复制矩阵页面自动刷新间隔 (秒)',
   center_public_host: '中心站对外访问地址 (已废弃, 由 nginx 负责)',
-  center_public_port: '中心站对外访问端口 (已废弃, 由 nginx 负责)'
+  center_public_port: '中心站对外访问端口 (已废弃, 由 nginx 负责)',
+  listenPort: '对外 Web/管理界面端口。改完需重启 center 后生效。',
+  heartbeat_port: 'Agent 心跳接收端口。DB 改后 5 min 内 agent 自动刷新。',
+  report_port: 'Agent replication snapshot 上报端口。'
 };
 // Chinese labels shown as the primary key caption in the config table.
 // Raw snake_case stays visible underneath as <code class="raw-key"> for users
@@ -106,7 +110,10 @@ const labels = {
   discovery_interval_hours: '拓扑发现周期',
   site_matrix_refresh_seconds: '站点矩阵刷新间隔',
   center_public_host: '中心站对外地址',
-  center_public_port: '中心站对外端口'
+  center_public_port: '中心站对外端口',
+  listenPort: '中心 Web 端口',
+  heartbeat_port: '心跳端口',
+  report_port: '报告端口'
 };
 const numericFields = [
   'polling_interval_minutes',
@@ -114,7 +121,10 @@ const numericFields = [
   'heartbeat_interval_seconds',
   'discovery_interval_hours',
   'site_matrix_refresh_seconds',
-  'center_public_port'
+  'center_public_port',
+  'listenPort',
+  'heartbeat_port',
+  'report_port'
 ];
 const RISKY_FIELDS = ['ad_agent_token'];
 
@@ -270,4 +280,5 @@ button.cancel { background: #0b1220; color: var(--text); }
 .copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }
 .key-label { font-weight: 600; color: var(--text); }
 .raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.restart-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; border-radius: 3px; font-size: 11px; cursor: help; }
 </style>
