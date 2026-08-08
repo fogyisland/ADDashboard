@@ -122,6 +122,26 @@ test('buildServerApps: webApp does NOT mount any /api/agent/* routes', () => {
     `webApp should NOT mount any /api/agent/* routes; found: ${agentRoutes.join(', ')}`);
 });
 
+test('buildServerApps: heartbeatApp and reportApp both mount /healthz (Task 2 — monitor reachable on all 3 ports)', () => {
+  // An external LB / k8s probe must be able to hit any of the three ports
+  // (web / heartbeat / report) and get the same DB-aware /healthz response.
+  // heartbeatApp and reportApp are bare express() instances (no createApp),
+  // so the test below is the regression net for the explicit
+  // `healthzRouter()` calls added in Task 2.
+  const { heartbeatApp, reportApp, webApp } = buildServerApps({
+    config: makeConfig(),
+    db: null,
+    logger: silentLogger,
+    needsInit: false,
+    systemConfig: {}
+  });
+  for (const [name, app] of [['heartbeatApp', heartbeatApp], ['reportApp', reportApp], ['webApp', webApp]]) {
+    const routes = collectRoutes(app);
+    assert.ok(routes.some((p) => p === 'GET /healthz'),
+      `${name} should mount GET /healthz, got: ${routes.join(', ')}`);
+  }
+});
+
 test('buildServerApps: 3 apps are distinct object identities (no aliasing)', () => {
   const r = buildServerApps({
     config: makeConfig(),

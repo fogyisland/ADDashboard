@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
-import { getConfig, setConfig, getConfigMap } from '../services/config.js';
+import { getConfig, setConfig, getConfigMap, restartRequired } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
 import { getDb } from '../db/index.js';
+import { sha256Hex } from '../config.js';
 
 // Snake -> camel rename for known columns in admin responses.
 const CAML_MAP = new Map([
@@ -139,7 +140,13 @@ export function adminRouter({ config, logger }) {
   r.get('/api/admin/config', auth, async (_req, res) => {
     try {
       const cfg = await getConfig();
-      res.json(cfg);
+      // Surface a `restartRequired` block so the ConfigView can render the
+      // "重启生效" badge without a second round-trip. Computed from the two
+      // version hashes written by the PUT handler (pending) and the bootstrap
+      // IIFE in server.js (started) — see restartRequired() in
+      // services/config.js for the exact contract.
+      const rr = await restartRequired();
+      res.json({ ...cfg, restartRequired: rr });
     } catch (e) {
       logger.error({ err: e }, 'admin config get failed');
       res.status(500).json({ error: 'internal' });
@@ -161,6 +168,18 @@ export function adminRouter({ config, logger }) {
             await tx.execute(db.sql.config.audit.write, [k, oldVal, newVal, req.user?.sub ?? null, 'UPDATE']);
             auditRows.push({ key: k, old: oldVal, new: newVal });
           }
+        }
+        // listenPort is a boot-time binding — the running process can't pick
+        // up a new value without a restart. Bump the pending version hash
+        // inside this same transaction so ConfigView's badge flips to
+        // "restart required" the moment the save commits (server-side logic,
+        // not something the frontend has to remember).
+        if ('listenPort' in updates && String(updates.listenPort) !== String(before.listenPort)) {
+          const pending = sha256Hex(`${new Date().toISOString()}:${updates.listenPort}`);
+          await tx.execute(
+            db.sql.config.upsert,
+            ['center_listen_port_pending_version', pending]
+          );
         }
       });
       await writeAudit({

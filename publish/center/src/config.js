@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { SUPPORTED_DIALECTS } from './db/sql.js';
 import { getDb } from './db/index.js';
 
@@ -91,4 +92,67 @@ export async function getRegistryUrl() {
     "SELECT config_value FROM system_config WHERE config_key = 'package_registry_url'"
   );
   return rows[0]?.config_value || null;
+}
+
+// ----- listenPort helpers (Task 2) -----
+//
+// The center's web port is stored in `system_config.listenPort` so the admin
+// UI can change it without editing appsettings.json. `getListenPort` is the
+// DB-first reader (fallback to appsettings.json default); `seedListenPortIfMissing`
+// is the idempotent bootstrap step that copies the appsettings.json value into
+// the DB on first boot. Seeding is intentionally a separate step — callers
+// that just want the current port (probe service, route wiring) should use
+// `getListenPort` and never write.
+
+// Query helper — single-key read reused by both getListenPort and the seed.
+async function readListenPortRow() {
+  const db = getDb();
+  const { rows } = await db.query(
+    "SELECT config_value FROM system_config WHERE config_key = 'listenPort'"
+  );
+  return rows[0]?.config_value ?? null;
+}
+
+// Returns the port the center should bind its web server to. Reads
+// `system_config.listenPort` first; falls back to the appsettings.json
+// default (8080) when the row is absent or holds an invalid value.
+//
+// Does NOT seed — this is a pure read. The bootstrap IIFE in server.js calls
+// `seedListenPortIfMissing()` once on startup so the DB always reflects the
+// appsettings.json value when the operator hasn't explicitly changed it.
+export async function getListenPort() {
+  const raw = await readListenPortRow();
+  if (raw != null) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0 && n < 65536) return n;
+  }
+  return defaultConfig().listenPort;
+}
+
+// If `system_config.listenPort` is absent, writes the appsettings.json default
+// into it via the dialect-specific upsert. Returns the active value (existing
+// or seeded). Idempotent — when the row already exists, no upsert is issued.
+export async function seedListenPortIfMissing(logger) {
+  const raw = await readListenPortRow();
+  if (raw != null) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0 && n < 65536) return n;
+  }
+  const db = getDb();
+  const seed = defaultConfig().listenPort;
+  await db.execute(
+    db.sql.config.upsert,
+    ['listenPort', String(seed)]
+  );
+  logger?.info?.({ listenPort: seed }, 'seeded listenPort from appsettings.json');
+  return seed;
+}
+
+// First 16 hex chars (8 bytes) of sha256(input). Used to build the
+// pending/started version hashes that gate the "restart required" badge in
+// the ConfigView (Task 6). 8 bytes is plenty of entropy for "did the port
+// change since startup?" — collisions across valid port values are
+// negligible. Matches the spec's "Version hash" section.
+export function sha256Hex(input) {
+  return createHash('sha256').update(input).digest('hex').slice(0, 16);
 }

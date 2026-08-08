@@ -1,6 +1,7 @@
 import express from 'express';
 import { createApp } from './src/app.js';
-import { loadConfigOrNull, defaultConfig, getRegistryUrl } from './src/config.js';
+import { loadConfigOrNull, defaultConfig, getRegistryUrl, seedListenPortIfMissing, getListenPort, sha256Hex } from './src/config.js';
+import { healthzRouter } from './src/routes/healthz.js';
 import { init, close, getDb } from './src/db/index.js';
 import { createLogger } from './src/logger.js';
 import { startServers, closeAll } from './src/multi-port.js';
@@ -50,6 +51,12 @@ export function buildServerApps({ config, db, logger, needsInit, systemConfig = 
   const heartbeatApp = express();
   heartbeatApp.disable('x-powered-by');
   heartbeatApp.use(express.json({ limit: '256kb' }));
+  // /healthz must be reachable on all three apps (web/heartbeat/report) so
+  // an external monitor (k8s liveness probe, LB health check) can hit any
+  // of the three ports and get the same DB-aware status. healthz is an
+  // unauthenticated GET, so order doesn't matter — mount before
+  // agentRouter so it's first-match.
+  heartbeatApp.use(healthzRouter());
   heartbeatApp.use(agentRouter({ config, logger, mount: 'heartbeat' }));
 
   // reportApp — replication snapshots can be 10MB+ (12+ rows × long error
@@ -57,6 +64,7 @@ export function buildServerApps({ config, db, logger, needsInit, systemConfig = 
   const reportApp = express();
   reportApp.disable('x-powered-by');
   reportApp.use(express.json({ limit: '10mb' }));
+  reportApp.use(healthzRouter());
   reportApp.use(agentRouter({ config, logger, mount: 'report' }));
 
   return {
@@ -151,6 +159,26 @@ await ((async () => {
       systemConfig = await getSystemConfig();
     } catch (err) {
       logger.warn({ err: err.message }, 'system_config read failed; using port defaults');
+    }
+  }
+
+  // Seed listenPort into system_config on first boot, then write the
+  // started_version hash so the UI's restart badge can compare pending vs
+  // started. Done BEFORE buildServerApps so the value is on disk by the
+  // time anything that depends on it (probe service in Task 3) reads it.
+  // Idempotent: re-running writes the same hash, no audit row, no side-effects.
+  if (!needsInit && db) {
+    try {
+      await seedListenPortIfMissing(logger);
+      const listenPort = await getListenPort();
+      const startedVersion = sha256Hex(`${new Date().toISOString()}:${listenPort}`);
+      await db.execute(
+        db.sql.config.upsert,
+        ['center_listen_port_started_version', startedVersion]
+      );
+      logger.info({ listenPort, startedVersion }, 'center listenPort bound');
+    } catch (err) {
+      logger.warn({ err: err.message }, 'listenPort seed/version write failed; continuing with appsettings.json value');
     }
   }
 
