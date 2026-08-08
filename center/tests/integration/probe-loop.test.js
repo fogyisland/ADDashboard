@@ -32,7 +32,7 @@ test('integration: probe loop writes probe_state after 3 ticks against real loca
   // it's safe to throw here.
   const { user, password, host, port } = parseTestUrl('TEST_MYSQL_URL', { defaultPort: 3306 });
   await init({
-    db: { dialect: 'mysql', mysql: { host, port, database: 'addashboard', user, password } },
+    db: { dialect: 'mysql', mysql: { host, port, database: 'ad_monitoring', user, password } },
     listenPort: 8080,
     jwtSecret: 'x',
     agentToken: 'x',

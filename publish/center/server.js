@@ -23,6 +23,7 @@ import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/ma
 import { userAuth } from './src/auth/user-auth.js';
 import { requirePerm } from './src/auth/rbac.js';
 import { getConfig as getSystemConfig } from './src/services/config.js';
+import { writeAudit } from './src/services/audit.js';
 
 // Build the three independent Express apps that server.js will run:
 //   - webApp:        admin UI, auth, dashboard, init routes (existing scope)
