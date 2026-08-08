@@ -59,16 +59,17 @@ test('listProbeStatus: returns 3 probe rows in fixed order with nowCenterProbeSt
     {
       match: PROBE_GETALL,
       rows: [
-        fakeProbeRow({ port_role: 'web',      latency_ms: 3 }),
         fakeProbeRow({ port_role: 'heartbeat', latency_ms: 7 }),
-        fakeProbeRow({ port_role: 'report',    latency_ms: 11 })
+        fakeProbeRow({ port_role: 'report',    latency_ms: 11 }),
+        fakeProbeRow({ port_role: 'web',       latency_ms: 3 })
       ]
     }
   ]).standard();
   _setDbForTest(db);
 
   const out = await heartbeatReportService.listProbeStatus();
-  assert.deepEqual(Object.keys(out.probes).sort(), ['heartbeat', 'report', 'web']);
+  // Fixed iteration order matches SQL's `ORDER BY port_role` (heartbeat, report, web alphabetically).
+  assert.deepEqual(Object.keys(out.probes), ['heartbeat', 'report', 'web']);
   assert.equal(out.probes.web.status, 'up');
   assert.equal(out.probes.web.latencyMs, 3);
   assert.equal(out.probes.web.consecutiveFailures, 0);

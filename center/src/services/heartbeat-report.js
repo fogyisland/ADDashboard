@@ -144,8 +144,11 @@ export const heartbeatReportService = {
     const STALE_MS = 30_000;
     const allUnknown = rows.length > 0 && rows.every((r) => r.status === 'unknown');
     const anyStale = rows.some((r) => {
-      if (!r.last_probe_at) return true;
-      return (now - new Date(r.last_probe_at).getTime()) > STALE_MS;
+      if (r.last_probe_at == null) return true;        // missing
+      const t = new Date(r.last_probe_at).getTime();
+      if (!Number.isFinite(t)) return true;             // NaN / Infinity (garbage string)
+      if (t > now) return true;                         // future (clock skew — probe hasn't happened yet)
+      return (now - t) > STALE_MS;                      // older than 30 s
     });
     return { probes, nowCenterProbeStale: allUnknown || anyStale };
   }
