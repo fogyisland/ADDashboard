@@ -120,5 +120,33 @@ export const heartbeatReportService = {
   async _staleSeconds() {
     const cfg = await getConfig();
     return Number(cfg.heartbeat_stale_seconds) || 15;
+  },
+
+  // Probe state for the admin monitor UI (Task 7). Reads the three rows
+  // written by the 1 Hz self-probe loop and re-shapes them into camelCase
+  // entries keyed by port_role. The 30 s stale sentinel fires when ANY row's
+  // last_probe_at is older than 30 s OR ALL rows are still in the boot
+  // 'unknown' state (no probe tick has completed yet).
+  async listProbeStatus(db = null) {
+    const conn = db ?? getDb();
+    const { rows } = await conn.query(conn.sql.probeState.getAll);
+    const probes = {};
+    for (const row of rows) {
+      probes[row.port_role] = {
+        status: row.status,
+        latencyMs: row.latency_ms == null ? null : Number(row.latency_ms),
+        lastProbeAt: toIsoOrNull(row.last_probe_at),
+        lastUpAt: toIsoOrNull(row.last_up_at),
+        consecutiveFailures: Number(row.consecutive_failures) || 0
+      };
+    }
+    const now = Date.now();
+    const STALE_MS = 30_000;
+    const allUnknown = rows.length > 0 && rows.every((r) => r.status === 'unknown');
+    const anyStale = rows.some((r) => {
+      if (!r.last_probe_at) return true;
+      return (now - new Date(r.last_probe_at).getTime()) > STALE_MS;
+    });
+    return { probes, nowCenterProbeStale: allUnknown || anyStale };
   }
 };

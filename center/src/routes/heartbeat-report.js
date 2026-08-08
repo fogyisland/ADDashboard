@@ -34,6 +34,20 @@ export function heartbeatReportRouter({ requireAuth, requirePerm }) {
     }
   });
 
+  // Center self-probe state (Task 5). Surfaced by the admin monitor UI's
+  // probe panel (Task 7) so operators can see whether the center app is
+  // actually probing its own three ports at 1 Hz. Registered BEFORE
+  // /agents/:agentId/report-detail so the static path wins over the param.
+  r.get('/api/admin/heartbeat-report/probe', ...auth, async (_req, res) => {
+    try {
+      const out = await heartbeatReportService.listProbeStatus();
+      res.json(out);
+    } catch (e) {
+      _req.log?.error?.({ err: e.message }, 'heartbeat-report probe failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   r.get('/api/admin/heartbeat-report/agents/:agentId/report-detail', ...auth, async (req, res) => {
     try {
       const out = await heartbeatReportService.getLatestReportDetail(req.params.agentId);
