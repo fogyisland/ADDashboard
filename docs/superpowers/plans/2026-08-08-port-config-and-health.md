@@ -593,21 +593,17 @@ export function createProbeLoop({ db, ports, logger, writeAudit, fetchImpl }) {
       });
       const latencyMs = Date.now() - t0;
       return {
-        portRole, port,
+        portRole,
         status: res.ok ? 'healthy' : 'degraded',
         latencyMs,
-        lastProbeAt: new Date(),
-        lastUpAt: res.ok ? new Date() : null,
-        consecutiveFailures: res.ok ? 0 : -1  // -1 sentinel: read prev below
+        lastProbeAt: new Date()
       };
     } catch (e) {
       return {
-        portRole, port,
+        portRole,
         status: 'degraded',
         latencyMs: null,
-        lastProbeAt: new Date(),
-        lastUpAt: null,
-        consecutiveFailures: -1
+        lastProbeAt: new Date()
       };
     }
   }
