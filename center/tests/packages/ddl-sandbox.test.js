@@ -130,3 +130,7 @@ test('BLOCKED_PATTERNS is non-empty array of RegExp', () => {
   assert.ok(BLOCKED_PATTERNS.length >= 6);
   for (const r of BLOCKED_PATTERNS) assert.ok(r instanceof RegExp);
 });
+
+test('scanSql: rejects non-string input', () => {
+  assert.deepStrictEqual(scanSql(null), { ok: false, blocked: 'non-string input' });
+});

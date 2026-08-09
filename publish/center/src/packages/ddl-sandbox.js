@@ -57,6 +57,7 @@ function stripComments(sql) {
 }
 
 export function scanSql(sql) {
+  if (typeof sql !== 'string') return { ok: false, blocked: 'non-string input' };
   const stripped = stripComments(sql);
   for (const re of BLOCKED_PATTERNS) {
     if (re.test(stripped)) return { ok: false, blocked: re.source };
