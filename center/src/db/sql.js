@@ -6,6 +6,12 @@
 // rewrites `?` -> `@p1, @p2, ...` at execute() time; service code never
 // sees @p1.
 
+import { memberServers } from './sql/member-servers.js';
+import { serverGroups } from './sql/server-groups.js';
+import { alertRules } from './sql/alert-rules.js';
+import { alertEvents } from './sql/alert-events.js';
+import { alertOutbox } from './sql/alert-outbox.js';
+
 const VARIANTS = {
   mysql: {
     health: {
@@ -306,7 +312,17 @@ const VARIANTS = {
       column: `SELECT 1 AS ok FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`
-    }
+    },
+    // Non-AD server management (migration 014). Eight tables total split
+    // across five domains so services can scope their reads: member-servers
+    // (the inventory), server-groups (groups + memberships + per-host package
+    // assignments), alert-rules (rules + state), alert-events (firing log),
+    // alert-outbox (email delivery queue).
+    memberServers: memberServers.mysql,
+    serverGroups: serverGroups.mysql,
+    alertRules: alertRules.mysql,
+    alertEvents: alertEvents.mysql,
+    alertOutbox: alertOutbox.mysql
   },
   mssql: {
     health: {
@@ -639,7 +655,13 @@ const VARIANTS = {
       table: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?`,
       column: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_NAME = ? AND COLUMN_NAME = ?`
-    }
+    },
+    // Non-AD server management (migration 014). See mysql counterpart.
+    memberServers: memberServers.mssql,
+    serverGroups: serverGroups.mssql,
+    alertRules: alertRules.mssql,
+    alertEvents: alertEvents.mssql,
+    alertOutbox: alertOutbox.mssql
   }
 };
 
