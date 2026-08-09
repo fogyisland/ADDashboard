@@ -28,6 +28,7 @@ export function createProbeLoop({ db, ports, logger, writeAudit, fetchImpl }) {
         portRole,
         status: res.ok ? 'healthy' : 'degraded',
         latencyMs,
+        lastProbeAt: new Date(),
         lastUpAt: new Date()
       };
     } catch (e) {
@@ -35,6 +36,7 @@ export function createProbeLoop({ db, ports, logger, writeAudit, fetchImpl }) {
         portRole,
         status: 'degraded',
         latencyMs: null,
+        lastProbeAt: new Date(),
         lastUpAt: new Date()
       };
     }

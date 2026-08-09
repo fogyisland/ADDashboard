@@ -81,6 +81,16 @@ test('tick: probes 3 ports in parallel, upserts each row', async () => {
   // noise: 3 entries for what is conceptually a single "all ports healthy"
   // event). Test 4 pins the per-tick aggregation across 2 ticks (2 audits).
   assert.strictEqual(auditCalls, 1);
+  // C-1 regression guard: each upsert must carry a Date at params[3]
+  // (lastProbeAt). Without this, the MySQL driver converts undefined → NULL,
+  // listProbeStatus anyStale always returns true, and the 30s watchdog
+  // fires a false probe_loop_watchdog audit on every healthy boot.
+  for (const u of upserts) {
+    assert.ok(
+      u.params[3] instanceof Date && !isNaN(u.params[3].getTime()),
+      `params[3] (lastProbeAt) must be a valid Date; got ${u.params[3]}`
+    );
+  }
 });
 
 test('tick: 2s timeout → status=degraded, consecutive_failures increments', async () => {
@@ -95,6 +105,13 @@ test('tick: 2s timeout → status=degraded, consecutive_failures increments', as
   const upserts = db.calls.filter(c => c.kind === 'execute' && c.sql.startsWith('UPSERT'));
   for (const u of upserts) {
     assert.ok(u.params[1] === 'degraded', `status param should be degraded; got ${u.params[1]}`);
+    // C-1 regression guard: degraded paths must still stamp lastProbeAt so
+    // the watchdog doesn't fire false-positive stale audits on every tick
+    // when the port is down.
+    assert.ok(
+      u.params[3] instanceof Date && !isNaN(u.params[3].getTime()),
+      `params[3] (lastProbeAt) must be a valid Date on degraded; got ${u.params[3]}`
+    );
   }
 });
 
