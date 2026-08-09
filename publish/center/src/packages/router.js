@@ -1,17 +1,19 @@
 // Admin-facing REST endpoints for the package system.
 //
 // Endpoints (all require userAuth + admin:packages permission):
-//   GET    /api/admin/packages                       → list all installed
-//   GET    /api/admin/packages/:name                 → single pkg + recentRuns
-//   POST   /api/admin/packages/install               → install via buffer or
-//                                                      registry
-//   POST   /api/admin/packages/:name/upgrade         → upgrade via registry
-//   POST   /api/admin/packages/:name/enable          → setEnabled(true)
-//   POST   /api/admin/packages/:name/disable         → setEnabled(false)
-//   DELETE /api/admin/packages/:name?purgeMetrics=…  → uninstall
-//   PUT    /api/admin/packages/:name/params          → updateParams
-//   GET    /api/admin/packages/registry/refresh      → force-refresh registry
-//   GET    /api/admin/packages/registry/list         → list cached registry index
+//   GET    /api/admin/packages                                  → list all installed
+//   GET    /api/admin/packages/:name                            → single pkg + recentRuns
+//   GET    /api/admin/packages/:name/ddl-preview                → {schemaName, files:[...]}
+//   POST   /api/admin/packages/install                          → install via buffer or
+//                                                                 registry (body gains
+//                                                                 optional confirmDropSchema)
+//   POST   /api/admin/packages/:name/upgrade                    → upgrade via registry
+//   POST   /api/admin/packages/:name/enable                     → setEnabled(true)
+//   POST   /api/admin/packages/:name/disable                    → setEnabled(false)
+//   DELETE /api/admin/packages/:name?purgeMetrics=…&confirmDropSchema=…  → uninstall
+//   PUT    /api/admin/packages/:name/params                     → updateParams
+//   GET    /api/admin/packages/registry/refresh                 → force-refresh registry
+//   GET    /api/admin/packages/registry/list                    → list cached registry index
 //
 // All PkgError instances thrown by installer / registry / compat are
 // mapped to HTTP responses via the `statusFor` helper; everything else
@@ -151,6 +153,39 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
     }
   });
 
+  // GET /api/admin/packages/:name/ddl-preview — show the cached migration
+  // files for a v2 package before re-install / upgrade / uninstall. Returns
+  // { schemaName, files: [{path, filename, content}] }. For v1 packages
+  // (no manifest.database) returns { schemaName: null, files: [] }.
+  // Registered BEFORE /:name to follow static-before-dynamic convention.
+  r.get('/api/admin/packages/:name/ddl-preview', auth, async (req, res) => {
+    try {
+      const pkg = await installedPackages.get(db, req.params.name);
+      if (!pkg) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'PKG_NOT_FOUND', message: req.params.name }
+        });
+      }
+      if (!pkg.manifest.database) {
+        return res.json({ schemaName: null, files: [] });
+      }
+      const schemaName = pkg.manifest.database.schemaName;
+      const cacheDir = join(process.cwd(), 'data', 'packages', req.params.name, pkg.version);
+      const files = [];
+      for (const rel of pkg.manifest.database.migrations) {
+        const filename = rel.split('/').pop();
+        const content = readFileSync(join(cacheDir, rel), 'utf8');
+        files.push({ path: rel, filename, content });
+      }
+      res.json({ schemaName, files });
+    } catch (e) {
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package ddl-preview failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
   r.get('/api/admin/packages/:name', auth, async (req, res) => {
     try {
       const pkg = await installedPackages.get(db, req.params.name);
@@ -173,7 +208,7 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
   });
 
   r.post('/api/admin/packages/install', auth, async (req, res) => {
-    const { source, packageRef, buffer: rawBuffer } = req.body || {};
+    const { source, packageRef, buffer: rawBuffer, confirmDropSchema: _confirmDropSchema } = req.body || {};
     const buffer = resolveBuffer({ buffer: rawBuffer });
     try {
       // When a buffer is supplied, run the compat check before we touch
@@ -336,9 +371,11 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
   r.delete('/api/admin/packages/:name', auth, async (req, res) => {
     try {
       const purgeMetrics = req.query.purgeMetrics === 'true';
+      const confirmDropSchema = req.query.confirmDropSchema === 'true';
       await installer.uninstallPackage(db, {
         name: req.params.name,
-        purgeMetrics
+        purgeMetrics,
+        confirmDropSchema
       });
       res.json({ ok: true });
     } catch (e) {

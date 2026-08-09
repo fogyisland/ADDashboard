@@ -16,6 +16,7 @@ import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
 import { createProbeLoop } from './src/services/probe.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
+import { orphanRouter } from './src/packages/orphan-router.js';
 import { packageRunner } from './src/packages/runner.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
@@ -246,6 +247,10 @@ await ((async () => {
       db: pkgDb,
       getLogger: () => logger,
       getRegistryUrl,
+      config: finalConfig
+    }));
+    app.use(orphanRouter({
+      db: pkgDb,
       config: finalConfig
     }));
     app.use(packageRunner({
