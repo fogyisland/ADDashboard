@@ -320,6 +320,42 @@ describe('DELETE /api/admin/packages/:name?confirmDropSchema=... (mock DB)', () 
   });
 });
 
+function buildFixtureV1Zip({ name, version }) {
+  const manifest = {
+    name,
+    version,
+    type: 'gauge',
+    description: 'v1 fixture',
+    agent: { minVersion: '1.0.0', script: 'collect.ps1', intervalSec: 60, timeoutMs: 30000 },
+    metrics: [{ key: 'm1', label: 'M1' }],
+    params: { schema: { type: 'object' }, required: [] },
+    widget: { type: 'builtin', component: 'GaugeTile' }
+  };
+  const ps1 = 'Write-Output \'{"metrics":{"m1":42}}\'';
+  const zip = new AdmZip();
+  zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest)));
+  zip.addFile('collect.ps1', Buffer.from(ps1));
+  return zip.toBuffer();
+}
+
+describe('POST /api/admin/packages/install body parsing (mock DB)', () => {
+  const seedName = 'router-v2-install-body';
+  test('accepts confirmDropSchema in body without 400 (currently inert for install)', async () => {
+    const db = buildMockDb([
+      { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [] }
+    ]).standard();
+    const app = buildApp(db);
+    const buffer = buildFixtureV1Zip({ name: seedName, version: '1.0.0' });
+    const r = await supertest(app)
+      .post('/api/admin/packages/install')
+      .set(adminAuth())
+      .send({ source: 'local', packageRef: seedName, buffer: buffer.toString('base64'), confirmDropSchema: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    fs.rmSync(path.join(process.cwd(), 'data', 'packages', seedName), { recursive: true, force: true });
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // Real-DB integration: install v2 → GET ddl-preview reads cached files.
 // Gated on TEST_MYSQL_URL.
