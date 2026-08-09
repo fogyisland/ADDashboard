@@ -64,6 +64,17 @@ test('scanSql: rejects cross-package reference (pkg_other)', () => {
   assert.match(r.blocked, /pkg_/);
 });
 
+test('scanSql: self-package refs pass when selfPackage is set', () => {
+  const r = scanSql('CREATE TABLE x (id INT REFERENCES pkg_self.foo(id))', 'pkg_self');
+  assert.deepStrictEqual(r, { ok: true });
+});
+
+test('scanSql: cross-package refs still rejected when selfPackage is set', () => {
+  const r = scanSql('CREATE TABLE x (id INT REFERENCES pkg_other.foo(id))', 'pkg_self');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.blocked, /pkg_/);
+});
+
 test('scanSql: rejects cross-schema reference (installed_packages)', () => {
   const r = scanSql('CREATE TABLE x (id INT REFERENCES installed_packages(id))');
   assert.strictEqual(r.ok, false);
