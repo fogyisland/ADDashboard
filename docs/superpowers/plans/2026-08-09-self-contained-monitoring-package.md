@@ -125,10 +125,12 @@ test('scanSql: passes CREATE INDEX', () => {
   assert.deepStrictEqual(scanSql('CREATE INDEX ix_metrics_agent ON metrics (agent_id)'), { ok: true });
 });
 
-test('scanSql: passes CREATE VIEW', () => {
-  assert.deepStrictEqual(scanSql('CREATE VIEW v AS SELECT * FROM metrics'), { ok: false, blocked: /MERGE|SELECT/ });
-  // ← Above asserts the wrong contract; we'll fix the test in Step 2 after we know the BLOCKED_PATTERNS.
-  // Real contract test is below.
+test('scanSql: rejects CREATE VIEW (SELECT body is blocked)', () => {
+  // CREATE VIEW is a DDL keyword (allowed) but every view body contains SELECT
+  // which is in BLOCKED_PATTERNS. The scanner rejects on SELECT, not on CREATE VIEW.
+  const r = scanSql('CREATE VIEW v AS SELECT * FROM metrics');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.blocked, /MERGE|SELECT/);
 });
 
 test('scanSql: rejects DROP TABLE', () => {
