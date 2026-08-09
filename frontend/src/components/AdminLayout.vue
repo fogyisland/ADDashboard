@@ -52,7 +52,8 @@ const groups = [
   { title: '系统设置', items: [
     { label: '系统配置', path: '/admin/config' },
     { label: '审计日志', path: '/admin/audit' },
-    { label: '迁移管理', path: '/admin/migrations' }
+    { label: '迁移管理', path: '/admin/migrations' },
+    { label: '未签名 Schema 残留', path: '/admin/orphan-schemas' }
   ]}
 ];
 </script>
