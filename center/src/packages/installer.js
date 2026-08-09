@@ -21,6 +21,7 @@ import { validateManifest } from './manifest.js';
 import { installedPackages } from '../db/sql/installed-packages.js';
 import { packageRuns } from '../db/sql/package-runs.js';
 import { PkgError } from './errors.js';
+import { ensureSchema, createSchemaMigrationsTable, applyMigrations, dropSchema, schemaExists, markMigrationsApplied } from './ddl-apply.js';
 
 export const installer = {
   async installPackage(db, { source, packageRef, buffer, registry }) {
@@ -39,6 +40,45 @@ export const installer = {
 
     const existing = await installedPackages.get(db, manifest.name);
     if (existing) throw new PkgError('PKG_NAME_CONFLICT', `package ${manifest.name} already installed`);
+
+    // v2 path: apply package-supplied DDL before persisting the installed_packages
+    // row. If anything fails mid-apply, the package row is never written and the
+    // schema is dropped best-effort — center state ends up as if the operation
+    // never happened.
+    let schemaName = null;
+    if (manifest.database) {
+      schemaName = manifest.database.schemaName || `pkg_${manifest.name.replace(/-/g, '_')}`;
+      if (!/^pkg_[a-z0-9_]+$/.test(schemaName)) {
+        throw new PkgError('PKG_DDL_FORBIDDEN', `invalid schemaName: ${schemaName}`);
+      }
+
+      // Read migration files from the zip buffer
+      const zip = new AdmZip(buffer);
+      const migrations = manifest.database.migrations;
+      const migrationFiles = migrations.map(rel => {
+        const entry = zip.getEntry(rel);
+        if (!entry) throw new PkgError('PKG_DDL_FORBIDDEN', `migration file missing: ${rel}`);
+        return { filename: rel.split('/').pop(), path: rel, content: entry.getData().toString('utf8') };
+      });
+
+      if (await schemaExists(db, schemaName, db.dialect)) {
+        throw new PkgError('PKG_SCHEMA_EXISTS', `${schemaName} already exists`);
+      }
+
+      try {
+        await ensureSchema(db, schemaName, db.dialect);
+        await createSchemaMigrationsTable(db, schemaName, db.dialect);
+        await applyMigrations(db, { schemaName, dialect: db.dialect, files: migrationFiles });
+        await markMigrationsApplied(db, { schemaName, version: manifest.version, filenames: migrationFiles.map(f => f.filename) });
+      } catch (e) {
+        // Best-effort rollback — drop the schema so center state is as if the
+        // operation never happened. The installed_packages row has not been
+        // written yet at this point, so no further cleanup is needed there.
+        try { await dropSchema(db, schemaName, db.dialect); } catch {}
+        if (e instanceof PkgError && (e.code === 'PKG_DDL_FORBIDDEN' || e.code === 'PKG_DDL_INVALID_SQL')) throw e;
+        throw new PkgError('PKG_INSTALL_FAILED', e.message);
+      }
+    }
 
     // Persist
     await installedPackages.upsert(db, {
