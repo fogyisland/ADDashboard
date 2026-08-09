@@ -325,6 +325,12 @@ sqlcmd -S <server> -d <db> -U <user> -P <pass> -i .\db\migrations\mssql\004-pack
 
 应用后 `Restart-Service ADDashboardCenter`（新增端点/服务需要重载代码，若升级步骤已重启则可跳过）。
 
+#### Migration 013（orphan_schemas）
+
+Added by the self-contained monitoring package plan (2026-08-09). Pure
+`CREATE TABLE IF NOT EXISTS`; existing installations pick it up
+automatically on next `/init` wizard boot. No manual action required.
+
 #### 新增的 UI 入口
 
 | 路径 | 权限 | 作用 |
