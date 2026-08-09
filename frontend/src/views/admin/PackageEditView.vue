@@ -29,6 +29,7 @@
         <p>Schema: <code>{{ pkg.manifest.database.schemaName }}</code></p>
         <p>Migrations: <span>{{ pkg.manifest.database.migrations.length }}</span> 个文件</p>
         <button @click="showDdlPreview">查看 DDL</button>
+        <span v-if="ddlPreviewMsg" class="msg">{{ ddlPreviewMsg }}</span>
       </section>
 
       <section class="card">
@@ -89,9 +90,10 @@
       />
 
       <UninstallSchemaConfirmModal
+        v-if="isV2"
         :visible="uninstallConfirmVisible"
         :packageName="pkg.name"
-        :schemaName="pkg.manifest.database ? pkg.manifest.database.schemaName : ''"
+        :schemaName="pkg.manifest.database.schemaName"
         :metricRowCount="recentRuns.length"
         @confirm="onUninstallConfirm"
         @close="uninstallConfirmVisible = false"
@@ -126,6 +128,7 @@ const ddlPreview = ref({ schemaName: null, files: [] });
 const uninstallConfirmVisible = ref(false);
 const uninstalling = ref(false);
 const uninstallMsg = ref('');
+const ddlPreviewMsg = ref('');
 
 const isV2 = computed(() => !!pkg.value?.manifest?.database);
 
@@ -170,12 +173,13 @@ async function saveParams() {
 }
 
 async function showDdlPreview() {
+  ddlPreviewMsg.value = '';
   try {
     ddlPreview.value = (await adminApi.getDdlPreview(pkg.value.name)).data;
+    ddlPreviewVisible.value = true;
   } catch (e) {
-    ddlPreview.value = { schemaName: null, files: [] };
+    ddlPreviewMsg.value = e.response?.data?.error?.message || e.message;
   }
-  ddlPreviewVisible.value = true;
 }
 
 function requestUninstall() {
