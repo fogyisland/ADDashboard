@@ -21,7 +21,7 @@ import { validateManifest } from './manifest.js';
 import { installedPackages } from '../db/sql/installed-packages.js';
 import { packageRuns } from '../db/sql/package-runs.js';
 import { PkgError } from './errors.js';
-import { ensureSchema, createSchemaMigrationsTable, applyMigrations, dropSchema, schemaExists, markMigrationsApplied } from './ddl-apply.js';
+import { ensureSchema, createSchemaMigrationsTable, applyMigrations, dropSchema, schemaExists, markMigrationsApplied, listAppliedMigrations } from './ddl-apply.js';
 
 export const installer = {
   async installPackage(db, { source, packageRef, buffer, registry }) {
@@ -101,7 +101,7 @@ export const installer = {
     return { name: manifest.name, version: manifest.version };
   },
 
-  async upgradePackage(db, { name, version, manifest: candidateManifest }) {
+  async upgradePackage(db, { name, version, manifest: candidateManifest, buffer }) {
     const existing = await installedPackages.get(db, name);
     if (!existing) throw new PkgError('PKG_NOT_FOUND', name);
     if (!version) throw new PkgError('PKG_VALIDATION_FAILED', 'version required');
@@ -130,8 +130,69 @@ export const installer = {
           `type change not allowed: existing=${existing.type} candidate=${candidateManifest.type}`
         );
       }
-      newManifest = { ...candidateManifest, name, version };
       resolvedType = existing.type;
+    }
+
+    // v2 path: diff migrations against pkg_<name>.schema_migrations and apply
+    // only the new ones. We only enter this branch when BOTH the existing
+    // installed manifest and the candidate manifest have a `database` field —
+    // upgrading a v1 package to a v2 manifest is not supported in this plan
+    // (see spec §"v1/v2 routing"). On mid-failure we do NOT attempt automatic
+    // rollback because MySQL DDL implicit-commits leave the schema in a
+    // partial state; we log to package_runs and rethrow as PKG_UPGRADE_FAILED
+    // so the admin can fix forward.
+    if (existing.manifest.database && candidateManifest?.database) {
+      if (!buffer) {
+        throw new PkgError('PKG_VALIDATION_FAILED', 'buffer required for v2 upgrade');
+      }
+      const schemaName = candidateManifest.database.schemaName || existing.manifest.database.schemaName;
+      if (!/^pkg_[a-z0-9_]+$/.test(schemaName)) {
+        throw new PkgError('PKG_DDL_FORBIDDEN', `invalid schemaName: ${schemaName}`);
+      }
+
+      const applied = await listAppliedMigrations(db, schemaName);
+      const appliedSet = new Set(applied.map(r => r.filename));
+      const zip = new AdmZip(buffer);
+      const migrations = candidateManifest.database.migrations;
+      const migrationFiles = migrations.map(rel => {
+        const entry = zip.getEntry(rel);
+        if (!entry) throw new PkgError('PKG_DDL_FORBIDDEN', `migration file missing: ${rel}`);
+        return { filename: rel.split('/').pop(), path: rel, content: entry.getData().toString('utf8') };
+      });
+      const toApply = migrationFiles.filter(f => !appliedSet.has(f.filename));
+
+      if (toApply.length) {
+        try {
+          await applyMigrations(db, { schemaName, dialect: db.dialect, files: toApply });
+          await markMigrationsApplied(db, { schemaName, version, filenames: toApply.map(f => f.filename) });
+        } catch (e) {
+          // No automatic rollback on upgrade — MySQL DDL implicit-commits, so
+          // already-applied migration files in `toApply` have been committed
+          // and remain in schema_migrations (with version = '__pending__' for
+          // any not yet touched by the markMigrationsApplied UPDATE). Log the
+          // failure to package_runs for admin visibility; admin must fix
+          // forward (re-upload a corrected migration) or uninstall + reinstall.
+          try {
+            await packageRuns.insert(db, {
+              agentId: 'system',
+              packageName: name,
+              startedAt: new Date(),
+              finishedAt: new Date(),
+              exitCode: null,
+              stdoutPreview: null,
+              stderrPreview: null,
+              error: `upgrade mid-failure: ${e.message}`
+            });
+          } catch {}
+          if (e instanceof PkgError && (e.code === 'PKG_DDL_FORBIDDEN' || e.code === 'PKG_DDL_INVALID_SQL')) {
+            throw new PkgError('PKG_UPGRADE_FAILED', `${e.code}: ${e.message}`);
+          }
+          throw new PkgError('PKG_UPGRADE_FAILED', e.message);
+        }
+      }
+      newManifest = { ...candidateManifest, name, version };
+    } else if (candidateManifest) {
+      newManifest = { ...candidateManifest, name, version };
     } else {
       newManifest = { ...existing.manifest, version };
     }

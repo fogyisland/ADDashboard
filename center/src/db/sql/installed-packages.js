@@ -75,12 +75,23 @@ export const installedPackagesSql = {
 
 // Map a raw row (driver column shape) to the JS-friendly shape the API
 // returns: parsed JSON, boolean for enabled.
+//
+// `manifest_json` / `params_json` are MySQL `json` columns; the mysql2 driver
+// auto-parses these to JS objects on read. The mssql driver returns them
+// as JSON strings. Normalize both to a JS object here so callers see a
+// consistent shape regardless of driver.
 function hydrate(row) {
   if (!row) return row;
+  const parseJson = (v) => {
+    if (v == null) return null;
+    if (typeof v === 'object') return v;        // mysql2 already-parsed json column
+    if (typeof v === 'string') return JSON.parse(v);  // mssql / TEXT column
+    return v;
+  };
   return {
     ...row,
-    manifest: row.manifest_json == null ? null : JSON.parse(row.manifest_json),
-    params: row.params_json == null ? null : JSON.parse(row.params_json),
+    manifest: parseJson(row.manifest_json),
+    params: parseJson(row.params_json),
     enabled: row.enabled === 1 || row.enabled === true
   };
 }

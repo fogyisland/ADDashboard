@@ -70,7 +70,7 @@ export async function createSchemaMigrationsTable(db, schemaName, dialect) {
 export async function applyMigrations(db, { schemaName, dialect, files }) {
   if (!Array.isArray(files)) throw new Error('files must be an array');
   for (const file of files) {
-    const { ok, blocked } = scanSql(file.content);
+    const { ok, blocked } = scanSql(file.content, schemaName);
     if (!ok) {
       throw new PkgError('PKG_DDL_FORBIDDEN', `${file.filename}: ${blocked}`);
     }

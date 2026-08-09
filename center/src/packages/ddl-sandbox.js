@@ -56,15 +56,28 @@ function stripComments(sql) {
   return sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--[^\n]*/g, '');
 }
 
-export function scanSql(sql) {
+export function scanSql(sql, selfPackage) {
   if (typeof sql !== 'string') return { ok: false, blocked: 'non-string input' };
   const stripped = stripComments(sql);
+  // The cross-package ban at index 7 (regex index 7) is `pkg_<name>.<table>`.
+  // Per spec §"v1/v2 routing" + §"apply flow", a package's own migrations may
+  // legitimately reference the package's own schema (e.g.
+  // `CREATE TABLE pkg_foo.metrics` for a v2 package whose schemaName is
+  // `pkg_foo`). When `selfPackage` is provided (the package's own schema
+  // name, in canonical `pkg_<name>` form) we strip those self-references
+  // before applying the cross-package block, then re-check — if any cross-
+  // package reference remains, it still fails the scan.
+  const selfRe = selfPackage ? new RegExp(`\\b${selfPackage}\\.[a-z0-9_]+`, 'gi') : null;
+  const scanStripped = selfRe ? stripped.replace(selfRe, '__SELF_REF__') : stripped;
   for (const re of BLOCKED_PATTERNS) {
-    if (re.test(stripped)) return { ok: false, blocked: re.source };
+    if (re.test(scanStripped)) return { ok: false, blocked: re.source };
   }
   // reserved-resource guard: also catch `installed_packages` even if surrounded
-  // by delimiters that the BLOCKED_PATTERNS' word boundary misses
-  const tokens = stripped.split(/[\s(),;]+/).filter(Boolean);
+  // by delimiters that the BLOCKED_PATTERNS' word boundary misses. The
+  // splitter also breaks on `.` so schema-qualified identifiers like
+  // `pkg_foo.metrics` tokenize into two parts, each of which is then
+  // validated against RESERVED_CENTER_RESOURCES individually.
+  const tokens = stripped.split(/[\s(),;.]+/).filter(Boolean);
   for (const t of tokens) {
     if (/^-?\d+(\.\d+)?$/.test(t)) continue;
     if (/^'[^']*'$/.test(t)) continue;
