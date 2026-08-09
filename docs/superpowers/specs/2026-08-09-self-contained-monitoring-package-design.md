@@ -187,32 +187,51 @@ const ALLOWED_KEYWORDS = new Set([
 ]);
 
 const BLOCKED_PATTERNS = [
+  /;\s*\S/,                                      // multi-statement — checked first so blocked string is `;`
   /\bDROP\b/i,                  // no DROP at all — uninstall + purgeMetrics does that explicitly
   /\b(TRUNCATE|RENAME|GRANT|REVOKE|EXEC|EXECUTE|CALL)\b/i,
   /\bINSERT\s+INTO\b/i,                           // DML (specific — does not match ON UPDATE / ON DELETE)
-  /\bUPDATE\s+[a-z_]/i,                           // DML — followed by identifier; ON UPDATE CASCADE passes
+  /\bUPDATE\s+(?!CASCADE\b)[a-z_]/i,              // DML — followed by identifier; ON UPDATE CASCADE passes (negative lookahead on the identifier character class)
   /\bDELETE\s+FROM\b/i,                           // DML — followed by FROM; ON DELETE CASCADE passes
   /\b(MERGE|SELECT)\b/i,
   /\bpkg_[a-z0-9_]+\.[a-z0-9_]+/i,               // cross-package reference (other pkg_)
   /\b(main|installed_packages|metric_gauge|metric_counter|metric_timeseries|metric_status|package_runs|orphan_schemas|system_config|audit_logs|schema_migrations)\b/i,
-  /;\s*\S/,                                      // multi-statement
 ];
 
 export function scanSql(sql) {
+  if (typeof sql !== 'string') return { ok: false, blocked: 'non-string input' };
   // 1. strip /* ... */ block comments and -- line comments
   const stripped = sql.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--[^\n]*/g, '');
-  // 2. reject if any BLOCKED_PATTERNS match
+  // 2. reject if any BLOCKED_PATTERNS match — order matters: multi-statement
+  //    (`; <non-ws>`) is checked FIRST so the `blocked` string reflects the
+  //    most-specific cause (the test asserts `assert.match(r.blocked, /;/)` for
+  //    `CREATE TABLE foo (id INT); DROP TABLE bar`).
   for (const re of BLOCKED_PATTERNS) {
     if (re.test(stripped)) return { ok: false, blocked: re.source };
   }
-  // 3. tokenize on whitespace + `(),;`; every non-empty token must be in ALLOWED_KEYWORDS or
-  //    match identifier pattern /^[a-z_][a-z0-9_]*$/i or be a numeric literal or quoted string
+  // 3. tokenize on whitespace + `(),;`. Identifier policy:
+  //    a. Numeric literal `^-?\d+(\.\d+)?$` → allowed.
+  //    b. String literal `^'[^']*'$` → allowed.
+  //    c. Identifier `/^[a-z_][a-z0-9_]*$/i` → allowed freely (table/column/
+  //       index names are user-chosen and not on any list). The DDL-keyword
+  //       safety is enforced by ALLOWED_KEYWORDS for known DDL tokens that
+  //       appear in the schema, not for arbitrary identifiers.
+  //    d. Defense-in-depth heuristic: an identifier that is entirely
+  //       UPPERCASE letters/underscores (looks like a SQL keyword, not a
+  //       typical lowercase table name) and is NOT in ALLOWED_KEYWORDS is
+  //       rejected. This catches typos like `DROPPED` (a table named
+  //       DROPPED that slipped past `\bDROP\b` because of the boundary),
+  //       `WHEREEVER`, etc. A package author wanting to use an uppercase
+  //       table name like `METRICS` would be rejected by this heuristic —
+  //       this is a deliberate trade-off documented in the unit tests and
+  //       in the BLOCKED_PATTERNS test coverage.
+  //    e. Any token not matching (a), (b), or (c) → unparseable, reject.
   const tokens = stripped.split(/[\s(),;]+/).filter(Boolean);
   for (const t of tokens) {
     if (/^-?\d+(\.\d+)?$/.test(t)) continue;       // numeric literal
     if (/^'[^']*'$/.test(t)) continue;             // string literal
     if (/^[a-z_][a-z0-9_]*$/i.test(t)) {
-      if (!ALLOWED_KEYWORDS.has(t.toUpperCase())) {
+      if (/^[A-Z_]+$/.test(t) && !ALLOWED_KEYWORDS.has(t.toUpperCase())) {
         return { ok: false, blocked: `unknown identifier: ${t}` };
       }
       continue;
@@ -225,7 +244,9 @@ export function scanSql(sql) {
 
 **Sandbox output**: `{ok: true}` or `{ok: false, blocked: '<pattern or token>'}`. Installer surfaces this as `PkgError('PKG_DDL_FORBIDDEN', blocked, 400)`.
 
-**FK ON UPDATE / ON DELETE allowance**: `ON UPDATE CASCADE` and `ON DELETE CASCADE` are FK referential actions, not DML. They are intentionally allowed. The `BLOCKED_PATTERNS` use anchored DML forms (`UPDATE <identifier>`, `DELETE FROM`) so these FK clauses pass through. This is enforced by the unit test `ddl-sandbox.test.js > "ON UPDATE / ON DELETE CASCADE pass"` — if a future refactor breaks this, the test catches it.
+**FK ON UPDATE / ON DELETE allowance**: `ON UPDATE CASCADE` and `ON DELETE CASCADE` are FK referential actions, not DML. They are intentionally allowed. The `BLOCKED_PATTERNS` use anchored DML forms (`UPDATE <identifier>`, `DELETE FROM`) so these FK clauses pass through. The `UPDATE` pattern uses a negative lookahead `(?!\bCASCADE\b)` so `UPDATE C` inside `ON UPDATE CASCADE` does not match the `[a-z_]` identifier character class. This is enforced by the unit test `ddl-sandbox.test.js > "ON UPDATE / ON DELETE CASCADE pass"` — if a future refactor breaks this, the test catches it.
+
+**Identifier policy**: Arbitrary table / column / index names are allowed by the scanner (they are user-chosen, not on any list). The DDL-keyword safety boundary is the `ALLOWED_KEYWORDS` Set (must contain every reserved word used in a DDL statement) and the `BLOCKED_PATTERNS` array (must catch every dangerous pattern). A defense-in-depth heuristic rejects identifiers that are entirely UPPERCASE and not in `ALLOWED_KEYWORDS` — this catches typos like `DROPPED` (a table named DROPPED that the `\bDROP\b` pattern misses because of the word boundary on the trailing `D`) and `WHEREEVER` (a misspelling of WHERE). The trade-off: package authors who want uppercase table names like `METRICS` are rejected. Documented and tested.
 
 ### Schema-name authority
 
