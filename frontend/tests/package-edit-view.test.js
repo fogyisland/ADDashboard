@@ -24,6 +24,15 @@ vi.mock('../src/stores/packages.js', () => ({
   usePackagesStore: vi.fn()
 }));
 
+vi.mock('../src/api/admin.js', () => ({
+  adminApi: {
+    getDdlPreview: vi.fn(),
+    listOrphanSchemas: vi.fn(),
+    dropOrphanSchema: vi.fn(),
+    uninstallPackage: vi.fn()
+  }
+}));
+
 import axios from 'axios';
 import PackageEditView from '../src/views/admin/PackageEditView.vue';
 import { usePackagesStore } from '../src/stores/packages.js';

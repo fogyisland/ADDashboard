@@ -24,6 +24,13 @@
         </tbody>
       </table>
 
+      <section v-if="isV2" class="card">
+        <h3>数据库</h3>
+        <p>Schema: <code>{{ pkg.manifest.database.schemaName }}</code></p>
+        <p>Migrations: <span>{{ pkg.manifest.database.migrations.length }}</span> 个文件</p>
+        <button @click="showDdlPreview">查看 DDL</button>
+      </section>
+
       <section class="card">
         <h3>Manifest 详情</h3>
         <pre class="json">{{ manifestJson }}</pre>
@@ -65,18 +72,46 @@
           </tbody>
         </table>
       </section>
+
+      <section class="card danger-zone">
+        <h3>危险操作</h3>
+        <button class="danger" @click="requestUninstall" :disabled="uninstalling">
+          {{ uninstalling ? '卸载中...' : '卸载' }}
+        </button>
+        <span v-if="uninstallMsg" class="msg">{{ uninstallMsg }}</span>
+      </section>
+
+      <PackageDdlPreviewModal
+        :visible="ddlPreviewVisible"
+        :schemaName="ddlPreview.schemaName"
+        :files="ddlPreview.files"
+        @close="ddlPreviewVisible = false"
+      />
+
+      <UninstallSchemaConfirmModal
+        :visible="uninstallConfirmVisible"
+        :packageName="pkg.name"
+        :schemaName="pkg.manifest.database ? pkg.manifest.database.schemaName : ''"
+        :metricRowCount="recentRuns.length"
+        @confirm="onUninstallConfirm"
+        @close="uninstallConfirmVisible = false"
+      />
     </div>
   </AdminLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import AdminLayout from '../../components/AdminLayout.vue';
+import PackageDdlPreviewModal from '../../components/PackageDdlPreviewModal.vue';
+import UninstallSchemaConfirmModal from '../../components/UninstallSchemaConfirmModal.vue';
 import { usePackagesStore } from '../../stores/packages.js';
+import { adminApi } from '../../api/admin.js';
 
 const route = useRoute();
+const router = useRouter();
 const store = usePackagesStore();
 const pkg = ref(null);
 const recentRuns = ref([]);
@@ -85,6 +120,14 @@ const loadError = ref(null);
 const paramsText = ref('');
 const savingParams = ref(false);
 const paramsMsg = ref('');
+
+const ddlPreviewVisible = ref(false);
+const ddlPreview = ref({ schemaName: null, files: [] });
+const uninstallConfirmVisible = ref(false);
+const uninstalling = ref(false);
+const uninstallMsg = ref('');
+
+const isV2 = computed(() => !!pkg.value?.manifest?.database);
 
 const manifestJson = computed(() => {
   if (!pkg.value?.manifest) return '';
@@ -123,6 +166,42 @@ async function saveParams() {
     paramsMsg.value = e.response?.data?.error?.message || e.message;
   } finally {
     savingParams.value = false;
+  }
+}
+
+async function showDdlPreview() {
+  try {
+    ddlPreview.value = (await adminApi.getDdlPreview(pkg.value.name)).data;
+  } catch (e) {
+    ddlPreview.value = { schemaName: null, files: [] };
+  }
+  ddlPreviewVisible.value = true;
+}
+
+function requestUninstall() {
+  uninstallMsg.value = '';
+  if (isV2.value) {
+    uninstallConfirmVisible.value = true;
+  } else {
+    doUninstall(false);
+  }
+}
+
+async function onUninstallConfirm() {
+  uninstallConfirmVisible.value = false;
+  await doUninstall(true);
+}
+
+async function doUninstall(confirmDropSchema) {
+  uninstalling.value = true;
+  uninstallMsg.value = '';
+  try {
+    await adminApi.uninstallPackage(pkg.value.name, { purgeMetrics: true, confirmDropSchema });
+    router.push('/admin/packages');
+  } catch (e) {
+    uninstallMsg.value = e.response?.data?.error?.message || e.message;
+  } finally {
+    uninstalling.value = false;
   }
 }
 
@@ -167,6 +246,12 @@ textarea {
 .t th, .t td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 13px; }
 .t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .empty { text-align: center; color: var(--muted); padding: 12px; }
+
+.danger-zone { border-color: #5a2222; }
+.danger-zone .danger { background: #5a2222; color: #fff; border: 1px solid #8a3333; padding: 5px 12px; border-radius: 3px; cursor: pointer; }
+.danger-zone .danger:disabled { opacity: 0.6; cursor: not-allowed; }
+
+code { background: #0b1220; padding: 1px 4px; border-radius: 2px; }
 
 .tag {
   display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px;

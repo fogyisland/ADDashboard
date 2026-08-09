@@ -41,5 +41,10 @@ export const adminApi = {
   listDcsCatalog: () => api.get('/api/admin/dcs-catalog'),
   assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId }),
   bulkImportSites: (rows) => api.post('/api/admin/sites-catalog/bulk', { rows }),
-  bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows })
+  bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows }),
+  getDdlPreview: (name) => api.get(`/api/admin/packages/${name}/ddl-preview`),
+  listOrphanSchemas: () => api.get('/api/admin/orphan-schemas'),
+  dropOrphanSchema: (name) => api.delete(`/api/admin/orphan-schemas/${name}`),
+  uninstallPackage: (name, { purgeMetrics = false, confirmDropSchema = false } = {}) =>
+    api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } })
 };
