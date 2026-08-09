@@ -20,6 +20,17 @@
           "license": { "type": "string" },
           "tags": { "type": "array", "items": { "type": "string" } },
           "icon": { "type": "string" },
+          "database": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["schemaName", "migrations", "metricTable"],
+            "properties": {
+              "schemaName": { "type": "string", "pattern": "^pkg_[a-z0-9_]+$" },
+              "migrations": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+              "metricTable": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+              "metricColumns": { "type": "integer", "minimum": 3 }
+            }
+          },
           "versions": {
             "type": "array",
             "minItems": 1,

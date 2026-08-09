@@ -30,6 +30,12 @@ import indexSchema from './registry-index.schema.json' with { type: 'json' };
 const ajv = new Ajv({ allErrors: true, strict: false });
 const validateIndex = ajv.compile(indexSchema);
 
+// Exported for tests (Task 9) — callers should use RegistryClient.fetchIndex().
+export function validateRegistryIndex(json) {
+  const valid = validateIndex(json);
+  return { valid, errors: valid ? [] : (validateIndex.errors || []) };
+}
+
 const INDEX_CACHE_TTL_MS = 3600_000; // 1 hour
 const INDEX_TIMEOUT_MS = 10_000;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
