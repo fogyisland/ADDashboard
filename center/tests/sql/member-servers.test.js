@@ -106,3 +106,145 @@ test('memberServers: upsert MSSQL uses MERGE SQL', async () => {
   assert.equal(db._calls[0].params[2], '10.0.0.1');
   assert.equal(db._calls[0].params[6], 'admin-add');
 });
+
+// ---- live-DB round-trip tests (Global Constraint #17) ----
+//
+// Below: real MySQL / MSSQL round-trip tests. Gated on TEST_MYSQL_URL /
+// TEST_MSSQL_URL — when neither is set, these tests skip (the contract).
+// Per-test hostname prefix lets multiple runs share the same DB without
+// colliding; rows are cleaned up in `finally`.
+
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { splitSqlStatements } from '../../src/init/schema-applier.js';
+import { buildSql } from '../../src/db/sql.js';
+import { createMysqlDriver } from '../../src/db/drivers/mysql.js';
+import { createMssqlDriver } from '../../src/db/drivers/mssql.js';
+import { parseTestUrl } from '../integration/_url.js';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..', '..');
+
+const MSRV_MYSQL = !!process.env.TEST_MYSQL_URL;
+const MSRV_MSSQL = !!process.env.TEST_MSSQL_URL;
+const MSRV_PREFIX = 'msrv-rt-' + Date.now().toString(36) + '-';
+
+test('memberServers (mysql): upsert -> findByHostname -> list -> touch -> delete round-trip',
+  { skip: !MSRV_MYSQL }, async () => {
+    const { user, password, host, port } = parseTestUrl('TEST_MYSQL_URL', { defaultPort: 3306 });
+    const db = createMysqlDriver({ host, port, user, password, database: 'addashboard' });
+    const m = memberServers.mysql;
+    const h1 = MSRV_PREFIX + 'alpha';
+    const h2 = MSRV_PREFIX + 'beta';
+    try {
+      const fileSql = fs.readFileSync(join(REPO_ROOT, 'db/migrations/014-member-servers.sql'), 'utf8');
+      for (const stmt of splitSqlStatements(fileSql)) {
+        await db.execute(stmt, []);
+      }
+
+      // INSERT (alpha) via upsert — 7 params
+      let r = await db.execute(m.upsert, [h1, null, '10.0.0.10', 'Windows Server 2022', 'non-ad', 1, 'self-register']);
+      assert.strictEqual(r.affectedRows, 1, 'first upsert should affect 1 row');
+      // INSERT (beta)
+      r = await db.execute(m.upsert, [h2, null, '10.0.0.11', 'Ubuntu 22.04', 'non-ad', 1, 'admin-add']);
+      assert.strictEqual(r.affectedRows, 1);
+
+      // findByHostname returns the row
+      const found = await db.query(m.findByHostname, [h1]);
+      assert.strictEqual(found.rows.length, 1);
+      assert.strictEqual(found.rows[0].hostname, h1);
+      assert.strictEqual(found.rows[0].ip_address, '10.0.0.10');
+      assert.strictEqual(found.rows[0].agent_type, 'non-ad');
+      assert.strictEqual(Number(found.rows[0].enabled), 1);
+
+      // UPDATE (upsert again with new ip + os_version + discovered_via)
+      r = await db.execute(m.upsert, [h1, null, '10.0.0.99', 'Windows Server 2025', 'non-ad', 1, 'admin-add']);
+      assert.ok(r.affectedRows >= 1, 'second upsert should affect 1 row (insert or update)');
+      const updated = await db.query(m.findByHostname, [h1]);
+      assert.strictEqual(updated.rows[0].ip_address, '10.0.0.99');
+      assert.strictEqual(updated.rows[0].os_version, 'Windows Server 2025');
+      assert.strictEqual(updated.rows[0].discovered_via, 'admin-add');
+
+      // list returns at least our two rows (LEFT JOIN to ad_sites exercises that path)
+      const all = await db.query(m.list);
+      const our = all.rows.filter(rw => rw.hostname && rw.hostname.startsWith(MSRV_PREFIX));
+      assert.ok(our.length >= 2, `list should return at least 2 of our rows, got ${our.length}`);
+
+      // touchLastSeen / touchLastReport
+      r = await db.execute(m.touchLastSeen, [h1]);
+      assert.strictEqual(r.affectedRows, 1);
+      r = await db.execute(m.touchLastReport, [h1]);
+      assert.strictEqual(r.affectedRows, 1);
+      const afterTouch = await db.query(m.findByHostname, [h1]);
+      assert.ok(afterTouch.rows[0].last_seen_at, 'last_seen_at should be populated');
+      assert.ok(afterTouch.rows[0].last_report_at, 'last_report_at should be populated');
+
+      // delete
+      r = await db.execute(m.delete, [h1]);
+      assert.strictEqual(r.affectedRows, 1);
+      const gone = await db.query(m.findByHostname, [h1]);
+      assert.strictEqual(gone.rows.length, 0, 'findByHostname should return no rows after delete');
+    } finally {
+      try { await db.execute('DELETE FROM ad_member_servers WHERE hostname LIKE ?', [MSRV_PREFIX + '%']); } catch {}
+      await db.close();
+    }
+  });
+
+test('memberServers (mssql): upsert -> findByHostname -> list -> touch -> delete round-trip',
+  { skip: !MSRV_MSSQL }, async () => {
+    const { user, password, host, port } = parseTestUrl('TEST_MSSQL_URL', { defaultPort: 1433 });
+    const db = createMssqlDriver({ server: host, port, database: 'addashboard', user, password });
+    const m = memberServers.mssql;
+    const h1 = MSRV_PREFIX + 'alpha-mssql';
+    const h2 = MSRV_PREFIX + 'beta-mssql';
+    try {
+      const fileSql = fs.readFileSync(join(REPO_ROOT, 'db/migrations/mssql/014-member-servers.sql'), 'utf8');
+      for (const stmt of splitSqlStatements(fileSql)) {
+        await db.execute(stmt, []);
+      }
+
+      // INSERT via MERGE WHEN NOT MATCHED
+      let r = await db.execute(m.upsert, [h1, null, '10.0.0.10', 'Windows Server 2022', 'non-ad', 1, 'self-register']);
+      assert.ok(r.affectedRows >= 1, 'first MERGE should affect at least 1 row');
+      r = await db.execute(m.upsert, [h2, null, '10.0.0.11', 'Ubuntu 22.04', 'non-ad', 1, 'admin-add']);
+      assert.ok(r.affectedRows >= 1);
+
+      // findByHostname
+      const found = await db.query(m.findByHostname, [h1]);
+      assert.strictEqual(found.rows.length, 1);
+      assert.strictEqual(found.rows[0].hostname, h1);
+      assert.strictEqual(found.rows[0].ip_address, '10.0.0.10');
+      assert.strictEqual(Number(found.rows[0].enabled), 1);
+
+      // UPDATE via MERGE WHEN MATCHED
+      r = await db.execute(m.upsert, [h1, null, '10.0.0.99', 'Windows Server 2025', 'non-ad', 1, 'admin-add']);
+      const updated = await db.query(m.findByHostname, [h1]);
+      assert.strictEqual(updated.rows[0].ip_address, '10.0.0.99');
+      assert.strictEqual(updated.rows[0].os_version, 'Windows Server 2025');
+      assert.strictEqual(updated.rows[0].discovered_via, 'admin-add');
+
+      // list returns our rows (filtered by prefix in app)
+      const all = await db.query(m.list);
+      const our = all.rows.filter(rw => rw.hostname && rw.hostname.startsWith(MSRV_PREFIX));
+      assert.ok(our.length >= 2, `list should return at least 2 of our rows, got ${our.length}`);
+
+      // touchLastSeen / touchLastReport
+      r = await db.execute(m.touchLastSeen, [h1]);
+      assert.strictEqual(r.affectedRows, 1);
+      r = await db.execute(m.touchLastReport, [h1]);
+      assert.strictEqual(r.affectedRows, 1);
+      const afterTouch = await db.query(m.findByHostname, [h1]);
+      assert.ok(afterTouch.rows[0].last_seen_at, 'last_seen_at should be populated');
+      assert.ok(afterTouch.rows[0].last_report_at, 'last_report_at should be populated');
+
+      // delete
+      r = await db.execute(m.delete, [h1]);
+      assert.strictEqual(r.affectedRows, 1);
+      const gone = await db.query(m.findByHostname, [h1]);
+      assert.strictEqual(gone.rows.length, 0);
+    } finally {
+      try { await db.execute('DELETE FROM ad_member_servers WHERE hostname LIKE ?', [MSRV_PREFIX + '%']); } catch {}
+      await db.close();
+    }
+  });

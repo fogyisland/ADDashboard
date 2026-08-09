@@ -68,3 +68,226 @@ test('alertRules: listStatesForEval inner-joins alert_rules to filter by enabled
   assert.match(alertRules.mysql.listStatesForEval, /r\.for_minutes/);
   assert.match(alertRules.mysql.listStatesForEval, /r\.cooldown_minutes/);
 });
+
+// ---- live-DB round-trip tests (Global Constraint #17) ----
+
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { splitSqlStatements } from '../../src/init/schema-applier.js';
+import { buildSql } from '../../src/db/sql.js';
+import { createMysqlDriver } from '../../src/db/drivers/mysql.js';
+import { createMssqlDriver } from '../../src/db/drivers/mssql.js';
+import { parseTestUrl } from '../integration/_url.js';
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..', '..');
+
+const AR_MYSQL = !!process.env.TEST_MYSQL_URL;
+const AR_MSSQL = !!process.env.TEST_MSSQL_URL;
+const AR_PREFIX = 'ar-rt-' + Date.now().toString(36) + '-';
+
+test('alertRules (mysql): create -> findById -> list -> update -> upsertState -> listStatesForEval -> delete round-trip',
+  { skip: !AR_MYSQL }, async () => {
+    const { user, password, host, port } = parseTestUrl('TEST_MYSQL_URL', { defaultPort: 3306 });
+    const db = createMysqlDriver({ host, port, user, password, database: 'addashboard' });
+    const m = alertRules.mysql;
+    const hostname = AR_PREFIX + 'host';
+    let ruleId = null;
+    try {
+      const fileSql = fs.readFileSync(join(REPO_ROOT, 'db/migrations/014-member-servers.sql'), 'utf8');
+      for (const stmt of splitSqlStatements(fileSql)) {
+        await db.execute(stmt, []);
+      }
+
+      // FK: alert_rules.hostname -> ad_member_servers.hostname
+      await db.execute(
+        `INSERT INTO ad_member_servers (hostname, agent_type, discovered_via) VALUES (?, 'non-ad', 'self-register')
+         ON DUPLICATE KEY UPDATE updated_at = NOW()`,
+        [hostname]
+      );
+
+      // CREATE rule
+      let r = await db.execute(m.create, [
+        hostname,
+        'cpu-high',
+        '{"metric":"cpu","gt":90}',
+        5,
+        30,
+        'ops@example.com',
+        1
+      ]);
+      assert.ok(r.insertId != null, 'create should yield insertId');
+      ruleId = r.insertId;
+
+      // findById
+      const found = await db.query(m.findById, [ruleId]);
+      assert.strictEqual(found.rows.length, 1);
+      assert.strictEqual(found.rows[0].name, 'cpu-high');
+      assert.strictEqual(found.rows[0].hostname, hostname);
+      assert.strictEqual(Number(found.rows[0].for_minutes), 5);
+      assert.strictEqual(Number(found.rows[0].enabled), 1);
+
+      // list / listForHost / listEnabled
+      const list = await db.query(m.list);
+      assert.ok(list.rows.some(rw => rw.rule_id === ruleId));
+      const forHost = await db.query(m.listForHost, [hostname]);
+      assert.ok(forHost.rows.some(rw => rw.rule_id === ruleId));
+      const enabled = await db.query(m.listEnabled);
+      assert.ok(enabled.rows.some(rw => rw.rule_id === ruleId));
+      const allEnabled = await db.query(m.listAllEnabled);
+      assert.ok(allEnabled.rows.some(rw => rw.rule_id === ruleId));
+
+      // UPDATE: change for_minutes + recipients
+      r = await db.execute(m.update, ['cpu-high', '{"metric":"cpu","gt":95}', 10, 60, 'ops@example.com,oncall@example.com', 1, ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      const afterUpdate = await db.query(m.findById, [ruleId]);
+      assert.strictEqual(Number(afterUpdate.rows[0].for_minutes), 10);
+      assert.strictEqual(Number(afterUpdate.rows[0].cooldown_minutes), 60);
+      assert.strictEqual(afterUpdate.rows[0].recipients, 'ops@example.com,oncall@example.com');
+
+      // upsertState (insert branch: rule_id has no state yet)
+      r = await db.execute(m.upsertState, [ruleId, 'normal', null, null, null, null]);
+      assert.strictEqual(r.affectedRows, 1);
+      const state1 = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(state1.rows.length, 1);
+      assert.strictEqual(state1.rows[0].state, 'normal');
+      assert.ok(state1.rows[0].last_evaluated_at, 'last_evaluated_at should be set by NOW()');
+
+      // upsertState (update branch: state -> pending, first_hit_at set)
+      r = await db.execute(m.upsertState, [ruleId, 'pending', new Date(), null, null, null]);
+      assert.strictEqual(r.affectedRows, 2, 'ON DUPLICATE: 1 update + 1 found');
+      const state2 = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(state2.rows[0].state, 'pending');
+      assert.ok(state2.rows[0].first_hit_at, 'first_hit_at should be populated after update');
+
+      // listStatesForEval: INNER JOIN alert_rules to filter enabled=1
+      const evalRows = await db.query(m.listStatesForEval);
+      assert.ok(evalRows.rows.some(rw => rw.rule_id === ruleId),
+        'listStatesForEval must include our enabled rule via INNER JOIN');
+
+      // touchEvaluated
+      r = await db.execute(m.touchEvaluated, [ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      // clearSuppression
+      r = await db.execute(m.clearSuppression, [ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      const cleared = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(cleared.rows[0].suppressed_until, null);
+
+      // DELETE
+      r = await db.execute(m.delete, [ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      const gone = await db.query(m.findById, [ruleId]);
+      assert.strictEqual(gone.rows.length, 0);
+      // alert_rule_state cascades via FK ON DELETE CASCADE
+      const stateGone = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(stateGone.rows.length, 0);
+    } finally {
+      try { await db.execute('DELETE FROM alert_rules WHERE hostname = ?', [hostname]); } catch {}
+      try { await db.execute('DELETE FROM ad_member_servers WHERE hostname = ?', [hostname]); } catch {}
+      await db.close();
+    }
+  });
+
+test('alertRules (mssql): create -> findById -> list -> update -> upsertState -> listStatesForEval -> delete round-trip',
+  { skip: !AR_MSSQL }, async () => {
+    const { user, password, host, port } = parseTestUrl('TEST_MSSQL_URL', { defaultPort: 1433 });
+    const db = createMssqlDriver({ server: host, port, database: 'addashboard', user, password });
+    const m = alertRules.mssql;
+    const hostname = AR_PREFIX + 'host-mssql';
+    let ruleId = null;
+    try {
+      const fileSql = fs.readFileSync(join(REPO_ROOT, 'db/migrations/mssql/014-member-servers.sql'), 'utf8');
+      for (const stmt of splitSqlStatements(fileSql)) {
+        await db.execute(stmt, []);
+      }
+
+      // FK pre-seed
+      await db.execute(
+        `MERGE INTO ad_member_servers AS t USING (SELECT ? AS hostname) AS s ON t.hostname = s.hostname
+         WHEN NOT MATCHED THEN INSERT (hostname, agent_type, discovered_via) VALUES (s.hostname, 'non-ad', 'self-register');`,
+        [hostname]
+      );
+
+      // CREATE rule
+      let r = await db.execute(m.create, [
+        hostname,
+        'cpu-high',
+        '{"metric":"cpu","gt":90}',
+        5,
+        30,
+        'ops@example.com',
+        1
+      ]);
+      assert.ok(r.insertId != null, 'create should yield insertId (SCOPE_IDENTITY)');
+      ruleId = r.insertId;
+
+      // findById
+      const found = await db.query(m.findById, [ruleId]);
+      assert.strictEqual(found.rows.length, 1);
+      assert.strictEqual(found.rows[0].name, 'cpu-high');
+      assert.strictEqual(found.rows[0].hostname, hostname);
+      assert.strictEqual(Number(found.rows[0].for_minutes), 5);
+      assert.strictEqual(Number(found.rows[0].enabled), 1);
+
+      // list / listForHost / listEnabled
+      const list = await db.query(m.list);
+      assert.ok(list.rows.some(rw => rw.rule_id === ruleId));
+      const forHost = await db.query(m.listForHost, [hostname]);
+      assert.ok(forHost.rows.some(rw => rw.rule_id === ruleId));
+      const enabled = await db.query(m.listEnabled);
+      assert.ok(enabled.rows.some(rw => rw.rule_id === ruleId));
+      const allEnabled = await db.query(m.listAllEnabled);
+      assert.ok(allEnabled.rows.some(rw => rw.rule_id === ruleId));
+
+      // UPDATE
+      r = await db.execute(m.update, ['cpu-high', '{"metric":"cpu","gt":95}', 10, 60, 'ops@example.com,oncall@example.com', 1, ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      const afterUpdate = await db.query(m.findById, [ruleId]);
+      assert.strictEqual(Number(afterUpdate.rows[0].for_minutes), 10);
+      assert.strictEqual(Number(afterUpdate.rows[0].cooldown_minutes), 60);
+
+      // upsertState (insert)
+      r = await db.execute(m.upsertState, [ruleId, 'normal', null, null, null, null]);
+      assert.ok(r.affectedRows >= 1);
+      const state1 = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(state1.rows.length, 1);
+      assert.strictEqual(state1.rows[0].state, 'normal');
+      assert.ok(state1.rows[0].last_evaluated_at, 'last_evaluated_at should be set by SYSUTCDATETIME()');
+
+      // upsertState (update)
+      r = await db.execute(m.upsertState, [ruleId, 'pending', new Date(), null, null, null]);
+      assert.ok(r.affectedRows >= 1);
+      const state2 = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(state2.rows[0].state, 'pending');
+      assert.ok(state2.rows[0].first_hit_at);
+
+      // listStatesForEval
+      const evalRows = await db.query(m.listStatesForEval);
+      assert.ok(evalRows.rows.some(rw => rw.rule_id === ruleId),
+        'listStatesForEval must include our enabled rule via INNER JOIN');
+
+      // touchEvaluated
+      r = await db.execute(m.touchEvaluated, [ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      // clearSuppression
+      r = await db.execute(m.clearSuppression, [ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      const cleared = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(cleared.rows[0].suppressed_until, null);
+
+      // DELETE
+      r = await db.execute(m.delete, [ruleId]);
+      assert.strictEqual(r.affectedRows, 1);
+      const gone = await db.query(m.findById, [ruleId]);
+      assert.strictEqual(gone.rows.length, 0);
+      // alert_rule_state cascades via FK ON DELETE CASCADE
+      const stateGone = await db.query(m.getState, [ruleId]);
+      assert.strictEqual(stateGone.rows.length, 0);
+    } finally {
+      try { await db.execute('DELETE FROM alert_rules WHERE hostname = ?', [hostname]); } catch {}
+      try { await db.execute('DELETE FROM ad_member_servers WHERE hostname = ?', [hostname]); } catch {}
+      await db.close();
+    }
+  });
