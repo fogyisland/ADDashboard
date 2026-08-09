@@ -173,6 +173,19 @@ const VARIANTS = {
       get: `SELECT * FROM installed_packages WHERE name = ?`,
       delete: `DELETE FROM installed_packages WHERE name = ?`
     },
+    // Drop-failure tracking (migration 013). Records pkg_<name> schemas
+    // left behind when DROP SCHEMA fails (FKs, perms, transient DB errors)
+    // so admin can manually clean up. T7 writes, T10 reads+deletes,
+    // T12 renders.
+    orphanSchemas: {
+      upsert: `INSERT INTO orphan_schemas (name, last_seen_at, note)
+        VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          last_seen_at = VALUES(last_seen_at),
+          note = VALUES(note)`,
+      list: `SELECT * FROM orphan_schemas ORDER BY last_seen_at DESC`,
+      delete: `DELETE FROM orphan_schemas WHERE name = ?`
+    },
     metricGauge: {
       upsertLatest: `INSERT INTO metric_gauge
         (agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit)
@@ -464,6 +477,19 @@ const VARIANTS = {
       listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
       get: `SELECT * FROM installed_packages WHERE name = ?`,
       delete: `DELETE FROM installed_packages WHERE name = ?`
+    },
+    // Drop-failure tracking (migration 013). See mysql counterpart.
+    orphanSchemas: {
+      upsert: `MERGE INTO orphan_schemas AS t
+        USING (SELECT ? AS name, ? AS last_seen_at, ? AS note) AS s
+        ON t.name = s.name
+        WHEN MATCHED THEN UPDATE SET
+          last_seen_at = s.last_seen_at,
+          note = s.note
+        WHEN NOT MATCHED THEN INSERT (name, last_seen_at, note)
+          VALUES (s.name, s.last_seen_at, s.note)`,
+      list: `SELECT * FROM orphan_schemas ORDER BY last_seen_at DESC`,
+      delete: `DELETE FROM orphan_schemas WHERE name = ?`
     },
     metricGauge: {
       upsertLatest: `MERGE INTO metric_gauge AS t
