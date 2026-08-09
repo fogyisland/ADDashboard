@@ -26,6 +26,12 @@ const manifestSchema = {
       required: ['minVersion', 'script', 'intervalSec'],
       additionalProperties: false,
       properties: {
+        // Optional agent runtime type. Defaults to "ad" when omitted (existing
+        // manifests are unaffected). "non-ad" is required for member-server
+        // packages (e.g. ad_os_baseline); the agent runtime reads this to
+        // pick the right loop. WPF package designer also exposes this as a
+        // dropdown in the manifest form.
+        type: { enum: ['ad', 'non-ad'], default: 'ad' },
         minVersion: { type: 'string' },
         platforms: { type: 'array', items: { enum: ['windows'] } },
         runtime: { enum: ['powershell'] },
