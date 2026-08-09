@@ -77,14 +77,71 @@ const manifestSchema = {
       },
     },
     dependencies: { type: 'array', items: { type: 'object' } },
+    database: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['schemaName', 'migrations', 'metricTable', 'metricSchema'],
+      properties: {
+        schemaName: {
+          type: 'string',
+          // pkg_<name-with-dashes-as-underscores>; installer defaults to this if omitted,
+          // but in the manifest it's required so the author is explicit.
+          pattern: '^pkg_[a-z0-9_]+$'
+        },
+        migrations: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 1 }
+        },
+        metricTable: {
+          type: 'string',
+          pattern: '^[a-z0-9_]+$'
+        },
+        metricSchema: {
+          type: 'object',
+          minProperties: 3,             // at least agent_id + ts + 1 user column
+          additionalProperties: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['type'],
+            properties: {
+              type: {
+                type: 'string',
+                // canonical vocabulary — match ddl-sandbox.normalizeType() output.
+                // Single source of truth: see task 1's normalizeType.
+                pattern: '^(int|integer|bigint|smallint|tinyint|varchar\\(\\d+\\)|char\\(\\d+\\)|text|nvarchar\\(\\d+\\)|ntext|double|float|decimal\\(\\d+,\\d+\\)|numeric\\(\\d+,\\d+\\)|datetime|timestamp|datetimeoffset|date|json|boolean|bit)$'
+              },
+              nullable: { type: 'boolean' }
+            }
+          },
+          // ajv can't easily express "agent_id and ts must be present with nullable=false" in pure JSON Schema;
+          // enforce in post-validation hook below.
+        }
+      }
+    }
   },
 };
 
 const validate = ajv.compile(manifestSchema);
 
+// Post-validation hook: enforce metricSchema must include agent_id and ts with nullable=false.
+// Pure ajv JSON Schema cannot express "key presence + value constraint" easily, so we layer
+// this check on top of the schema-validated shape.
+function extraCheck(m) {
+  if (m && m.database && m.database.metricSchema) {
+    const s = m.database.metricSchema;
+    if (!s.agent_id || s.agent_id.nullable !== false) return 'database.metricSchema.agent_id must exist with nullable=false';
+    if (!s.ts || s.ts.nullable !== false) return 'database.metricSchema.ts must exist with nullable=false';
+  }
+  return null;
+}
+
 export function validateManifest(m) {
   const valid = validate(m);
-  return { valid, errors: validate.errors || [] };
+  if (!valid) return { valid: false, errors: validate.errors || [] };
+  const extra = extraCheck(m);
+  if (extra) return { valid: false, errors: [{ instancePath: '/database/metricSchema', message: extra }] };
+  return { valid: true, errors: [] };
 }
 
 export { manifestSchema };
