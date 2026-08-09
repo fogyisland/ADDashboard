@@ -298,8 +298,9 @@ describe('admin /api/admin/packages', () => {
     test('uninstalls without purgeMetrics', async () => {
       const db = buildMockDb([
         // uninstallPackage calls installedPackages.get first; return a
-        // row so the route proceeds.
-        { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [{ name: 'foo', version: '1.0.0' }] }
+        // row so the route proceeds. manifest_json is required by the
+        // v2 routing check in installer.uninstallPackage (manifest.database).
+        { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [{ name: 'foo', version: '1.0.0', manifest_json: JSON.stringify({ name: 'foo', version: '1.0.0' }) }] }
       ]).standard();
       const app = buildApp(db);
       const r = await supertest(app).delete('/api/admin/packages/foo').set(adminAuth());
@@ -309,7 +310,7 @@ describe('admin /api/admin/packages', () => {
 
     test('accepts purgeMetrics=true query param', async () => {
       const db = buildMockDb([
-        { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [{ name: 'foo', version: '1.0.0' }] }
+        { match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i, rows: [{ name: 'foo', version: '1.0.0', manifest_json: JSON.stringify({ name: 'foo', version: '1.0.0' }) }] }
       ]).standard();
       const app = buildApp(db);
       const r = await supertest(app).delete('/api/admin/packages/foo?purgeMetrics=true').set(adminAuth());

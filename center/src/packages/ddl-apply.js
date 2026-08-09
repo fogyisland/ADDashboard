@@ -21,19 +21,20 @@ function dropSchemaSql(schemaName, dialect) {
   return `DROP SCHEMA [${schemaName}]`;
 }
 
-function schemaMigrationsDdl(dialect) {
+function schemaMigrationsDdl(dialect, schemaName) {
   if (dialect === 'mysql') {
-    return `CREATE TABLE IF NOT EXISTS schema_migrations (
+    return `CREATE TABLE IF NOT EXISTS \`${schemaName}\`.schema_migrations (
       filename    VARCHAR(255) NOT NULL PRIMARY KEY,
       version     VARCHAR(32)  NOT NULL,
       applied_at  DATETIME     NOT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`;
   }
-  return `CREATE TABLE schema_migrations (
-    filename    NVARCHAR(255) NOT NULL PRIMARY KEY,
-    version     NVARCHAR(32)  NOT NULL,
-    applied_at  DATETIMEOFFSET NOT NULL
-  )`;
+  return `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = N'schema_migrations' AND schema_id = SCHEMA_ID(N'${schemaName}'))
+    CREATE TABLE [${schemaName}].[schema_migrations] (
+      filename    NVARCHAR(255) NOT NULL PRIMARY KEY,
+      version     NVARCHAR(32)  NOT NULL,
+      applied_at  DATETIMEOFFSET NOT NULL
+    )`;
 }
 
 export async function schemaExists(db, schemaName, dialect) {
@@ -56,15 +57,13 @@ export async function ensureSchema(db, schemaName, dialect) {
 }
 
 export async function createSchemaMigrationsTable(db, schemaName, dialect) {
-  // Switch into the schema then create. For MSSQL the bracketed identifier
-  // form is portable; for MySQL we prefix.
-  const ddl = schemaMigrationsDdl(dialect);
-  if (dialect === 'mysql') {
-    await db.execute(`USE \`${schemaName}\``);
-  }
+  // The DDL is fully schema-qualified; no `USE <schema>` needed. The mysql2
+  // pool persists `USE` per-connection across pool queries (verified in T6
+  // review Concern 3), so a stray `USE pkg_x` here would leak into subsequent
+  // `installedPackages.upsert/delete` calls and break unqualified INSERTs
+  // on `installed_packages`. Same for the MSSQL default-database context.
+  const ddl = schemaMigrationsDdl(dialect, schemaName);
   await db.execute(ddl);
-  // MySQL `USE` only affects the connection — not all drivers persist this.
-  // Always fully-qualify subsequent statements: `<schemaName>.schema_migrations`.
 }
 
 export async function applyMigrations(db, { schemaName, dialect, files }) {
@@ -110,9 +109,34 @@ export async function listAppliedMigrations(db, schemaName) {
 }
 
 export async function dropSchema(db, schemaName, dialect) {
-  // Idempotent: swallow "schema doesn't exist" errors
+  // Capture the connection's current default database before the DROP so
+  // we can restore it. After `DROP DATABASE pkg_x` the connection has no
+  // current DB and the next unqualified query (e.g. `DELETE FROM
+  // installed_packages`) will fail. mysql2's pool persists `USE` per
+  // connection, so we can't rely on the driver-config default — the
+  // install path's `createSchemaMigrationsTable` used to `USE pkg_x` and
+  // would leave the connection in the (now-dropped) schema. Restore to
+  // whatever the connection was in before, so uninstall is safe regardless
+  // of which path the caller took to get here.
+  let prevDb = null;
+  try {
+    if (dialect === 'mysql') {
+      const { rows } = await db.execute('SELECT DATABASE() AS db');
+      prevDb = rows[0]?.db ?? null;
+    } else {
+      const { rows } = await db.execute('SELECT DB_NAME() AS db');
+      prevDb = rows[0]?.db ?? null;
+    }
+  } catch { /* best effort — proceed with drop even if introspection fails */ }
   try {
     await db.execute(dropSchemaSql(schemaName, dialect));
+    // Successful drop. If the dropped schema was the current DB, fall back to
+    // the driver default (passed via the SQL pattern; we use the schemaName
+    // of the dropped DB to detect this).
+    if (prevDb && prevDb !== schemaName) {
+      if (dialect === 'mysql') await db.execute(`USE \`${prevDb}\``);
+      else await db.execute(`USE [${prevDb}]`);
+    }
   } catch (e) {
     if (/does not exist|can't drop|Unknown database/i.test(e.message)) return;
     throw e;

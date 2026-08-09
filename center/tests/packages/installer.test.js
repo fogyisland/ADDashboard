@@ -252,7 +252,7 @@ describe('installer.uninstallPackage', () => {
   test('removes row and does not purge metrics by default', async () => {
     const db = makeMockDb();
     db._addScript(/FROM installed_packages WHERE name = \?/i, {
-      rows: [{ name: 'cpu-monitor', version: '1.0.0' }]
+      rows: [{ name: 'cpu-monitor', version: '1.0.0', manifest_json: JSON.stringify({ name: 'cpu-monitor', version: '1.0.0' }) }]
     });
     await installer.uninstallPackage(db, { name: 'cpu-monitor', purgeMetrics: false });
 
@@ -299,7 +299,7 @@ describe('installer.uninstallPackage', () => {
     assert.ok(fs.existsSync(cacheDir), 'cache dir should exist before uninstall');
 
     db._addScript(/FROM installed_packages WHERE name = \?/i, {
-      rows: [{ name: 'test-mem', version: '1.0.0' }]
+      rows: [{ name: 'test-mem', version: '1.0.0', manifest_json: JSON.stringify({ name: 'test-mem', version: '1.0.0' }) }]
     });
     await installer.uninstallPackage(db, { name: 'test-mem', purgeMetrics: true });
 

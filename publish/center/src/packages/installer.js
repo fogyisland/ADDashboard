@@ -20,6 +20,7 @@ import semver from 'semver';
 import { validateManifest } from './manifest.js';
 import { installedPackages } from '../db/sql/installed-packages.js';
 import { packageRuns } from '../db/sql/package-runs.js';
+import { orphanSchemas } from '../db/sql/orphan-schemas.js';
 import { PkgError } from './errors.js';
 import { ensureSchema, createSchemaMigrationsTable, applyMigrations, dropSchema, schemaExists, markMigrationsApplied, listAppliedMigrations } from './ddl-apply.js';
 
@@ -208,18 +209,58 @@ export const installer = {
     return { name, version };
   },
 
-  async uninstallPackage(db, { name, purgeMetrics }) {
+  async uninstallPackage(db, { name, purgeMetrics, confirmDropSchema }) {
     const existing = await installedPackages.get(db, name);
     if (!existing) throw new PkgError('PKG_NOT_FOUND', name);
-    await installedPackages.delete(db, name);
-    if (purgeMetrics) {
-      // Delete metric_* rows where metric_id LIKE '<name>.%'
+
+    // v2: drop pkg_<name> schema first if requested. v1 packages (no
+    // manifest.database) fall through to the existing v1 metric_* purge
+    // branch. The DROP happens before the `installedPackages.delete` so
+    // that the connection's `USE` state set by `createSchemaMigrationsTable`
+    // on install is reset by `dropSchema`'s restore-prevDb logic before
+    // the unqualified `DELETE FROM installed_packages` runs.
+    if (existing.manifest.database) {
+      if (!purgeMetrics) {
+        // v2 uninstall without purge: leave the schema in place; uninstall
+        // just removes the installed_packages row + cache (the next lines).
+      } else {
+        if (!confirmDropSchema) {
+          throw new PkgError(
+            'PKG_CONFIRM_REQUIRED',
+            `set confirmDropSchema=true to drop pkg schema for ${name}`
+          );
+        }
+        const schemaName = existing.manifest.database.schemaName;
+        try {
+          await dropSchema(db, schemaName, db.dialect);
+        } catch (e) {
+          // Best-effort: record the orphan and continue. The uninstall
+          // still completes (installed_packages row + cache removed) so
+          // the admin can re-install if they want. T10 reads
+          // orphan_schemas and lets admin re-attempt the drop.
+          try {
+            await orphanSchemas.upsert(db, {
+              name: schemaName,
+              lastSeenAt: new Date(),
+              note: `uninstall DROP failed: ${e.message}`
+            });
+          } catch (orphanErr) {
+            // Even the orphan-record failed (e.g. orphan_schemas table
+            // missing). Log and proceed — do not block uninstall.
+            console.error(`orphan_schemas.upsert also failed: ${orphanErr.message}`);
+          }
+        }
+      }
+    } else if (purgeMetrics) {
+      // Existing v1 path: delete metric_* rows where metric_id LIKE '<name>.%'
       await db.execute(`DELETE FROM metric_gauge WHERE metric_id LIKE ?`, [`${name}.%`]);
       await db.execute(`DELETE FROM metric_counter WHERE metric_id LIKE ?`, [`${name}.%`]);
       await db.execute(`DELETE FROM metric_timeseries WHERE metric_id LIKE ?`, [`${name}.%`]);
       await db.execute(`DELETE FROM metric_status WHERE metric_id LIKE ?`, [`${name}.%`]);
     }
+
     await db.execute(`DELETE FROM package_runs WHERE package_name = ?`, [name]);
+    await installedPackages.delete(db, name);
     // Remove cache directory
     const cacheDir = path.join(process.cwd(), 'data', 'packages', name);
     if (fs.existsSync(cacheDir)) fs.rmSync(cacheDir, { recursive: true, force: true });
