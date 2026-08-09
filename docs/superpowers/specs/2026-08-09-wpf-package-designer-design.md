@@ -180,6 +180,12 @@ The tool's output is a v2 zip, byte-compatible with `center/src/packages/install
 
 Tool enforces **only the required files**: `manifest.json` + `collect.ps1` + at least one file in `migrations/`. Optional files (`icon.svg`, `default-config.json`, `widget.vue`) can be added via toolbar "Add Optional File" — they pass through unchanged.
 
+> **PATCH 2026-08-09 (non-AD companion spec):** The new-package dialog adds a **starter template** option so authors can scaffold a non-AD metric package without writing a manifest from scratch. The shipped templates are:
+> - **AD starter** (default, `agent.type: "ad"`) — `ad-monitoring-lite` template: empty `metricSchema` for `cpu_pct` + `memory_pct`, one `001_initial.sql` with the matching `CREATE TABLE`, `collect.ps1` with a `Get-Counter` snippet. Targets the existing DC agent.
+> - **Non-AD starter** (`agent.type: "non-ad"`) — `ad-os-baseline-lite` template: minimal `metricSchema` for `cpu_pct` and `memory_pct`, `001_initial.sql` with `CREATE TABLE pkg_ad_os_baseline_lite.metrics`, `collect.ps1` with a `Get-Counter` snippet. Targets the non-AD agent runtime. The center-side built-in package shipped in production is `ad-os-baseline` (see `docs/superpowers/specs/2026-08-09-non-ad-server-management-design.md` §7); the WPF template is for **authoring** non-AD packages locally and is independent of the production built-in.
+>
+> The starter template is selected in the new-package dialog next to the existing `name` + `type` fields; selecting a template pre-populates the manifest, migrations, and collect.ps1 with the listed content. Authors can edit anything after the template loads.
+
 ### `manifest.json` — JSON Schema (embedded as EmbeddedResource)
 
 Schema derived 1:1 from `center/src/packages/manifest.js > manifestSchema`. The .NET tool embeds a JSON Schema draft-07 equivalent (compiled from the same source) and validates via NJsonSchema at save + publish time. Any drift between this schema and the ajv schema in center is a bug; both must be updated in lockstep.
@@ -203,12 +209,13 @@ Top-level structure (full schema in `Resources/manifest-schema.json`):
       "required": ["minVersion", "script", "intervalSec"],
       "additionalProperties": false,
       "properties": {
-        "minVersion":   { "type": "string" },
-        "platforms":    { "type": "array", "items": { "enum": ["windows"] } },
-        "runtime":      { "enum": ["powershell"] },
-        "script":       { "type": "string" },
-        "timeoutMs":    { "type": "integer", "minimum": 1000, "maximum": 600000 },
-        "intervalSec":  { "type": "integer", "minimum": 5, "maximum": 86400 }
+        "type":        { "enum": ["ad", "non-ad"], "default": "ad" },  // PATCHED 2026-08-09 — see non-AD companion spec
+        "minVersion":  { "type": "string" },
+        "platforms":   { "type": "array", "items": { "enum": ["windows"] } },
+        "runtime":     { "enum": ["powershell"] },
+        "script":      { "type": "string" },
+        "timeoutMs":   { "type": "integer", "minimum": 1000, "maximum": 600000 },
+        "intervalSec": { "type": "integer", "minimum": 5, "maximum": 86400 }
       }
     },
     "center": {
@@ -311,6 +318,7 @@ Each file in `migrations/` (and the implicit `ddl/` files at v2 root if the auth
 - **Closing file tab** with unsaved changes: prompt `Save / Discard / Cancel`.
 - **Closing package tab** with unsaved changes: prompt `Save .pkgproj / Discard / Cancel`.
 - **Manifest form** is the only non-text editor for manifest; SQL/PS1 use AvalonEdit.
+- **Manifest form** has a new `Agent Type` dropdown (`AD` / `Non-AD`) bound to `manifest.agent.type` (PATCHED 2026-08-09). Default `AD`. The dropdown sits next to the existing `Platforms` / `Runtime` rows. Changing it does not affect any other field, but the new-package dialog filters the **starter template** list based on this value.
 - **Sandbox status strip** per SQL file tab: `Sandbox: 3 OK / 0 errors` updated on each debounced re-scan.
 - **Error glyph** click → jump to token location in editor.
 - **Empty state**: when all tabs closed, main window shows centered "Open or create a package to get started" + recent files list.
@@ -702,10 +710,11 @@ These are non-negotiable requirements binding every task in the implementation p
 13. **No third-party MVVM framework** — manual `INotifyPropertyChanged` only. Reason: keep dependency surface minimal; MVVM toolkit adds 2MB+ for marginal benefit on this scope.
 14. **AvalonEdit + NJsonSchema + Meziantou.Framework.Win32.CredentialManager are the only third-party NuGet deps** beyond BCL. No other deps without spec amendment.
 15. **Test suite MUST include sandbox golden file tests** that fail if the .NET port drifts from Node.js output.
+16. **(PATCHED 2026-08-09) `agent.type` enum `["ad", "non-ad"]`** with default `"ad"` is part of the embedded manifest schema. The dropdown is round-tripped through `.pkgproj` save/load and through the published `manifest.json`. The companion spec `2026-08-09-non-ad-server-management-design.md` §4.2 is the source of truth for the runtime semantics; this spec is the source of truth for the editor + form.
 
 ## Risks and open questions
 
-1. **Manifest schema drift** — `manifest-schema.json` (embedded) must stay in lockstep with `manifest.js` ajv schema. CI in center repo runs a JSON-schema-equivalence check (compile both → compare AST). Drift caught pre-merge.
+1. **Manifest schema drift** — `manifest-schema.json` (embedded) must stay in lockstep with `manifest.js` ajv schema. CI in center repo runs a JSON-schema-equivalence check (compile both → compare AST). Drift caught pre-merge. **PATCHED 2026-08-09:** both schemas now also include the `agent.type` enum; the equivalence check is extended to that field.
 
 2. **Sandbox golden file maintenance** — when adding new allowed keyword / blocked pattern, fixtures must update in both repos. Owner: whoever touches the spec's "DDL sandbox" section.
 
@@ -718,6 +727,8 @@ These are non-negotiable requirements binding every task in the implementation p
 6. **AvalonEdit version pinning** — AvalonEdit hasn't had a release in some time; WPF .NET 8 compatibility is community-maintained. Pin to a known-good version (`AvalonEdit 6.3.x` or later) and validate against sample syntax highlighting before committing.
 
 7. **No automated UI tests** — WPF UI testing (FlaUI, Appium.Windows) is heavy and brittle. Manual smoke test (`docs/operations/package-designer-smoke.md`) is the contract. If regressions become a problem, add a single happy-path FlaUI test for the publish flow in a follow-up plan.
+
+8. **(PATCHED 2026-08-09) Starter template drift** — the WPF-shipped templates (`ad-monitoring-lite` / `ad-os-baseline-lite`) must keep their `agent.type` aligned with the chosen template. The `agent.type` value is set by template choice and can be edited after; the embedder must not silently override it. The production built-in package shipped by center is `ad-os-baseline` (different name, different scope); the WPF template is a *local authoring helper*, not a packaged subset.
 
 ## Future work (out of scope)
 
@@ -740,3 +751,4 @@ The plan is complete when ALL of:
 4. `dotnet publish -c Release -r win-x64 --self-contained` produces a single .exe that runs on a clean Windows 11 VM without .NET runtime install.
 5. Crash recovery: kill PackageDesigner mid-edit → relaunch → recovery dialog appears → restore succeeds → workspace state matches pre-crash.
 6. Multi-package session: open 3 packages → edit each → publish one → close others → re-open → all state restored.
+7. **(PATCHED 2026-08-09)** New-package dialog exposes the `AD` / `Non-AD` template chooser; selecting `Non-AD` pre-fills `agent.type: "non-ad"`, the `ad-os-baseline-lite` manifest, the matching `migrations/001_initial.sql`, and a `Get-Counter`-based `collect.ps1`. The dropdown round-trips through save/load. The published zip, when sent to center, passes ajv validation including the `agent.type` enum.
