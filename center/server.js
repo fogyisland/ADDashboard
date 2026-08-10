@@ -19,6 +19,7 @@ import { packageRouter } from './src/packages/router.js';
 import { orphanRouter } from './src/packages/orphan-router.js';
 import { packageRunner } from './src/packages/runner.js';
 import { memberRouter } from './src/routes/member-servers.js';
+import { agentPackagesRouter } from './src/routes/agent-packages.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
@@ -293,6 +294,15 @@ await ((async () => {
     app.use(memberRouter({
       config: finalConfig,
       logger
+    }));
+    // Agent-facing per-host package list (Task 8: spec §4.3 / global
+    // constraint #14). Sits on the web app so non-AD agents hitting
+    // /api/admin/agent/packages-for-host?hostname=... on heartbeat get the
+    // merged view of global installed_packages + per-host
+    // ad_member_server_packages. Backed by agentToken (NOT userAuth) — the
+    // agent has no JWT, only the agent_token from appsettings.json.
+    app.use(agentPackagesRouter({
+      config: finalConfig
     }));
   }
 
