@@ -23,12 +23,23 @@
   <ItemGroup>
     <Compile Remove="PackageDesigner.App/**/*.cs" />
     <Compile Remove="Sandbox/**/*.cs" />
+    <Compile Remove="Models/**/*.cs" />
+    <Compile Remove="Services/**/*.cs" />
     <None Remove="PackageDesigner.App/**" />
     <None Remove="Sandbox/**" />
+    <None Remove="Models/**" />
+    <None Remove="Services/**" />
+    <None Remove="Resources/**" />
     <Content Remove="PackageDesigner.App/**" />
     <Content Remove="Sandbox/**" />
+    <Content Remove="Models/**" />
+    <Content Remove="Services/**" />
+    <Content Remove="Resources/**" />
     <EmbeddedResource Remove="PackageDesigner.App/**" />
     <EmbeddedResource Remove="Sandbox/**" />
+    <EmbeddedResource Remove="Models/**" />
+    <EmbeddedResource Remove="Services/**" />
+    <EmbeddedResource Remove="Resources/**" />
   </ItemGroup>
   <ItemGroup>
     <None Include="tests\fixtures\sandbox-cases.json" Link="fixtures\sandbox-cases.json">

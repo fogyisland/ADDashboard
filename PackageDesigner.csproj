@@ -16,4 +16,11 @@
     <Content Remove="Tests/**" />
     <EmbeddedResource Remove="Tests/**" />
   </ItemGroup>
+  <ItemGroup>
+    <None Remove="Resources\manifest-schema.json" />
+    <EmbeddedResource Include="Resources\manifest-schema.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="NJsonSchema" Version="11.0.0" />
+  </ItemGroup>
 </Project>
