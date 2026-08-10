@@ -19,6 +19,12 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { shouldRunPackageForNonAd } from '../src/agent-filters.js';
+import {
+  applyPackageList,
+  peekLocalTask,
+  peekLocalTaskNames,
+  __resetLocalTasksForTests
+} from '../src/non-ad-scheduler.js';
 
 function fakeLogger() {
   return { info() {}, warn() {}, error() {}, debug() {} };
@@ -208,3 +214,91 @@ test('ad agent: legacy DC runtime path still POSTs heartbeats to /api/agent/hear
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('non-ad scheduler: applyPackageList does NOT replace an existing timer when intervalSec is unchanged', () => {
+  // Regression test for the T16 fix-round-2 timer-starvation bug. Prior to
+  // the fix, applyPackageList unconditionally clearInterval'd the existing
+  // handle and started a fresh setInterval on every 5-minute poll — which
+  // meant any package whose intervalSec >= 300 (the poll cadence) NEVER
+  // fired, because the countdown reset to zero on every poll.
+  //
+  // This test asserts the fixed behavior: two consecutive applyPackageList
+  // calls with the SAME package list (same name + same intervalSec) leave
+  // the underlying Timeout object reference unchanged — i.e. no restart.
+  __resetLocalTasksForTests();
+
+  // Use a long intervalSec to mirror the starvation scenario (>= poll cadence).
+  // The test asserts reference equality on the timer handle regardless of
+  // how long the interval is; 60s is fine for the assertion.
+  const items = [
+    {
+      name: 'ad_os_baseline',
+      agent: { type: 'non-ad', platforms: ['windows'], intervalSec: 60 }
+    },
+    {
+      name: 'disk_space_probe',
+      agent: { type: 'non-ad', platforms: ['windows'], intervalSec: 600 }
+    }
+  ];
+  const noop = () => {};
+
+  // First call schedules fresh timers.
+  applyPackageList(items, noop);
+  const namesAfterFirst = peekLocalTaskNames();
+  assert.deepEqual(namesAfterFirst, ['ad_os_baseline', 'disk_space_probe']);
+
+  const entry1Before = peekLocalTask('ad_os_baseline');
+  const entry2Before = peekLocalTask('disk_space_probe');
+  assert.ok(entry1Before && entry2Before, 'first call should have stored both entries');
+  assert.equal(entry1Before.intervalSec, 60);
+  assert.equal(entry2Before.intervalSec, 600);
+
+  // Second call with the SAME list MUST preserve the same timer handles.
+  // This is the regression assertion: before the fix, both handles would
+  // have been replaced (and the 600s package would never fire on a 5min
+  // poll cadence).
+  applyPackageList(items, noop);
+  const entry1After = peekLocalTask('ad_os_baseline');
+  const entry2After = peekLocalTask('disk_space_probe');
+  assert.ok(entry1After && entry2After, 'second call should still have both entries');
+  assert.strictEqual(
+    entry1After.timer, entry1Before.timer,
+    '60s timer handle must be the same reference after a second applyPackageList call'
+  );
+  assert.strictEqual(
+    entry2After.timer, entry2Before.timer,
+    '600s timer handle must be the same reference after a second applyPackageList call — ' +
+    'THIS is the starvation regression: it must NOT have been restarted.'
+  );
+
+  __resetLocalTasksForTests();
+});
+
+test('non-ad scheduler: applyPackageList DOES replace the timer when intervalSec changes', () => {
+  // The negative case for the regression test above: when the center
+  // updates intervalSec, the scheduler MUST clear and re-arm the timer.
+  // Reference inequality is the expected outcome here.
+  __resetLocalTasksForTests();
+
+  const itemsBefore = [
+    { name: 'ad_os_baseline', agent: { type: 'non-ad', platforms: ['windows'], intervalSec: 60 } }
+  ];
+  applyPackageList(itemsBefore, () => {});
+  const entryBefore = peekLocalTask('ad_os_baseline');
+  assert.ok(entryBefore);
+
+  const itemsAfter = [
+    { name: 'ad_os_baseline', agent: { type: 'non-ad', platforms: ['windows'], intervalSec: 120 } }
+  ];
+  applyPackageList(itemsAfter, () => {});
+  const entryAfter = peekLocalTask('ad_os_baseline');
+  assert.ok(entryAfter);
+  assert.notStrictEqual(
+    entryAfter.timer, entryBefore.timer,
+    'changing intervalSec MUST replace the timer handle'
+  );
+  assert.equal(entryAfter.intervalSec, 120);
+
+  __resetLocalTasksForTests();
+});
+

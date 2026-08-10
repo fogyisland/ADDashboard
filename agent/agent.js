@@ -11,7 +11,10 @@ import { createScheduler } from './src/scheduler.js';
 import { PackageManager } from './src/package-manager.js';
 import { requestJson } from './src/reporter.js';
 import { getOsInfo } from './src/os-info.js';
-import { shouldRunPackageForNonAd } from './src/agent-filters.js';
+import {
+  applyPackageList,
+  clearAllTimers
+} from './src/non-ad-scheduler.js';
 
 const VERSION = '0.1.0';
 
@@ -253,90 +256,56 @@ async function runNonAdRuntime({ config, logger }) {
 
   // Local cache of which packages are currently scheduled. The center is
   // the source of truth; on every poll we diff against the previously-
-  // scheduled set and (re)start / stop timers accordingly.
-  const localTasks = new Map(); // name -> { timer, intervalSec }
-
-  function clearAllTimers() {
-    for (const t of localTasks.values()) clearInterval(t.timer);
-    localTasks.clear();
-  }
-
-  function startTimerFor(pkg) {
-    const intervalSec = pkg.agent?.intervalSec;
-    if (!intervalSec || intervalSec <= 0) return;
-    const intervalMs = intervalSec * 1000;
-    // Guard against the applyPackageList restart-on-every-poll loop. Without
-    // this clearInterval, every 5-minute poll would leave the previous handle
-    // running and start a fresh one — one package = 12 timers/hr, 288/day,
-    // each spawning PowerShell. Clear any prior handle for this name first.
-    const existing = localTasks.get(pkg.name);
-    if (existing && existing.timer) clearInterval(existing.timer);
-    const timer = setInterval(() => {
-      // v1 contract: /api/admin/agent/packages-for-host returns parsed
-      // manifests WITHOUT a top-level scriptPath — the agent is expected to
-      // derive it from a local cache directory once package materialization
-      // is wired. v1 has no materialization path, so we skip-and-log when
-      // scriptPath is missing rather than crashing spawn() with undefined.
-      // v2 contract (future task): derive scriptPath =
-      //   join(config.agentDataDir, 'packages', pkg.name, pkg.version, 'collect.ps1').
-      if (!pkg.scriptPath) {
-        logger.debug({ name: pkg.name }, 'non-ad package: scriptPath not yet materialized, skipping');
-        return;
-      }
-      // Fire-and-forget; errors logged inside runPackageScript.
-      import('./src/package-runner.js').then(({ runPackageScript }) => {
-        runPackageScript({
-          scriptPath: pkg.scriptPath,
-          params: pkg.params || {},
-          timeoutMs: pkg.agent?.timeoutMs || 30_000,
-          logger,
-          powerShellPath: config.powerShellPath
-        }).then((result) => {
-          // Best-effort report POST; failures are dropped (no on-disk
-          // queue for non-AD in v1 — packages are heartbeat-lightweight
-          // metrics, not critical replication data).
-          return requestJson({
-            method: 'POST',
-            url: `${config.centerUrl}/api/admin/agent/packages/report`,
-            headers: { 'X-Agent-Token': config.agentToken },
-            body: {
-              runs: [{
-                packageName: pkg.name,
-                hostname: config.hostname || osInfo.hostname,
-                ...result
-              }]
-            },
-            timeoutMs: 30_000
-          });
-        }).catch((e) => {
-          logger.warn({ err: e.message, name: pkg.name }, 'non-ad package run failed');
+  // scheduled set and (re)start / stop timers accordingly. The map + the
+  // timer-scheduling functions live in src/non-ad-scheduler.js so unit
+  // tests can import the SAME functions the runtime uses — no re-statement,
+  // no drift — and assert handle stability across polls (regression test
+  // for the timer-starvation bug where unconditional clearInterval on every
+  // 5-minute poll reset the countdown for any package whose intervalSec was
+  // >= 300, so it never fired).
+  function runPackage(pkg) {
+    // v1 contract: /api/admin/agent/packages-for-host returns parsed
+    // manifests WITHOUT a top-level scriptPath — the agent is expected to
+    // derive it from a local cache directory once package materialization
+    // is wired. v1 has no materialization path, so we skip-and-log when
+    // scriptPath is missing rather than crashing spawn() with undefined.
+    // v2 contract (future task): derive scriptPath =
+    //   join(config.agentDataDir, 'packages', pkg.name, pkg.version, 'collect.ps1').
+    if (!pkg.scriptPath) {
+      logger.debug({ name: pkg.name }, 'non-ad package: scriptPath not yet materialized, skipping');
+      return;
+    }
+    // Fire-and-forget; errors logged inside runPackageScript.
+    import('./src/package-runner.js').then(({ runPackageScript }) => {
+      runPackageScript({
+        scriptPath: pkg.scriptPath,
+        params: pkg.params || {},
+        timeoutMs: pkg.agent?.timeoutMs || 30_000,
+        logger,
+        powerShellPath: config.powerShellPath
+      }).then((result) => {
+        // Best-effort report POST; failures are dropped (no on-disk
+        // queue for non-AD in v1 — packages are heartbeat-lightweight
+        // metrics, not critical replication data).
+        return requestJson({
+          method: 'POST',
+          url: `${config.centerUrl}/api/admin/agent/packages/report`,
+          headers: { 'X-Agent-Token': config.agentToken },
+          body: {
+            runs: [{
+              packageName: pkg.name,
+              hostname: config.hostname || osInfo.hostname,
+              ...result
+            }]
+          },
+          timeoutMs: 30_000
         });
       }).catch((e) => {
-        logger.warn({ err: e.message, name: pkg.name }, 'non-ad package runner import failed');
+        logger.warn({ err: e.message, name: pkg.name }, 'non-ad package run failed');
       });
-    }, intervalMs);
-    if (typeof timer.unref === 'function') timer.unref();
-    localTasks.set(pkg.name, { timer, intervalSec });
-  }
-
-  function applyPackageList(items) {
-    // Filter per brief: type === 'non-ad' AND windows is in platforms.
-    // Predicate lives in src/agent-filters.js so tests import the SAME
-    // function the runtime uses (no re-statement, no drift).
-    const wanted = items.filter(shouldRunPackageForNonAd);
-    const wantedNames = new Set(wanted.map((p) => p.name));
-    // Stop timers that no longer apply
-    for (const [name, t] of localTasks) {
-      if (!wantedNames.has(name)) {
-        clearInterval(t.timer);
-        localTasks.delete(name);
-      }
-    }
-    // (Re)start timers for the current wanted set. Restart-on-every-poll
-    // is fine: agent is a long-lived process and the brief keeps the
-    // contract simple (no interval-decrease optimization).
-    for (const pkg of wanted) startTimerFor(pkg);
-    return wanted;
+    }).catch((e) => {
+      logger.warn({ err: e.message, name: pkg.name }, 'non-ad package runner import failed');
+    });
   }
 
   async function pollPackages() {
@@ -352,7 +321,7 @@ async function runNonAdRuntime({ config, logger }) {
       return;
     }
     const items = Array.isArray(r.data?.items) ? r.data.items : [];
-    applyPackageList(items);
+    applyPackageList(items, runPackage);
   }
 
   // Initial poll + periodic refresh (every 5 minutes, same cadence as the

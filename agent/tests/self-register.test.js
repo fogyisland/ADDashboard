@@ -67,7 +67,7 @@ function startCaptureServer() {
   }));
 }
 
-test('non-ad self-register body contains hostname, agent_version, os_version, ip_address', async () => {
+test('non-ad self-register body contains hostname, agentVersion, osVersion, ipAddress', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'self-register-'));
   try {
     const cap = await startCaptureServer();
