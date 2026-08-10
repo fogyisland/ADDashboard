@@ -45,12 +45,25 @@ $comparisons = @(
   @{ left = 'center/src/db/sql/alert-metrics.js';            right = 'publish/center/src/db/sql/alert-metrics.js' }
   # Non-AD server management — Tasks 11 fix round 1 (F1: add listEnabledForHostWithState SQL block)
   @{ left = 'center/src/db/sql/alert-rules.js';              right = 'publish/center/src/db/sql/alert-rules.js' }
+  # Non-AD server management — Task 2 (member-servers + server-groups SQL blocks)
+  @{ left = 'center/src/db/sql/member-servers.js';           right = 'publish/center/src/db/sql/member-servers.js' }
+  @{ left = 'center/src/db/sql/server-groups.js';            right = 'publish/center/src/db/sql/server-groups.js' }
+  # Non-AD server management — Task 4 (built-in package seeder)
+  @{ left = 'center/src/services/builtin-packages.js';       right = 'publish/center/src/services/builtin-packages.js' }
+  # Non-AD server management — Task 6 (member-servers route)
+  @{ left = 'center/src/routes/member-servers.js';           right = 'publish/center/src/routes/member-servers.js' }
+  # Non-AD server management — Task 8 (per-host package merge service + agent-facing route)
+  @{ left = 'center/src/services/agent-packages-for-host.js'; right = 'publish/center/src/services/agent-packages-for-host.js' }
+  @{ left = 'center/src/routes/agent-packages.js';           right = 'publish/center/src/routes/agent-packages.js' }
   # Non-AD server management — Task 12 (SMTP config seed + mask-on-read + test-mail route)
   @{ left = 'center/src/services/config.js';                 right = 'publish/center/src/services/config.js' }
   @{ left = 'center/src/routes/admin.js';                    right = 'publish/center/src/routes/admin.js' }
   # Migrations — Task 2
   @{ left = 'db/migrations/013-orphan-schemas.sql';          right = 'publish/db/migrations/013-orphan-schemas.sql' }
   @{ left = 'db/migrations/mssql/013-orphan-schemas.sql';    right = 'publish/db/migrations/mssql/013-orphan-schemas.sql' }
+  # Migrations — Non-AD Task 1 (member servers, packages, alerts)
+  @{ left = 'db/migrations/014-member-servers.sql';          right = 'publish/db/migrations/014-member-servers.sql' }
+  @{ left = 'db/migrations/mssql/014-member-servers.sql';    right = 'publish/db/migrations/mssql/014-member-servers.sql' }
   # Frontend — Tasks 11, 12
   @{ left = 'frontend/src/components/PackageDdlPreviewModal.vue';   right = 'publish/frontend/src/components/PackageDdlPreviewModal.vue' }
   @{ left = 'frontend/src/components/UninstallSchemaConfirmModal.vue'; right = 'publish/frontend/src/components/UninstallSchemaConfirmModal.vue' }
@@ -70,6 +83,8 @@ $comparisons = @(
   @{ left = 'agent/src/os-info.js';                          right = 'publish/agent/src/os-info.js' }
   # Non-AD server management — Task 16 fix round 1 (exported shouldRunPackageForNonAd filter)
   @{ left = 'agent/src/agent-filters.js';                    right = 'publish/agent/src/agent-filters.js' }
+  # Non-AD server management — Task 16 fix round 2 (extracted scheduler module)
+  @{ left = 'agent/src/non-ad-scheduler.js';                 right = 'publish/agent/src/non-ad-scheduler.js' }
 )
 
 $fail = $false
