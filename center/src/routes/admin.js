@@ -7,6 +7,7 @@ import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
+import * as email from '../services/email.js';
 
 // Snake -> camel rename for known columns in admin responses.
 const CAML_MAP = new Map([
@@ -227,6 +228,52 @@ export function adminRouter({ config, logger }) {
     } catch (e) {
       logger.error({ err: e }, 'admin config rollback failed');
       res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- SMTP test-mail (Task 12) -----
+  // Sends a one-off test email using the currently-saved SMTP config. The
+  // SMTP password is read from system_config directly (NOT through getConfig,
+  // which masks) so the real credential is handed to nodemailer. The real
+  // password must never appear in the response or logs — only the boolean
+  // outcome and an error string on failure.
+  r.post('/api/admin/config/email/test', auth, async (req, res) => {
+    try {
+      const to = req.body?.to;
+      if (!to) return res.status(400).json({ error: 'to is required' });
+      // Read the SMTP bundle directly without the mask — the test-mail
+      // route needs the real password to authenticate with the SMTP server.
+      // Use the same SQL the masked getConfigAll() would use; bypass the
+      // mask by reading rows directly via db.query.
+      const db = getDb();
+      const { rows } = await db.query(db.sql.config.getAll);
+      const cfg = {};
+      for (const row of rows) cfg[row.config_key] = row.config_value;
+      const smtp = {
+        host: cfg.smtp_host,
+        port: Number(cfg.smtp_port) || 25,
+        secure: String(cfg.smtp_secure) === 'true',
+        user: cfg.smtp_user,
+        password: cfg.smtp_password
+      };
+      const r2 = await email.send({
+        smtp,
+        from: cfg.smtp_from,
+        to,
+        subject: 'AD Dashboard test',
+        text: 'Test email.'
+      });
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'test_smtp_email',
+        target: to,
+        payload: { ok: r2.ok, error: r2.error ?? null },
+        logger
+      });
+      res.status(r2.ok ? 200 : 500).json({ ok: r2.ok, error: r2.error ?? null });
+    } catch (e) {
+      logger.error({ err: e }, 'admin email test failed');
+      res.status(500).json({ ok: false, error: e.message });
     }
   });
 
