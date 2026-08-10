@@ -27,7 +27,7 @@ import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
 import { userAuth } from './src/auth/user-auth.js';
 import { requirePerm } from './src/auth/rbac.js';
-import { getConfig as getSystemConfig, seedSmtpDefaultsIfMissing } from './src/services/config.js';
+import { getConfig as getSystemConfig, getConfigMap, seedSmtpDefaultsIfMissing } from './src/services/config.js';
 import { writeAudit } from './src/services/audit.js';
 import { seedBuiltinPackages } from './src/services/builtin-packages.js';
 
@@ -382,7 +382,12 @@ await ((async () => {
         const v = await getSystemConfig();
         return Number(v.alert_eval_interval_seconds) || 60;
       },
-      getSystemConfig
+      // Pass getConfigMap (unmasked) so the loop can hand the real
+      // smtp_password to nodemailer when authenticating. getSystemConfig is
+      // masked on read; using it here would silently authenticate with
+      // '********' once the test-mail route bypass is unified with the
+      // canonical system_config reader (see T12 fix1 I-4).
+      getSystemConfig: getConfigMap
     });
     alertLoop.start();
     emailLoop.start();

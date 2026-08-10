@@ -4,20 +4,6 @@
 
 import { getDb } from '../db/index.js';
 
-// SMTP-related config keys. Used by:
-//   - getConfigAll(keys) for the test-mail route (avoids reading the full
-//     system_config table when only a subset is needed)
-//   - maskSmtpPasswordForRead() to redact the password on every read path
-//     that returns the SMTP bundle to the UI or another caller
-//   - putConfig() / the seedSmtpDefaultsIfMissing helper to preserve the
-//     password when the UI submits the masked sentinel
-const SMTP_KEYS = [
-  'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_password', 'smtp_from',
-  'alert_default_to', 'alert_default_cc',
-  'alert_eval_interval_seconds',
-  'alert_email_max_attempts', 'alert_email_initial_backoff_seconds'
-];
-
 // Sentinel returned to UI callers when the SMTP password is present. The UI
 // sends this back on PUT to mean "keep the existing value" (matches the
 // putConfig contract below).
@@ -56,15 +42,25 @@ export async function getConfigMap() {
 // email.send() — but the mask contract is documented; this helper enforces
 // it for callers that don't need the real value). Callers that DO need the
 // real password should read system_config directly.
+//
+// With no keys argument, returns the full table filtered through the same
+// mask. SQL pushes the WHERE clause when keys are supplied so we don't
+// round-trip rows that won't be used; the no-arg shape still scans the full
+// table (callers that want everything use getConfig() instead).
 export async function getConfigAll(keys = []) {
   const db = getDb();
-  const { rows } = await db.query(db.sql.config.getAll);
-  const out = {};
-  const keySet = keys.length > 0 ? new Set(keys) : null;
-  for (const row of rows) {
-    if (keySet && !keySet.has(row.config_key)) continue;
-    out[row.config_key] = row.config_value;
+  let rows;
+  if (keys.length > 0) {
+    const placeholders = keys.map(() => '?').join(',');
+    ({ rows } = await db.query(
+      `SELECT config_key, config_value FROM system_config WHERE config_key IN (${placeholders})`,
+      keys
+    ));
+  } else {
+    ({ rows } = await db.query(db.sql.config.getAll));
   }
+  const out = {};
+  for (const row of rows) out[row.config_key] = row.config_value;
   return maskSmtpPasswordForRead(out);
 }
 
@@ -85,8 +81,28 @@ export async function setConfig(key, value) {
 // Matches the contract used by PUT /api/admin/config (see admin.js): the UI
 // sends the masked sentinel back on re-saves so we don't overwrite a real
 // password with '********' on a partial-form re-save.
-export async function putConfig(patch) {
+//
+// `userId` is the caller's user id (or null). It's recorded as changed_by on
+// every audit row inside the same transaction so the audit list reflects who
+// made each change.
+export async function putConfig(patch, userId = null) {
   const db = getDb();
+  const auditRows = await db.transaction(async (tx) => putConfigInTx(tx, patch, userId));
+  return { auditCount: auditRows.length };
+}
+
+// Tx-scoped putConfig — exposed for callers that need to add work inside the
+// same transaction (e.g. PUT /api/admin/config bumps the listenPort pending
+// version hash atomically with the row update). Returns the audit rows.
+export async function putConfigWithin(tx, patch, userId = null) {
+  return putConfigInTx(tx, patch, userId);
+}
+
+// Core putConfig logic. Strips masked/empty smtp_password (preserve-existing
+// contract), redacts the password on the audit row so cleartext never lands
+// in sys_config_audit, and pushes the change-detection through the same tx
+// the caller opened.
+async function putConfigInTx(tx, patch, userId) {
   const updates = { ...patch };
   // Strip masked/empty smtp_password — the caller didn't intend to change it.
   if ('smtp_password' in updates) {
@@ -94,27 +110,35 @@ export async function putConfig(patch) {
       delete updates.smtp_password;
     }
   }
-  if (Object.keys(updates).length === 0) return { auditCount: 0 };
-
+  // Redact smtp_password from any audit row we write — the audit log stores
+  // cleartext old_value/new_value by design, and T12 introduces the SMTP
+  // password as a config value, so we must scrub it here to avoid persisting
+  // credentials to sys_config_audit. The system_config row itself is updated
+  // with the real value (the UI submitted it on purpose); only the audit
+  // trail gets masked.
+  const REDACTED = SMTP_PASSWORD_MASK;
   const auditRows = [];
-  await db.transaction(async (tx) => {
-    const before = {};
-    const { rows } = await tx.query(db.sql.config.getAll);
-    for (const row of rows) before[row.config_key] = row.config_value;
-    for (const [k, v] of Object.entries(updates)) {
-      await tx.execute(
-        'UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?',
-        [v == null ? null : String(v), k]
-      );
-      const oldVal = before[k] ?? null;
-      const newVal = v == null ? null : String(v);
-      if (String(oldVal) !== String(newVal)) {
-        await tx.execute(db.sql.config.audit.write, [k, oldVal, newVal, null, 'UPDATE']);
-        auditRows.push({ key: k, old: oldVal, new: newVal });
-      }
+  if (Object.keys(updates).length === 0) return auditRows;
+
+  const db = getDb();
+  const before = {};
+  const { rows } = await tx.query(db.sql.config.getAll);
+  for (const row of rows) before[row.config_key] = row.config_value;
+  for (const [k, v] of Object.entries(updates)) {
+    await tx.execute(
+      db.sql.config.upsert,
+      [k, v == null ? null : String(v)]
+    );
+    const oldVal = before[k] ?? null;
+    const newVal = v == null ? null : String(v);
+    if (String(oldVal) !== String(newVal)) {
+      const auditOld = k === 'smtp_password' ? REDACTED : oldVal;
+      const auditNew = k === 'smtp_password' ? REDACTED : newVal;
+      await tx.execute(db.sql.config.audit.write, [k, auditOld, auditNew, userId, 'UPDATE']);
+      auditRows.push({ key: k, old: auditOld, new: auditNew });
     }
-  });
-  return { auditCount: auditRows.length };
+  }
+  return auditRows;
 }
 
 // Seed the SMTP-related defaults into system_config on first boot. Idempotent

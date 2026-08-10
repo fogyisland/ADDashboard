@@ -289,11 +289,14 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
 test('PUT /api/admin/config: 200 updates multiple keys', async () => {
   let updateCount = 0;
   const { buildSql } = await import('../src/db/sql.js');
-  // Need a working tx shim — the new handler does UPDATEs inside
+  // Need a working tx shim — the new handler does upserts inside
   // db.transaction(async tx => { tx.execute(...) }), so the transaction
-  // wrapper must thread a tx object that exposes execute/query.
+  // wrapper must thread a tx object that exposes execute/query. The
+  // route now uses db.sql.config.upsert (INSERT...ON DUPLICATE KEY UPDATE /
+  // MERGE INTO) per T12 fix1 M-3; the mock's regex must accept all three
+  // forms (legacy UPDATE, INSERT upsert, MERGE upsert).
   const txExecute = async (sql, params = []) => {
-    if (/UPDATE\s+system_config/i.test(sql) || /MERGE\s+INTO\s+system_config/i.test(sql)) {
+    if (/(?:UPDATE|MERGE\s+INTO|INSERT\s+INTO)\s+system_config/i.test(sql)) {
       updateCount++;
       return { rows: [], affectedRows: 1, insertId: undefined };
     }

@@ -122,8 +122,17 @@ test('PUT /api/admin/config: bumps center_listen_port_pending_version when liste
           txCalls.push({ sql, params });
           return { rows: [], affectedRows: 1, insertId: undefined };
         },
+        // tx.query must also serve the snapshot — the new PUT route reads
+        // the pre-image via tx.query(db.sql.config.getAll) inside the same
+        // transaction as the write, so the listenPort change-detection and
+        // the audit row's before-value see the same rows.
         async query(sql, params = []) {
           txCalls.push({ sql, params });
+          if (/FROM\s+system_config/i.test(sql)) {
+            return { rows: [
+              { config_key: 'listenPort', config_value: '8080' }
+            ] };
+          }
           return { rows: [] };
         }
       };
@@ -171,7 +180,15 @@ test('PUT /api/admin/config: does NOT bump pending version when listenPort uncha
           txCalls.push({ sql, params });
           return { rows: [], affectedRows: 1, insertId: undefined };
         },
-        async query() { return { rows: [] }; }
+        async query(sql) {
+          txCalls.push({ sql });
+          if (/FROM\s+system_config/i.test(sql)) {
+            return { rows: [
+              { config_key: 'listenPort', config_value: '8080' }
+            ] };
+          }
+          return { rows: [] };
+        }
       };
       return await work(txWrapper);
     },
@@ -214,7 +231,15 @@ test('PUT /api/admin/config: does NOT touch pending version when listenPort not 
           txCalls.push({ sql, params });
           return { rows: [], affectedRows: 1, insertId: undefined };
         },
-        async query() { return { rows: [] }; }
+        async query(sql) {
+          txCalls.push({ sql });
+          if (/FROM\s+system_config/i.test(sql)) {
+            return { rows: [
+              { config_key: 'listenPort', config_value: '8080' }
+            ] };
+          }
+          return { rows: [] };
+        }
       };
       return await work(txWrapper);
     },

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
-import { getConfig, setConfig, getConfigMap, restartRequired } from '../services/config.js';
+import { getConfig, setConfig, getConfigMap, restartRequired, putConfig, putConfigWithin } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
 import { getDb } from '../db/index.js';
@@ -157,22 +157,25 @@ export function adminRouter({ config, logger }) {
   r.put('/api/admin/config', auth, async (req, res) => {
     try {
       const updates = req.body || {};
+      // Strip smtp_password from the audit payload — putConfig already redacts
+      // it on the sys_config_audit row, but the broader audit_logs row would
+      // otherwise carry the cleartext through writeAudit's JSON.stringify.
+      const { smtp_password: _omit, ...safeUpdates } = updates;
+      void _omit;
       const db = getDb();
-      const auditRows = [];
+      let auditCount = 0;
+      let listenPortBumped = false;
       await db.transaction(async (tx) => {
-        const before = await getConfigMap();
-        for (const [k, v] of Object.entries(updates)) {
-          await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [v == null ? null : String(v), k]);
-          const oldVal = before[k] ?? null;
-          const newVal = v == null ? null : String(v);
-          if (String(oldVal) !== String(newVal)) {
-            await tx.execute(db.sql.config.audit.write, [k, oldVal, newVal, req.user?.sub ?? null, 'UPDATE']);
-            auditRows.push({ key: k, old: oldVal, new: newVal });
-          }
-        }
+        // Read the pre-image INSIDE the transaction so the listenPort change
+        // detection uses the same snapshot as the audit row's before-value.
+        const before = {};
+        const { rows } = await tx.query(db.sql.config.getAll);
+        for (const row of rows) before[row.config_key] = row.config_value;
+        const auditRows = await putConfigWithin(tx, updates, req.user?.sub ?? null);
+        auditCount = auditRows.length;
         // listenPort is a boot-time binding — the running process can't pick
         // up a new value without a restart. Bump the pending version hash
-        // inside this same transaction so ConfigView's badge flips to
+        // inside the same transaction so ConfigView's badge flips to
         // "restart required" the moment the save commits (server-side logic,
         // not something the frontend has to remember).
         if ('listenPort' in updates && String(updates.listenPort) !== String(before.listenPort)) {
@@ -181,16 +184,18 @@ export function adminRouter({ config, logger }) {
             db.sql.config.upsert,
             ['center_listen_port_pending_version', pending]
           );
+          listenPortBumped = true;
         }
       });
+      void listenPortBumped;
       await writeAudit({
         userId: req.user?.sub ?? null,
         action: 'update_config',
         target: 'system_config',
-        payload: { ...updates, _audit: auditRows },
+        payload: { ...safeUpdates, auditCount },
         logger
       });
-      res.json({ ok: true, auditCount: auditRows.length });
+      res.json({ ok: true, auditCount });
     } catch (e) {
       logger.error({ err: e }, 'admin config update failed');
       res.status(500).json({ error: 'internal' });
@@ -201,7 +206,18 @@ export function adminRouter({ config, logger }) {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.config.audit.list);
-      res.json(rows.map(camelRow));
+      // Redact smtp_password on the read path: putConfig now stores the masked
+      // sentinel on new audit rows, but rows written before T12 fix1 may still
+      // contain cleartext. Mask both old/new values when the row's config_key
+      // is the SMTP password so the UI never sees cleartext via this endpoint.
+      const MASK = '********';
+      const redacted = rows.map(r => {
+        if (r.config_key === 'smtp_password') {
+          return { ...r, old_value: MASK, new_value: MASK };
+        }
+        return r;
+      });
+      res.json(redacted.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin config audit list failed');
       res.status(500).json({ error: 'internal' });
@@ -218,12 +234,27 @@ export function adminRouter({ config, logger }) {
         const { rows } = await tx.query(db.sql.config.audit.getById, [auditId]);
         if (rows.length === 0) { result = { notFound: true }; return; }
         const audit = rows[0];
+        // Refuse to roll back a row whose old_value is the masked sentinel —
+        // there's no real password to restore, and writing '********' back
+        // would clobber whatever the operator has since saved.
+        if (audit.config_key === 'smtp_password' && audit.old_value === '********') {
+          result = { error: 'cannot rollback a masked smtp_password audit row' };
+          return;
+        }
         await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [audit.old_value, audit.config_key]);
-        await tx.execute(db.sql.config.audit.write, [audit.config_key, audit.new_value, audit.old_value, req.user?.sub ?? null, 'ROLLBACK']);
-        result = { configKey: audit.config_key, newValue: audit.old_value };
+        // Redact the password on the audit-trail write too — the rollback
+        // row would otherwise carry cleartext if the source row's new_value
+        // was the real password (rows written before T12 fix1).
+        const auditOld = audit.config_key === 'smtp_password' ? '********' : audit.new_value;
+        const auditNew = audit.config_key === 'smtp_password' ? '********' : audit.old_value;
+        await tx.execute(db.sql.config.audit.write, [audit.config_key, auditOld, auditNew, req.user?.sub ?? null, 'ROLLBACK']);
+        // Redact the response payload too so the UI never sees cleartext.
+        const responseValue = audit.config_key === 'smtp_password' ? '********' : audit.old_value;
+        result = { configKey: audit.config_key, newValue: responseValue };
       });
       if (!result) return res.status(500).json({ error: 'internal' });
       if (result.notFound) return res.status(404).json({ error: 'audit not found' });
+      if (result.error) return res.status(400).json({ error: result.error });
       res.json({ ok: true, ...result });
     } catch (e) {
       logger.error({ err: e }, 'admin config rollback failed');
@@ -237,6 +268,11 @@ export function adminRouter({ config, logger }) {
   // which masks) so the real credential is handed to nodemailer. The real
   // password must never appear in the response or logs — only the boolean
   // outcome and an error string on failure.
+  //
+  // Tests pass `_deps.createTransport` (a sinon-style fake transport) so they
+  // can assert the auth.pass value reached the SMTP layer without opening a
+  // real socket. Real callers omit `_deps` and email.send falls back to
+  // nodemailer.createTransport.
   r.post('/api/admin/config/email/test', auth, async (req, res) => {
     try {
       const to = req.body?.to;
@@ -256,13 +292,14 @@ export function adminRouter({ config, logger }) {
         user: cfg.smtp_user,
         password: cfg.smtp_password
       };
+      const _deps = req.app.locals.__smtpTestDeps || undefined;
       const r2 = await email.send({
         smtp,
         from: cfg.smtp_from,
         to,
         subject: 'AD Dashboard test',
         text: 'Test email.'
-      });
+      }, _deps);
       await writeAudit({
         userId: req.user?.sub ?? null,
         action: 'test_smtp_email',
