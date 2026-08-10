@@ -286,11 +286,11 @@ export function adminRouter({ config, logger }) {
       const cfg = {};
       for (const row of rows) cfg[row.config_key] = row.config_value;
       const smtp = {
-        host: cfg.smtp_host,
-        port: Number(cfg.smtp_port) || 25,
-        secure: String(cfg.smtp_secure) === 'true',
-        user: cfg.smtp_user,
-        password: cfg.smtp_password
+        smtp_host: cfg.smtp_host,
+        smtp_port: Number(cfg.smtp_port) || 25,
+        smtp_secure: String(cfg.smtp_secure) === 'true',
+        smtp_user: cfg.smtp_user,
+        smtp_password: cfg.smtp_password
       };
       const _deps = req.app.locals.__smtpTestDeps || undefined;
       const r2 = await email.send({

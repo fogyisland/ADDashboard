@@ -46,11 +46,11 @@ test('send creates the requested SMTP transport and sends the message', async ()
 
   const result = await send({
     smtp: {
-      host: 'smtp.example.com',
-      port: 587,
-      secure: false,
-      user: 'smtp-user',
-      password: 'smtp-password'
+      smtp_host: 'smtp.example.com',
+      smtp_port: 587,
+      smtp_secure: false,
+      smtp_user: 'smtp-user',
+      smtp_password: 'smtp-password'
     },
     from: 'sender@example.com',
     to: 'recipient@example.com',

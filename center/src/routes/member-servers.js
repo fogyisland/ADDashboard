@@ -284,6 +284,12 @@ export function memberRouter({ config, logger }) {
       const db = getDb();
       const { affectedRows } = await db.execute(db.sql.alertRules.delete, [ruleId]);
       if (affectedRows === 0) return res.status(404).json({ error: 'rule not found' });
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'delete_alert_rule',
+        target: String(ruleId),
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'alert-rule delete failed');

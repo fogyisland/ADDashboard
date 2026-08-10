@@ -8,7 +8,7 @@
 //                              hand off to nodemailer; returns {ok, error?}
 //
 // Factory export (Task 11):
-//   createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl })
+//   createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl, _deps })
 //                              matches the createProbeLoop shape (see
 //                              center/src/services/probe.js) — {start, stop, tick,
 //                              isRunning}. Reads pending rows from
@@ -17,6 +17,9 @@
 //                              stamps sent_at on success, schedules retries on
 //                              failure, and emits a cooldown_skipped alert_event
 //                              once attempt_count reaches alert_email_max_attempts.
+//                              `_deps` is forwarded to send() so tests can inject
+//                              a stub createTransport without monkey-patching
+//                              nodemailer.
 //
 // Per Global Constraint #9: alert_eval_interval_seconds has a 10-second floor.
 // Per Global Constraint #8: matches createProbeLoop shape; inFlight guard;
@@ -41,10 +44,10 @@ export async function send(
   try {
     const createTransport = _deps.createTransport ?? nodemailer.createTransport;
     const transport = createTransport({
-      host: smtp.host,
-      port: smtp.port,
-      secure: Boolean(smtp.secure),
-      auth: smtp.user ? { user: smtp.user, pass: smtp.password } : undefined
+      host: smtp.smtp_host,
+      port: smtp.smtp_port,
+      secure: Boolean(smtp.smtp_secure),
+      auth: smtp.smtp_user ? { user: smtp.smtp_user, pass: smtp.smtp_password } : undefined
     });
     await transport.sendMail({ from, to, cc, subject, text, html });
     return { ok: true };
@@ -91,7 +94,7 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 //     drain-on-stop pattern are the contract. If a future requirement demands "skip the
 //     next tick if the previous is still running", the guard belongs in tick() body —
 //     not at the setInterval callback boundary.
-export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl }) {
+export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl, _deps = {} }) {
   const sendFn = sendImpl || send;
   let interval = null;
   let inFlight = null;
@@ -203,7 +206,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
         subject: row.subject,
         text: row.body_text,
         html: row.body_html
-      });
+      }, _deps);
     } catch (err) {
       // send() already catches its own errors, but defensive try/catch
       // here means a thrown dependency (e.g. nodemailer import failure)
