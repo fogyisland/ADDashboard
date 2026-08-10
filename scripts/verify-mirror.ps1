@@ -61,6 +61,9 @@ $comparisons = @(
   # Note: Task 12 modified AdminLayout.vue (not AppLayout.vue as the global
   # plan file claims). Confirmed via `git show --stat 37d1ef7`.
   @{ left = 'frontend/src/components/AdminLayout.vue';       right = 'publish/frontend/src/components/AdminLayout.vue' }
+  # Non-AD server management — Task 15 (EmailConfigCard + ConfigView integration)
+  @{ left = 'frontend/src/views/admin/EmailConfigCard.vue';  right = 'publish/frontend/src/views/admin/EmailConfigCard.vue' }
+  @{ left = 'frontend/src/views/admin/ConfigView.vue';       right = 'publish/frontend/src/views/admin/ConfigView.vue' }
 )
 
 $fail = $false

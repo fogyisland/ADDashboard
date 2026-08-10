@@ -51,9 +51,13 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
-  const inputs = w.findAll('input');
-  // polling_interval_minutes is the first row
-  await inputs[0].setValue('7');
+  // Find the polling_interval_minutes input by walking the rows in the main
+  // config table (T15 moved SMTP keys into EmailConfigCard so input[0] is
+  // no longer guaranteed to be polling_interval_minutes).
+  const rows = w.findAll('table.t tbody tr');
+  const pollingRow = rows.find((r) => r.text().includes('polling_interval_minutes'));
+  const pollingInput = pollingRow.find('input');
+  await pollingInput.setValue('7');
   expect(w.find('button.save').attributes('disabled')).toBeUndefined();
   await w.find('button.save').trigger('click');
   await flushPromises();
@@ -67,13 +71,24 @@ test('edit risky field (ad_agent_token) shows confirm dialog; cancel aborts save
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
-  // ad_agent_token is the 5th field (index 4)
-  const inputs = w.findAll('input');
-  await inputs[4].setValue('new-token-1234567890');
+  // Find the ad_agent_token input by walking the rows in the main config
+  // table (T15 moved SMTP keys into EmailConfigCard so input[4] is no
+  // longer guaranteed to be ad_agent_token).
+  const rows = w.findAll('table.t tbody tr');
+  const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
+  const tokenInput = tokenRow.find('input');
+  await tokenInput.setValue('new-token-1234567890');
   await w.find('button.save').trigger('click');
   await flushPromises();
   expect(w.findComponent({ name: 'ConfirmDialog' }).exists() || w.find('.dialog').exists()).toBe(true);
-  await w.find('button.cancel').trigger('click');
+  // Cancel via the dialog component's @cancel handler — find the
+  // ConfirmDialog instance and emit cancel on it directly.
+  const dialog = w.findComponent({ name: 'ConfirmDialog' });
+  if (dialog.exists()) {
+    dialog.vm.$emit('cancel');
+  } else {
+    await w.find('.dialog button.cancel').trigger('click');
+  }
   await flushPromises();
   expect(adminApi.updateConfig).not.toHaveBeenCalled();
 });
@@ -84,8 +99,10 @@ test('edit risky field shows confirm dialog; confirm proceeds with save', async 
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
-  const inputs = w.findAll('input');
-  await inputs[4].setValue('new-token-1234567890');
+  const rows = w.findAll('table.t tbody tr');
+  const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
+  const tokenInput = tokenRow.find('input');
+  await tokenInput.setValue('new-token-1234567890');
   await w.find('button.save').trigger('click');
   await flushPromises();
   await w.find('button.confirm').trigger('click');
@@ -98,12 +115,16 @@ test('cancel button restores the snapshot', async () => {
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   const w = mount(ConfigView);
   await flushPromises();
-  const inputs = w.findAll('input');
-  await inputs[0].setValue('99');
-  expect(inputs[0].element.value).toBe('99');
+  // Find polling_interval_minutes input by walking rows (T15 card moved
+  // input[0]).
+  const rows = w.findAll('table.t tbody tr');
+  const pollingRow = rows.find((r) => r.text().includes('polling_interval_minutes'));
+  const pollingInput = pollingRow.find('input');
+  await pollingInput.setValue('99');
+  expect(pollingInput.element.value).toBe('99');
   await w.find('button.cancel').trigger('click');
   await flushPromises();
-  expect(inputs[0].element.value).toBe('5');
+  expect(pollingInput.element.value).toBe('5');
 });
 
 test('save failure with fieldErrors highlights the offending row', async () => {
@@ -194,8 +215,12 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   const w = mount(ConfigView);
   await flushPromises();
-  const labels = w.findAll('.key-label').map(el => el.text());
-  const rawKeys = w.findAll('.raw-key').map(el => el.text());
+  // Scope to the main config table only (T15 moved SMTP keys into
+  // EmailConfigCard so its own `.key-label` / `.raw-key` pairs are
+  // intentionally excluded from this count).
+  const tableScope = w.find('table.t');
+  const labels = tableScope.findAll('.key-label').map(el => el.text());
+  const rawKeys = tableScope.findAll('.raw-key').map(el => el.text());
   // Primary label is Chinese, raw key still visible for DB / API mapping
   expect(labels).toContain('采集周期');
   expect(labels).toContain('延迟阈值');
