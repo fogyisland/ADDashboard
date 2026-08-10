@@ -56,7 +56,22 @@ export const serverGroups = {
                           WHERE msp.package_name = ?
                           ORDER BY msp.hostname`,
     touchPackageRun: `UPDATE ad_member_server_packages SET last_run_at = NOW()
-                      WHERE hostname = ? AND package_name = ?`
+                      WHERE hostname = ? AND package_name = ?`,
+    // Bulk operations for Task 7 (server-groups admin routes). Pattern:
+    // resolve member hostnames via the join, then write. MySQL uses INSERT
+    // ... SELECT FROM ...; MSSQL uses INSERT ... SELECT FROM ... too — both
+    // dialects accept the same shape (SELECT in INSERT).
+    bulkInstallPackage: `INSERT IGNORE INTO ad_member_server_packages (hostname, package_name, enabled)
+      SELECT m.hostname, ?, ?
+      FROM ad_server_group_members m
+      WHERE m.group_id = ?`,
+    bulkUninstallPackage: `DELETE msp FROM ad_member_server_packages msp
+      INNER JOIN ad_server_group_members m ON m.hostname = msp.hostname
+      WHERE m.group_id = ? AND msp.package_name = ?`,
+    bulkSetEnabled: `UPDATE ad_member_server_packages msp
+      INNER JOIN ad_server_group_members m ON m.hostname = msp.hostname
+      SET msp.enabled = ?
+      WHERE m.group_id = ? AND msp.package_name = ?`
   },
   mssql: {
     // ---- ad_server_groups ----
@@ -112,6 +127,27 @@ export const serverGroups = {
                           WHERE msp.package_name = ?
                           ORDER BY msp.hostname`,
     touchPackageRun: `UPDATE ad_member_server_packages SET last_run_at = SYSUTCDATETIME()
-                      WHERE hostname = ? AND package_name = ?`
+                      WHERE hostname = ? AND package_name = ?`,
+    // Bulk operations for Task 7. MSSQL has no INSERT IGNORE — use a
+    // LEFT JOIN ... WHERE NOT EXISTS anti-pattern so re-running the install
+    // is a no-op for hosts already bound to this package (idempotent).
+    bulkInstallPackage: `INSERT INTO ad_member_server_packages (hostname, package_name, enabled)
+      SELECT m.hostname, ?, ?
+      FROM ad_server_group_members m
+      WHERE m.group_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM ad_member_server_packages msp
+          WHERE msp.hostname = m.hostname AND msp.package_name = ?
+        )`,
+    // MSSQL DELETE ... JOIN is supported in modern SQL Server (2005+).
+    // Alternative is IN (SELECT hostname ...), but DELETE JOIN is more
+    // efficient and reads the same as the MySQL counterpart.
+    bulkUninstallPackage: `DELETE msp FROM ad_member_server_packages msp
+      INNER JOIN ad_server_group_members m ON m.hostname = msp.hostname
+      WHERE m.group_id = ? AND msp.package_name = ?`,
+    bulkSetEnabled: `UPDATE msp SET msp.enabled = ?
+      FROM ad_member_server_packages msp
+      INNER JOIN ad_server_group_members m ON m.hostname = msp.hostname
+      WHERE m.group_id = ? AND msp.package_name = ?`
   }
 };
