@@ -11,7 +11,12 @@ const DEFAULTS = {
   agentDataDir: 'C:\\addashboard\\Agent\\data',
   powerShellPath: 'powershell.exe',
   psScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-replication.ps1',
-  healthCheckIntervalMs: 600_000
+  healthCheckIntervalMs: 600_000,
+  // T16: agent type discriminator. 'ad' = DC-collector (legacy); 'non-ad'
+  // = member-server heartbeat + self-register + per-host package fetch.
+  // Default stays 'ad' so existing deployments keep working without a
+  // config-file change.
+  agentType: 'ad'
 };
 
 export function loadConfig(path) {

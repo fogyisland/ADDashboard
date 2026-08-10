@@ -5,6 +5,14 @@ param(
   [Parameter(Mandatory)][string[]]$ComputerName,
   [Parameter(Mandatory)][string]$CenterUrl,
   [Parameter(Mandatory)][string]$AgentToken,
+  # T16: agent type discriminator. 'ad' (default) installs the legacy DC
+  # collector with DisplayName "AD Replication Agent (on <host>)"; 'non-ad'
+  # installs the member-server runtime with DisplayName "AD Dashboard
+  # Agent (Member)" and persists agentType to agent-config.json so the
+  # running process picks it up on next start. Backward compatible: callers
+  # who omit the param keep the pre-T16 behavior.
+  [ValidateSet('ad','non-ad')]
+  [string]$AgentType = 'ad',
   [string]$InstallPath = 'C:\addashboard\Agent',
   # Internal-use parameters for remote-install forwarding. When the script runs
   # in a remote session, $PSScriptRoot is null; we pre-resolve and pass these
@@ -35,7 +43,7 @@ $psScriptDstDir = Join-Path $InstallPath 'scripts'
 $node = (Get-Command node.exe -ErrorAction Stop).Source
 
 function Install-LocalAgent {
-  Write-Step "installing local agent to $InstallPath"
+  Write-Step "installing local agent to $InstallPath (agentType=$AgentType)"
   @($InstallPath, $psScriptDstDir, 'C:\addashboard\Logs', 'C:\addashboard\Agent') | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
@@ -54,15 +62,25 @@ function Install-LocalAgent {
     queueDbPath = 'C:\addashboard\Agent\queue.db'
     psScriptPath = "$InstallPath\scripts\collect-replication.ps1"
     healthCheckIntervalMs = 600000
+    # T16: persist agentType so the running process picks it up on next
+    # start. The agent's loadConfig defaults to 'ad', so omitting the
+    # field in an old config keeps the legacy flow.
+    agentType = $AgentType
   }
   $cfg | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath 'appsettings.json') -Encoding UTF8
+
+  # T16: DisplayName differs by agent type. 'ad' keeps the legacy string
+  # (operators may have alerts / dashboards keyed off it); 'non-ad' gets
+  # the new "Member" label so the distinction is visible in services.msc.
+  if ($AgentType -eq 'non-ad') { $displayName = 'AD Dashboard Agent (Member)' }
+  else { $displayName = "AD Replication Agent (on $env:COMPUTERNAME)" }
 
   Install-NssmService -Name 'ADReplicationAgent' `
     -Application $node `
     -AppDirectory $InstallPath `
     -AppParameters 'agent.js' `
     -DependOnService @('DNS Client','Netlogon') `
-    -DisplayName "AD Replication Agent (on $env:COMPUTERNAME)" `
+    -DisplayName $displayName `
     -Description 'AD Replication collection agent' `
     -Start SERVICE_AUTO_START
   if (Start-ServiceSafe -Name 'ADReplicationAgent' -WaitSeconds 20) { Write-Ok "agent started on $env:COMPUTERNAME" }
@@ -79,7 +97,7 @@ foreach ($cn in $ComputerName) {
       $block = [scriptblock]::Create((Get-Content -Raw (Join-Path $PSScriptRoot 'install-agent.ps1')))
       # Pass pre-resolved source paths so the remote scriptblock does not depend
       # on its own $PSScriptRoot (which is null inside Invoke-Command -ScriptBlock).
-      Invoke-Command -Session $sess -ScriptBlock $block -ArgumentList @(@($cn), $CenterUrl, $AgentToken, $InstallPath, $AgentSrc, $PsScriptSrc) -ErrorAction Stop
+      Invoke-Command -Session $sess -ScriptBlock $block -ArgumentList @(@($cn), $CenterUrl, $AgentToken, $AgentType, $InstallPath, $AgentSrc, $PsScriptSrc) -ErrorAction Stop
     } finally { Remove-PSSession $sess }
   }
 }

@@ -64,6 +64,10 @@ $comparisons = @(
   # Non-AD server management — Task 15 (EmailConfigCard + ConfigView integration)
   @{ left = 'frontend/src/views/admin/EmailConfigCard.vue';  right = 'publish/frontend/src/views/admin/EmailConfigCard.vue' }
   @{ left = 'frontend/src/views/admin/ConfigView.vue';       right = 'publish/frontend/src/views/admin/ConfigView.vue' }
+  # Non-AD server management — Task 16 (agentType switch in agent.js + install-agent.ps1 -AgentType param)
+  @{ left = 'agent/agent.js';                                right = 'publish/agent/agent.js' }
+  @{ left = 'agent/src/config.js';                           right = 'publish/agent/src/config.js' }
+  @{ left = 'agent/src/os-info.js';                          right = 'publish/agent/src/os-info.js' }
 )
 
 $fail = $false
