@@ -16,6 +16,7 @@ function mountLayout() {
 
 const EXPECTED_PATHS = [
   '/admin/users', '/admin/roles',
+  '/admin/member-servers', '/admin/server-groups',
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix', '/admin/ports', '/admin/heartbeat-report', '/admin/packages',
   '/admin/config', '/admin/audit', '/admin/migrations', '/admin/orphan-schemas'
@@ -25,15 +26,15 @@ beforeEach(() => {
   setActivePinia(createPinia());
 });
 
-test('renders 4 nav groups', () => {
+test('renders 5 nav groups', () => {
   const w = mountLayout();
-  expect(w.findAll('.nav-group').length).toBe(4);
+  expect(w.findAll('.nav-group').length).toBe(5);
 });
 
-test('renders all 12 nav-links with correct paths', () => {
+test('renders all 14 nav-links with correct paths', () => {
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
-  expect(links.length).toBe(12);
+  expect(links.length).toBe(14);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
 });
@@ -41,7 +42,7 @@ test('renders all 12 nav-links with correct paths', () => {
 test('all groups open by default', () => {
   const w = mountLayout();
   const details = w.findAll('details');
-  expect(details.length).toBe(4);
+  expect(details.length).toBe(5);
   for (const d of details) {
     expect(d.attributes('open')).toBeDefined();
   }

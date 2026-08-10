@@ -46,5 +46,29 @@ export const adminApi = {
   listOrphanSchemas: () => api.get('/api/admin/orphan-schemas'),
   dropOrphanSchema: (name) => api.delete(`/api/admin/orphan-schemas/${name}`),
   uninstallPackage: (name, { purgeMetrics = false, confirmDropSchema = false } = {}) =>
-    api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } })
+    api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } }),
+
+  // ---- Non-AD member servers (Task 6/13) ----
+  listMemberServers: () => api.get('/api/admin/member-servers'),
+  getMemberServer: (hostname) => api.get(`/api/admin/member-servers/${encodeURIComponent(hostname)}`),
+  createMemberServer: (body) => api.post('/api/admin/member-servers', body),
+  updateMemberServer: (hostname, body) => api.put(`/api/admin/member-servers/${encodeURIComponent(hostname)}`, body),
+  deleteMemberServer: (hostname) => api.delete(`/api/admin/member-servers/${encodeURIComponent(hostname)}`),
+  listMemberServerPackages: (hostname) => api.get(`/api/admin/member-servers/${encodeURIComponent(hostname)}/packages`),
+  setMemberServerPackageEnabled: (hostname, packageName, enabled) =>
+    api.put(`/api/admin/member-servers/${encodeURIComponent(hostname)}/packages/${encodeURIComponent(packageName)}`, { enabled }),
+  removeMemberServerPackage: (hostname, packageName) =>
+    api.delete(`/api/admin/member-servers/${encodeURIComponent(hostname)}/packages/${encodeURIComponent(packageName)}`),
+
+  // ---- Non-AD server groups (Task 7/13) ----
+  listServerGroups: () => api.get('/api/admin/server-groups'),
+  createServerGroup: (body) => api.post('/api/admin/server-groups', body),
+  updateServerGroup: (groupId, body) => api.put(`/api/admin/server-groups/${groupId}`, body),
+  deleteServerGroup: (groupId) => api.delete(`/api/admin/server-groups/${groupId}`),
+  listServerGroupMembers: (groupId) => api.get(`/api/admin/server-groups/${groupId}/members`),
+  replaceServerGroupMembers: (groupId, hostnames) => api.put(`/api/admin/server-groups/${groupId}/members`, { hostnames }),
+  bulkInstallForGroup: (groupId, packageName) => api.post(`/api/admin/server-groups/${groupId}/packages/install`, { packageName }),
+  bulkUninstallForGroup: (groupId, packageName) => api.post(`/api/admin/server-groups/${groupId}/packages/${encodeURIComponent(packageName)}/uninstall`),
+  bulkEnableForGroup: (groupId, packageName) => api.post(`/api/admin/server-groups/${groupId}/packages/${encodeURIComponent(packageName)}/enable`),
+  bulkDisableForGroup: (groupId, packageName) => api.post(`/api/admin/server-groups/${groupId}/packages/${encodeURIComponent(packageName)}/disable`)
 };
