@@ -28,6 +28,11 @@ export const alertRules = {
                   FROM alert_rules WHERE enabled = 1 ORDER BY hostname, name`,
     listEnabledForHost: `SELECT rule_id, hostname, name, \`condition\`, for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                          FROM alert_rules WHERE hostname = ? AND enabled = 1 ORDER BY name`,
+    listEnabledForHostWithState: `SELECT r.rule_id, r.hostname, r.name, r.\`condition\`, r.for_minutes, r.cooldown_minutes, r.recipients, r.enabled,
+       s.state, s.first_hit_at, s.last_fired_at, s.suppressed_until
+       FROM alert_rules r
+       LEFT JOIN alert_rule_state s ON s.rule_id = r.rule_id
+       WHERE r.hostname = ? AND r.enabled = 1`,
     listAllEnabled: `SELECT rule_id, hostname, name, \`condition\`, for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                      FROM alert_rules WHERE enabled = 1 ORDER BY hostname, rule_id`,
     update: `UPDATE alert_rules SET name = ?, \`condition\` = ?, for_minutes = ?, cooldown_minutes = ?, recipients = ?, enabled = ?
@@ -68,6 +73,11 @@ export const alertRules = {
                   FROM alert_rules WHERE enabled = 1 ORDER BY hostname, name`,
     listEnabledForHost: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                          FROM alert_rules WHERE hostname = ? AND enabled = 1 ORDER BY name`,
+    listEnabledForHostWithState: `SELECT r.rule_id, r.hostname, r.name, r.[condition], r.for_minutes, r.cooldown_minutes, r.recipients, r.enabled,
+       s.state, s.first_hit_at, s.last_fired_at, s.suppressed_until
+       FROM alert_rules r
+       LEFT JOIN alert_rule_state s ON s.rule_id = r.rule_id
+       WHERE r.hostname = ? AND r.enabled = 1`,
     listAllEnabled: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                      FROM alert_rules WHERE enabled = 1 ORDER BY hostname, rule_id`,
     update: `UPDATE alert_rules SET name = ?, [condition] = ?, for_minutes = ?, cooldown_minutes = ?, recipients = ?, enabled = ?

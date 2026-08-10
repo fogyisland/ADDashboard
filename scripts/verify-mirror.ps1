@@ -43,6 +43,8 @@ $comparisons = @(
   @{ left = 'center/src/db/sql/alert-events.js';             right = 'publish/center/src/db/sql/alert-events.js' }
   @{ left = 'center/src/db/sql/alert-outbox.js';             right = 'publish/center/src/db/sql/alert-outbox.js' }
   @{ left = 'center/src/db/sql/alert-metrics.js';            right = 'publish/center/src/db/sql/alert-metrics.js' }
+  # Non-AD server management — Tasks 11 fix round 1 (F1: add listEnabledForHostWithState SQL block)
+  @{ left = 'center/src/db/sql/alert-rules.js';              right = 'publish/center/src/db/sql/alert-rules.js' }
   # Migrations — Task 2
   @{ left = 'db/migrations/013-orphan-schemas.sql';          right = 'publish/db/migrations/013-orphan-schemas.sql' }
   @{ left = 'db/migrations/mssql/013-orphan-schemas.sql';    right = 'publish/db/migrations/mssql/013-orphan-schemas.sql' }

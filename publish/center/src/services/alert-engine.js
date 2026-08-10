@@ -208,6 +208,15 @@ const STATE_UPSERT_MSSQL = `MERGE INTO alert_rule_state AS t
                             VALUES
                               (s.rule_id, s.state, s.first_hit_at, SYSUTCDATETIME(), s.last_fired_at, s.last_recovered_at, s.suppressed_until)`;
 
+// inFlight guard pattern (matches createProbeLoop at probe.js:111):
+//   - setInterval callback captures the in-flight tick via `inFlight = tick().catch(...)`.
+//   - stop() awaits the in-flight promise to drain so a slow tick doesn't get cut off.
+//   - tick() itself has NO `if (inFlight) return;` re-entry guard; the setInterval callback
+//     does not add one either. Two overlapping guards would silently swallow a slow tick
+//     without surfacing it in logs. The natural setInterval cadence (>= 10s) plus the
+//     drain-on-stop pattern are the contract. If a future requirement demands "skip the
+//     next tick if the previous is still running", the guard belongs in tick() body —
+//     not at the setInterval callback boundary.
 export function createAlertEvaluationLoop({ db, getIntervalSeconds, getSystemConfig, logger }) {
   const log = logger?.child ? logger.child({ component: 'alert-eval' }) : null;
   const logError = (err) => {
@@ -225,11 +234,7 @@ export function createAlertEvaluationLoop({ db, getIntervalSeconds, getSystemCon
   }
 
   async function readRulesForHost(hostname) {
-    // LEFT JOIN keeps rules that have no state row yet. The state column
-    // may be NULL (no row → treated as 'normal' by transitionState). SQL is
-    // a single line so test mocks that match with `.+` (no /s flag) line up.
-    const sql = `SELECT r.rule_id, r.hostname, r.name, r.\`condition\`, r.for_minutes, r.cooldown_minutes, r.recipients, r.enabled, s.state, s.first_hit_at, s.last_fired_at, s.suppressed_until FROM alert_rules r LEFT JOIN alert_rule_state s ON s.rule_id = r.rule_id WHERE r.hostname = ? AND r.enabled = 1`;
-    const { rows } = await db.query(sql, [hostname]);
+    const { rows } = await db.execute(db.sql.alertRules.listEnabledForHostWithState, [hostname]);
     return rows;
   }
 
@@ -274,8 +279,12 @@ export function createAlertEvaluationLoop({ db, getIntervalSeconds, getSystemCon
   // freshly-allocated event row's id.
   async function recordTransition(tx, { ruleId, hostname, event, detail, recipients, subject, body }) {
     const insertEvent = db.sql.alertEvents.insert;
-    const { insertId } = await tx.execute(insertEvent, [ruleId, event, hostname, JSON.stringify(detail)]);
-    const eventId = insertId ?? 99; // mock fallback when the driver wrapper doesn't return insertId
+    const insertResult = await tx.execute(insertEvent, [ruleId, event, hostname, JSON.stringify(detail)]);
+    // MySQL returns insertId; MSSQL returns recordset[0].id from OUTPUT INSERTED.id.
+    const eventId = insertResult.insertId ?? insertResult.recordset?.[0]?.id;
+    if (eventId == null) {
+      throw new Error(`alert_events insert returned no id for rule=${ruleId} event=${event}`);
+    }
     await tx.execute(db.sql.alertOutbox.enqueue, [
       eventId,
       recipients.to || '',
@@ -379,16 +388,6 @@ export function createAlertEvaluationLoop({ db, getIntervalSeconds, getSystemCon
   }
 
   async function tick() {
-    // The 10-second floor (Global Constraint #9) is enforced inside tick()
-    // — server.js mounts us at start() but a misconfigured loop could push
-    // getIntervalSeconds() below the floor for a single evaluation. The
-    // floor is a hard cap on rate, not just on schedule.
-    let intervalSec = 60;
-    try {
-      intervalSec = Math.max(10, Number(await getIntervalSeconds()) || 60);
-    } catch (err) {
-      logError(err);
-    }
     try {
       const hosts = await readEnabledHosts();
       for (const h of hosts) {

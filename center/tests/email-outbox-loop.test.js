@@ -193,28 +193,40 @@ test('emailOutboxLoop: max attempts reached → emit cooldown_skipped event', as
   assert.equal(evt.params[2], '');
 });
 
-test('emailOutboxLoop: setInterval guarded by inFlight (second tick is no-op during first)', async () => {
-  // The factory's inFlight guard prevents concurrent ticks. We lock the
-  // behavior by replacing the underlying async function with one that
-  // stalls, then firing a second tick before the first resolves.
+test('emailOutboxLoop: concurrent tick() calls produce at most 2 outbox SELECTs', async () => {
+  // The factory's setInterval callback captures the in-flight tick via
+  // `inFlight = tick().catch(...)` (see email.js inFlight comment). When
+  // two `tick()` calls are fired concurrently, the contract is: the first
+  // tick holds the SELECT open, the second tick either (a) returns early
+  // because tick() body has a guard, or (b) blocks on the same SELECT and
+  // resolves after. The setInterval callback is NOT a guard; it only
+  // captures the in-flight promise. This test locks in the contract: the
+  // outbox SELECT is issued at least once, and never more than 2 times
+  // (one per concurrent tick), so a future regression that adds an
+  // unconditional re-run inside the loop body would be caught.
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM alert_email_outbox/i, rows: [] }
     ]
   });
 
-  // Replace the listPending mock to stall; the inFlight guard should make
-  // a second tick call return immediately without re-running.
+  // Use the mock's onQuery hook (clean interception per plan) to stall the
+  // outbox SELECT so both ticks enter the call before either resolves.
   let resolveStall;
   const stalled = new Promise((r) => { resolveStall = r; });
+  const onQuery = (sql /* , params */) => {
+    if (/FROM alert_email_outbox/i.test(sql)) {
+      return stalled.then(() => ({ rows: [] }));
+    }
+    return { rows: [] };
+  };
+  // Replace the script's onQuery by re-injecting through the mock.
+  // buildMockDb builds scripts at construction time; we instead re-route
+  // db.query to use our stall-aware lookup that records into db.records.
   const records = db.records;
   db.query = async (sql, params) => {
     records.push({ sql, params: [...params] });
-    if (/FROM alert_email_outbox/i.test(sql)) {
-      await stalled;
-      return { rows: [] };
-    }
-    return { rows: [] };
+    return onQuery(sql, params);
   };
 
   const tick1 = loop.tick();
@@ -222,10 +234,16 @@ test('emailOutboxLoop: setInterval guarded by inFlight (second tick is no-op dur
   resolveStall();
   await Promise.all([tick1, tick2]);
 
-  // We don't assert the exact number of calls (depends on the scheduling);
-  // the inFlight guard means the second tick should have returned BEFORE
-  // the first resolved. assert that both resolved without throwing.
-  assert.ok(true, 'both ticks resolved cleanly');
+  const outboxSelects = db.records.filter((r) =>
+    /FROM alert_email_outbox/i.test(r.sql)
+  ).length;
+  // The first tick must have issued at least one SELECT. Without the
+  // guard the second tick would also issue a SELECT (total = 2). With a
+  // tick-body guard the second tick returns early (total = 1). We assert
+  // the upper bound 2 — never 0 (broken loop) and never 3+ (uncontrolled
+  // re-entry bug). This is a contract test, not a strict-count test.
+  assert.ok(outboxSelects >= 1, 'first tick must execute at least one outbox SELECT');
+  assert.ok(outboxSelects <= 2, 'concurrent ticks must not produce more than 2 outbox SELECTs');
 });
 
 test('emailOutboxLoop: tick is no-op when no pending rows (no send, no UPDATE)', async () => {

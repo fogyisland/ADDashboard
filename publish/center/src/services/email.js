@@ -82,6 +82,15 @@ const PENDING_LIMIT = 25;
 const DEFAULT_INITIAL_BACKOFF_SECONDS = 30;
 const DEFAULT_MAX_ATTEMPTS = 5;
 
+// inFlight guard pattern (matches createProbeLoop at probe.js:111):
+//   - setInterval callback captures the in-flight tick via `inFlight = tick().catch(...)`.
+//   - stop() awaits the in-flight promise to drain so a slow tick doesn't get cut off.
+//   - tick() itself has NO `if (inFlight) return;` re-entry guard; the setInterval callback
+//     does not add one either. Two overlapping guards would silently swallow a slow tick
+//     without surfacing it in logs. The natural setInterval cadence (>= 10s) plus the
+//     drain-on-stop pattern are the contract. If a future requirement demands "skip the
+//     next tick if the previous is still running", the guard belongs in tick() body —
+//     not at the setInterval callback boundary.
 export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl }) {
   const sendFn = sendImpl || send;
   let interval = null;
@@ -210,16 +219,6 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
   }
 
   async function tick() {
-    // Per-tick interval read; 10-second floor enforced inside tick() so a
-    // misconfigured caller can't push the cadence below the floor for a
-    // single evaluation. server.js start() also clamps the scheduled
-    // cadence (the setInterval period).
-    let intervalSec = 60;
-    try {
-      intervalSec = Math.max(10, Number(await getIntervalSeconds()) || 60);
-    } catch {
-      // keep default
-    }
     let rows;
     try {
       rows = await listPending();
@@ -236,7 +235,6 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
         console.error('[email-outbox] deliver failed for outbox id', row.id, ':', err.message);
       }
     }
-    void intervalSec;
   }
 
   function start() {

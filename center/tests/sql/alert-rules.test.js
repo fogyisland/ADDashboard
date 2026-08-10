@@ -69,6 +69,22 @@ test('alertRules: listStatesForEval inner-joins alert_rules to filter by enabled
   assert.match(alertRules.mysql.listStatesForEval, /r\.cooldown_minutes/);
 });
 
+test('alertRules: listEnabledForHostWithState (MySQL) is a SELECT with LEFT JOIN and 1 placeholder', () => {
+  const sql = alertRules.mysql.listEnabledForHostWithState;
+  assert.match(sql, /SELECT/i);
+  assert.match(sql, /LEFT JOIN alert_rule_state/i);
+  assert.equal((sql.match(/\?/g) || []).length, 1);
+  assert.ok(!/MERGE/i.test(sql), 'mysql variant must not use MERGE');
+});
+
+test('alertRules: listEnabledForHostWithState (MSSQL) is a SELECT with LEFT JOIN and 1 placeholder', () => {
+  const sql = alertRules.mssql.listEnabledForHostWithState;
+  assert.match(sql, /SELECT/i);
+  assert.match(sql, /LEFT JOIN alert_rule_state/i);
+  assert.equal((sql.match(/\?/g) || []).length, 1);
+  assert.ok(/\[condition\]/.test(sql), 'mssql variant must bracket-quote reserved word condition');
+});
+
 // ---- live-DB round-trip tests (Global Constraint #17) ----
 
 import fs from 'node:fs';

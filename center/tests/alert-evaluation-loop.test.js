@@ -77,7 +77,7 @@ test('alertEvalLoop: tick fires a rule that has been pending past for_minutes', 
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [{ hostname: 'srv-01' }] },
-      { match: /FROM alert_rules.*LEFT JOIN alert_rule_state/i, rows: rules },
+      { match: /FROM alert_rules[\s\S]*?LEFT JOIN alert_rule_state/i, rows: rules },
       { match: /FROM `?pkg_ad_os_baseline`?\.?metrics|SELECT.*FROM .pkg_ad_os_baseline/i, rows: [{ cpu_pct: 95, memory_pct: 50, disk_free: '{}', services: '{}', events: '[]' }] },
       { match: /SELECT last_seen_at FROM ad_member_servers/i, rows: [{ last_seen_at: NOW }] }
     ]
@@ -127,7 +127,7 @@ test('alertEvalLoop: recovery fires email when firing has been no-hit for for_mi
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [{ hostname: 'srv-02' }] },
-      { match: /FROM alert_rules.*LEFT JOIN alert_rule_state/i, rows: rules },
+      { match: /FROM alert_rules[\s\S]*?LEFT JOIN alert_rule_state/i, rows: rules },
       { match: /FROM `?pkg_ad_os_baseline`?\.?metrics|SELECT.*FROM .pkg_ad_os_baseline/i, rows: [{ cpu_pct: 50, memory_pct: 50, disk_free: '{}', services: '{}', events: '[]' }] },
       { match: /SELECT last_seen_at FROM ad_member_servers/i, rows: [{ last_seen_at: NOW }] }
     ],
@@ -182,7 +182,7 @@ test('alertEvalLoop: cooldown (suppressed_until in future) suppresses re-fire', 
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [{ hostname: 'srv-03' }] },
-      { match: /FROM alert_rules.*LEFT JOIN alert_rule_state/i, rows: rules },
+      { match: /FROM alert_rules[\s\S]*?LEFT JOIN alert_rule_state/i, rows: rules },
       { match: /FROM `?pkg_ad_os_baseline`?\.?metrics|SELECT.*FROM .pkg_ad_os_baseline/i, rows: [{ cpu_pct: 95, memory_pct: 50, disk_free: '{}', services: '{}', events: '[]' }] },
       { match: /SELECT last_seen_at FROM ad_member_servers/i, rows: [{ last_seen_at: NOW }] }
     ]
@@ -216,7 +216,7 @@ test('alertEvalLoop: disabled rule is skipped (no state write, no event)', async
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [{ hostname: 'srv-04' }] },
-      { match: /FROM alert_rules.*LEFT JOIN alert_rule_state/i, rows: [] },
+      { match: /FROM alert_rules[\s\S]*?LEFT JOIN alert_rule_state/i, rows: [] },
       { match: /FROM `?pkg_ad_os_baseline`?\.?metrics|SELECT.*FROM .pkg_ad_os_baseline/i, rows: [{ cpu_pct: 95, memory_pct: 50, disk_free: '{}', services: '{}', events: '[]' }] },
       { match: /SELECT last_seen_at FROM ad_member_servers/i, rows: [{ last_seen_at: NOW }] }
     ]
@@ -262,7 +262,7 @@ test('alertEvalLoop: transaction rolls back on partial failure (no state written
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [{ hostname: 'srv-05' }] },
-      { match: /FROM alert_rules.*LEFT JOIN alert_rule_state/i, rows: rules },
+      { match: /FROM alert_rules[\s\S]*?LEFT JOIN alert_rule_state/i, rows: rules },
       { match: /FROM `?pkg_ad_os_baseline`?\.?metrics|SELECT.*FROM .pkg_ad_os_baseline/i, rows: [{ cpu_pct: 95, memory_pct: 50, disk_free: '{}', services: '{}', events: '[]' }] },
       { match: /SELECT last_seen_at FROM ad_member_servers/i, rows: [{ last_seen_at: NOW }] }
     ]
@@ -294,7 +294,12 @@ test('alertEvalLoop: transaction rolls back on partial failure (no state written
   assert.ok(stateUpsert, 'state upsert should have been attempted');
 });
 
-test('alertEvalLoop: factory must call getIntervalSeconds each tick (floor is enforced by caller)', async () => {
+test('alertEvalLoop: tick() does NOT call getIntervalSeconds (matches createProbeLoop pattern)', async () => {
+  // After F2 review fix: the per-tick `intervalSec` read in tick() was dead
+  // (never used). We now drop the read entirely so the floor is enforced
+  // once at start() — same as createProbeLoop at probe.js:111. Restart
+  // the loop to pick up interval config changes. This test locks the
+  // contract: tick() must not re-read the interval.
   const { db } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [] }
@@ -307,12 +312,13 @@ test('alertEvalLoop: factory must call getIntervalSeconds each tick (floor is en
     getSystemConfig: async () => ({})
   });
   await loop.tick();
-  assert.equal(readInterval, 1, 'factory must call getIntervalSeconds each tick');
+  assert.equal(readInterval, 0, 'tick() must not call getIntervalSeconds');
   // The 10-second floor (Global Constraint #9) is enforced inside start()
-  // when the loop is mounted: Math.max(10, raw). The factory does NOT
-  // re-read the interval on every tick (createProbeLoop pattern: fixed
-  // interval for the lifetime of the loop; restart to pick up config
-  // changes). Tests for the floor live in the start-stop integration test.
+  // when the loop is mounted: Math.max(10, raw). start() does call
+  // getIntervalSeconds, so it is exercised on the boot path.
+  loop.start();
+  await loop.stop();
+  assert.equal(readInterval, 1, 'start() must call getIntervalSeconds once to set the period');
 });
 
 test('alertEvalLoop: tick is no-op when no enabled hosts', async () => {
@@ -349,7 +355,7 @@ test('alertEvalLoop: heartbeat_stale derived from last_seen_at delta', async () 
   const { db, loop } = makeLoop({
     scripts: [
       { match: /FROM ad_member_servers WHERE enabled = 1/i, rows: [{ hostname: 'srv-06' }] },
-      { match: /FROM alert_rules.*LEFT JOIN alert_rule_state/i, rows: rules },
+      { match: /FROM alert_rules[\s\S]*?LEFT JOIN alert_rule_state/i, rows: rules },
       { match: /FROM `?pkg_ad_os_baseline`?\.?metrics|SELECT.*FROM .pkg_ad_os_baseline/i, rows: [] }, // no metrics row
       { match: /SELECT last_seen_at FROM ad_member_servers/i, rows: [{ last_seen_at: lastSeenAt }] }
     ]
