@@ -75,13 +75,23 @@ function Install-LocalAgent {
   if ($AgentType -eq 'non-ad') { $displayName = 'AD Dashboard Agent (Member)' }
   else { $displayName = "AD Replication Agent (on $env:COMPUTERNAME)" }
 
+  # T16: Description differs by agent type. AD agents collect replication
+  # status for DCs; non-AD agents are member-server monitors that fetch
+  # per-host packages and heartbeat to the member-servers.touchLastSeen path.
+  if ($AgentType -eq 'non-ad') {
+    $description = 'AD Dashboard member-server monitor (self-register + heartbeat + package fetch)'
+  }
+  else {
+    $description = 'AD Replication collection agent'
+  }
+
   Install-NssmService -Name 'ADReplicationAgent' `
     -Application $node `
     -AppDirectory $InstallPath `
     -AppParameters 'agent.js' `
     -DependOnService @('DNS Client','Netlogon') `
     -DisplayName $displayName `
-    -Description 'AD Replication collection agent' `
+    -Description $description `
     -Start SERVICE_AUTO_START
   if (Start-ServiceSafe -Name 'ADReplicationAgent' -WaitSeconds 20) { Write-Ok "agent started on $env:COMPUTERNAME" }
   else { Write-Err2 "agent failed to start on $env:COMPUTERNAME" }

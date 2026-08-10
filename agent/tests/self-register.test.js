@@ -2,7 +2,7 @@
 //
 // T16 contract (brief §Step 1):
 //   - non-AD agent MUST POST to /api/admin/member-servers/self-register on
-//     boot, with body { hostname, agent_version, os_version, ip_address }.
+//     boot, with body { hostname, agentVersion, osVersion, ipAddress }.
 //   - AD agent MUST skip this call.
 //
 // Approach: same as agent-type.test.js — boot agent.js as a child process
@@ -92,7 +92,7 @@ test('non-ad self-register body contains hostname, agent_version, os_version, ip
     // Auth header must be set (matches the rest of the agent's traffic)
     assert.equal(calls[0].headers['x-agent-token'], 'tok', 'X-Agent-Token must be sent');
     const body = JSON.parse(calls[0].body);
-    for (const key of ['hostname', 'agent_version', 'os_version', 'ip_address']) {
+    for (const key of ['hostname', 'agentVersion', 'osVersion', 'ipAddress']) {
       assert.ok(key in body, `self-register body missing key: ${key}`);
       assert.equal(typeof body[key], 'string', `self-register body.${key} must be string`);
     }

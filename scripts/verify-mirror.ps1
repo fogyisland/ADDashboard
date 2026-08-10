@@ -68,6 +68,8 @@ $comparisons = @(
   @{ left = 'agent/agent.js';                                right = 'publish/agent/agent.js' }
   @{ left = 'agent/src/config.js';                           right = 'publish/agent/src/config.js' }
   @{ left = 'agent/src/os-info.js';                          right = 'publish/agent/src/os-info.js' }
+  # Non-AD server management — Task 16 fix round 1 (exported shouldRunPackageForNonAd filter)
+  @{ left = 'agent/src/agent-filters.js';                    right = 'publish/agent/src/agent-filters.js' }
 )
 
 $fail = $false

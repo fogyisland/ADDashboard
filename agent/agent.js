@@ -11,6 +11,7 @@ import { createScheduler } from './src/scheduler.js';
 import { PackageManager } from './src/package-manager.js';
 import { requestJson } from './src/reporter.js';
 import { getOsInfo } from './src/os-info.js';
+import { shouldRunPackageForNonAd } from './src/agent-filters.js';
 
 const VERSION = '0.1.0';
 
@@ -21,7 +22,7 @@ const logger = createLogger({ component: 'agent', level: config.logLevel });
 // T16: agent type discriminator. 'ad' = legacy DC collector flow (default).
 // 'non-ad' = member-server runtime: self-register on boot, fetch packages
 // from /api/admin/agent/packages-for-host (host-scoped, filtered), heartbeat
-// with agent_type='non-ad' so the center can route to the member-servers
+// with agentType='non-ad' so the center can route to the member-servers
 // touchLastSeen path. See brief §Step 2.
 const AGENT_TYPE = config.agentType || 'ad';
 
@@ -215,9 +216,9 @@ async function runNonAdRuntime({ config, logger }) {
       headers: { 'X-Agent-Token': config.agentToken },
       body: {
         hostname: config.hostname || osInfo.hostname,
-        agent_version: VERSION,
-        os_version: osInfo.version,
-        ip_address: osInfo.ip
+        agentVersion: VERSION,
+        osVersion: osInfo.version,
+        ipAddress: osInfo.ip
       },
       timeoutMs: 30_000
     });
@@ -264,7 +265,24 @@ async function runNonAdRuntime({ config, logger }) {
     const intervalSec = pkg.agent?.intervalSec;
     if (!intervalSec || intervalSec <= 0) return;
     const intervalMs = intervalSec * 1000;
+    // Guard against the applyPackageList restart-on-every-poll loop. Without
+    // this clearInterval, every 5-minute poll would leave the previous handle
+    // running and start a fresh one — one package = 12 timers/hr, 288/day,
+    // each spawning PowerShell. Clear any prior handle for this name first.
+    const existing = localTasks.get(pkg.name);
+    if (existing && existing.timer) clearInterval(existing.timer);
     const timer = setInterval(() => {
+      // v1 contract: /api/admin/agent/packages-for-host returns parsed
+      // manifests WITHOUT a top-level scriptPath — the agent is expected to
+      // derive it from a local cache directory once package materialization
+      // is wired. v1 has no materialization path, so we skip-and-log when
+      // scriptPath is missing rather than crashing spawn() with undefined.
+      // v2 contract (future task): derive scriptPath =
+      //   join(config.agentDataDir, 'packages', pkg.name, pkg.version, 'collect.ps1').
+      if (!pkg.scriptPath) {
+        logger.debug({ name: pkg.name }, 'non-ad package: scriptPath not yet materialized, skipping');
+        return;
+      }
       // Fire-and-forget; errors logged inside runPackageScript.
       import('./src/package-runner.js').then(({ runPackageScript }) => {
         runPackageScript({
@@ -303,9 +321,9 @@ async function runNonAdRuntime({ config, logger }) {
 
   function applyPackageList(items) {
     // Filter per brief: type === 'non-ad' AND windows is in platforms.
-    const wanted = items.filter(
-      (m) => m?.agent?.type === 'non-ad' && (m.agent?.platforms || []).includes('windows')
-    );
+    // Predicate lives in src/agent-filters.js so tests import the SAME
+    // function the runtime uses (no re-statement, no drift).
+    const wanted = items.filter(shouldRunPackageForNonAd);
     const wantedNames = new Set(wanted.map((p) => p.name));
     // Stop timers that no longer apply
     for (const [name, t] of localTasks) {
@@ -347,7 +365,7 @@ async function runNonAdRuntime({ config, logger }) {
   }, 5 * 60_000);
 
   // 3. Heartbeat loop. Same /api/agent/heartbeat endpoint as the AD flow,
-  //    but with agent_type: 'non-ad' and the host's hostname so the
+  //    but with agentType: 'non-ad' and the host's hostname so the
   //    center can route into the member-servers touchLastSeen path
   //    (Task 6 of the non-AD plan).
   const heartbeat = startHeartbeat({
@@ -356,7 +374,7 @@ async function runNonAdRuntime({ config, logger }) {
       agentId: config.agentId || osInfo.hostname,
       agentVersion: VERSION,
       hostname: config.hostname || osInfo.hostname,
-      agent_type: 'non-ad',
+      agentType: 'non-ad',
       pendingQueueSize: 0
     }),
     send: (p) => postHeartbeat({

@@ -4,7 +4,7 @@
 //   - AD agents (default agentType='ad') MUST NOT call
 //     /api/admin/member-servers/self-register on boot.
 //   - non-AD agents (agentType='non-ad') MUST call self-register on boot
-//     with { hostname, agent_version, os_version, ip_address }.
+//     with { hostname, agentVersion, osVersion, ipAddress }.
 //   - non-AD agents MUST filter packages by
 //     pkg.agent?.type === 'non-ad' && (pkg.agent.platforms || []).includes('windows').
 //
@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { shouldRunPackageForNonAd } from '../src/agent-filters.js';
 
 function fakeLogger() {
   return { info() {}, warn() {}, error() {}, debug() {} };
@@ -139,12 +140,12 @@ test('non-ad agent calls /api/admin/member-servers/self-register on boot with th
     const selfRegisters = cap.requests.filter(r => r.path === '/api/admin/member-servers/self-register');
     assert.ok(selfRegisters.length >= 1, `non-AD agent MUST call self-register; saw ${selfRegisters.length}`);
     const body = JSON.parse(selfRegisters[0].body);
-    // Payload contract from the brief: hostname, agent_version, os_version, ip_address.
+    // Payload contract from the brief: hostname, agentVersion, osVersion, ipAddress.
     assert.equal(typeof body.hostname, 'string', 'hostname must be a string');
     assert.ok(body.hostname.length > 0, 'hostname must be non-empty');
-    assert.equal(typeof body.agent_version, 'string', 'agent_version must be a string');
-    assert.equal(typeof body.os_version, 'string', 'os_version must be a string');
-    assert.equal(typeof body.ip_address, 'string', 'ip_address must be a string');
+    assert.equal(typeof body.agentVersion, 'string', 'agentVersion must be a string');
+    assert.equal(typeof body.osVersion, 'string', 'osVersion must be a string');
+    assert.equal(typeof body.ipAddress, 'string', 'ipAddress must be a string');
     await cap.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -152,15 +153,11 @@ test('non-ad agent calls /api/admin/member-servers/self-register on boot with th
 });
 
 test('non-ad agent filter: includes pkg with agent.type === non-ad && platforms includes windows; excludes everything else', async () => {
-  // The filter is a pure function of pkg shape — verify it directly so we
-  // don't need to mock HTTP. The filter predicate is implemented inline in
-  // agent.js; we re-state it here for white-box verification. If agent.js
-  // ever diverges, this test will still pass because we test the documented
-  // predicate, not the runtime path. To prove the runtime path actually
-  // applies the same predicate, we rely on the structural match in the
-  // first two tests.
-  const filter = (pkg) =>
-    pkg.agent?.type === 'non-ad' && (pkg.agent.platforms || []).includes('windows');
+  // Import the SAME predicate the runtime uses (agent/src/agent-filters.js).
+  // If agent.js diverges from this assertion, the import in agent.js will
+  // also diverge — this test exercises the real exported function, not a
+  // local re-statement.
+  const filter = shouldRunPackageForNonAd;
 
   // PASS cases
   assert.equal(filter({ name: 'a', agent: { type: 'non-ad', platforms: ['windows'] } }), true);
@@ -177,12 +174,37 @@ test('non-ad agent filter: includes pkg with agent.type === non-ad && platforms 
   assert.equal(filter({ name: 'a', agent: { type: 'non-ad' } }), false);
 });
 
-test('ad agent filter: rejects non-ad packages (regression — AD flow unchanged)', async () => {
-  // Mirror the same filter shape from the non-AD path. The AD path uses
-  // `/api/agent/packages` (not `/api/admin/agent/packages-for-host`), so
-  // this test is mostly a documentation guard: the AD filter is server-side
-  // (the center decides what packages to expose) — there is no in-agent
-  // filter today and there must remain none after T16.
-  const adFlowUsesServerSideFilter = true;
-  assert.equal(adFlowUsesServerSideFilter, true, 'AD agent must continue to use /api/agent/packages (server-side filter)');
+test('ad agent: legacy DC runtime path still POSTs heartbeats to /api/agent/heartbeat', async () => {
+  // Positive liveness assertion for the AD runtime — verifies the agent
+  // keeps using /api/agent/heartbeat (the endpoint the center routes to the
+  // DC collector flow). Catches a regression where a T16 refactor might
+  // accidentally drop or rename the AD heartbeat URL.
+  const dir = mkdtempSync(join(tmpdir(), 'agent-type-ad-hb-'));
+  try {
+    const cap = await startCaptureServer();
+    const cfgPath = writeAppsettings(dir, {
+      centerUrl: `http://127.0.0.1:${cap.port}`,
+      heartbeatIntervalSeconds: 1
+    });
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, ['agent.js', cfgPath], {
+      cwd: process.cwd(),
+      env: { ...process.env }
+    });
+    // Wait long enough for at least one heartbeat to land (intervalSec=1, plus boot overhead).
+    await new Promise(r => setTimeout(r, 2500));
+    child.kill('SIGTERM');
+    await new Promise(r => child.on('exit', r));
+
+    const heartbeats = cap.requests.filter(r => r.path === '/api/agent/heartbeat');
+    assert.ok(heartbeats.length >= 1, `AD agent MUST call /api/agent/heartbeat; saw ${heartbeats.length}`);
+    // The AD heartbeat should NOT advertise agentType (center treats absence
+    // as 'ad'; see center/src/routes/agent.js:27 — the non-AD extension
+    // branches on agentType === 'non-ad').
+    const body = JSON.parse(heartbeats[0].body);
+    assert.equal(body.agentType, undefined, 'AD heartbeat must not set agentType');
+    await cap.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
