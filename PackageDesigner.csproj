@@ -23,6 +23,7 @@
     <EmbeddedResource Include="Resources\templates\*.zip" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Meziantou.Framework.Win32.CredentialManager" Version="1.2.0" />
     <PackageReference Include="NJsonSchema" Version="11.0.0" />
   </ItemGroup>
 </Project>
