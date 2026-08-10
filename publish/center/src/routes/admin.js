@@ -617,7 +617,8 @@ export function adminRouter({ config, logger }) {
     }
   });
 
-  // DELETE drop; cascades via FK (group_members + member_server_packages)
+  // DELETE drop; cascades to ad_server_group_members via FK ON DELETE CASCADE;
+  // host package bindings on ad_member_server_packages persist (no FK to ad_server_groups)
   r.delete('/api/admin/server-groups/:group_id', auth, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
