@@ -25,20 +25,28 @@
     <Compile Remove="Sandbox/**/*.cs" />
     <Compile Remove="Models/**/*.cs" />
     <Compile Remove="Services/**/*.cs" />
+    <Compile Remove="ViewModels/**/*.cs" />
+    <Compile Remove="Views/**/*.cs" />
     <None Remove="PackageDesigner.App/**" />
     <None Remove="Sandbox/**" />
     <None Remove="Models/**" />
     <None Remove="Services/**" />
+    <None Remove="ViewModels/**" />
+    <None Remove="Views/**" />
     <None Remove="Resources/**" />
     <Content Remove="PackageDesigner.App/**" />
     <Content Remove="Sandbox/**" />
     <Content Remove="Models/**" />
     <Content Remove="Services/**" />
+    <Content Remove="ViewModels/**" />
+    <Content Remove="Views/**" />
     <Content Remove="Resources/**" />
     <EmbeddedResource Remove="PackageDesigner.App/**" />
     <EmbeddedResource Remove="Sandbox/**" />
     <EmbeddedResource Remove="Models/**" />
     <EmbeddedResource Remove="Services/**" />
+    <EmbeddedResource Remove="ViewModels/**" />
+    <EmbeddedResource Remove="Views/**" />
     <EmbeddedResource Remove="Resources/**" />
   </ItemGroup>
   <ItemGroup>
