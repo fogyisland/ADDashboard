@@ -2,11 +2,12 @@ import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
-import { getConfig, setConfig, getConfigMap, restartRequired } from '../services/config.js';
+import { getConfig, setConfig, getConfigMap, restartRequired, putConfig, putConfigWithin } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
+import * as email from '../services/email.js';
 
 // Snake -> camel rename for known columns in admin responses.
 const CAML_MAP = new Map([
@@ -156,22 +157,25 @@ export function adminRouter({ config, logger }) {
   r.put('/api/admin/config', auth, async (req, res) => {
     try {
       const updates = req.body || {};
+      // Strip smtp_password from the audit payload — putConfig already redacts
+      // it on the sys_config_audit row, but the broader audit_logs row would
+      // otherwise carry the cleartext through writeAudit's JSON.stringify.
+      const { smtp_password: _omit, ...safeUpdates } = updates;
+      void _omit;
       const db = getDb();
-      const auditRows = [];
+      let auditCount = 0;
+      let listenPortBumped = false;
       await db.transaction(async (tx) => {
-        const before = await getConfigMap();
-        for (const [k, v] of Object.entries(updates)) {
-          await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [v == null ? null : String(v), k]);
-          const oldVal = before[k] ?? null;
-          const newVal = v == null ? null : String(v);
-          if (String(oldVal) !== String(newVal)) {
-            await tx.execute(db.sql.config.audit.write, [k, oldVal, newVal, req.user?.sub ?? null, 'UPDATE']);
-            auditRows.push({ key: k, old: oldVal, new: newVal });
-          }
-        }
+        // Read the pre-image INSIDE the transaction so the listenPort change
+        // detection uses the same snapshot as the audit row's before-value.
+        const before = {};
+        const { rows } = await tx.query(db.sql.config.getAll);
+        for (const row of rows) before[row.config_key] = row.config_value;
+        const auditRows = await putConfigWithin(tx, updates, req.user?.sub ?? null);
+        auditCount = auditRows.length;
         // listenPort is a boot-time binding — the running process can't pick
         // up a new value without a restart. Bump the pending version hash
-        // inside this same transaction so ConfigView's badge flips to
+        // inside the same transaction so ConfigView's badge flips to
         // "restart required" the moment the save commits (server-side logic,
         // not something the frontend has to remember).
         if ('listenPort' in updates && String(updates.listenPort) !== String(before.listenPort)) {
@@ -180,16 +184,18 @@ export function adminRouter({ config, logger }) {
             db.sql.config.upsert,
             ['center_listen_port_pending_version', pending]
           );
+          listenPortBumped = true;
         }
       });
+      void listenPortBumped;
       await writeAudit({
         userId: req.user?.sub ?? null,
         action: 'update_config',
         target: 'system_config',
-        payload: { ...updates, _audit: auditRows },
+        payload: { ...safeUpdates, auditCount },
         logger
       });
-      res.json({ ok: true, auditCount: auditRows.length });
+      res.json({ ok: true, auditCount });
     } catch (e) {
       logger.error({ err: e }, 'admin config update failed');
       res.status(500).json({ error: 'internal' });
@@ -200,7 +206,18 @@ export function adminRouter({ config, logger }) {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.config.audit.list);
-      res.json(rows.map(camelRow));
+      // Redact smtp_password on the read path: putConfig now stores the masked
+      // sentinel on new audit rows, but rows written before T12 fix1 may still
+      // contain cleartext. Mask both old/new values when the row's config_key
+      // is the SMTP password so the UI never sees cleartext via this endpoint.
+      const MASK = '********';
+      const redacted = rows.map(r => {
+        if (r.config_key === 'smtp_password') {
+          return { ...r, old_value: MASK, new_value: MASK };
+        }
+        return r;
+      });
+      res.json(redacted.map(camelRow));
     } catch (e) {
       logger.error({ err: e }, 'admin config audit list failed');
       res.status(500).json({ error: 'internal' });
@@ -217,16 +234,83 @@ export function adminRouter({ config, logger }) {
         const { rows } = await tx.query(db.sql.config.audit.getById, [auditId]);
         if (rows.length === 0) { result = { notFound: true }; return; }
         const audit = rows[0];
+        // Refuse to roll back a row whose old_value is the masked sentinel —
+        // there's no real password to restore, and writing '********' back
+        // would clobber whatever the operator has since saved.
+        if (audit.config_key === 'smtp_password' && audit.old_value === '********') {
+          result = { error: 'cannot rollback a masked smtp_password audit row' };
+          return;
+        }
         await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [audit.old_value, audit.config_key]);
-        await tx.execute(db.sql.config.audit.write, [audit.config_key, audit.new_value, audit.old_value, req.user?.sub ?? null, 'ROLLBACK']);
-        result = { configKey: audit.config_key, newValue: audit.old_value };
+        // Redact the password on the audit-trail write too — the rollback
+        // row would otherwise carry cleartext if the source row's new_value
+        // was the real password (rows written before T12 fix1).
+        const auditOld = audit.config_key === 'smtp_password' ? '********' : audit.new_value;
+        const auditNew = audit.config_key === 'smtp_password' ? '********' : audit.old_value;
+        await tx.execute(db.sql.config.audit.write, [audit.config_key, auditOld, auditNew, req.user?.sub ?? null, 'ROLLBACK']);
+        // Redact the response payload too so the UI never sees cleartext.
+        const responseValue = audit.config_key === 'smtp_password' ? '********' : audit.old_value;
+        result = { configKey: audit.config_key, newValue: responseValue };
       });
       if (!result) return res.status(500).json({ error: 'internal' });
       if (result.notFound) return res.status(404).json({ error: 'audit not found' });
+      if (result.error) return res.status(400).json({ error: result.error });
       res.json({ ok: true, ...result });
     } catch (e) {
       logger.error({ err: e }, 'admin config rollback failed');
       res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- SMTP test-mail (Task 12) -----
+  // Sends a one-off test email using the currently-saved SMTP config. The
+  // SMTP password is read from system_config directly (NOT through getConfig,
+  // which masks) so the real credential is handed to nodemailer. The real
+  // password must never appear in the response or logs — only the boolean
+  // outcome and an error string on failure.
+  //
+  // Tests pass `_deps.createTransport` (a sinon-style fake transport) so they
+  // can assert the auth.pass value reached the SMTP layer without opening a
+  // real socket. Real callers omit `_deps` and email.send falls back to
+  // nodemailer.createTransport.
+  r.post('/api/admin/config/email/test', auth, async (req, res) => {
+    try {
+      const to = req.body?.to;
+      if (!to) return res.status(400).json({ error: 'to is required' });
+      // Read the SMTP bundle directly without the mask — the test-mail
+      // route needs the real password to authenticate with the SMTP server.
+      // Use the same SQL the masked getConfigAll() would use; bypass the
+      // mask by reading rows directly via db.query.
+      const db = getDb();
+      const { rows } = await db.query(db.sql.config.getAll);
+      const cfg = {};
+      for (const row of rows) cfg[row.config_key] = row.config_value;
+      const smtp = {
+        smtp_host: cfg.smtp_host,
+        smtp_port: Number(cfg.smtp_port) || 25,
+        smtp_secure: String(cfg.smtp_secure) === 'true',
+        smtp_user: cfg.smtp_user,
+        smtp_password: cfg.smtp_password
+      };
+      const _deps = req.app.locals.__smtpTestDeps || undefined;
+      const r2 = await email.send({
+        smtp,
+        from: cfg.smtp_from,
+        to,
+        subject: 'AD Dashboard test',
+        text: 'Test email.'
+      }, _deps);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'test_smtp_email',
+        target: to,
+        payload: { ok: r2.ok, error: r2.error ?? null },
+        logger
+      });
+      res.status(r2.ok ? 200 : 500).json({ ok: r2.ok, error: r2.error ?? null });
+    } catch (e) {
+      logger.error({ err: e }, 'admin email test failed');
+      res.status(500).json({ ok: false, error: e.message });
     }
   });
 
@@ -550,8 +634,241 @@ export function adminRouter({ config, logger }) {
     }
   });
 
+  // ----- Server Groups (Task 7) -----
+  // 9 routes backing the group inventory + bulk install/uninstall/enable/disable
+  // surface. All guarded by [userAuth, requirePerm('admin:users')] per Global
+  // Constraint #4 ("No new permissions"). The built-in 'ad-os-baseline' package
+  // mirrors the per-host DELETE in member-servers.js (memberRouter, Task 6):
+  // every affected host gets an audit row BEFORE the DELETE row lands, so an
+  // audit reader can always correlate a disable_builtin_ad_os_baseline with
+  // the row that disappeared.
+
+  // GET list with member_count
+  r.get('/api/admin/server-groups', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.serverGroups.list);
+      res.json(rows.map(row => ({
+        groupId: row.group_id,
+        groupName: row.group_name,
+        description: row.description,
+        memberCount: Number(row.member_count ?? 0)
+      })));
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // POST create; 409 on duplicate group_name
+  r.post('/api/admin/server-groups', auth, async (req, res) => {
+    const { groupName, description } = req.body || {};
+    if (!groupName) return res.status(400).json({ error: 'groupName is required' });
+    try {
+      const db = getDb();
+      const result = await db.execute(db.sql.serverGroups.create, [groupName, description ?? null]);
+      res.status(201).json({ id: result.insertId });
+    } catch (e) {
+      if (e.code === 'DUP_ENTRY') return res.status(409).json({ error: 'groupName already exists' });
+      logger.error({ err: e }, 'admin server-groups create failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // PUT rename (group_name) / update description; 404 on miss
+  r.put('/api/admin/server-groups/:group_id', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    const { groupName, description } = req.body || {};
+    const fields = [];
+    const params = [];
+    if (groupName !== undefined)   { fields.push('group_name = ?');   params.push(groupName); }
+    if (description !== undefined) { fields.push('description = ?');  params.push(description); }
+    if (fields.length === 0) return res.status(400).json({ error: 'no fields to update' });
+    params.push(id);
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(
+        `UPDATE ad_server_groups SET ${fields.join(', ')} WHERE group_id = ?`,
+        params
+      );
+      if (affectedRows === 0) return res.status(404).json({ error: 'group not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      if (e.code === 'DUP_ENTRY') return res.status(409).json({ error: 'groupName already exists' });
+      logger.error({ err: e }, 'admin server-groups update failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // DELETE drop; cascades to ad_server_group_members via FK ON DELETE CASCADE;
+  // host package bindings on ad_member_server_packages persist (no FK to ad_server_groups)
+  r.delete('/api/admin/server-groups/:group_id', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(db.sql.serverGroups.delete, [id]);
+      if (affectedRows === 0) return res.status(404).json({ error: 'group not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups delete failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // GET members — list hostnames + site for the group
+  r.get('/api/admin/server-groups/:group_id/members', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.serverGroups.listMembers, [id]);
+      res.json(rows);
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups listMembers failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // PUT members — replace (idempotent diff).
+  // Read existing hostnames, compute (added, removed), DELETE removed + INSERT
+  // IGNORE / NOT-EXISTS added. Same hostname set → no-op. Wrapped in a tx so
+  // concurrent updates from another admin can't tear the membership.
+  r.put('/api/admin/server-groups/:group_id/members', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    const raw = req.body?.hostnames;
+    if (!Array.isArray(raw)) return res.status(400).json({ error: 'hostnames array required' });
+    // Dedupe + trim; reject empties so the diff doesn't carry empty strings.
+    const desired = Array.from(new Set(raw.map(h => String(h).trim()).filter(Boolean)));
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.serverGroups.listMembers, [id]);
+      // Group-exists guard: listMembers only returns rows when the group has
+      // members. If we got 0 rows AND the desired set is non-empty, the group
+      // might still exist empty — so verify explicitly before returning 404.
+      if (rows.length === 0 && desired.length === 0) {
+        const found = await db.query(db.sql.serverGroups.findById, [id]);
+        if (found.rows.length === 0) return res.status(404).json({ error: 'group not found' });
+      }
+      const existing = new Set(rows.map(r => r.hostname));
+      const wanted = new Set(desired);
+      const toRemove = [...existing].filter(h => !wanted.has(h));
+      const toAdd = [...wanted].filter(h => !existing.has(h));
+      await db.transaction(async (tx) => {
+        for (const hostname of toRemove) {
+          await tx.execute(db.sql.serverGroups.removeMember, [id, hostname]);
+        }
+        for (const hostname of toAdd) {
+          await tx.execute(db.sql.serverGroups.addMember, [id, hostname]);
+        }
+      });
+      res.json({ ok: true, added: toAdd.length, removed: toRemove.length });
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups replaceMembers failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // POST packages/install — bulk INSERT IGNORE / NOT EXISTS for every member
+  // of the group. The SQL block resolves the membership join, so the handler
+  // stays a single round-trip regardless of group size.
+  r.post('/api/admin/server-groups/:group_id/packages/install', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    const { packageName } = req.body || {};
+    if (!packageName) return res.status(400).json({ error: 'packageName is required' });
+    // confirmDropSchema is accepted for forward compatibility with the
+    // agent-side install handler (which checks the flag before DROP SCHEMA).
+    // The admin route never drops anything, so the flag is informational.
+    try {
+      const db = getDb();
+      // MSSQL bulkInstallPackage takes 4 params (package_name, enabled,
+      // group_id, package_name-again for NOT EXISTS); MySQL takes 3.
+      // We detect dialect to pick the right param count.
+      const params = db.dialect === 'mssql'
+        ? [packageName, 1, id, packageName]
+        : [packageName, 1, id];
+      const { affectedRows } = await db.execute(db.sql.serverGroups.bulkInstallPackage, params);
+      res.json({ ok: true, affected: affectedRows });
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups bulkInstall failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // POST packages/:name/uninstall — bulk DELETE; for built-in ad-os-baseline,
+  // audit one disable_builtin_ad_os_baseline row per affected host BEFORE
+  // the DELETE (matches per-host DELETE in memberRouter).
+  r.post('/api/admin/server-groups/:group_id/packages/:package_name/uninstall', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    const packageName = req.params.package_name;
+    try {
+      const db = getDb();
+      // Snapshot affected hostnames first so we can write audit rows even
+      // if the DELETE itself fails. Read from ad_member_server_packages so
+      // we audit exactly the rows that will be removed (not the entire
+      // group membership — installing without a bind wouldn't produce an
+      // audit row).
+      const { rows } = await db.query(db.sql.serverGroups.listHostsForPackage, [packageName]);
+      const affected = rows.map(r => r.hostname);
+      if (packageName === BUILTIN_AD_OS_BASELINE) {
+        for (const hostname of affected) {
+          await writeAudit({
+            userId: req.user?.sub ?? null,
+            action: 'disable_builtin_ad_os_baseline',
+            target: hostname,
+            payload: { package: BUILTIN_AD_OS_BASELINE, groupId: id, via: 'bulk_uninstall' },
+            logger
+          });
+        }
+      }
+      const { affectedRows } = await db.execute(db.sql.serverGroups.bulkUninstallPackage, [id, packageName]);
+      res.json({ ok: true, removed: affectedRows, audited: affected.length });
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups bulkUninstall failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // POST packages/:name/enable | disable — bulk UPDATE the enabled flag.
+  r.post('/api/admin/server-groups/:group_id/packages/:package_name/enable', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    const packageName = req.params.package_name;
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(db.sql.serverGroups.bulkSetEnabled, [1, id, packageName]);
+      res.json({ ok: true, affected: affectedRows });
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups bulkEnable failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.post('/api/admin/server-groups/:group_id/packages/:package_name/disable', auth, async (req, res) => {
+    const id = Number(req.params.group_id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
+    const packageName = req.params.package_name;
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(db.sql.serverGroups.bulkSetEnabled, [0, id, packageName]);
+      res.json({ ok: true, affected: affectedRows });
+    } catch (e) {
+      logger.error({ err: e }, 'admin server-groups bulkDisable failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }
+
+// Built-in package name constant. Mirrors member-servers.js — disabling it
+// on a per-host or per-group basis is allowed but audited so operators can
+// see who pulled the safety net.
+const BUILTIN_AD_OS_BASELINE = 'ad-os-baseline';
 
 function formatTsForFilename(d) {
   const pad = n => String(n).padStart(2, '0');

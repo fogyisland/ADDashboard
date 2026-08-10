@@ -27,8 +27,11 @@ scripts/cdp-redirect.js
 # Dev-only JWT minter for local smoke tests (hardcoded dev secret; see scripts/sign-token.mjs)
 scripts/sign-token.mjs
 
-# Runtime dev data (SQLite databases, plugin test fixtures)
-data/
+# Runtime dev data (SQLite databases, plugin test fixtures).
+# Narrow from `data/` to `center/data/` so bundled built-in package sources
+# under publish/center/data/packages/<name>/<version>/ remain tracked (their
+# negations are listed below).
+center/data/
 
 # NSSM binary downloaded by Ensure-Nssm.ps1 (auto-installed on first deploy)
 nssm/
@@ -42,6 +45,17 @@ publish/agent/node_modules/
 publish/frontend/node_modules/
 publish/center/dist/
 publish/frontend/dist/
+
+# Built-in package sources (shipped via publish.zip, versioned in git so the
+# seeder has a stable on-disk source — see center/src/services/builtin-packages.js).
+# These are authored source artifacts, not runtime data; the `center/data/`
+# rule above covers only the runtime cache, not these bundled sources.
+!/publish/center/data/packages/ad_os_baseline/
+!/publish/center/data/packages/ad_os_baseline/1.0.0/
+!/publish/center/data/packages/ad_os_baseline/1.0.0/manifest.json
+!/publish/center/data/packages/ad_os_baseline/1.0.0/collect.ps1
+!/publish/center/data/packages/ad_os_baseline/1.0.0/content.sha256
+!/publish/center/data/packages/ad_os_baseline/1.0.0/migrations/001_initial.sql
 
 # Leftover zips dropped in publish/ by user tooling (re-zip if needed)
 publish/db.zip

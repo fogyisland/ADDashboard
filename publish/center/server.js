@@ -14,17 +14,22 @@ import { lockoutRouter } from './src/routes/lockout.js';
 import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
 import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
 import { createProbeLoop } from './src/services/probe.js';
+import { createAlertEvaluationLoop } from './src/services/alert-engine.js';
+import { createEmailDeliveryLoop } from './src/services/email.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { orphanRouter } from './src/packages/orphan-router.js';
 import { packageRunner } from './src/packages/runner.js';
+import { memberRouter } from './src/routes/member-servers.js';
+import { agentPackagesRouter } from './src/routes/agent-packages.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
 import { userAuth } from './src/auth/user-auth.js';
 import { requirePerm } from './src/auth/rbac.js';
-import { getConfig as getSystemConfig } from './src/services/config.js';
+import { getConfig as getSystemConfig, getConfigMap, seedSmtpDefaultsIfMissing } from './src/services/config.js';
 import { writeAudit } from './src/services/audit.js';
+import { seedBuiltinPackages } from './src/services/builtin-packages.js';
 
 // Build the three independent Express apps that server.js will run:
 //   - webApp:        admin UI, auth, dashboard, init routes (existing scope)
@@ -110,8 +115,13 @@ process.on('unhandledRejection', (reason) => {
 // directly via `node server.js [configPath]`. We compare pathToFileURL of
 // process.argv[1] against import.meta.url — works on both Windows
 // (drive-letter case) and POSIX, and is robust to symlinks.
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 const invokedDirectly = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+// ESM has no __dirname — derive it from this file's URL so we can locate
+// sibling directories (publish/ in particular, for the built-in package
+// seed). Used by the seedBuiltinPackages call below.
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 if (invokedDirectly) {
 await ((async () => {
@@ -182,6 +192,34 @@ await ((async () => {
       logger.info({ listenPort, startedVersion }, 'center listenPort bound');
     } catch (err) {
       logger.warn({ err: err.message }, 'listenPort seed/version write failed; continuing with appsettings.json value');
+    }
+    // Seed SMTP + alert-engine defaults (Task 12). Idempotent — only writes
+    // rows that are absent. Done in the same normal-mode gate as the
+    // listenPort seed so the rows exist before the alert/email loops boot.
+    try {
+      await seedSmtpDefaultsIfMissing(logger);
+    } catch (err) {
+      logger.warn({ err: err.message }, 'SMTP defaults seed failed; alerts may be misconfigured');
+    }
+  }
+
+  // Seed built-in packages (e.g. ad_os_baseline) into data/packages/<name>/<version>/
+  // on first normal-mode start. Runs after listenPort seed (same normal-mode
+  // gate `!needsInit && db`) and BEFORE buildServerApps so the agent package
+  // runner can read the cached collect.ps1 from the same path it uses for
+  // downloaded packages. Idempotent: skips if <dataDir>/<name>/<version>/manifest.json
+  // already exists. Source is bundled at publish/center/data/packages/ — that
+  // mirror is maintained by the mirror script (publish/build) so this seeder
+  // stays consistent with what gets shipped in publish.zip.
+  if (!needsInit && db) {
+    try {
+      await seedBuiltinPackages({
+        dataDir: process.cwd() + '/data/packages',
+        sourceDir: __dirname + '/publish/center/data/packages',
+        writeAudit
+      });
+    } catch (err) {
+      logger.warn({ err: err.message }, 'built-in package seed failed; non-AD package runner will skip until next restart');
     }
   }
 
@@ -258,6 +296,24 @@ await ((async () => {
       getLogger: () => logger,
       config: finalConfig
     }));
+    // Member-server admin routes (Task 6): non-AD inventory CRUD, per-host
+    // package bind, and the agent-token self-register endpoint. Lives in a
+    // dedicated memberRouter per the no-cross-pollination rule with DC
+    // agent routes. Mounted on webApp only — heartbeat/report apps stay
+    // focused on DC traffic.
+    app.use(memberRouter({
+      config: finalConfig,
+      logger
+    }));
+    // Agent-facing per-host package list (Task 8: spec §4.3 / global
+    // constraint #14). Sits on the web app so non-AD agents hitting
+    // /api/admin/agent/packages-for-host?hostname=... on heartbeat get the
+    // merged view of global installed_packages + per-host
+    // ad_member_server_packages. Backed by agentToken (NOT userAuth) — the
+    // agent has no JWT, only the agent_token from appsettings.json.
+    app.use(agentPackagesRouter({
+      config: finalConfig
+    }));
   }
 
   if (needsInit) {
@@ -301,6 +357,40 @@ await ((async () => {
       writeAudit
     });
     probeLoop.start();
+
+    // AlertEvaluationLoop + EmailDeliveryLoop (Task 11). Both follow the
+    // createProbeLoop factory shape (Global Constraint #8): start() schedules
+    // a setInterval with an inFlight guard; tick() runs one evaluation pass;
+    // stop() clears the interval and waits for the in-flight tick so
+    // shutdown can't strand a half-written transaction. Both are mounted
+    // AFTER probeLoop because they depend on alert_metrics and outbox tables
+    // (migration 014) being live — probeLoop has no such dependency.
+    // The 10-second floor (Global Constraint #9) is enforced inside the
+    // factory's tick() so the cadence clamp survives caller misconfiguration.
+    const alertLoop = createAlertEvaluationLoop({
+      db: getDb(),
+      getIntervalSeconds: async () => {
+        const v = await getSystemConfig();
+        return Number(v.alert_eval_interval_seconds) || 60;
+      },
+      getSystemConfig,
+      logger
+    });
+    const emailLoop = createEmailDeliveryLoop({
+      db: getDb(),
+      getIntervalSeconds: async () => {
+        const v = await getSystemConfig();
+        return Number(v.alert_eval_interval_seconds) || 60;
+      },
+      // Pass getConfigMap (unmasked) so the loop can hand the real
+      // smtp_password to nodemailer when authenticating. getSystemConfig is
+      // masked on read; using it here would silently authenticate with
+      // '********' once the test-mail route bypass is unified with the
+      // canonical system_config reader (see T12 fix1 I-4).
+      getSystemConfig: getConfigMap
+    });
+    alertLoop.start();
+    emailLoop.start();
     // Bootstrap watchdog: 30 s after startup, if no probe write has landed
     // (all rows still stale or uninitialized), emit a one-shot audit warning
     // so the operator can see in the audit log that the loop is wedged. The
@@ -325,6 +415,8 @@ await ((async () => {
     const shutdown = async (sig) => {
       logger.info({ sig }, 'shutting down');
       try { await probeLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'probe stop failed'); }
+      try { await alertLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'alert loop stop failed'); }
+      try { await emailLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'email loop stop failed'); }
       await closeAll(servers, logger);
       try { await closeWizardFacade(); } catch {}
       try { await close(); } catch {}

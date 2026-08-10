@@ -1,0 +1,30 @@
+{
+  "name": "ad-os-baseline",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "Windows member server baseline metrics (CPU, memory, disks, services, event log).",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 60
+  },
+  "database": {
+    "schemaName": "pkg_ad_os_baseline",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "cpu_pct":    { "type": "double" },
+      "memory_pct": { "type": "double" },
+      "disk_free":  { "type": "json" },
+      "disk_total": { "type": "json" },
+      "services":   { "type": "json" },
+      "events":     { "type": "json" }
+    }
+  }
+}

@@ -39,6 +39,10 @@ const groups = [
     { label: '用户',     path: '/admin/users' },
     { label: '角色',     path: '/admin/roles' }
   ]},
+  { title: '服务器管理', items: [
+    { label: '非 AD 服务器', path: '/admin/member-servers' },
+    { label: '非 AD 服务器组', path: '/admin/server-groups' }
+  ]},
   { title: '目录管理', items: [
     { label: 'AD 站点清单', path: '/admin/sites-catalog' },
     { label: 'AD 域控清单', path: '/admin/dcs-catalog' }

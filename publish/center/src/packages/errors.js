@@ -35,6 +35,7 @@ export class PkgError extends Error {
       PKG_METRIC_KEY_UNKNOWN: 400,
       PKG_METRIC_TYPE_MISMATCH: 400,
       PKG_METRIC_REQUIRED: 400,
+      PKG_BUILTIN: 400,
     }[code] || 500;
   }
 }

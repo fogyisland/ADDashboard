@@ -210,6 +210,19 @@ export const installer = {
   },
 
   async uninstallPackage(db, { name, purgeMetrics, confirmDropSchema }) {
+    // Built-in packages (e.g. `ad-os-baseline`) cannot be uninstalled via
+    // the global uninstall path — the package is part of the center's own
+    // baseline bundle. Per-server unbind via DELETE
+    // /api/admin/member-servers/:hostname/packages/<name> (Task 7) is a
+    // separate code path and remains allowed.
+    const BUILTIN = new Set(['ad-os-baseline']);
+    if (BUILTIN.has(name)) {
+      throw new PkgError(
+        'PKG_BUILTIN',
+        `${name} is a built-in package and cannot be uninstalled`
+      );
+    }
+
     const existing = await installedPackages.get(db, name);
     if (!existing) throw new PkgError('PKG_NOT_FOUND', name);
 

@@ -37,9 +37,33 @@ $comparisons = @(
   @{ left = 'center/src/packages/registry-index.schema.json'; right = 'publish/center/src/packages/registry-index.schema.json' }
   @{ left = 'center/src/packages/registry.js';               right = 'publish/center/src/packages/registry.js' }
   @{ left = 'center/server.js';                              right = 'publish/center/server.js' }
+  # Non-AD server management — Tasks 11 (alert loop + email loop + alert SQL)
+  @{ left = 'center/src/services/alert-engine.js';           right = 'publish/center/src/services/alert-engine.js' }
+  @{ left = 'center/src/services/email.js';                  right = 'publish/center/src/services/email.js' }
+  @{ left = 'center/src/db/sql/alert-events.js';             right = 'publish/center/src/db/sql/alert-events.js' }
+  @{ left = 'center/src/db/sql/alert-outbox.js';             right = 'publish/center/src/db/sql/alert-outbox.js' }
+  @{ left = 'center/src/db/sql/alert-metrics.js';            right = 'publish/center/src/db/sql/alert-metrics.js' }
+  # Non-AD server management — Tasks 11 fix round 1 (F1: add listEnabledForHostWithState SQL block)
+  @{ left = 'center/src/db/sql/alert-rules.js';              right = 'publish/center/src/db/sql/alert-rules.js' }
+  # Non-AD server management — Task 2 (member-servers + server-groups SQL blocks)
+  @{ left = 'center/src/db/sql/member-servers.js';           right = 'publish/center/src/db/sql/member-servers.js' }
+  @{ left = 'center/src/db/sql/server-groups.js';            right = 'publish/center/src/db/sql/server-groups.js' }
+  # Non-AD server management — Task 4 (built-in package seeder)
+  @{ left = 'center/src/services/builtin-packages.js';       right = 'publish/center/src/services/builtin-packages.js' }
+  # Non-AD server management — Task 6 (member-servers route)
+  @{ left = 'center/src/routes/member-servers.js';           right = 'publish/center/src/routes/member-servers.js' }
+  # Non-AD server management — Task 8 (per-host package merge service + agent-facing route)
+  @{ left = 'center/src/services/agent-packages-for-host.js'; right = 'publish/center/src/services/agent-packages-for-host.js' }
+  @{ left = 'center/src/routes/agent-packages.js';           right = 'publish/center/src/routes/agent-packages.js' }
+  # Non-AD server management — Task 12 (SMTP config seed + mask-on-read + test-mail route)
+  @{ left = 'center/src/services/config.js';                 right = 'publish/center/src/services/config.js' }
+  @{ left = 'center/src/routes/admin.js';                    right = 'publish/center/src/routes/admin.js' }
   # Migrations — Task 2
   @{ left = 'db/migrations/013-orphan-schemas.sql';          right = 'publish/db/migrations/013-orphan-schemas.sql' }
   @{ left = 'db/migrations/mssql/013-orphan-schemas.sql';    right = 'publish/db/migrations/mssql/013-orphan-schemas.sql' }
+  # Migrations — Non-AD Task 1 (member servers, packages, alerts)
+  @{ left = 'db/migrations/014-member-servers.sql';          right = 'publish/db/migrations/014-member-servers.sql' }
+  @{ left = 'db/migrations/mssql/014-member-servers.sql';    right = 'publish/db/migrations/mssql/014-member-servers.sql' }
   # Frontend — Tasks 11, 12
   @{ left = 'frontend/src/components/PackageDdlPreviewModal.vue';   right = 'publish/frontend/src/components/PackageDdlPreviewModal.vue' }
   @{ left = 'frontend/src/components/UninstallSchemaConfirmModal.vue'; right = 'publish/frontend/src/components/UninstallSchemaConfirmModal.vue' }
@@ -50,6 +74,17 @@ $comparisons = @(
   # Note: Task 12 modified AdminLayout.vue (not AppLayout.vue as the global
   # plan file claims). Confirmed via `git show --stat 37d1ef7`.
   @{ left = 'frontend/src/components/AdminLayout.vue';       right = 'publish/frontend/src/components/AdminLayout.vue' }
+  # Non-AD server management — Task 15 (EmailConfigCard + ConfigView integration)
+  @{ left = 'frontend/src/views/admin/EmailConfigCard.vue';  right = 'publish/frontend/src/views/admin/EmailConfigCard.vue' }
+  @{ left = 'frontend/src/views/admin/ConfigView.vue';       right = 'publish/frontend/src/views/admin/ConfigView.vue' }
+  # Non-AD server management — Task 16 (agentType switch in agent.js + install-agent.ps1 -AgentType param)
+  @{ left = 'agent/agent.js';                                right = 'publish/agent/agent.js' }
+  @{ left = 'agent/src/config.js';                           right = 'publish/agent/src/config.js' }
+  @{ left = 'agent/src/os-info.js';                          right = 'publish/agent/src/os-info.js' }
+  # Non-AD server management — Task 16 fix round 1 (exported shouldRunPackageForNonAd filter)
+  @{ left = 'agent/src/agent-filters.js';                    right = 'publish/agent/src/agent-filters.js' }
+  # Non-AD server management — Task 16 fix round 2 (extracted scheduler module)
+  @{ left = 'agent/src/non-ad-scheduler.js';                 right = 'publish/agent/src/non-ad-scheduler.js' }
 )
 
 $fail = $false

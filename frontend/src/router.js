@@ -21,6 +21,9 @@ import InitWizardView from './views/init/InitWizardView.vue';
 import MetricDashboardView from './views/MetricDashboardView.vue';
 import ServersOverviewView from './views/ServersOverviewView.vue';
 import LockoutTroubleshootingView from './views/LockoutTroubleshootingView.vue';
+import MemberServersView from './views/admin/MemberServersView.vue';
+import MemberServerDetailView from './views/admin/MemberServerDetailView.vue';
+import ServerGroupsView from './views/admin/ServerGroupsView.vue';
 import NotFoundView from './views/NotFoundView.vue';
 
 const routes = [
@@ -48,6 +51,9 @@ const routes = [
   { path: '/dashboard/metrics', component: MetricDashboardView },
   { path: '/servers-overview', component: ServersOverviewView },
   { path: '/lockout-troubleshooting', component: LockoutTroubleshootingView },
+  { path: '/admin/member-servers', component: MemberServersView, meta: { perm: 'admin:users' } },
+  { path: '/admin/member-servers/:hostname', component: MemberServerDetailView, meta: { perm: 'admin:users' } },
+  { path: '/admin/server-groups', component: ServerGroupsView, meta: { perm: 'admin:users' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

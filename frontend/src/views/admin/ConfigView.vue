@@ -1,6 +1,16 @@
 <template>
   <AdminLayout>
     <h2>系统配置</h2>
+    <!--
+      EmailConfigCard (T15) owns the SMTP / alert-default inputs. The card
+      emits `update` events with {key, value} that the parent merges into the
+      same `current` map so the existing save flow / dirty tracking handles
+      it uniformly with the table rows below.
+    -->
+    <EmailConfigCard
+      :cfg="emailCfg"
+      @update="onCardUpdate"
+    />
     <table class="t">
       <thead><tr><th>键</th><th>值</th><th>说明</th></tr></thead>
       <tbody>
@@ -57,7 +67,22 @@
             <td>{{ row.changedByUsername || row.changedBy || '—' }}</td>
             <td>{{ formatTs(row.changedAt) }}</td>
             <td>
-              <button v-if="row.changeType !== 'ROLLBACK'" class="rollback" @click="onRollbackClick(row)">回滚</button>
+              <!--
+                T12 cross-task concern: every post-fix1 smtp_password audit row
+                is permanently un-rollbackable. The PUT route strips the value
+                from writeAudit, so the audit row only carries `********` for
+                old/new — the backend's rollback endpoint already refuses
+                masked rows (config.js + admin.js), but the UI should mirror
+                that contract so the operator doesn't see a clickable button
+                that 400s.
+              -->
+              <button
+                v-if="row.changeType !== 'ROLLBACK'"
+                class="rollback"
+                :disabled="isUnrollbackable(row)"
+                :title="rollbackTitle(row)"
+                @click="onRollbackClick(row)"
+              >{{ isUnrollbackable(row) ? '不可回滚' : '回滚' }}</button>
             </td>
           </tr>
         </tbody>
@@ -80,6 +105,7 @@ import { ref, onMounted, computed } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import ConfigFieldRow from './ConfigFieldRow.vue';
 import ConfirmDialog from './ConfirmDialog.vue';
+import EmailConfigCard from './EmailConfigCard.vue';
 import { adminApi } from '../../api/admin.js';
 import { useConfigValidation } from '../../composables/useConfigValidation.js';
 import { useDirtyState } from '../../composables/useDirtyState.js';
@@ -139,6 +165,48 @@ const confirmBody = ref('');
 const audit = ref([]);
 const rollbackTarget = ref(null);
 const copyMsg = ref('');
+
+// SMTP keys rendered by EmailConfigCard. Trimmed from the main table so the
+// card can show password masking + test-mail UI; the parent still owns
+// save/dirty lifecycle via the `update` event handler below.
+const SMTP_KEYS = [
+  'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_password',
+  'smtp_from', 'alert_default_to', 'alert_default_cc',
+  'alert_eval_interval_seconds', 'alert_email_max_attempts', 'alert_email_initial_backoff_seconds'
+];
+const SMTP_PASSWORD_MASK = '********';
+
+// Subset of `current` that the EmailConfigCard binds to. Derived so the card
+// always sees the live edited value (it emits update events back into
+// `current`).
+const emailCfg = computed(() => {
+  const out = {};
+  for (const k of SMTP_KEYS) out[k] = current.value[k];
+  return out;
+});
+
+function onCardUpdate({ key, value }) {
+  // Forward the card's edit into the same dirty-tracking map so the main
+  // save button reflects changes from either source.
+  onInput(key, value);
+}
+
+function isUnrollbackable(row) {
+  // smtp_password rows carry `********` on both sides post-T12 fix1; the
+  // backend refuses to roll them back, so the UI mirrors that contract.
+  // Rows where the new value is the mask (cleartext never persisted) are
+  // also un-rollbackable — there's no real value to restore.
+  if (!row) return false;
+  if (row.configKey !== 'smtp_password') return false;
+  if (row.changeType === 'ROLLBACK') return false;
+  if (row.oldValue === SMTP_PASSWORD_MASK) return true;
+  if (row.newValue === SMTP_PASSWORD_MASK) return true;
+  return false;
+}
+
+function rollbackTitle(row) {
+  return isUnrollbackable(row) ? '密码变更不可回滚' : '';
+}
 
 function generateAgentToken() {
   const bytes = new Uint8Array(16);
@@ -275,6 +343,7 @@ button.cancel { background: #0b1220; color: var(--text); }
 .audit th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .audit code { font-size: 12px; color: var(--text); }
 .audit button.rollback { padding: 4px 10px; border: 1px solid #1e293b; background: var(--accent); color: #0b1220; border-radius: 3px; cursor: pointer; font-size: 12px; }
+.audit button.rollback:disabled { background: #1e293b; color: var(--muted); cursor: not-allowed; }
 .token-action { padding: 3px 10px; border: 1px solid #1e293b; background: #0b1220; color: var(--text); border-radius: 3px; cursor: pointer; font-size: 12px; margin-right: 4px; }
 .token-action:hover { background: var(--accent); color: #0b1220; }
 .copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }

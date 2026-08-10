@@ -20,6 +20,13 @@
           "license": { "type": "string" },
           "tags": { "type": "array", "items": { "type": "string" } },
           "icon": { "type": "string" },
+          "agent": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": { "enum": ["ad", "non-ad"], "default": "ad" }
+            }
+          },
           "database": {
             "type": "object",
             "additionalProperties": false,
