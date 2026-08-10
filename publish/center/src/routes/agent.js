@@ -24,7 +24,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     });
 
     r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
-      const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports } = req.body || {};
+      const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname } = req.body || {};
       if (!agentId) return res.status(400).json({ error: 'missing agentId' });
       try {
         const db = getDb();
@@ -44,7 +44,38 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           const portRows = await listPorts();
           const validPortsSet = new Set(portRows.map(p => p.port));
           const { accepted, rejected } = await upsertPortStatuses(agentId, ports, { validPortsSet });
+
+          // Non-AD extension (Task 6 of the non-AD plan): when a non-AD
+          // agent (agentType='non-ad') sends a heartbeat with hostname,
+          // bump last_seen_at on ad_member_servers so the admin "last
+          // seen" panel stays current. Additive — DC agents keep their
+          // existing path untouched. Both code paths still write to
+          // ad_agent_heartbeat (the upsert above). Wrapped in try/catch
+          // so a missing ad_member_servers row (agent hasn't self-
+          // registered yet) does NOT fail the heartbeat — self-register
+          // will create the row on next call. Best-effort, runs before
+          // the early return so non-AD port-status agents still get
+          // their last_seen_at bumped.
+          if (agentType === 'non-ad' && hostname) {
+            try {
+              await db.execute(db.sql.memberServers.touchLastSeen, [hostname]);
+            } catch (e) {
+              logger.warn({ err: e.message, hostname }, 'non-ad touchLastSeen failed (best-effort)');
+            }
+          }
+
           return res.json({ ok: true, accepted, rejected });
+        }
+
+        // No ports payload — same non-AD touchLastSeen extension for the
+        // legacy heartbeat shape. Independent try/catch so it can't
+        // poison the response.
+        if (agentType === 'non-ad' && hostname) {
+          try {
+            await db.execute(db.sql.memberServers.touchLastSeen, [hostname]);
+          } catch (e) {
+            logger.warn({ err: e.message, hostname }, 'non-ad touchLastSeen failed (best-effort)');
+          }
         }
 
         res.json({ ok: true });

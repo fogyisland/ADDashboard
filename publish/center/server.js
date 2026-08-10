@@ -18,6 +18,7 @@ import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { orphanRouter } from './src/packages/orphan-router.js';
 import { packageRunner } from './src/packages/runner.js';
+import { memberRouter } from './src/routes/member-servers.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
@@ -283,6 +284,15 @@ await ((async () => {
       db: pkgDb,
       getLogger: () => logger,
       config: finalConfig
+    }));
+    // Member-server admin routes (Task 6): non-AD inventory CRUD, per-host
+    // package bind, and the agent-token self-register endpoint. Lives in a
+    // dedicated memberRouter per the no-cross-pollination rule with DC
+    // agent routes. Mounted on webApp only — heartbeat/report apps stay
+    // focused on DC traffic.
+    app.use(memberRouter({
+      config: finalConfig,
+      logger
     }));
   }
 
