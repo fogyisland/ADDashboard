@@ -19,6 +19,8 @@
   <ItemGroup>
     <None Remove="Resources\manifest-schema.json" />
     <EmbeddedResource Include="Resources\manifest-schema.json" />
+    <None Remove="Resources\templates\*.zip" />
+    <EmbeddedResource Include="Resources\templates\*.zip" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="NJsonSchema" Version="11.0.0" />
