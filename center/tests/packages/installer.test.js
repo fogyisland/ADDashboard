@@ -289,6 +289,36 @@ describe('installer.uninstallPackage', () => {
     );
   });
 
+  test('rejects ad-os-baseline uninstall with PKG_BUILTIN', async () => {
+    // Even though ad-os-baseline is installed (seeder wrote the row in
+    // T4), the global uninstall path must reject with PKG_BUILTIN.
+    // Per-server unbind via DELETE /api/admin/member-servers/.../packages
+    // is a separate code path and remains allowed.
+    const db = makeMockDb();
+    db._addScript(/FROM installed_packages WHERE name = \?/i, {
+      rows: [{
+        name: 'ad-os-baseline',
+        version: '1.0.0',
+        type: 'ad',
+        manifest_json: JSON.stringify({ name: 'ad-os-baseline', version: '1.0.0', type: 'ad' })
+      }]
+    });
+    await assert.rejects(
+      () => installer.uninstallPackage(db, { name: 'ad-os-baseline' }),
+      (err) => {
+        assert.equal(err.code, 'PKG_BUILTIN');
+        assert.match(err.message, /built-in/);
+        return true;
+      }
+    );
+    // Critical: no DELETE FROM installed_packages should have been issued.
+    const deleteCall = findCall(
+      db._calls,
+      (c) => /DELETE FROM installed_packages WHERE name = \?/i.test(c.sql)
+    );
+    assert.equal(deleteCall, undefined, 'no DELETE FROM installed_packages should be issued for built-in package');
+  });
+
   test('purges metric_* rows + package_runs + cache dir when purgeMetrics=true', async () => {
     const db = makeMockDb();
     // Pre-populate the cache directory so we can verify it gets removed.
