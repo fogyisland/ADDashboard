@@ -25,6 +25,7 @@ import { userAuth } from './src/auth/user-auth.js';
 import { requirePerm } from './src/auth/rbac.js';
 import { getConfig as getSystemConfig } from './src/services/config.js';
 import { writeAudit } from './src/services/audit.js';
+import { seedBuiltinPackages } from './src/services/builtin-packages.js';
 
 // Build the three independent Express apps that server.js will run:
 //   - webApp:        admin UI, auth, dashboard, init routes (existing scope)
@@ -110,8 +111,13 @@ process.on('unhandledRejection', (reason) => {
 // directly via `node server.js [configPath]`. We compare pathToFileURL of
 // process.argv[1] against import.meta.url — works on both Windows
 // (drive-letter case) and POSIX, and is robust to symlinks.
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 const invokedDirectly = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+// ESM has no __dirname — derive it from this file's URL so we can locate
+// sibling directories (publish/ in particular, for the built-in package
+// seed). Used by the seedBuiltinPackages call below.
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 if (invokedDirectly) {
 await ((async () => {
@@ -182,6 +188,26 @@ await ((async () => {
       logger.info({ listenPort, startedVersion }, 'center listenPort bound');
     } catch (err) {
       logger.warn({ err: err.message }, 'listenPort seed/version write failed; continuing with appsettings.json value');
+    }
+  }
+
+  // Seed built-in packages (e.g. ad_os_baseline) into data/packages/<name>/<version>/
+  // on first normal-mode start. Runs after listenPort seed (same normal-mode
+  // gate `!needsInit && db`) and BEFORE buildServerApps so the agent package
+  // runner can read the cached collect.ps1 from the same path it uses for
+  // downloaded packages. Idempotent: skips if <dataDir>/<name>/<version>/manifest.json
+  // already exists. Source is bundled at publish/center/data/packages/ — that
+  // mirror is maintained by the mirror script (publish/build) so this seeder
+  // stays consistent with what gets shipped in publish.zip.
+  if (!needsInit && db) {
+    try {
+      await seedBuiltinPackages({
+        dataDir: process.cwd() + '/data/packages',
+        sourceDir: __dirname + '/publish/center/data/packages',
+        writeAudit
+      });
+    } catch (err) {
+      logger.warn({ err: err.message }, 'built-in package seed failed; non-AD package runner will skip until next restart');
     }
   }
 
