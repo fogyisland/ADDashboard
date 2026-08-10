@@ -76,26 +76,111 @@
         <p v-else class="muted">未绑定任何包 — 内置 ad-os-baseline 会由 agent self-register 自动加入</p>
       </section>
 
-      <!-- §6.3 3. 告警规则 + 4. 活动告警/历史 + 5. 基线指标 -->
-      <!-- T13 ships placeholders; the real widgets land in T14 (RuleEditorDialog)
-           and T11's per-host alert hooks (which already exist backend-side). -->
+      <!-- §6.3 3. 告警规则 (filled in T14) -->
       <section class="card">
-        <h3>告警规则</h3>
-        <p class="muted">规则编辑器在 T14 交付 — 当前可见 <code>alert_rules</code> 规则数: <b>{{ alertRuleCount }}</b>。编辑入口即将上线。</p>
+        <div class="card-head">
+          <h3>告警规则 ({{ rules.length }})</h3>
+          <button class="primary" @click="openNewRule">+ 新建规则</button>
+        </div>
+        <table class="t" v-if="rules.length">
+          <thead>
+            <tr>
+              <th>规则名</th>
+              <th>持续 / 冷却</th>
+              <th>收件人</th>
+              <th>启用</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in rules" :key="r.rule_id">
+              <td>{{ r.name }}</td>
+              <td><small>{{ r.for_minutes }}m / {{ r.cooldown_minutes }}m</small></td>
+              <td><small>{{ r.recipients || '默认' }}</small></td>
+              <td>
+                <span :class="['pill', r.enabled ? 'on' : 'off']">{{ r.enabled ? '是' : '否' }}</span>
+              </td>
+              <td>
+                <button @click="onDeleteRule(r)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="muted">尚未配置告警规则 — 点击"新建规则"开始</p>
       </section>
 
+      <!-- §6.3 4. 活动告警 / 历史 (filled in T14) -->
       <section class="card">
-        <h3>活动告警 / 历史</h3>
-        <p class="muted">告警事件展示在 T14 落地 — 后端 <code>alert_events</code> 已可写入。</p>
+        <div class="card-head">
+          <h3>活动告警 / 历史</h3>
+          <div class="tab-toggle">
+            <button :class="{ on: alertTab === 'active' }" @click="alertTab = 'active'">
+              活动 ({{ activeAlerts.length }})
+            </button>
+            <button :class="{ on: alertTab === 'history' }" @click="alertTab = 'history'">
+              历史 ({{ historicalAlerts.length }})
+            </button>
+          </div>
+        </div>
+        <table class="t" v-if="displayedAlerts.length">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>事件</th>
+              <th>详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in displayedAlerts" :key="e.id">
+              <td><small>{{ fmt(e.created_at) }}</small></td>
+              <td>
+                <span :class="['pill', e.event === 'fired' ? 'on' : 'off']">{{ e.event }}</span>
+              </td>
+              <td><small>{{ e.detail || '-' }}</small></td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="muted">
+          {{ alertTab === 'active' ? '无活动告警' : '无历史告警事件' }}
+        </p>
       </section>
 
+      <!-- §6.3 5. 基线指标 (filled in T14) -->
       <section class="card">
         <h3>基线指标</h3>
-        <p class="muted">读取自 <code>pkg_ad_os_baseline.metrics</code> 最近一次上报 — 当前无可视化数据展示组件。CPU / 内存 / 磁盘 free 将在该 tab 内 ECharts 网格渲染 (T14 范围)。</p>
+        <div v-if="!baseline" class="muted">尚无基线数据 — 等待 agent 上报 metrics 后显示</div>
+        <div v-else class="baseline-tiles">
+          <div class="tile">
+            <div class="tile-k">CPU 使用率</div>
+            <div class="tile-v">{{ pctOrDash(baseline.cpu_pct) }}%</div>
+          </div>
+          <div class="tile">
+            <div class="tile-k">内存使用率</div>
+            <div class="tile-v">{{ pctOrDash(baseline.memory_pct) }}%</div>
+          </div>
+          <div class="tile">
+            <div class="tile-k">磁盘剩余 (总览)</div>
+            <div class="tile-v">{{ diskFreeSummary(baseline.disk_free) }}</div>
+          </div>
+          <div class="tile">
+            <div class="tile-k">采集时间</div>
+            <div class="tile-v">{{ fmt(baseline.ts) }}</div>
+          </div>
+          <div class="tile wide" v-if="baseline.services">
+            <div class="tile-k">服务列表</div>
+            <div class="tile-v">
+              <ul class="svc-list">
+                <li v-for="(v, k) in baseline.services" :key="k">
+                  <code>{{ k }}</code>: {{ v }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
       </section>
     </template>
 
-    <!-- 简单 Add Package dialog: 输入包名(自由文本,backend 接受任意) -->
+    <!-- Add Package dialog -->
     <div v-if="addOpen" class="modal-bg" @click.self="addOpen = false">
       <div class="modal">
         <h3>添加包绑定</h3>
@@ -116,6 +201,14 @@
         </div>
       </div>
     </div>
+
+    <!-- Rule editor dialog -->
+    <RuleEditorDialog
+      v-if="ruleEditorOpen"
+      :rule="{ hostname }"
+      @save="onRuleSaved"
+      @cancel="ruleEditorOpen = false"
+    />
   </AdminLayout>
 </template>
 
@@ -123,6 +216,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import AdminLayout from '../../components/AdminLayout.vue';
+import RuleEditorDialog from './RuleEditorDialog.vue';
 import { adminApi } from '../../api/admin.js';
 
 const route = useRoute();
@@ -130,7 +224,9 @@ const hostname = computed(() => decodeURIComponent(String(route.params.hostname 
 
 const server = ref(null);
 const packages = ref([]);
-const alertRuleCount = ref(0);
+const rules = ref([]);
+const alerts = ref([]);
+const baseline = ref(null);
 const loading = ref(true);
 const loadError = ref('');
 
@@ -139,6 +235,13 @@ const addPkgName = ref('');
 const addPkgEnabled = ref(true);
 const addBusy = ref(false);
 const addError = ref('');
+
+const ruleEditorOpen = ref(false);
+const alertTab = ref('active'); // 'active' | 'history'
+
+const activeAlerts = computed(() => alerts.value.filter((e) => e.event === 'fired'));
+const historicalAlerts = computed(() => alerts.value); // history = everything (capped 200 server-side)
+const displayedAlerts = computed(() => alertTab.value === 'active' ? activeAlerts.value : historicalAlerts.value);
 
 async function load() {
   loading.value = true;
@@ -149,20 +252,15 @@ async function load() {
     if (server.value) {
       const pkgs = await adminApi.listMemberServerPackages(hostname.value);
       packages.value = pkgs.data?.items || [];
-      // alertRuleCount is informational only — backend has a list route but the
-      // editor lands in T14. We read it from a generic list call if available;
-      // if the endpoint isn't on adminApi yet, just leave 0.
-      try {
-        const ar = await fetch(`${(import.meta?.env?.BASE_URL || '/')}api/admin/alert-rules?hostname=${encodeURIComponent(hostname.value)}`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem('ad_token') || ''}` }
-        });
-        if (ar.ok) {
-          const j = await ar.json();
-          alertRuleCount.value = (j.items || j || []).length;
-        }
-      } catch {
-        alertRuleCount.value = 0;
-      }
+      // T14: load rules + alerts + baseline in parallel (each fails independently).
+      const [r, a, b] = await Promise.all([
+        adminApi.listAlertRules(hostname.value).catch(() => ({ data: { items: [] } })),
+        adminApi.listMemberServerAlerts(hostname.value).catch(() => ({ data: { items: [] } })),
+        adminApi.getMemberServerBaseline(hostname.value).catch(() => ({ data: { latest: null } }))
+      ]);
+      rules.value = r.data?.items || [];
+      alerts.value = a.data?.items || [];
+      baseline.value = b.data?.latest || null;
     }
   } catch (e) {
     loadError.value = e.response?.data?.error || e.message || String(e);
@@ -207,7 +305,37 @@ async function submitAddPackage() {
   }
 }
 
+function openNewRule() { ruleEditorOpen.value = true; }
+
+async function onRuleSaved() {
+  ruleEditorOpen.value = false;
+  await load();
+}
+
+async function onDeleteRule(r) {
+  if (!confirm(`删除告警规则 "${r.name}"? 已触发的 alert_events 也会通过 FK CASCADE 清掉。`)) return;
+  try {
+    await adminApi.deleteAlertRule(r.rule_id);
+    await load();
+  } catch (e) {
+    loadError.value = e.response?.data?.error || e.message || String(e);
+  }
+}
+
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function pctOrDash(v) {
+  if (v === null || v === undefined) return '-';
+  return Number(v).toFixed(1);
+}
+function diskFreeSummary(diskFree) {
+  if (!diskFree || typeof diskFree !== 'object') return '-';
+  const keys = Object.keys(diskFree);
+  if (!keys.length) return '-';
+  // Take first drive as a summary; full per-drive breakdown would be a future tile.
+  const first = diskFree[keys[0]];
+  if (typeof first === 'number') return `${keys[0]}: ${first} MB`;
+  return `${keys.length} 个盘`;
+}
 
 onMounted(load);
 </script>
@@ -240,4 +368,16 @@ small { color: var(--muted); }
 .row input { flex: 1; background: #0b1220; color: var(--text); border: 1px solid #1e293b; padding: 6px 8px; border-radius: 3px; }
 .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .primary { background: var(--accent); color: white; }
+.tab-toggle button { background: var(--panel); color: var(--text); border: 1px solid #1e293b; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+.tab-toggle button:first-child { border-radius: 3px 0 0 3px; }
+.tab-toggle button:last-child { border-radius: 0 3px 3px 0; border-left: 0; }
+.tab-toggle button.on { background: var(--accent); color: #0b1220; }
+.baseline-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tile { background: #0b1220; border: 1px solid #1e293b; border-radius: 3px; padding: 8px 12px; }
+.tile.wide { grid-column: 1 / -1; }
+.tile-k { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.tile-v { color: var(--text); font-size: 16px; font-weight: 600; }
+.svc-list { list-style: none; padding: 0; margin: 0; font-size: 12px; font-weight: 400; }
+.svc-list li { padding: 2px 0; border-bottom: 1px solid #1e293b; }
+.svc-list li:last-child { border-bottom: none; }
 </style>

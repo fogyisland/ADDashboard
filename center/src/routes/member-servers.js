@@ -17,6 +17,11 @@
 //           - for ad-os-baseline: audit disable_builtin_ad_os_baseline BEFORE the DELETE
 //           - other packages: DELETE only
 //   POST   /api/admin/member-servers/self-register          (agent_token; upsert discovered_via='self-register')
+//   GET    /api/admin/member-servers/:hostname/alerts        (alert_events.listByHostname, capped 200)
+//   GET    /api/admin/member-servers/:hostname/baseline      (alert-metrics.getLatest — single row or null)
+//   GET    /api/admin/alert-rules                            (list, optional ?hostname=)
+//   POST   /api/admin/alert-rules                            (create — name + condition JSON + for_minutes + cooldown_minutes + recipients)
+//   DELETE /api/admin/alert-rules/:rule_id                   (drop)
 //
 // Auth: admin routes use [userAuth, requirePerm('admin:users')] (matches
 // all other admin routers). self-register uses [agentToken] — agents
@@ -190,6 +195,98 @@ export function memberRouter({ config, logger }) {
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'member-server package delete failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- PER-HOST ALERT EVENTS (cap 200 for the UI history panel) -----
+  // Reuses db.sql.alertEvents.listByHostname which already orders by
+  // created_at DESC. The frontend detail view paginates client-side by
+  // slicing the items array, so LIMIT 200 is fine for v1.
+  r.get('/api/admin/member-servers/:hostname/alerts', ...auth, async (req, res) => {
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.alertEvents.listByHostname, [req.params.hostname]);
+      res.json({ items: rows.slice(0, 200) });
+    } catch (e) {
+      logger.error({ err: e }, 'member-server alerts list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- PER-HOST BASELINE METRICS (single latest row or null) -----
+  // Reuses db.sql.alertMetrics.getLatest. The frontend renders this as a
+  // tile grid (CPU / memory / disk free) for the baseline tab.
+  r.get('/api/admin/member-servers/:hostname/baseline', ...auth, async (req, res) => {
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.alertMetrics.getLatest, [req.params.hostname]);
+      res.json({ latest: rows[0] || null });
+    } catch (e) {
+      logger.error({ err: e }, 'member-server baseline lookup failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // ----- ALERT RULES (list / create / delete) -----
+  // Optional ?hostname= filter; the RuleEditorDialog only ever passes a
+  // hostname, but the endpoint accepts no-filter too for future "all rules"
+  // admin pages. Reuses db.sql.alertRules.list / listForHost from the
+  // registry — no inline SQL.
+  r.get('/api/admin/alert-rules', ...auth, async (req, res) => {
+    try {
+      const db = getDb();
+      const sql = req.query.hostname
+        ? db.sql.alertRules.listForHost
+        : db.sql.alertRules.list;
+      const params = req.query.hostname ? [req.query.hostname] : [];
+      const { rows } = await db.query(sql, params);
+      res.json({ items: rows });
+    } catch (e) {
+      logger.error({ err: e }, 'alert-rules list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // Create a rule. RuleEditorDialog sends { hostname, name, condition,
+  // for_minutes, cooldown_minutes, recipients }. `condition` is a JSON
+  // {op, children} tree stringified at the boundary. The backend stores
+  // it verbatim into the `condition` TEXT/NVARCHAR(MAX) column. for_minutes
+  // and cooldown_minutes default to 5/30 if missing.
+  r.post('/api/admin/alert-rules', ...auth, async (req, res) => {
+    const { hostname, name, condition, for_minutes = 5, cooldown_minutes = 30, recipients = null, enabled = 1 } = req.body || {};
+    if (!hostname || !name) return res.status(400).json({ error: 'hostname + name required' });
+    if (condition == null) return res.status(400).json({ error: 'condition required' });
+    try {
+      const db = getDb();
+      const conditionStr = typeof condition === 'string' ? condition : JSON.stringify(condition);
+      await db.execute(db.sql.alertRules.create, [
+        hostname, name, conditionStr, for_minutes, cooldown_minutes, recipients, enabled ? 1 : 0
+      ]);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'create_alert_rule',
+        target: hostname,
+        payload: { hostname, name, for_minutes, cooldown_minutes, enabled: enabled ? 1 : 0 },
+        logger
+      });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'alert-rule create failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.delete('/api/admin/alert-rules/:rule_id', ...auth, async (req, res) => {
+    const ruleId = Number(req.params.rule_id);
+    if (!Number.isFinite(ruleId)) return res.status(400).json({ error: 'rule_id must be numeric' });
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(db.sql.alertRules.delete, [ruleId]);
+      if (affectedRows === 0) return res.status(404).json({ error: 'rule not found' });
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'alert-rule delete failed');
       res.status(500).json({ error: 'internal' });
     }
   });
