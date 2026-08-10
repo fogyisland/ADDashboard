@@ -61,12 +61,12 @@ test('alertEvents (mysql): insert -> findById -> listByRule -> listByHostname ->
       ruleId = 999999 + Math.floor(Math.random() * 1000);
 
       // INSERT event 1
-      let r = await db.execute(m.insert, [ruleId, hostname, 'fired', 'cpu > 90 for 5m']);
+      let r = await db.execute(m.insert, [ruleId, 'fired', hostname, 'cpu > 90 for 5m']);
       assert.ok(r.insertId != null, 'insert should yield insertId');
       const eid1 = r.insertId;
 
       // INSERT event 2 (same rule, different event type)
-      r = await db.execute(m.insert, [ruleId, hostname, 'recovered', 'cpu < 50 for 1m']);
+      r = await db.execute(m.insert, [ruleId, 'recovered', hostname, 'cpu < 50 for 1m']);
       assert.ok(r.insertId != null);
       const eid2 = r.insertId;
 
@@ -125,12 +125,12 @@ test('alertEvents (mssql): insert -> findById -> listByRule -> listByHostname ->
       ruleId = 999999 + Math.floor(Math.random() * 1000);
 
       // INSERT event 1
-      let r = await db.execute(m.insert, [ruleId, hostname, 'fired', 'cpu > 90 for 5m']);
+      let r = await db.execute(m.insert, [ruleId, 'fired', hostname, 'cpu > 90 for 5m']);
       assert.ok(r.insertId != null, 'insert should yield insertId (SCOPE_IDENTITY)');
       const eid1 = r.insertId;
 
       // INSERT event 2
-      r = await db.execute(m.insert, [ruleId, hostname, 'recovered', 'cpu < 50 for 1m']);
+      r = await db.execute(m.insert, [ruleId, 'recovered', hostname, 'cpu < 50 for 1m']);
       assert.ok(r.insertId != null);
       const eid2 = r.insertId;
 

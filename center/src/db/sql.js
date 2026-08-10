@@ -11,6 +11,7 @@ import { serverGroups } from './sql/server-groups.js';
 import { alertRules } from './sql/alert-rules.js';
 import { alertEvents } from './sql/alert-events.js';
 import { alertOutbox } from './sql/alert-outbox.js';
+import { alertMetrics } from './sql/alert-metrics.js';
 
 const VARIANTS = {
   mysql: {
@@ -322,7 +323,8 @@ const VARIANTS = {
     serverGroups: serverGroups.mysql,
     alertRules: alertRules.mysql,
     alertEvents: alertEvents.mysql,
-    alertOutbox: alertOutbox.mysql
+    alertOutbox: alertOutbox.mysql,
+    alertMetrics: alertMetrics.mysql
   },
   mssql: {
     health: {
@@ -661,7 +663,8 @@ const VARIANTS = {
     serverGroups: serverGroups.mssql,
     alertRules: alertRules.mssql,
     alertEvents: alertEvents.mssql,
-    alertOutbox: alertOutbox.mssql
+    alertOutbox: alertOutbox.mssql,
+    alertMetrics: alertMetrics.mssql
   }
 };
 

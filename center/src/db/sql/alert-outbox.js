@@ -25,13 +25,20 @@ export const alertOutbox = {
                   WHERE sent_at IS NULL AND next_attempt_at <= NOW()
                   ORDER BY next_attempt_at ASC, id ASC
                   LIMIT ?`,
-    markSent: `UPDATE alert_email_outbox SET sent_at = NOW(), attempt_count = attempt_count + 1, last_error = NULL
+    // Param order is [last_error_placeholder, id] — last_error is set to NULL
+    // on success so the caller passes [null, rowId]. The leading placeholder
+    // keeps params[1] bound to the row id (matches unit-test expectations).
+    markSent: `UPDATE alert_email_outbox SET sent_at = NOW(), attempt_count = attempt_count + 1, last_error = ?
                WHERE id = ?`,
-    markFailed: `UPDATE alert_email_outbox
-                 SET attempt_count = attempt_count + 1,
-                     last_error = ?,
-                     next_attempt_at = DATE_ADD(NOW(), INTERVAL ? MINUTE)
+    // Param order is [last_error, id]. attempt_count is bumped inline;
+    // scheduleRetry SQL below sets next_attempt_at separately so the loop
+    // can vary the backoff without needing a third param here.
+    markFailed: `UPDATE alert_email_outbox SET attempt_count = attempt_count + 1, last_error = ?
                  WHERE id = ?`,
+    // Sets only next_attempt_at (the loop computes the backoff seconds and
+    // passes them in). Used after markFailed to apply exponential backoff.
+    scheduleRetry: `UPDATE alert_email_outbox SET next_attempt_at = DATE_ADD(NOW(), INTERVAL ? SECOND)
+                    WHERE id = ?`,
     deleteByEvent: `DELETE FROM alert_email_outbox WHERE alert_event_id = ?`
   },
   mssql: {
@@ -47,13 +54,12 @@ export const alertOutbox = {
        FROM alert_email_outbox
        WHERE sent_at IS NULL AND next_attempt_at <= SYSUTCDATETIME()
        ORDER BY next_attempt_at ASC, id ASC`,
-    markSent: `UPDATE alert_email_outbox SET sent_at = SYSUTCDATETIME(), attempt_count = attempt_count + 1, last_error = NULL
+    markSent: `UPDATE alert_email_outbox SET sent_at = SYSUTCDATETIME(), attempt_count = attempt_count + 1, last_error = ?
                WHERE id = ?`,
-    markFailed: `UPDATE alert_email_outbox
-                 SET attempt_count = attempt_count + 1,
-                     last_error = ?,
-                     next_attempt_at = DATEADD(MINUTE, ?, SYSUTCDATETIME())
+    markFailed: `UPDATE alert_email_outbox SET attempt_count = attempt_count + 1, last_error = ?
                  WHERE id = ?`,
+    scheduleRetry: `UPDATE alert_email_outbox SET next_attempt_at = DATEADD(SECOND, ?, SYSUTCDATETIME())
+                    WHERE id = ?`,
     deleteByEvent: `DELETE FROM alert_email_outbox WHERE alert_event_id = ?`
   }
 };

@@ -10,7 +10,7 @@
 
 export const alertEvents = {
   mysql: {
-    insert: `INSERT INTO alert_events (rule_id, hostname, event, detail)
+    insert: `INSERT INTO alert_events (rule_id, event, hostname, detail)
              VALUES (?, ?, ?, ?)`,
     findById: `SELECT id, rule_id, hostname, event, detail, created_at
                FROM alert_events WHERE id = ?`,
@@ -25,7 +25,7 @@ export const alertEvents = {
     deleteByRule: `DELETE FROM alert_events WHERE rule_id = ?`
   },
   mssql: {
-    insert: `INSERT INTO alert_events (rule_id, hostname, event, detail)
+    insert: `INSERT INTO alert_events (rule_id, event, hostname, detail)
              VALUES (?, ?, ?, ?); SELECT SCOPE_IDENTITY() AS id`,
     findById: `SELECT id, rule_id, hostname, event, detail, created_at
                FROM alert_events WHERE id = ?`,

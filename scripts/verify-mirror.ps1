@@ -37,6 +37,12 @@ $comparisons = @(
   @{ left = 'center/src/packages/registry-index.schema.json'; right = 'publish/center/src/packages/registry-index.schema.json' }
   @{ left = 'center/src/packages/registry.js';               right = 'publish/center/src/packages/registry.js' }
   @{ left = 'center/server.js';                              right = 'publish/center/server.js' }
+  # Non-AD server management — Tasks 11 (alert loop + email loop + alert SQL)
+  @{ left = 'center/src/services/alert-engine.js';           right = 'publish/center/src/services/alert-engine.js' }
+  @{ left = 'center/src/services/email.js';                  right = 'publish/center/src/services/email.js' }
+  @{ left = 'center/src/db/sql/alert-events.js';             right = 'publish/center/src/db/sql/alert-events.js' }
+  @{ left = 'center/src/db/sql/alert-outbox.js';             right = 'publish/center/src/db/sql/alert-outbox.js' }
+  @{ left = 'center/src/db/sql/alert-metrics.js';            right = 'publish/center/src/db/sql/alert-metrics.js' }
   # Migrations — Task 2
   @{ left = 'db/migrations/013-orphan-schemas.sql';          right = 'publish/db/migrations/013-orphan-schemas.sql' }
   @{ left = 'db/migrations/mssql/013-orphan-schemas.sql';    right = 'publish/db/migrations/mssql/013-orphan-schemas.sql' }

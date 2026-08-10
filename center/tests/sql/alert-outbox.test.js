@@ -22,15 +22,20 @@ test('alertOutbox: listPending (MySQL) scans sent_at IS NULL and next_attempt_at
 test('alertOutbox: markSent (MySQL) sets sent_at=NOW(), bumps attempt_count, clears last_error', () => {
   assert.match(alertOutbox.mysql.markSent, /SET sent_at = NOW\(\)/i);
   assert.match(alertOutbox.mysql.markSent, /attempt_count = attempt_count \+ 1/);
-  assert.match(alertOutbox.mysql.markSent, /last_error = NULL/);
+  // markSent uses a placeholder for last_error (=NULL at call time) so the
+  // loop's passing [null, rowId] keeps params[1] bound to rowId (matches the
+  // email-outbox-loop unit-test expectations).
+  assert.match(alertOutbox.mysql.markSent, /last_error = \?/);
 });
 
-test('alertOutbox: markFailed (MySQL) bumps attempt_count, sets last_error, schedules next_attempt_at via DATE_ADD', () => {
+test('alertOutbox: markFailed (MySQL) bumps attempt_count, sets last_error; scheduleRetry applies backoff', () => {
   assert.match(alertOutbox.mysql.markFailed, /attempt_count = attempt_count \+ 1/);
   assert.match(alertOutbox.mysql.markFailed, /last_error = \?/);
-  assert.match(alertOutbox.mysql.markFailed, /DATE_ADD\(NOW\(\), INTERVAL \? MINUTE\)/);
-  // 3 placeholders: last_error, minutes, id
-  assert.strictEqual((alertOutbox.mysql.markFailed.match(/\?/g) || []).length, 3);
+  // markFailed has [last_error, id] (2 params); scheduleRetry is a separate
+  // helper that applies the backoff next_attempt_at.
+  assert.strictEqual((alertOutbox.mysql.markFailed.match(/\?/g) || []).length, 2);
+  assert.match(alertOutbox.mysql.scheduleRetry, /DATE_ADD\(NOW\(\), INTERVAL \? SECOND\)/);
+  assert.strictEqual((alertOutbox.mysql.scheduleRetry.match(/\?/g) || []).length, 2);
 });
 
 test('alertOutbox: deleteByEvent uses alert_event_id (the log key, not the outbox id)', () => {
@@ -48,10 +53,12 @@ test('alertOutbox: listPending (MSSQL) is a function that interpolates the integ
   assert.match(sql, /next_attempt_at <= SYSUTCDATETIME\(\)/);
 });
 
-test('alertOutbox: markFailed (MSSQL) uses DATEADD(MINUTE, ?, SYSUTCDATETIME())', () => {
+test('alertOutbox: markFailed (MSSQL) bumps attempt_count, sets last_error; scheduleRetry applies backoff', () => {
   assert.match(alertOutbox.mssql.markFailed, /attempt_count = attempt_count \+ 1/);
-  assert.match(alertOutbox.mssql.markFailed, /DATEADD\(MINUTE, \?, SYSUTCDATETIME\(\)\)/);
-  assert.strictEqual((alertOutbox.mssql.markFailed.match(/\?/g) || []).length, 3);
+  assert.match(alertOutbox.mssql.markFailed, /last_error = \?/);
+  assert.strictEqual((alertOutbox.mssql.markFailed.match(/\?/g) || []).length, 2);
+  assert.match(alertOutbox.mssql.scheduleRetry, /DATEADD\(SECOND, \?, SYSUTCDATETIME\(\)\)/);
+  assert.strictEqual((alertOutbox.mssql.scheduleRetry.match(/\?/g) || []).length, 2);
 });
 
 test('alertOutbox: markSent (MSSQL) uses SYSUTCDATETIME() for sent_at', () => {
@@ -129,8 +136,12 @@ test('alertOutbox (mysql): enqueue -> findById -> listPending -> markFailed -> m
       assert.ok(pending.rows.some(rw => rw.id === outId),
         'listPending must include our pending outbox row');
 
-      // markFailed: attempt_count -> 1, last_error set, next_attempt_at pushed 5 min out
-      r = await db.execute(m.markFailed, [outId, 'SMTP connection refused', 5]);
+      // markFailed: attempt_count -> 1, last_error set; scheduleRetry applies backoff
+      r = await db.execute(m.markFailed, ['SMTP connection refused', outId]);
+      assert.strictEqual(r.affectedRows, 1);
+      // scheduleRetry pushes next_attempt_at forward (Task 11 design: backoff
+      // is set via a separate UPDATE so the loop can vary seconds per attempt).
+      r = await db.execute(m.scheduleRetry, [300, outId]); // 5 minutes = 300 seconds
       assert.strictEqual(r.affectedRows, 1);
       const afterFail = await db.query(m.findById, [outId]);
       assert.strictEqual(Number(afterFail.rows[0].attempt_count), 1);
@@ -138,7 +149,8 @@ test('alertOutbox (mysql): enqueue -> findById -> listPending -> markFailed -> m
       assert.ok(afterFail.rows[0].next_attempt_at, 'next_attempt_at should be populated');
 
       // markSent: stamps sent_at, attempt_count += 1, last_error cleared
-      r = await db.execute(m.markSent, [outId]);
+      // markSent takes [null_placeholder, id] so the caller passes [null, rowId].
+      r = await db.execute(m.markSent, [null, outId]);
       assert.strictEqual(r.affectedRows, 1);
       const afterSent = await db.query(m.findById, [outId]);
       assert.ok(afterSent.rows[0].sent_at, 'sent_at should be populated');
@@ -206,16 +218,18 @@ test('alertOutbox (mssql): enqueue -> findById -> listPending -> markFailed -> m
       assert.ok(pending.rows.some(rw => rw.id === outId),
         'listPending must include our pending outbox row');
 
-      // markFailed
-      r = await db.execute(m.markFailed, [outId, 'SMTP connection refused', 5]);
+      // markFailed: attempt_count -> 1, last_error set; scheduleRetry applies backoff
+      r = await db.execute(m.markFailed, ['SMTP connection refused', outId]);
+      assert.strictEqual(r.affectedRows, 1);
+      r = await db.execute(m.scheduleRetry, [300, outId]); // 5 minutes = 300 seconds
       assert.strictEqual(r.affectedRows, 1);
       const afterFail = await db.query(m.findById, [outId]);
       assert.strictEqual(Number(afterFail.rows[0].attempt_count), 1);
       assert.strictEqual(afterFail.rows[0].last_error, 'SMTP connection refused');
       assert.ok(afterFail.rows[0].next_attempt_at);
 
-      // markSent
-      r = await db.execute(m.markSent, [outId]);
+      // markSent (Task 11 param order: [null_placeholder, id])
+      r = await db.execute(m.markSent, [null, outId]);
       assert.strictEqual(r.affectedRows, 1);
       const afterSent = await db.query(m.findById, [outId]);
       assert.ok(afterSent.rows[0].sent_at, 'sent_at should be populated');

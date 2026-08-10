@@ -14,6 +14,8 @@ import { lockoutRouter } from './src/routes/lockout.js';
 import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
 import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
 import { createProbeLoop } from './src/services/probe.js';
+import { createAlertEvaluationLoop } from './src/services/alert-engine.js';
+import { createEmailDeliveryLoop } from './src/services/email.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { orphanRouter } from './src/packages/orphan-router.js';
@@ -347,6 +349,35 @@ await ((async () => {
       writeAudit
     });
     probeLoop.start();
+
+    // AlertEvaluationLoop + EmailDeliveryLoop (Task 11). Both follow the
+    // createProbeLoop factory shape (Global Constraint #8): start() schedules
+    // a setInterval with an inFlight guard; tick() runs one evaluation pass;
+    // stop() clears the interval and waits for the in-flight tick so
+    // shutdown can't strand a half-written transaction. Both are mounted
+    // AFTER probeLoop because they depend on alert_metrics and outbox tables
+    // (migration 014) being live — probeLoop has no such dependency.
+    // The 10-second floor (Global Constraint #9) is enforced inside the
+    // factory's tick() so the cadence clamp survives caller misconfiguration.
+    const alertLoop = createAlertEvaluationLoop({
+      db: getDb(),
+      getIntervalSeconds: async () => {
+        const v = await getSystemConfig();
+        return Number(v.alert_eval_interval_seconds) || 60;
+      },
+      getSystemConfig,
+      logger
+    });
+    const emailLoop = createEmailDeliveryLoop({
+      db: getDb(),
+      getIntervalSeconds: async () => {
+        const v = await getSystemConfig();
+        return Number(v.alert_eval_interval_seconds) || 60;
+      },
+      getSystemConfig
+    });
+    alertLoop.start();
+    emailLoop.start();
     // Bootstrap watchdog: 30 s after startup, if no probe write has landed
     // (all rows still stale or uninitialized), emit a one-shot audit warning
     // so the operator can see in the audit log that the loop is wedged. The
@@ -371,6 +402,8 @@ await ((async () => {
     const shutdown = async (sig) => {
       logger.info({ sig }, 'shutting down');
       try { await probeLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'probe stop failed'); }
+      try { await alertLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'alert loop stop failed'); }
+      try { await emailLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'email loop stop failed'); }
       await closeAll(servers, logger);
       try { await closeWizardFacade(); } catch {}
       try { await close(); } catch {}

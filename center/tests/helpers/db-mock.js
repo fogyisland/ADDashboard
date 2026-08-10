@@ -77,7 +77,12 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
       query,
       transaction: async (work) => work({ execute, query }),
       healthcheck: async () => {},
-      close: async () => {}
+      close: async () => {},
+      // Expose the recording array so tests using
+      // `buildMockDb(scripts).withRecording()` can still inspect what was
+      // issued via db.records. Other tests pass an explicit `records` and
+      // reference their own copy — both shapes are supported.
+      records: records || null
     };
   }
   return {
