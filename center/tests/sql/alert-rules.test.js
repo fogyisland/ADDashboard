@@ -182,6 +182,15 @@ test('alertRules (mysql): create -> findById -> list -> update -> upsertState ->
       assert.ok(evalRows.rows.some(rw => rw.rule_id === ruleId),
         'listStatesForEval must include our enabled rule via INNER JOIN');
 
+      // listEnabledForHostWithState: LEFT JOIN alert_rule_state
+      const withState = await db.query(m.listEnabledForHostWithState, [hostname]);
+      const ourRow = withState.rows.find(rw => rw.rule_id === ruleId);
+      assert.ok(ourRow, 'listEnabledForHostWithState must return our enabled rule');
+      assert.strictEqual(ourRow.state, 'pending');
+      assert.ok(ourRow.first_hit_at, 'state JOIN should populate first_hit_at');
+      assert.strictEqual(ourRow.name, 'cpu-high');
+      assert.strictEqual(Number(ourRow.for_minutes), 10); // matches the post-update value
+
       // touchEvaluated
       r = await db.execute(m.touchEvaluated, [ruleId]);
       assert.strictEqual(r.affectedRows, 1);
@@ -283,6 +292,18 @@ test('alertRules (mssql): create -> findById -> list -> update -> upsertState ->
       const evalRows = await db.query(m.listStatesForEval);
       assert.ok(evalRows.rows.some(rw => rw.rule_id === ruleId),
         'listStatesForEval must include our enabled rule via INNER JOIN');
+
+      // listEnabledForHostWithState: LEFT JOIN alert_rule_state
+      // Note: the bracket-quoting of [condition] is an identifier-escape only;
+      // the driver returns the column under the plain name `condition`. These
+      // assertions read non-reserved columns, so no bracket handling is needed.
+      const withState = await db.query(m.listEnabledForHostWithState, [hostname]);
+      const ourRow = withState.rows.find(rw => rw.rule_id === ruleId);
+      assert.ok(ourRow, 'listEnabledForHostWithState must return our enabled rule');
+      assert.strictEqual(ourRow.state, 'pending');
+      assert.ok(ourRow.first_hit_at, 'state JOIN should populate first_hit_at');
+      assert.strictEqual(ourRow.name, 'cpu-high');
+      assert.strictEqual(Number(ourRow.for_minutes), 10); // matches the post-update value
 
       // touchEvaluated
       r = await db.execute(m.touchEvaluated, [ruleId]);
