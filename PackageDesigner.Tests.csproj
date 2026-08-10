@@ -21,27 +21,27 @@
     <ProjectReference Include="$(MSBuildThisFileDirectory)PackageDesigner.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Remove="PackageDesigner.App/**/*.cs" />
+    <Compile Remove="App.xaml.cs" />
+    <Compile Remove="MainWindow.xaml.cs" />
     <Compile Remove="Sandbox/**/*.cs" />
     <Compile Remove="Models/**/*.cs" />
     <Compile Remove="Services/**/*.cs" />
     <Compile Remove="ViewModels/**/*.cs" />
     <Compile Remove="Views/**/*.cs" />
-    <None Remove="PackageDesigner.App/**" />
+    <None Remove="App.xaml.cs" />
+    <None Remove="MainWindow.xaml.cs" />
     <None Remove="Sandbox/**" />
     <None Remove="Models/**" />
     <None Remove="Services/**" />
     <None Remove="ViewModels/**" />
     <None Remove="Views/**" />
     <None Remove="Resources/**" />
-    <Content Remove="PackageDesigner.App/**" />
     <Content Remove="Sandbox/**" />
     <Content Remove="Models/**" />
     <Content Remove="Services/**" />
     <Content Remove="ViewModels/**" />
     <Content Remove="Views/**" />
     <Content Remove="Resources/**" />
-    <EmbeddedResource Remove="PackageDesigner.App/**" />
     <EmbeddedResource Remove="Sandbox/**" />
     <EmbeddedResource Remove="Models/**" />
     <EmbeddedResource Remove="Services/**" />
