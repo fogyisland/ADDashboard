@@ -28,6 +28,7 @@
     <Compile Remove="Services/**/*.cs" />
     <Compile Remove="ViewModels/**/*.cs" />
     <Compile Remove="Views/**/*.cs" />
+    <Compile Remove="Converters/**/*.cs" />
     <None Remove="App.xaml.cs" />
     <None Remove="MainWindow.xaml.cs" />
     <None Remove="Sandbox/**" />
@@ -35,18 +36,21 @@
     <None Remove="Services/**" />
     <None Remove="ViewModels/**" />
     <None Remove="Views/**" />
+    <None Remove="Converters/**" />
     <None Remove="Resources/**" />
     <Content Remove="Sandbox/**" />
     <Content Remove="Models/**" />
     <Content Remove="Services/**" />
     <Content Remove="ViewModels/**" />
     <Content Remove="Views/**" />
+    <Content Remove="Converters/**" />
     <Content Remove="Resources/**" />
     <EmbeddedResource Remove="Sandbox/**" />
     <EmbeddedResource Remove="Models/**" />
     <EmbeddedResource Remove="Services/**" />
     <EmbeddedResource Remove="ViewModels/**" />
     <EmbeddedResource Remove="Views/**" />
+    <EmbeddedResource Remove="Converters/**" />
     <EmbeddedResource Remove="Resources/**" />
   </ItemGroup>
   <ItemGroup>

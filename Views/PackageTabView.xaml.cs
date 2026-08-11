@@ -7,11 +7,13 @@ namespace PackageDesigner.Views;
 
 public partial class PackageTabView : UserControl
 {
-    public PackageTabViewModel ViewModel { get; }
-    public PackageTabView(PackageTabViewModel vm)
+    // VM is set via DataContext by the parent MainWindow.xaml DataTemplate
+    // ({Binding} on the TabControl.ContentTemplate). WPF requires a
+    // parameterless constructor for declaratively-instantiated views;
+    // a VM-taking ctor causes XamlParseException at first render.
+    public PackageTabViewModel ViewModel => (PackageTabViewModel)DataContext;
+    public PackageTabView()
     {
-        ViewModel = vm;
-        DataContext = vm;
         InitializeComponent();
     }
     private void Tree_SelectedItemChanged(object s, RoutedPropertyChangedEventArgs<object> e)
