@@ -26,11 +26,46 @@ public class PackageTabViewModelTests
     }
 
     [Fact]
-    public void OpenManifest_Adds_Another_Tab()
+    public void OpenManifest_Does_Not_Add_Duplicate_When_Tab_Already_Open()
+    {
+        // Regression: clicking the "manifest" tree node repeatedly used to stack
+        // duplicate manifest tabs. After dedupe, re-opening focuses the same tab.
+        var vm = new PackageTabViewModel(new PackageProject());
+        Assert.Single(vm.OpenFiles);
+        var first = vm.SelectedFile;
+        vm.OpenManifest();
+        Assert.Single(vm.OpenFiles);
+        Assert.Same(first, vm.SelectedFile);
+        vm.OpenManifest();
+        Assert.Single(vm.OpenFiles);
+    }
+
+    [Fact]
+    public void OpenSql_Dedupes_By_Same_File_Reference()
     {
         var vm = new PackageTabViewModel(new PackageProject());
-        vm.OpenManifest();
+        var f = new PackageFile { Path = "001_init.sql", Role = "migration" };
+        var svm = new SqlFileViewModel(f);
+        vm.OpenSql(svm);
+        Assert.Equal(2, vm.OpenFiles.Count);  // manifest (auto) + sql
+        var first = vm.SelectedFile;
+        vm.OpenSql(svm);
         Assert.Equal(2, vm.OpenFiles.Count);
+        Assert.Same(first, vm.SelectedFile);
+    }
+
+    [Fact]
+    public void OpenPs1_Dedupes_By_Same_File_Reference()
+    {
+        var vm = new PackageTabViewModel(new PackageProject());
+        var f = new PackageFile { Path = "collect.ps1", Role = "ps1" };
+        var pvm = new PowerShellFileViewModel(f);
+        vm.OpenPs1(pvm);
+        Assert.Equal(2, vm.OpenFiles.Count);
+        var first = vm.SelectedFile;
+        vm.OpenPs1(pvm);
+        Assert.Equal(2, vm.OpenFiles.Count);
+        Assert.Same(first, vm.SelectedFile);
     }
 
     [Fact]

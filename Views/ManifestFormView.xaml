@@ -7,36 +7,79 @@
     <ObjectDataProvider x:Key="AgentTypes" MethodName="GetValues" ObjectType="{x:Type m:AgentType}">
       <ObjectDataProvider.MethodParameters><x:Type TypeName="m:AgentType"/></ObjectDataProvider.MethodParameters>
     </ObjectDataProvider>
+    <!-- SectionHeader + FieldLabel come from Themes/Modern.xaml (App.Resources). -->
   </UserControl.Resources>
-  <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
-    </Grid.RowDefinitions>
-    <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
 
-    <TextBlock Grid.Row="0" Grid.Column="0" Text="Name"/><TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
-    <TextBlock Grid.Row="1" Grid.Column="0" Text="Version"/><TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Version}"/>
-    <TextBlock Grid.Row="2" Grid.Column="0" Text="Type"/><TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Type}"/>
-    <TextBlock Grid.Row="3" Grid.Column="0" Text="Description"/><TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Description}"/>
-    <TextBlock Grid.Row="4" Grid.Column="0" Text="Agent Type"/><ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding Source={StaticResource AgentTypes}}" SelectedItem="{Binding AgentType}"/>
-    <TextBlock Grid.Row="5" Grid.Column="0" Text="MinVersion"/><TextBox Grid.Row="5" Grid.Column="1" Text="{Binding MinVersion}"/>
-    <TextBlock Grid.Row="6" Grid.Column="0" Text="Script"/><TextBox Grid.Row="6" Grid.Column="1" Text="{Binding Script}"/>
-    <TextBlock Grid.Row="7" Grid.Column="0" Text="IntervalSec"/><TextBox Grid.Row="7" Grid.Column="1" Text="{Binding IntervalSec}"/>
-    <TextBlock Grid.Row="8" Grid.Column="0" Text="TimeoutMs"/><TextBox Grid.Row="8" Grid.Column="1" Text="{Binding TimeoutMs}"/>
-    <TextBlock Grid.Row="9" Grid.Column="0" Text="SchemaName"/><TextBox Grid.Row="9" Grid.Column="1" Text="{Binding SchemaName}"/>
-    <TextBlock Grid.Row="10" Grid.Column="0" Text="MetricTable"/><TextBox Grid.Row="10" Grid.Column="1" Text="{Binding MetricTable}"/>
+  <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="20">
+    <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+      <TextBlock Text="manifest.json" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,4"/>
+      <TextBlock Text="Edit the package metadata. agent.type drives schema and runtime behaviour."
+                 Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
 
-    <StackPanel Grid.Row="11" Grid.ColumnSpan="2">
-      <TextBlock Text="Migrations"/>
-      <ListBox ItemsSource="{Binding Migrations}" Height="100"/>
-      <DockPanel>
-        <Button DockPanel.Dock="Right" Content="+" Click="AddMigration_Click"/>
-        <Button DockPanel.Dock="Right" Content="-" Click="RemoveMigration_Click"/>
+      <TextBlock Text="PACKAGE" Style="{StaticResource SectionHeader}"/>
+      <Grid Margin="0,0,0,4">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="160"/><ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Name"        Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Version"     Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding Version}"/>
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Type"        Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="2" Grid.Column="1" Text="{Binding Type}"/>
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Description" Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding Description}" MinHeight="44" TextWrapping="Wrap" AcceptsReturn="True"/>
+      </Grid>
+
+      <TextBlock Text="AGENT" Style="{StaticResource SectionHeader}"/>
+      <Grid Margin="0,0,0,4">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="160"/><ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Agent Type"  Style="{StaticResource FieldLabel}"/>
+        <ComboBox   Grid.Row="0" Grid.Column="1" ItemsSource="{Binding Source={StaticResource AgentTypes}}" SelectedItem="{Binding AgentType}"/>
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Min version" Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding MinVersion}"/>
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Script"      Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="2" Grid.Column="1" Text="{Binding Script}"/>
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Interval (sec)" Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding IntervalSec}"/>
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="Timeout (ms)"   Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="4" Grid.Column="1" Text="{Binding TimeoutMs}"/>
+      </Grid>
+
+      <TextBlock Text="DATABASE" Style="{StaticResource SectionHeader}"/>
+      <Grid Margin="0,0,0,12">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="160"/><ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition/><RowDefinition/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Schema name" Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding SchemaName}"/>
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Metric table" Style="{StaticResource FieldLabel}"/>
+        <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding MetricTable}"/>
+      </Grid>
+
+      <TextBlock Text="MIGRATIONS" Style="{StaticResource SectionHeader}"/>
+      <Border BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
+        <ListBox ItemsSource="{Binding Migrations}" MinHeight="80" MaxHeight="180"
+                 BorderThickness="0" Background="Transparent"/>
+      </Border>
+      <DockPanel Margin="0,8,0,0">
+        <Button DockPanel.Dock="Right" Content="+" Width="28" Margin="4,0,0,0" Click="AddMigration_Click"
+                ToolTip="Add migration path"/>
+        <Button DockPanel.Dock="Right" Content="−" Width="28" Margin="4,0,0,0" Click="RemoveMigration_Click"
+                ToolTip="Remove selected"/>
         <TextBox Text="{Binding NewMigrationPath, UpdateSourceTrigger=PropertyChanged}"/>
       </DockPanel>
     </StackPanel>
-  </Grid>
+  </ScrollViewer>
 </UserControl>

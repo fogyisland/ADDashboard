@@ -5,10 +5,9 @@
   <DockPanel>
     <avalon:TextEditor x:Name="Editor" FontFamily="Consolas" FontSize="13"
                        ShowLineNumbers="True" SyntaxHighlighting="SQL" />
-    <Border DockPanel.Dock="Bottom" Background="#222" Padding="6">
-      <StackPanel Orientation="Horizontal">
-        <TextBlock Foreground="White" Text="{Binding StatusMessage}"/>
-      </StackPanel>
+    <Border DockPanel.Dock="Bottom" Background="{StaticResource SurfaceBrush}" Padding="8,4"
+            BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
+      <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource MutedBrush}" FontSize="11"/>
     </Border>
   </DockPanel>
 </UserControl>

@@ -1,13 +1,28 @@
 <UserControl x:Class="PackageDesigner.Views.PackageTabView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <DockPanel>
-    <TreeView x:Name="Tree" Width="240" DockPanel.Dock="Left" SelectedItemChanged="Tree_SelectedItemChanged">
-      <TreeViewItem Header="manifest" x:Name="ManifestNode"/>
-      <TreeViewItem Header="migrations" ItemsSource="{Binding MigrationsVM.Items}" x:Name="MigrationsNode"/>
-      <TreeViewItem Header="collect.ps1" x:Name="Ps1Node"/>
-    </TreeView>
-    <TabControl ItemsSource="{Binding OpenFiles}" SelectedItem="{Binding SelectedFile}">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="240"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <Border Grid.Column="0" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0" Background="{StaticResource SurfaceBrush}">
+      <DockPanel>
+        <Border DockPanel.Dock="Top" Background="{StaticResource SurfaceBrush}" Padding="14,12,14,10" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
+          <StackPanel>
+            <TextBlock Text="{Binding Project.Manifest.Name, FallbackValue='Untitled'}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Text="{Binding Project.Manifest.Version, FallbackValue='0.1.0'}" Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+          </StackPanel>
+        </Border>
+        <TextBlock DockPanel.Dock="Top" Text="PACKAGE FILES" Style="{StaticResource SectionHeader}" Margin="14,12,14,4"/>
+        <TreeView x:Name="Tree" BorderThickness="0" Background="Transparent" SelectedItemChanged="Tree_SelectedItemChanged">
+          <TreeViewItem Header="manifest" x:Name="ManifestNode" IsExpanded="True"/>
+          <TreeViewItem Header="migrations" ItemsSource="{Binding MigrationsVM.Items}" x:Name="MigrationsNode" IsExpanded="True"/>
+          <TreeViewItem Header="collect.ps1" x:Name="Ps1Node"/>
+        </TreeView>
+      </DockPanel>
+    </Border>
+    <TabControl Grid.Column="1" ItemsSource="{Binding OpenFiles}" SelectedItem="{Binding SelectedFile}" Padding="0">
       <TabControl.ItemTemplate>
         <DataTemplate>
           <TextBlock Text="{Binding Title}"/>
@@ -19,5 +34,5 @@
         </DataTemplate>
       </TabControl.ContentTemplate>
     </TabControl>
-  </DockPanel>
+  </Grid>
 </UserControl>

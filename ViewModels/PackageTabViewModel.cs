@@ -45,9 +45,30 @@ public class PackageTabViewModel : INotifyPropertyChanged
         OpenManifest();
     }
 
-    public void OpenSql(SqlFileViewModel svm) => OpenFiles.Add(new SqlFileTab(svm));
-    public void OpenPs1(PowerShellFileViewModel pvm) => OpenFiles.Add(new Ps1FileTab(pvm));
-    public void OpenManifest() => OpenFiles.Add(new ManifestTab(ManifestVM));
+    public void OpenSql(SqlFileViewModel svm)
+    {
+        // Dedupe: if a tab for this exact file is already open, focus it instead
+        // of stacking another copy. Without this, repeated tree-clicks on the
+        // same migration file accumulate identical editor tabs.
+        foreach (var f in OpenFiles)
+            if (f is SqlFileTab t && ReferenceEquals(t._vm, svm)) { SelectedFile = f; return; }
+        OpenFiles.Add(new SqlFileTab(svm));
+    }
+
+    public void OpenPs1(PowerShellFileViewModel pvm)
+    {
+        foreach (var f in OpenFiles)
+            if (f is Ps1FileTab t && ReferenceEquals(t._vm, pvm)) { SelectedFile = f; return; }
+        OpenFiles.Add(new Ps1FileTab(pvm));
+    }
+
+    public void OpenManifest()
+    {
+        // Only one manifest tab per package.
+        foreach (var f in OpenFiles)
+            if (f is ManifestTab) { SelectedFile = f; return; }
+        OpenFiles.Add(new ManifestTab(ManifestVM));
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnChanged([CallerMemberName] string? name = null) =>
@@ -55,7 +76,7 @@ public class PackageTabViewModel : INotifyPropertyChanged
 
     private sealed class ManifestTab : FileTabViewModel
     {
-        private readonly ManifestViewModel _vm;
+        internal readonly ManifestViewModel _vm;
         private Views.ManifestFormView? _view;
         public ManifestTab(ManifestViewModel vm) { _vm = vm; }
         public override string Title => "manifest";
@@ -63,7 +84,7 @@ public class PackageTabViewModel : INotifyPropertyChanged
     }
     private sealed class SqlFileTab : FileTabViewModel
     {
-        private readonly SqlFileViewModel _vm;
+        internal readonly SqlFileViewModel _vm;
         private Views.SqlEditorView? _view;
         public SqlFileTab(SqlFileViewModel vm) { _vm = vm; }
         public override string Title => _vm.File.Path;
@@ -71,7 +92,7 @@ public class PackageTabViewModel : INotifyPropertyChanged
     }
     private sealed class Ps1FileTab : FileTabViewModel
     {
-        private readonly PowerShellFileViewModel _vm;
+        internal readonly PowerShellFileViewModel _vm;
         private Views.PowerShellEditorView? _view;
         public Ps1FileTab(PowerShellFileViewModel vm) { _vm = vm; }
         public override string Title => _vm.File.Path;
