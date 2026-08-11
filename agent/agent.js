@@ -15,10 +15,16 @@ import {
   applyPackageList,
   clearAllTimers
 } from './src/non-ad-scheduler.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, join as joinPath } from 'node:path';
 
 const VERSION = '0.1.0';
 
-const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || './appsettings.json';
+// Default appsettings.json lives next to this script so the agent works
+// regardless of cwd. argv[2] and APPSETTINGS_PATH still win when provided.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const defaultConfigPath = joinPath(__dirname, 'appsettings.json');
+const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || defaultConfigPath;
 const config = loadConfig(configPath);
 const logger = createLogger({ component: 'agent', level: config.logLevel });
 

@@ -116,12 +116,33 @@ process.on('unhandledRejection', (reason) => {
 // process.argv[1] against import.meta.url — works on both Windows
 // (drive-letter case) and POSIX, and is robust to symlinks.
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 const invokedDirectly = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 // ESM has no __dirname — derive it from this file's URL so we can locate
 // sibling directories (publish/ in particular, for the built-in package
 // seed). Used by the seedBuiltinPackages call below.
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const repoRoot = dirname(__dirname);
+
+// Locate the built-in package source from either the source-tree view
+// (cwd=center, __dirname=repo/center) or the bundled publish view
+// (cwd=publish, __dirname=publish/center). The bundled view puts the
+// package source alongside the script; the source view walks up to the
+// repo root then descends into publish/. Both layouts are tried so the
+// same server.js works whether launched via `npm start` (cwd=repo-root),
+// `cd center && node server.js` (cwd=center), or from the bundled
+// publish/center/server.js.
+const builtinSourceCandidates = [
+  join(repoRoot, 'publish', 'center', 'data', 'packages'),
+  join(__dirname, 'data', 'packages')
+];
+const resolveBuiltinSourceDir = () => {
+  const found = builtinSourceCandidates.find(d => existsSync(d));
+  if (!found) throw new Error(`seedBuiltinPackages: source not found in any candidate: ${builtinSourceCandidates.join(', ')}`);
+  return found;
+};
 
 if (invokedDirectly) {
 await ((async () => {
@@ -215,7 +236,7 @@ await ((async () => {
     try {
       await seedBuiltinPackages({
         dataDir: process.cwd() + '/data/packages',
-        sourceDir: __dirname + '/publish/center/data/packages',
+        sourceDir: resolveBuiltinSourceDir(),
         writeAudit
       });
     } catch (err) {
@@ -266,7 +287,7 @@ await ((async () => {
       requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
       requirePerm: (perm) => requirePerm(perm),
       logger,
-      getRepoRoot: () => process.cwd()
+      getRepoRoot: () => repoRoot
     }));
     // Heartbeat/Report admin aggregator (Task 6). Read-only per-agent view
     // joining ad_agent_heartbeat with the latest ad_replication_status
