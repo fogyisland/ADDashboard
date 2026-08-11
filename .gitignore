@@ -15,6 +15,8 @@ Thumbs.db
 
 # Claude Code local state
 .claude/
+# Brainstorm server runtime scratch (server pid, instance id, draft content)
+.superpowers/brainstorm/
 
 # Agent runtime SQLite queue (regenerated on each agent start)
 agent/queue.db
