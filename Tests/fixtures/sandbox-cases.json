@@ -1,0 +1,72 @@
+[
+  {
+    "name": "simple_create_table",
+    "sql": "CREATE TABLE foo (id INT)",
+    "selfPackage": null,
+    "expectedOk": true,
+    "expectedBlocked": null
+  },
+  {
+    "name": "multi_statement_fail",
+    "sql": "CREATE TABLE a (id INT); CREATE TABLE b (id INT)",
+    "selfPackage": null,
+    "expectedOk": false,
+    "expectedBlocked": ";\\s*\\S"
+  },
+  {
+    "name": "drop_fail",
+    "sql": "CREATE TABLE foo (id INT); DROP TABLE foo",
+    "selfPackage": null,
+    "expectedOk": false,
+    "expectedBlocked": ";\\s*\\S"
+  },
+  {
+    "name": "unknown_keyword_fail",
+    "sql": "CREATE TABLE foo (DROPPED INT)",
+    "selfPackage": null,
+    "expectedOk": false,
+    "expectedBlocked": "unknown identifier: DROPPED"
+  },
+  {
+    "name": "on_update_cascade_pass",
+    "sql": "CREATE TABLE foo (id INT PRIMARY KEY, parent_id INT, FOREIGN KEY (parent_id) REFERENCES bar(id) ON UPDATE CASCADE)",
+    "selfPackage": null,
+    "expectedOk": true,
+    "expectedBlocked": null
+  },
+  {
+    "name": "on_delete_cascade_pass",
+    "sql": "CREATE TABLE foo (id INT PRIMARY KEY, parent_id INT, FOREIGN KEY (parent_id) REFERENCES bar(id) ON DELETE CASCADE)",
+    "selfPackage": null,
+    "expectedOk": true,
+    "expectedBlocked": null
+  },
+  {
+    "name": "self_ref_pass",
+    "sql": "CREATE TABLE pkg_foo.metrics (id INT)",
+    "selfPackage": "pkg_foo",
+    "expectedOk": true,
+    "expectedBlocked": null
+  },
+  {
+    "name": "cross_package_fail",
+    "sql": "CREATE TABLE foo (id INT, m INT REFERENCES pkg_other.metrics(id))",
+    "selfPackage": "pkg_foo",
+    "expectedOk": false,
+    "expectedBlocked": "\\bpkg_[a-z0-9_]+\\.[a-z0-9_]+"
+  },
+  {
+    "name": "numeric_literal_pass",
+    "sql": "CREATE TABLE foo (n INT DEFAULT 42)",
+    "selfPackage": null,
+    "expectedOk": true,
+    "expectedBlocked": null
+  },
+  {
+    "name": "string_literal_pass",
+    "sql": "CREATE TABLE foo (s VARCHAR(10) DEFAULT 'abc')",
+    "selfPackage": null,
+    "expectedOk": true,
+    "expectedBlocked": null
+  }
+]

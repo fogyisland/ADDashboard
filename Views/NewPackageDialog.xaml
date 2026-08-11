@@ -1,0 +1,18 @@
+<Window x:Class="PackageDesigner.Views.NewPackageDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="New Package" Width="400" Height="240" WindowStartupLocation="CenterOwner">
+  <StackPanel Margin="12">
+    <TextBlock Text="Template:"/>
+    <ComboBox x:Name="TemplateBox" SelectedIndex="0">
+      <ComboBoxItem Content="ad-monitoring-lite (AD)"/>
+      <ComboBoxItem Content="ad-os-baseline-lite (Non-AD)"/>
+    </ComboBox>
+    <TextBlock Text="Package name:"/>
+    <TextBox x:Name="NameBox"/>
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+      <Button Content="OK" Width="80" Margin="0,0,8,0" Click="OK_Click" IsDefault="True"/>
+      <Button Content="Cancel" Width="80" Click="Cancel_Click" IsCancel="True"/>
+    </StackPanel>
+  </StackPanel>
+</Window>

@@ -1,0 +1,14 @@
+<UserControl x:Class="PackageDesigner.Views.SqlEditorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:avalon="http://icsharpcode.net/sharpdevelop/avalonedit">
+  <DockPanel>
+    <avalon:TextEditor x:Name="Editor" FontFamily="Consolas" FontSize="13"
+                       ShowLineNumbers="True" SyntaxHighlighting="SQL" />
+    <Border DockPanel.Dock="Bottom" Background="#222" Padding="6">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock Foreground="White" Text="{Binding StatusMessage}"/>
+      </StackPanel>
+    </Border>
+  </DockPanel>
+</UserControl>

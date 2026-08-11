@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <BaseOutputPath>bin\PackageDesigner.Tests\</BaseOutputPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.10.0">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="xunit" Version="2.9.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)PackageDesigner.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="App.xaml.cs" />
+    <Compile Remove="MainWindow.xaml.cs" />
+    <Compile Remove="Sandbox/**/*.cs" />
+    <Compile Remove="Models/**/*.cs" />
+    <Compile Remove="Services/**/*.cs" />
+    <Compile Remove="ViewModels/**/*.cs" />
+    <Compile Remove="Views/**/*.cs" />
+    <None Remove="App.xaml.cs" />
+    <None Remove="MainWindow.xaml.cs" />
+    <None Remove="Sandbox/**" />
+    <None Remove="Models/**" />
+    <None Remove="Services/**" />
+    <None Remove="ViewModels/**" />
+    <None Remove="Views/**" />
+    <None Remove="Resources/**" />
+    <Content Remove="Sandbox/**" />
+    <Content Remove="Models/**" />
+    <Content Remove="Services/**" />
+    <Content Remove="ViewModels/**" />
+    <Content Remove="Views/**" />
+    <Content Remove="Resources/**" />
+    <EmbeddedResource Remove="Sandbox/**" />
+    <EmbeddedResource Remove="Models/**" />
+    <EmbeddedResource Remove="Services/**" />
+    <EmbeddedResource Remove="ViewModels/**" />
+    <EmbeddedResource Remove="Views/**" />
+    <EmbeddedResource Remove="Resources/**" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="tests\fixtures\sandbox-cases.json" Link="fixtures\sandbox-cases.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>

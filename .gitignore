@@ -61,3 +61,7 @@ publish/frontend/dist/
 publish/db.zip
 publish/frontend.zip
 publish/publish.zip
+
+# .NET build outputs (PackageDesigner WPF app)
+**/bin/
+**/obj/

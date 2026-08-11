@@ -1,0 +1,20 @@
+<Project>
+  <!--
+    PackageDesigner.csproj and PackageDesigner.Tests.csproj both live in the repo
+    root, so they would otherwise share obj\project.assets.json and
+    obj\Debug\... — whichever restored last wins, silently clobbering the other
+    project's NuGet references. Give each project its own intermediate output
+    directory. Must live in Directory.Build.props: Microsoft.Common.props reads
+    this before defaulting it, which is too early for the .csproj body.
+  -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <PropertyGroup>
+    <!--
+      Each project only auto-excludes its own bin\ and obj\ subtree, so without
+      this the two root-level projects glob each other's generated AssemblyInfo.cs.
+    -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,12 @@
+<UserControl x:Class="PackageDesigner.Views.MigrationsListView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <DockPanel>
+    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal">
+      <TextBox x:Name="PathBox" Width="240"/>
+      <Button Content="+" Click="Add_Click"/>
+      <Button Content="-" Click="Remove_Click"/>
+    </StackPanel>
+    <ListBox x:Name="List" ItemsSource="{Binding Items}"/>
+  </DockPanel>
+</UserControl>
