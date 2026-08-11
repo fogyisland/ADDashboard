@@ -37,6 +37,8 @@
          WIXUI_INSTALLDIR overrides the Name attribute below at install time. -->
     <Directory Id="INSTALLDIR" Name="Agent">
       <Directory Id="INSTALLDIR.src" Name="src" />
+      <Directory Id="INSTALLDIR.node" Name="node" />
+      <Directory Id="INSTALLDIR.node_modules" Name="node_modules" />
       <Directory Id="INSTALLDIR.scripts" Name="scripts" />
     </Directory>
   </Fragment>

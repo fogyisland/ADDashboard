@@ -15,6 +15,14 @@
       </Component>
     </DirectoryRef>
 
+    <DirectoryRef Id="INSTALLDIR.node">
+      <Component Id="Agent.Node" Guid="{D7E9F3A1-6666-7777-8888-999900001111}">
+        <File Id="Agent.Node.Exe"
+              Source="$(var.StagingDir)\node\node.exe"
+              KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
     <DirectoryRef Id="INSTALLDIR.scripts">
       <Component Id="Agent.Scripts.Replication" Guid="{D7E9F3A1-4444-5555-6666-777788889999}">
         <File Id="Agent.Scripts.Replication.File"
@@ -31,10 +39,14 @@
     <ComponentGroup Id="AgentComponents">
       <ComponentRef Id="Agent.AppsettingsTemplate" />
       <ComponentRef Id="Agent.Main" />
+      <ComponentRef Id="Agent.Node" />
       <ComponentRef Id="Agent.Scripts.Replication" />
       <ComponentRef Id="Agent.Scripts.Discovery" />
       <!-- WiX 5 auto-harvests Files into Components keyed per file. -->
       <Files Include="$(var.StagingDir)\agent\src\**" Directory="INSTALLDIR.src" />
+      <!-- node_modules: ~700+ files (axios + better-sqlite3 native + pino + transitive).
+           WiX 5 generates a Component per harvested file with ComponentId="*". -->
+      <Files Include="$(var.StagingDir)\node_modules\**" Directory="INSTALLDIR.node_modules" />
     </ComponentGroup>
   </Fragment>
 </Wix>
