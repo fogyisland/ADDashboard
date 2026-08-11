@@ -5,10 +5,14 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $staging = Join-Path $root 'installer\staging'
 if (-not (Test-Path $staging)) { New-Item -ItemType Directory -Force -Path $staging | Out-Null }
 
-# 1. Stage agent source (exclude tests + appsettings.json + node_modules + package-lock.json).
+# 1. Stage agent source (exclude tests + appsettings.json + node_modules).
 #    Use robocopy for reliable recursive copy with directory-name exclusion: PS 5.1's
 #    Copy-Item -Exclude doesn't apply to nested directories under -Recurse.
 #    robocopy exit codes 8+ indicate real failures; 0-7 are success/info.
+#    Note: agent/package.json is staged (needed at runtime for ESM detection).
+#    agent/package-lock.json is NOT staged — we use the root monorepo lockfile
+#    below (Task 3 review: per-workspace lockfiles drift from the root and
+#    ship versions the test suite never runs against).
 $agentSrc = Join-Path $root 'agent'
 $agentDst = Join-Path $staging 'agent'
 if (Test-Path $agentDst) { Remove-Item $agentDst -Recurse -Force }
@@ -80,20 +84,28 @@ if (-not (Test-Path $nodeModulesDst)) {
   $env:PATH = "$nodeDir;$env:PATH"
   Push-Location $staging
   try {
-    # We need a package.json + package-lock.json at the cwd to drive npm.
-    # The staged agent/ has package.json; copy the lockfile from source for
-    # deterministic resolution (we excluded it from the robocopy earlier).
-    $lockSrc = Join-Path $root 'agent\package-lock.json'
+    # Drive npm with the ROOT monorepo lockfile so resolution matches what
+    # `npm install` at the repo root produces for the agent workspace
+    # (axios 1.18.1, better-sqlite3 11.10.0, pino 9.14.0). The lockfile is
+    # a super-set of the agent's needs; npm ci installs only the deps
+    # declared in the staging package.json (the agent's deps). Using the
+    # root lockfile eliminates the drift found by Task 3 review: a per-
+    # workspace agent lockfile (now removed) was resolving axios 1.19.0
+    # because it was generated in a temp dir outside the workspace.
+    $rootLockSrc = Join-Path $root 'package-lock.json'
     $pkgDst = Join-Path $staging 'package.json'
     $lockDst = Join-Path $staging 'package-lock.json'
+    # The staging cwd's "package.json" must declare only the agent's deps so
+    # npm ci installs the correct subset (no center/frontend bloat). The
+    # root's package.json includes all three workspaces; use the agent's.
     if (-not (Test-Path $pkgDst)) {
       Copy-Item -Path (Join-Path $root 'agent\package.json') -Destination $pkgDst -Force
     }
     if (-not (Test-Path $lockDst)) {
-      Copy-Item -Path $lockSrc -Destination $lockDst -Force
+      Copy-Item -Path $rootLockSrc -Destination $lockDst -Force
     }
-    npm install --omit=dev --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
+    npm ci --omit=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed: $LASTEXITCODE" }
     # Cleanup staging-root package.json + lockfile; node_modules remains
     Remove-Item $pkgDst -Force -ErrorAction SilentlyContinue
     Remove-Item $lockDst -Force -ErrorAction SilentlyContinue
