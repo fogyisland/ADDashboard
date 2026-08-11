@@ -17,7 +17,7 @@
       VersionNT64 = 1000). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt
     -->
     <Launch Message="AD Dashboard Agent requires Windows 10 / Server 2016 or later (x64)."
-            Condition="VersionNT64 &gt;= 1000" />
+            Condition="Installed OR VersionNT64 &gt;= 1000" />
 
     <Media Id="1" Cabinet="agent" EmbedCab="yes" CompressionLevel="high" />
 
