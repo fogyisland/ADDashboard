@@ -1,22 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <!--
-    Task 2 will populate this with agent/* + scripts/* + appsettings.template.json
-    Task 3 will add node/ + node_modules/
-    Task 4 will add nssm/
-    The CreateFolder placeholder below is the minimal legal Component that lets
-    the empty ComponentGroup compile under WiX 5; Task 2's implementer may remove
-    it once real Component entries land.
-  -->
   <Fragment>
-    <Directory Id="INSTALLDIR" Name="Agent">
-      <!-- Task 2 will add nested directories here. -->
-    </Directory>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="Agent.AppsettingsTemplate" Guid="{D7E9F3A1-1111-2222-3333-444455556666}">
+        <File Id="Agent.AppsettingsTemplate.File"
+              Source="$(var.StagingDir)\appsettings.template.json"
+              KeyPath="yes" />
+      </Component>
+
+      <Component Id="Agent.Main" Guid="{D7E9F3A1-2222-3333-4444-555566667777}">
+        <File Id="Agent.Main.File"
+              Source="$(var.StagingDir)\agent\agent.js"
+              KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLDIR.scripts">
+      <Component Id="Agent.Scripts.Replication" Guid="{D7E9F3A1-4444-5555-6666-777788889999}">
+        <File Id="Agent.Scripts.Replication.File"
+              Source="$(var.StagingDir)\agent\scripts\collect-replication.ps1"
+              KeyPath="yes" />
+      </Component>
+      <Component Id="Agent.Scripts.Discovery" Guid="{D7E9F3A1-5555-6666-7777-888899990000}">
+        <File Id="Agent.Scripts.Discovery.File"
+              Source="$(var.StagingDir)\agent\scripts\collect-discovery.ps1"
+              KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
 
     <ComponentGroup Id="AgentComponents">
-      <Component Id="AgentInstallDir" Directory="INSTALLDIR" Guid="{B5C7E17B-A001-4001-9000-000000000001}">
-        <CreateFolder />
-      </Component>
+      <ComponentRef Id="Agent.AppsettingsTemplate" />
+      <ComponentRef Id="Agent.Main" />
+      <ComponentRef Id="Agent.Scripts.Replication" />
+      <ComponentRef Id="Agent.Scripts.Discovery" />
+      <!-- WiX 5 auto-harvests Files into Components keyed per file. -->
+      <Files Include="$(var.StagingDir)\agent\src\**" Directory="INSTALLDIR.src" />
     </ComponentGroup>
   </Fragment>
 </Wix>

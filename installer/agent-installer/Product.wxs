@@ -31,4 +31,13 @@
 
     <Property Id="WIXUI_INSTALLDIR" Value="C:\addashboard\Agent" />
   </Package>
+
+  <Fragment>
+    <!-- INSTALLDIR's full path is governed by WIXUI_INSTALLDIR = C:\addashboard\Agent.
+         WIXUI_INSTALLDIR overrides the Name attribute below at install time. -->
+    <Directory Id="INSTALLDIR" Name="Agent">
+      <Directory Id="INSTALLDIR.src" Name="src" />
+      <Directory Id="INSTALLDIR.scripts" Name="scripts" />
+    </Directory>
+  </Fragment>
 </Wix>

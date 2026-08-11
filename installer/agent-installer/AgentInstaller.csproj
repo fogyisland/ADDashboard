@@ -14,6 +14,7 @@
     <DefineConstants>$(DefineConstants);Manufacturer=$(Manufacturer)</DefineConstants>
     <DefineConstants>$(DefineConstants);ProductCode=$(ProductCode)</DefineConstants>
     <DefineConstants>$(DefineConstants);UpgradeCode=$(UpgradeCode)</DefineConstants>
+    <DefineConstants>$(DefineConstants);StagingDir=..\staging</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
