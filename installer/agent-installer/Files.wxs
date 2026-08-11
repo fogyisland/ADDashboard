@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    Task 2 will populate this with agent/* + scripts/* + appsettings.template.json
+    Task 3 will add node/ + node_modules/
+    Task 4 will add nssm/
+    The CreateFolder placeholder below is the minimal legal Component that lets
+    the empty ComponentGroup compile under WiX 5; Task 2's implementer may remove
+    it once real Component entries land.
+  -->
+  <Fragment>
+    <Directory Id="INSTALLDIR" Name="Agent">
+      <!-- Task 2 will add nested directories here. -->
+    </Directory>
+
+    <ComponentGroup Id="AgentComponents">
+      <Component Id="AgentInstallDir" Directory="INSTALLDIR" Guid="{B5C7E17B-A001-4001-9000-000000000001}">
+        <CreateFolder />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

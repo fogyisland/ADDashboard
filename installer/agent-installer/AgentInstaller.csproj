@@ -1,0 +1,22 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <Platforms>x64</Platforms>
+    <TargetFramework>net8.0</TargetFramework>
+    <ProductName>AD Dashboard Agent</ProductName>
+    <ProductVersion>1.0.0.0</ProductVersion>
+    <ProductCode>{B5C7E17B-1234-4567-89AB-CDEF01234567}</ProductCode>
+    <UpgradeCode>{C6D8E28C-2345-5678-9ABC-DEF123456789}</UpgradeCode>
+    <Manufacturer>AD Dashboard</Manufacturer>
+    <OutputName>addashboard-agent-x64-$(ProductVersion)</OutputName>
+    <DefineConstants>$(DefineConstants);ProductName=$(ProductName)</DefineConstants>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion)</DefineConstants>
+    <DefineConstants>$(DefineConstants);Manufacturer=$(Manufacturer)</DefineConstants>
+    <DefineConstants>$(DefineConstants);ProductCode=$(ProductCode)</DefineConstants>
+    <DefineConstants>$(DefineConstants);UpgradeCode=$(UpgradeCode)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+  </ItemGroup>
+</Project>

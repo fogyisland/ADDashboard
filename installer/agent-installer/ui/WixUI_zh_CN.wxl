@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="zh-CN" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <!--
+    Placeholder for Task 6. WiX 5 requires WixUI_Minimal to have a localization
+    file available; the strings here are the bare minimum that the dialog set
+    looks up at compile time. Task 6 will replace this file with full zh-CN
+    copy that matches the brief's GUI spec.
+
+    WiX 5 requires the Value= attribute (inner text is obsolete).
+  -->
+  <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Bigger}欢迎使用 [ProductName]" />
+  <String Id="WelcomeDlgDescription" Value="安装程序将引导您在计算机上安装 [ProductName]。" />
+  <String Id="InstallDirDlgTitle" Value="{\WixUI_Font_Bigger}安装文件夹" />
+  <String Id="InstallDirDlgDescription" Value="请选择安装文件夹。" />
+  <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}[ProductName] 安装完成" />
+  <String Id="ExitDialogDescription" Value="安装程序已在您的计算机上安装 [ProductName]。" />
+</WixLocalization>

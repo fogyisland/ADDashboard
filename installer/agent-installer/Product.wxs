@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="$(var.ProductName)"
+           Version="$(var.ProductVersion)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="$(var.UpgradeCode)"
+           ProductCode="$(var.ProductCode)"
+           InstallerVersion="500"
+           Language="2052">
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed."
+                  AllowSameVersionUpgrades="no" />
+
+    <!--
+      Block install on anything below Windows 10 / Server 2016 (both report
+      VersionNT64 = 1000). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt
+    -->
+    <Launch Message="AD Dashboard Agent requires Windows 10 / Server 2016 or later (x64)."
+            Condition="VersionNT64 &gt;= 1000" />
+
+    <Media Id="1" Cabinet="agent" EmbedCab="yes" CompressionLevel="high" />
+
+    <Feature Id="AgentFeature" Title="AD Dashboard Agent" Level="1">
+      <ComponentGroupRef Id="AgentComponents" />
+    </Feature>
+
+    <UI>
+      <ui:WixUI Id="WixUI_Minimal" />
+    </UI>
+
+    <Property Id="WIXUI_INSTALLDIR" Value="C:\addashboard\Agent" />
+  </Package>
+</Wix>
