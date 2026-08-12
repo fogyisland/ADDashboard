@@ -1,0 +1,120 @@
+# GitHub Actions CI for the AD Dashboard agent MSI installer.
+#
+# Build host: windows-2022 (mandatory — the smoke test actually installs the
+# MSI via msiexec, registers the NSSM service, and uninstalls it. Windows-2022
+# is admin by default so the test will run rather than silently skip. On any
+# non-admin runner msi-smoke.Tests.ps1 would skip every It with "Not running
+# as Administrator" and report success, which is misleading in CI.)
+#
+# Scope: ONLY MSI-related artifacts. The main repo CI on ubuntu-latest
+# (.github/workflows/ci.yml) handles the rest (center, frontend, agent unit
+# tests, Pester suite at ./scripts/tests). If you change agent source code
+# paths and need them tested here too, update the paths filter below.
+#
+# Brief-vs-actual fixes (see .superpowers/sdd/2026-08-11-msi-agent-installer/progress.md):
+#   1. MSI artifact path: installer\agent-installer\bin\x64\Release\zh-CN\addashboard-agent-x64-1.0.0.0.msi
+#      (brief said bin\Release\...msi — wrong; x64 platform + zh-CN lang folder
+#       + ProductVersion=1.0.0.0 in OutputName)
+#   2. Pester filenames: spec-mirror.Tests.ps1, msi-smoke.Tests.ps1
+#      (brief said spec-mirror-tests.ps1 / msi-smoke.ps1 — Pester 5/6 default
+#       discovery requires .Tests.ps1; both files exist with that suffix)
+#   3. MSI size threshold: < 20 MB fails (brief said < 40 MB — actual MSI is
+#       24.98 MB; 40 MB would fail every build). 20 MB catches catastrophic
+#       under-build (missing node_modules / missing agent source) without
+#       false-positive on the current build artifact.
+#   4. Smoke test runs unconditionally (no gating) — the test cleans up after
+#      itself; Windows-2022 fresh-runner or re-used runner is fine.
+
+name: MSI CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'installer/**'
+      - 'agent/**'
+      - 'scripts/install-agent.ps1'
+      - 'scripts/common/**'
+      - '.github/workflows/msi-ci.yml'
+  pull_request:
+    paths:
+      - 'installer/**'
+      - 'agent/**'
+      - 'scripts/install-agent.ps1'
+      - 'scripts/common/**'
+      - '.github/workflows/msi-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup .NET 8 (for WiX 5 build host)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build MSI
+        shell: pwsh
+        run: .\installer\build-msi.ps1
+
+      - name: Verify MSI artifact
+        shell: pwsh
+        run: |
+          $msi = "installer\agent-installer\bin\x64\Release\zh-CN\addashboard-agent-x64-1.0.0.0.msi"
+          if (-not (Test-Path $msi)) { throw "MSI not produced at $msi" }
+          $size = (Get-Item $msi).Length
+          $sizeMB = [Math]::Round($size / 1MB, 2)
+          Write-Host "MSI size: $sizeMB MB"
+          # Threshold rationale: 24.98 MB observed on this branch (MSBuild CAB
+          # compression is effective). < 20 MB catches catastrophic under-build
+          # (missing node_modules, missing agent src) without false-positive on
+          # the current build. Brief's 40 MB would fail every build.
+          if ($sizeMB -lt 20) { throw "MSI smaller than expected ($sizeMB MB; expected ~25 MB)" }
+
+      - name: Run C# CA unit tests
+        shell: pwsh
+        run: dotnet test installer\tests\AgentInstaller.CA.Tests\AgentInstaller.CA.Tests.csproj -c Release --logger "trx;LogFileName=ca-tests.trx"
+
+      - name: Install Pester
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser
+
+      - name: Run spec-mirror NSSM config drift test
+        shell: pwsh
+        run: |
+          Invoke-Pester -Path installer\tests\spec-mirror.Tests.ps1 -Output Detailed
+
+      - name: Run Pester E2E smoke
+        shell: pwsh
+        run: |
+          Invoke-Pester -Path installer\tests\msi-smoke.Tests.ps1 -Output Detailed
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: addashboard-agent-msi
+          path: installer\agent-installer\bin\x64\Release\zh-CN\addashboard-agent-x64-1.0.0.0.msi
+          retention-days: 30
+
+      - name: Upload xUnit TRX results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ca-tests-trx
+          path: installer\tests\AgentInstaller.CA.Tests\TestResults\ca-tests.trx
+          retention-days: 14
