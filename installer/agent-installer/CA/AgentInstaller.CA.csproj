@@ -18,4 +18,10 @@
     <PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />
     <PackageReference Include="WixToolset.Dtf.WindowsInstaller" Version="5.0.2" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Task 8: grant the xUnit test project visibility into our `internal static`
+         helpers (Validate, ParseCustomActionData, WriteAppsettingsJson, ...).
+         Without this, reflection is the only option from the test assembly. -->
+    <InternalsVisibleTo Include="ADDashboard.AgentInstaller.CA.Tests" />
+  </ItemGroup>
 </Project>
