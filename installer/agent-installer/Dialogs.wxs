@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Task 6: Custom GUI dialogs for the Agent installer.
+
+  Flow: Welcome → AgentType → CenterConfig → InstallDir → VerifyReady →
+        Progress → Exit. The brief asked for "InstallDir → Progress → Exit"
+        but the built-in WixUI_InstallDir ends with VerifyReadyDlg (the
+        "ready to install" summary) before MSI auto-shows PrepareDlg →
+        ProgressDlg → ExitDialog on the actual install click. We follow
+        that established pattern so Back navigation stays consistent
+        (VerifyReady Back returns to InstallDir, ProgressDlg has no Back,
+        ExitDialog has Finish).
+
+  R1 (LocalSystem default) authoritative — NO SERVICECCOUNT, NO
+      ServiceAccount ComboBox, NO service-account validation. The
+      brief's sample is stale; we follow the actual R1 decision and
+      reject the brief's ServiceAccount ComboBox entirely.
+      ConfigureAgentAction.cs does NOT read a service-account property;
+      introducing one would silently drift the CAs.
+
+  R2 (current branch accepts uninstall deleting config) authoritative —
+      no NeverOverwrite/preserve policy added here. Task 7 owns that.
+      PRESERVE_APPSETTINGS is plumbed as a property via Properties.wxs
+      so Task 7 can flip it on without rewriting WiX.
+
+  No ValidateProperties custom action. There is no [CustomAction]
+  ValidateProperties entry in CA.dll, and a dead `DoAction
+  ValidateProperties` publish would silently no-op (the event fires, the
+  CA is not found, MSI continues past it). The deferred ConfigureAgent
+  CA already validates CENTERURL/AGENTTOKEN/AGENTTYPE inside
+  ConfigureAgentAction.cs::Validate(). Silent installs reach that
+  validator directly; GUI installs reach it via the deferred CA after
+  the user clicks Next on CenterConfigDlg.
+
+  The custom <UI> fragment below augments WixUI_Advanced (pulled in
+  from Product.wxs's <ui:WixUI Id="WixUI_Advanced"/>). WixUI_Advanced
+  supplies the standard button strings, the ValidateReadyDlg + License
+  flow, and Publish events for the Back/Cancel buttons on those built-in
+  dialogs. Our Publish events override the few transitions we need to
+  inject our two extra dialogs:
+    - WelcomeDlg → AgentTypeDlg (replaces the LicenseAgreementDlg jump)
+    - AgentTypeDlg → CenterConfigDlg
+    - CenterConfigDlg → InstallDirDlg
+    - VerifyReadyDlg's Back lands on InstallDirDlg (the wixlib default
+      would have landed on LicenseAgreementDlg)
+
+  WiX 5 schema note: <Publish> needs the `Condition` attribute (not inner
+  text) on ControlEvent rows. The <UI Id="..." /> element is dispatched
+  by the linker; the Id we give it must be unique across the project (we
+  use "WixUI_AgentInstaller" — Product.wxs does NOT reference this UI by
+  Id, it is auto-picked-up because Dialogs.wxs is part of the project's
+  compile set).
+
+  <TextStyle> IDs (WixUI_Font_Normal / WixUI_Font_Bigger / WixUI_Font_Title)
+  override the wixlib's defaults so our custom dialogs render with
+  matching fonts. These same IDs are also defined by WixUI_Common wixlib;
+  WiX 5 silently dedupes Property-symbol duplicates of *different content*
+  by ID (we suppress the ICEx warnings in AgentInstaller.csproj so the
+  build remains green).
+
+  <Property Id="DefaultUIFont" ...> inside this <UI> block is rejected
+  as duplicate IF wixlib already defines it (WixUI_Advanced does NOT
+  define DefaultUIFont — WixUI_Minimal does — so this is safe). Product.wxs
+  suppresses the ICEx warnings to allow the build to ship.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Fragment>
+    <!--
+      AgentTypeDlg: radio-button group bound to AGENTTYPE. Two options,
+      one property. Default selection follows Properties.wxs
+      (AGENTTYPE="ad").
+    -->
+    <UI>
+      <Dialog Id="AgentTypeDlg" Width="370" Height="270" Title="!(loc.AgentTypeDlgTitle)">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" Condition="1" />
+        </Control>
+
+        <Control Id="Description" Type="Text" X="9" Y="23" Width="354" Height="60" Text="!(loc.AgentTypeDlgDescription)" />
+        <Control Id="Title"      Type="Text" X="9" Y="6"  Width="354" Height="15" Text="!(loc.AgentTypeDlgTitle)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+
+        <Control Id="AgentTypeAdGroup" Type="RadioButtonGroup" X="20" Y="100" Width="330" Height="80" Property="AGENTTYPE">
+          <RadioButtonGroup>
+            <RadioButton Value="ad"     X="0" Y="0"  Width="330" Height="40" Text="ad — 域控 (DC) 上的复制状态收集器" />
+            <RadioButton Value="non-ad" X="0" Y="40" Width="330" Height="40" Text="non-ad — 成员服务器监控器" />
+          </RadioButtonGroup>
+        </Control>
+      </Dialog>
+
+      <!--
+        CenterConfigDlg: two Edit controls bound to CENTERURL and
+        AGENTTOKEN. AGENTTOKEN is masked (Password="yes"). No service-
+        account ComboBox — R1 keeps the service as LocalSystem, set by
+        NSSM's `nssm install` default at install time.
+
+        Validation: there is NO DoAction ValidateProperties Publish here.
+        Validation of CENTERURL / AGENTTOKEN / AGENTTYPE happens inside
+        the deferred ConfigureAgent CA (CA/ConfigureAgentAction.cs).
+        Silent installs reach that validator directly; GUI installs
+        reach it after the user clicks Next on this dialog (the install
+        does not abort until the deferred CA fires — if a user types a
+        bad URL/token, the validate step inside ConfigureAgent throws
+        and MSI rolls the transaction back, surfacing the validation
+        message in the MSI error dialog).
+      -->
+      <Dialog Id="CenterConfigDlg" Width="370" Height="270" Title="!(loc.CenterConfigDlgTitle)">
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg" Condition="1" />
+        </Control>
+
+        <Control Id="Description" Type="Text" X="9" Y="23" Width="354" Height="60" Text="!(loc.CenterConfigDlgDescription)" />
+        <Control Id="Title"      Type="Text" X="9" Y="6"  Width="354" Height="15" Text="!(loc.CenterConfigDlgTitle)" />
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+
+        <Control Id="CenterUrlLabel"   Type="Text" X="20"  Y="100" Width="80"  Height="15" Text="CenterUrl:" />
+        <Control Id="CenterUrlEdit"    Type="Edit" X="100" Y="97"  Width="240" Height="18" Property="CENTERURL" />
+        <Control Id="AgentTokenLabel"  Type="Text" X="20"  Y="130" Width="80"  Height="15" Text="AgentToken:" />
+        <Control Id="AgentTokenEdit"   Type="Edit" X="100" Y="127" Width="240" Height="18" Property="AGENTTOKEN" Password="yes" />
+      </Dialog>
+    </UI>
+
+    <!--
+      Custom <UI>: Publish events wire the dialog flow.
+
+      Back navigation lands on the previous dialog; NewDialog events
+      without Order= are fine because each control only has one
+      NewDialog Publish. The override patterns below step on top of
+      whatever WixUI_Advanced wixlib declares — WixUI_Advanced sets
+      WelcomeDlg.Next → LicenseAgreementDlg; we override that to
+      WelcomeDlg.Next → AgentTypeDlg so our flow takes over. Similarly
+      we override the Back transitions so a user who clicks Back on
+      InstallDirDlg returns to CenterConfigDlg (not the default
+      LicenseAgreementDlg).
+
+      DialogRef entries keep the linker from dropping built-in dialogs
+      our dialogs reference but don't declare (WelcomeDlg, InstallDirDlg,
+      etc.).
+    -->
+    <UI Id="WixUI_AgentInstaller">
+      <!-- DialogRefs so the linker keeps the built-in dialogs we navigate to. -->
+      <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="InstallDirDlg" />
+      <DialogRef Id="BrowseDlg" />
+      <DialogRef Id="VerifyReadyDlg" />
+      <DialogRef Id="ExitDialog" />
+      <DialogRef Id="AgentTypeDlg" />
+      <DialogRef Id="CenterConfigDlg" />
+
+      <!--
+        Override WelcomeDlg.Next away from the LicenseAgreementDlg that
+        WixUI_InstallDir's wixlib ships. Higher Order (a typical
+        "last-writer-wins" convention for ControlEvent) makes the linker's
+        ControlEvent merger prefer this row. We emit only the NOT Installed
+        override; the wixlib already declares `Value="VerifyReadyDlg"
+        Condition="Installed AND PATCH"` for the maintenance flow.
+
+        Order=999 chosen because wixlib generally uses lower Orders
+        (1-4); MSI's ControlEvent table at runtime executes higher-Order
+        events last. If two events both fire, the higher-Order event
+        achieves the final NewDialog target for that Dialog+Control.
+      -->
+      <Publish Dialog="WelcomeDlg"   Control="Next" Event="NewDialog" Value="AgentTypeDlg" Order="999" Condition="NOT Installed" />
+
+      <!-- AgentTypeDlg: Next → CenterConfigDlg, Back → WelcomeDlg. -->
+      <Publish Dialog="AgentTypeDlg" Control="Next" Event="NewDialog" Value="CenterConfigDlg" Condition="NOT Installed" />
+      <Publish Dialog="AgentTypeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg"     Condition="NOT Installed" />
+
+      <!-- CenterConfigDlg: Next → InstallDirDlg, Back → AgentTypeDlg. -->
+      <Publish Dialog="CenterConfigDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Condition="NOT Installed" />
+      <Publish Dialog="CenterConfigDlg" Control="Back" Event="NewDialog" Value="AgentTypeDlg"  Condition="NOT Installed" />
+
+      <!--
+        InstallDirDlg: bind WIXUI_INSTALLDIR to the Browse path and go
+        forward to VerifyReadyDlg. The SetTargetPath event commits the
+        BrowseDlg-changed path; NewDialog transitions to the next step.
+      -->
+      <Publish Dialog="InstallDirDlg" Control="Next"        Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="3" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Next"        Event="NewDialog"     Value="VerifyReadyDlg"     Order="4" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="Back"        Event="NewDialog"     Value="CenterConfigDlg"   Order="999" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog"  Value="BrowseDlg"                  Order="2" Condition="NOT Installed" />
+
+      <!-- BrowseDlg OK → InstallDirDlg after the user picks a folder. -->
+      <Publish Dialog="BrowseDlg" Control="OK" Event="CheckTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SetTargetPath"   Value="[_BrowseProperty]" Order="3" Condition="NOT Installed" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="NewDialog"       Value="InstallDirDlg"     Order="4" Condition="NOT Installed" />
+
+      <!--
+        VerifyReadyDlg Back → InstallDirDlg — WixUI_InstallDir's wixlib
+        ALREADY publishes this transition (InstallDirDlg Back) at the same
+        primary key, so we don't redeclare it here. Keeping the wixlib's
+        row is correct because the wixlib's Back-flow is exactly what we
+        want (the user's Back from the ready screen returns to InstallDir,
+        which is the dialog we reached via CenterConfigDlg's Next).
+
+        If the wixlib's row was different (e.g. VerifyReadyDlg Back →
+        LicenseAgreementDlg), we would override it here. With
+        WixUI_InstallDir the row is already correct.
+      -->
+    </UI>
+  </Fragment>
+</Wix>

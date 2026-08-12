@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="$(var.ProductName)"
+           Version="$(var.ProductVersion)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="$(var.UpgradeCode)"
+           ProductCode="$(var.ProductCode)"
+           InstallerVersion="500"
+           Language="2052">
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed."
+                  AllowSameVersionUpgrades="no" />
+
+    <!--
+      Task 7 — Major upgrade wiring (verified empirically, see report).
+
+      WiX 5's <MajorUpgrade> element auto-emits two rows in the Upgrade table:
+
+        Row 1 (Attributes=1): VersionMax = <ProductVersion>
+                              Prevents a newer installed package from being
+                              downgraded. Bumps automatically when we change
+                              <ProductVersion>.
+
+        Row 2 (Attributes=2): VersionMin = <ProductVersion>
+                              Used by FindRelatedProducts (InstallExecuteSequence
+                              action at sequence=25) to discover an installed
+                              related product to upgrade in-place. Bumps
+                              automatically when we change <ProductVersion>.
+
+      ProductCode MUST stay constant across versions (currently
+      {B5C7E17B-1234-4567-89AB-CDEF01234567}). MajorUpgrade is keyed on
+      UpgradeCode + ProductCode; bumping ProductCode would break upgrade —
+      MSI would see v1.0.1 as a NEW product family, not as an upgrade of
+      v1.0.0, and would install side-by-side instead of replacing in-place.
+      Only <ProductVersion> changes between v1.0.0 and v1.0.1.
+
+      UpgradeCode is also constant ({C6D8E28C-2345-5678-9ABC-DEF123456789}).
+      Bumping UpgradeCode would orphan the installed v1.0.0 product — its
+      UpgradeCode wouldn't match v1.0.1's, so FindRelatedProducts wouldn't
+      find it.
+
+      Bumping <ProductVersion> requires only a single .csproj edit and a
+      rebuild. Verified by probing both v1.0.0 and v1.0.1 built MSIs:
+
+        v1.0.0  ProductCode={B5C7E17B-...}  UpgradeCode={C6D8E28C-...}
+                ProductVersion=1.0.0.0
+                Upgrade(VersionMax=1.0.0.0, Attributes=1)  ← prevent downgrade
+                Upgrade(VersionMin=1.0.0.0, Attributes=2)  ← find related
+
+        v1.0.1  ProductCode={B5C7E17B-...}  UpgradeCode={C6D8E28C-...}
+                ProductVersion=1.0.1.0
+                Upgrade(VersionMax=1.0.1.0, Attributes=1)  ← prevent downgrade
+                Upgrade(VersionMin=1.0.1.0, Attributes=2)  ← find related
+
+      Real install / uninstall round-trip is deferred to Task 9 (Pester E2E
+      on a Windows VM); this task verifies the wiring via the linked MSI's
+      Property + Upgrade tables only.
+    -->
+
+    <!--
+      Block install on anything below Windows 10 / Server 2016 (both report
+      VersionNT64 = 1000). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt
+    -->
+    <Launch Message="AD Dashboard Agent requires Windows 10 / Server 2016 or later (x64)."
+            Condition="Installed OR VersionNT64 &gt;= 1000" />
+
+    <Media Id="1" Cabinet="agent" EmbedCab="yes" CompressionLevel="high" />
+
+    <Feature Id="AgentFeature" Title="AD Dashboard Agent" Level="1">
+      <ComponentGroupRef Id="AgentComponents" />
+    </Feature>
+
+    <UI>
+      <!--
+        Task 6: pulled WixUI_InstallDir as the UI base. WixUI_InstallDir
+        supplies the standard button strings, the WelcomeDlg +
+        InstallDirDlg + VerifyReadyDlg flow, and WIXUI_INSTALLDIR.
+
+        Dialogs.wxs declares two extra dialogs (AgentTypeDlg,
+        CenterConfigDlg) and a <UI Id="WixUI_AgentInstaller"> fragment
+        whose Publish events override WixUI_InstallDir's transitions:
+          - WelcomeDlg.Next → AgentTypeDlg (replaces →LicenseAgreementDlg)
+          - AgentTypeDlg.Next → CenterConfigDlg
+          - CenterConfigDlg.Next → InstallDirDlg
+          - VerifyReadyDlg.Back → InstallDirDlg (kept from wixlib)
+        The <UIRef> pulls that fragment into the build; its Publish
+        events at higher Order override WixUI_InstallDir's defaults.
+
+        WixUICostingPopupOptOut (declared further below in <WixVariable>)
+        disables the "evaluating disk cost" popup that the wixext
+        ResumeDlg / PrepareDlg reference. Without that variable the WiX 5
+        bind lookup fails with WIX0197 ("bind variable
+        !(wix.WixUICostingPopupOptOut) is unknown").
+
+        Localization: ui/WixUI_zh_CN.wxl auto-loads from the csproj compile
+        root via its WixLocalization Culture="zh-CN" root element.
+        Language="2052" on Package above matches.
+      -->
+      <ui:WixUI Id="WixUI_InstallDir" />
+      <UIRef Id="WixUI_AgentInstaller" />
+    </UI>
+
+    <!--
+      PropertyRefs pull CENTERURL / AGENTTOKEN / AGENTTYPE /
+      PRESERVE_APPSETTINGS from Properties.wxs (the source of truth, per
+      the controller's mandatory correction #3). Each ref makes the linker
+      add the Property table row from the Properties.wxs fragment.
+      WIXUI_INSTALLDIR / ApplicationFolderName / WixAppFolder are NOT
+      ref'd here — WixUI_InstallDir wixlib already declares them, and we
+      override WIXUI_INSTALLDIR's value inline below.
+
+      R1: NO SERVICECCOUNT / ServiceAccount PropertyRef. The service runs
+      as LocalSystem via NSSM's `nssm install` default.
+
+      The WixUI_InstallDir wixlib supplies WIXUI_INSTALLDIR with a default
+      of ProgramFiles64Folder\$(var.ProductName); we override inline to
+      C:\addashboard\Agent to match the PS1 installer.
+    -->
+    <PropertyRef Id="CENTERURL" />
+    <PropertyRef Id="AGENTTOKEN" />
+    <PropertyRef Id="AGENTTYPE" />
+    <PropertyRef Id="PRESERVE_APPSETTINGS" />
+    <Property Id="WIXUI_INSTALLDIR" Value="C:\addashboard\Agent" />
+
+    <!-- Link CustomActions.wxs into the Package. WiX 5 fragments are only
+         pulled into the linker if something reachable from Package references
+         an element inside them. <CustomActionRef> to any element inside the
+         fragment drags in the whole fragment, including Binary "CA.dll", all
+         <CustomAction>s, and all scheduling entries in <InstallExecuteSequence>.
+         Without these refs the fragment is an orphan and the built MSI contains
+         no CA.dll, no CustomAction rows, and no sequence rows for our pipeline
+         (C-1 caught in Task 4 fix round). One ref to ConfigureAgent covers the
+         install path; the uninstall path's ref is added here as well so the
+         linker recognises RemoveAgentService is used. -->
+    <CustomActionRef Id="ConfigureAgent" />
+    <CustomActionRef Id="RemoveAgentService" />
+  </Package>
+
+  <Fragment>
+    <!-- INSTALLDIR's full path is governed by WIXUI_INSTALLDIR = C:\addashboard\Agent.
+         WIXUI_INSTALLDIR overrides the Name attribute below at install time. -->
+    <Directory Id="INSTALLDIR" Name="Agent">
+      <Directory Id="INSTALLDIR.src" Name="src" />
+      <Directory Id="INSTALLDIR.node" Name="node" />
+      <Directory Id="INSTALLDIR.node_modules" Name="node_modules" />
+      <Directory Id="INSTALLDIR.scripts" Name="scripts" />
+      <Directory Id="INSTALLDIR.nssm" Name="nssm" />
+    </Directory>
+  </Fragment>
+</Wix>

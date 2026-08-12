@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="zh-CN" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <!--
+    Task 6 zh-CN localization. Replaces the Task 1 placeholder copy with the
+    full strings from .superpowers/sdd/2026-08-11-msi-agent-installer/task-6-brief.md.
+
+    WixUI_Common provides the standard buttons (WixUINext / WixUIBack / WixUICancel
+    / WixUIFinish) and the WelcomeDlg/InstallDirDlg/VerifyReadyDlg/ProgressDlg/
+    ExitDialog titles via !loc references. We supply the titles/descriptions for
+    the custom dialogs (AgentTypeDlgTitle / AgentTypeDlgDescription /
+    CenterConfigDlgTitle / CenterConfigDlgDescription) and override the built-in
+    titles so the entire flow reads in Simplified Chinese.
+
+    WiX 5 requires the Value= attribute (inner text is obsolete).
+  -->
+
+  <!-- Standard buttons (also provided by WixUI_Common; redefined here so the
+       brief's literal strings are visible in the .wxl even if the wixext is
+       upgraded in the future). -->
+  <String Id="WixUINext" Value="下一步(&amp;N)" />
+  <String Id="WixUIBack" Value="上一步(&amp;B)" />
+  <String Id="WixUICancel" Value="取消(&amp;C)" />
+  <String Id="WixUIFinish" Value="完成(&amp;F)" />
+
+  <!-- Welcome (built-in WelcomeDlg). -->
+  <String Id="WelcomeDlgTitle" Value="{\WixUI_Font_Bigger}欢迎使用 AD Dashboard Agent 安装向导" />
+  <String Id="WelcomeDlgDescription" Value="安装向导将在您的计算机上安装 [ProductName]。&#x0a;&#x0a;此安装程序需要管理员权限,并将注册 Windows 服务 &quot;ADReplicationAgent&quot;。" />
+
+  <!-- Custom: Agent type selection. -->
+  <String Id="AgentTypeDlgTitle" Value="{\WixUI_Font_Bigger}选择 Agent 类型" />
+  <String Id="AgentTypeDlgDescription" Value="请选择此 Agent 的运行模式:&#x0a;&#x0a;ad — 域控 (DC) 上的复制状态收集器&#x0a;&#x0a;non-ad — 成员服务器监控器 (自注册 + 包拉取 + 心跳)" />
+
+  <!-- Custom: Center connection + token. -->
+  <String Id="CenterConfigDlgTitle" Value="{\WixUI_Font_Bigger}配置中心连接" />
+  <String Id="CenterConfigDlgDescription" Value="输入中心服务器 URL 和共享的 Agent Token。&#x0a;&#x0a;CenterUrl 示例: http://center:8081&#x0a;&#x0a;AgentToken 从中心 appsettings.json 的 agentToken 字段获取" />
+
+  <!-- Install dir (built-in InstallDirDlg). -->
+  <String Id="InstallDirDlgTitle" Value="{\WixUI_Font_Bigger}选择安装位置" />
+  <String Id="InstallDirDlgDescription" Value="选择 AD Dashboard Agent 的安装文件夹。" />
+
+  <!-- Exit (built-in ExitDialog). -->
+  <String Id="ExitDialogTitle" Value="{\WixUI_Font_Bigger}安装完成" />
+  <String Id="ExitDialogDescription" Value="AD Dashboard Agent 已安装并启动。&#x0a;&#x0a;查看服务运行状态: Get-Service ADReplicationAgent&#x0a;&#x0a;在中心查看 Agent 是否在线: GET /api/dashboard/agents" />
+</WixLocalization>

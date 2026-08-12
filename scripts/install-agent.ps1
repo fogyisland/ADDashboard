@@ -21,6 +21,19 @@ param(
   [string]$PsScriptSrc
 )
 
+# ============================================================================
+# Local / WinRM remote install for AD Dashboard Agent. As of v2.1+, this is
+# the SECONDARY install path; the primary path is the WiX MSI installer
+# (addashboard-agent-x64-<version>.msi). Operators who can double-click an
+# MSI (or run `msiexec /i ... /qn CENTERURL=... AGENTTOKEN=... AGENTTYPE=...`)
+# should prefer the MSI path — see docs/operations/deployment.md §Agent MSI
+# 安装. This script remains for:
+#   - WinRM-based remote install to multiple machines from a management box
+#   - Air-gapped environments where pulling the MSI binary is undesirable
+# Both paths produce the same service name (ADReplicationAgent) and the same
+# NSSM configuration, so you can switch between them freely.
+# ============================================================================
+
 $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force

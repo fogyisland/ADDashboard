@@ -311,8 +311,8 @@ All dialogs skipped. ConfigureAgentAction still runs (reads MSI properties from 
 - `<Product Version="1.0.0.0" UpgradeCode="{FIXED-GUID-001}">` — UpgradeCode fixed forever; ProductVersion bumped on each release.
 - `<MajorUpgrade Schedule="afterInstallInitialize" DowngradeErrorMessage="..." AllowSameVersionUpgrades="no" />` — detects existing product and uninstalls before installing new.
 - On upgrade: existing service `StopServices`'d → old files `RemoveFile`'d → new files `InstallFiles`'d → `ConfigureAgentAction` runs → service re-registered and started.
-- `appsettings.json` preservation: dialog detects existing file and prompts "preserve current CenterUrl/AgentToken?" → sets `PRESERVE_APPSETTINGS=1` if user selects Yes. If file `<File Source="appsettings.json" NeverOverwrite="yes" />` (WiX never overwrites on re-install), the CA reads existing values when `PRESERVE_APPSETTINGS=1` and skips the template-merge.
-- `queue.db`, `appsettings.json` marked `NeverOverwrite="yes"` to survive both re-install and uninstall scenarios.
+- `appsettings.json` preservation (CA-only model, as implemented): `appsettings.json` is **not** a File-table entry — it is generated at install time by `ConfigureAgentAction.WriteAppsettingsJson`. `NeverOverwrite="yes"` is therefore meaningless for it. Preservation is implemented purely inside the CA: `WriteAppsettingsJson` short-circuits when `PRESERVE_APPSETTINGS=1` **and** the file already exists on disk. Default is `PRESERVE_APPSETTINGS=0`, i.e. an upgrade or reinstall **overwrites** `appsettings.json` with the `CENTERURL` / `AGENTTOKEN` passed on this install's command line. There is no dialog toggle for this; pass `PRESERVE_APPSETTINGS=1` on the msiexec command line to keep the old config.
+- `queue.db` is a runtime SQLite file created by the agent process; it is never staged into the MSI, so `RemoveFiles` cannot delete it and no `NeverOverwrite` marking applies.
 
 ### Reboot
 
@@ -338,7 +338,8 @@ msiexec /x addashboard-agent-x64-1.0.0.msi [/qn] [/l*v "<log>"]
                                 (idempotent — no-op if service already gone)
 4. RemoveRegistryValues
 5. RemoveFiles                (deletes agent/, node/, nssm/, scripts/;
-                                PRESERVES appsettings.json + queue.db if NeverOverwrite)
+                                appsettings.json + queue.db are not File-table
+                                entries, so they are left on disk)
 6. RemoveFolders
 ```
 
@@ -349,8 +350,8 @@ msiexec /x addashboard-agent-x64-1.0.0.msi [/qn] [/l*v "<log>"]
 | `agent.js`, `src/*`, `scripts/*` | Overwrite | Delete |
 | `node/*`, `nssm/*` | Overwrite | Delete |
 | `node_modules/*` | Overwrite | Delete |
-| `appsettings.json` | `NeverOverwrite="yes"` — install skips if exists | **Preserved** unless user passes `/remove REMOVE_APPSETTINGS=1` |
-| `queue.db` | `NeverOverwrite="yes"` | **Preserved** for re-install |
+| `appsettings.json` | CA-generated (not in File table); overwritten unless `PRESERVE_APPSETTINGS=1` and file exists | **Left on disk** — MSI `RemoveFiles` cannot delete a file it does not own. Remove manually if desired. |
+| `queue.db` | Runtime SQLite, created by the agent process (not in File table) | **Left on disk** — same reason. |
 
 ### Rollback (install failed mid-way)
 

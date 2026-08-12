@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Task 6: MSI properties consumed by ConfigureAgentAction's deferred CA
+  (CA/ConfigureAgentAction.cs).
+
+  Source of truth per the controller's mandatory correction #3.
+  Product.wxs references each Property by Id so the linker pulls them
+  into the Property table; WIXUI_INSTALLDIR stays as an inline override
+  in Product.wxs because WixUI_Advanced wixlib already declares it.
+
+  R1 (LocalSystem default) authoritative — no SERVICECCOUNT / ServiceAccount
+  property is defined here. The brief's sample is stale and intentionally
+  not followed. ConfigureAgentAction.cs never reads a service-account
+  property; introducing one would silently drift the CAs.
+
+  Property semantics:
+    CENTERURL            — absolute http/https URL of the dashboard Center.
+                           Hidden so it does not appear in verbose MSI logs
+                           (msiexec /l*v) and so it is persisted in the
+                           Property table for the deferred CA. WiX 5
+                           ignores empty <Property> elements without
+                           Hidden/Secure/Admin, so this attribute is
+                           load-bearing for silent installs that pass
+                           the value via PROPERTY= on the msiexec command.
+    AGENTTOKEN           — shared secret issued by the Center (>= 16 chars
+                           enforced in ConfigureAgentAction.cs::Validate).
+                           Hidden for the same reason as CENTERURL.
+    AGENTTYPE            — "ad" (domain controller collector) or "non-ad"
+                           (member-server monitor). Defaults to "ad" so a
+                           silent msiexec /i with no AGENTTYPE defaults
+                           sensibly. Validation in the deferred CA rejects
+                           anything else.
+    PRESERVE_APPSETTINGS — "0" (write appsettings.json on every install)
+                           or "1" (skip the write if appsettings.json
+                           already exists on disk). Defaults to "0".
+                           Task 7 owns the upgrade-side preservation
+                           policy; this property is plumbed today so
+                           Task 7 can flip it on without rewriting WiX.
+    APPLICATIONFOLDERNAME — WixUI_Advanced / InstallScopeDlg wixlib symbol.
+                           Defaulted to "AD Dashboard Agent" so the per-user
+                           install / per-machine install scope dialog has a
+                           folder name to present. We don't actually
+                           install under per-user scope (NSSM + sc.exe
+                           service registration requires admin/machine
+                           scope), so this value is only used by the
+                           wixlib's path defaults — INSTALLDIR's full path
+                           comes from WIXUI_INSTALLDIR override in
+                           Product.wxs.
+    WIXAPPFOLDER          — WixUI_Advanced wixlib symbol. Defaulted to
+                           "Agent" so the wixlib's directory references
+                           compile. We override INSTALLDIR's full path
+                           explicitly so WIXAPPFOLDER's value is
+                           decorative; without declaring it the linker
+                           fails with WIX0094 ("identifier 'Property:
+                           WixAppFolder' could not be found").
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <Property Id="CENTERURL"             Hidden="yes" />
+    <Property Id="AGENTTOKEN"            Hidden="yes" />
+    <Property Id="AGENTTYPE"             Value="ad" />
+    <Property Id="PRESERVE_APPSETTINGS"  Value="0" />
+  </Fragment>
+</Wix>
+
