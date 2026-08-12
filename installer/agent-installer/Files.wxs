@@ -67,50 +67,5 @@
            WiX 5 generates a Component per harvested file with ComponentId="*". -->
       <Files Include="$(var.StagingDir)\node_modules\**" Directory="INSTALLDIR.node_modules" />
     </ComponentGroup>
-
-    <!--
-      Custom action pipeline. The CustomActionData string assembled by
-      ScheduleConfigureAgent is consumed by the deferred ConfigureAgent at
-      install time. RollbackAgent runs in the rollback path so an install
-      failure mid-CustomAction cleans up the NSSM-registered service.
-      See installer/agent-installer/CA/ConfigureAgentAction.cs for the body.
-
-      R1: Service runs as LocalSystem (NSSM default for `nssm install` when
-      no ObjectName is set), matching install-agent.ps1.
-    -->
-    <Binary Id="CA.dll" SourceFile="$(var.AgentInstaller.CA.TargetPath)" />
-
-    <CustomAction Id="ScheduleConfigureAgent"
-                  Return="check"
-                  Property="ConfigureAgent"
-                  Value="INSTALLDIR=[INSTALLDIR];CENTERURL=[CENTERURL];AGENTTOKEN=[AGENTTOKEN];AGENTTYPE=[AGENTTYPE];PRESERVE_APPSETTINGS=[PRESERVE_APPSETTINGS]" />
-
-    <CustomAction Id="ConfigureAgent"
-                  BinaryRef="CA.dll"
-                  DllEntry="ConfigureAgent"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="check" />
-
-    <CustomAction Id="RollbackAgent"
-                  BinaryRef="CA.dll"
-                  DllEntry="RollbackAgent"
-                  Execute="rollback"
-                  Impersonate="no"
-                  Return="ignore" />
-
-    <InstallExecuteSequence>
-      <!-- WiX 5 syntax: <Custom Action="..." After="..." Condition="..."/> is
-           self-closing. The "virtual " prefix tells WiX to NOT generate a
-           CustomAction table entry for the scheduling entry — the actual
-           custom action (ScheduleConfigureAgent above) already exists, and
-           the virtual entry just places it in the sequence. The condition
-           gates when it runs.
-           NOT Installed OR REINSTALL: first install or reinstall (re-set
-           NSSM params on upgrade). -->
-      <Custom Action="ScheduleConfigureAgent" After="InstallFiles" Condition="NOT Installed OR REINSTALL" />
-      <Custom Action="ConfigureAgent" After="ScheduleConfigureAgent" Condition="NOT Installed OR REINSTALL" />
-      <Custom Action="RollbackAgent" Before="ConfigureAgent" Condition="NOT Installed OR REINSTALL" />
-    </InstallExecuteSequence>
   </Fragment>
 </Wix>

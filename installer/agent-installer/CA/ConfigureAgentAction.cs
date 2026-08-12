@@ -187,7 +187,13 @@ namespace ADDashboard.AgentInstaller.CA
                 p.StartInfo.RedirectStandardOutput = true;
                 p.StartInfo.RedirectStandardError = true;
                 p.Start();
-                p.WaitForExit();
+                // I-3: bounded wait to avoid hanging the deferred CA forever.
+                // On timeout, kill the child and throw — MSI will roll back.
+                if (!p.WaitForExit(ProcessTimeoutMs))
+                {
+                    try { p.Kill(); } catch { /* already exited */ }
+                    throw new Exception($"Process '{exe} {args}' did not exit within {ProcessTimeoutMs} ms; killed.");
+                }
                 return p.ExitCode;
             }
         }
@@ -204,10 +210,22 @@ namespace ADDashboard.AgentInstaller.CA
                 p.StartInfo.RedirectStandardError = true;
                 p.Start();
                 var output = p.StandardOutput.ReadToEnd();
-                p.WaitForExit();
+                // I-3: bounded wait. If the capture completes but the process
+                // hangs on exit (e.g. blocked stderr pipe), force-kill so the
+                // process isn't left running.
+                if (!p.WaitForExit(ProcessTimeoutMs))
+                {
+                    try { p.Kill(); } catch { /* already exited */ }
+                    throw new Exception($"Process '{exe} {args}' did not exit within {ProcessTimeoutMs} ms; killed.");
+                }
                 return output;
             }
         }
+
+        // I-3: hard cap on how long any single child-process invocation may run.
+        // MSI deferred CAs run synchronously inside the install transaction; an
+        // unbounded WaitForExit() turns a misbehaving child into a stuck install.
+        private const int ProcessTimeoutMs = 30 * 1000;
 
         internal static void RunNssmSet(string nssm, string key, string value)
         {
