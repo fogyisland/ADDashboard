@@ -208,17 +208,29 @@ namespace ADDashboard.AgentInstaller.CA
                 p.StartInfo.CreateNoWindow = true;
                 p.StartInfo.RedirectStandardOutput = true;
                 p.StartInfo.RedirectStandardError = true;
+                // I-A: use async output capture so the read does not block on a
+                // child holding stdout open past ProcessTimeoutMs. A blocking
+                // ReadToEnd() before WaitForExit() would let a misbehaving child
+                // (e.g. sc.exe query against a slow RPC endpoint) hang forever,
+                // freezing the deferred CA. Drain stdout into a StringBuilder via
+                // OutputDataReceived; if we hit the deadline, kill the child and
+                // complete the buffer with whatever was captured so far.
+                var output = new StringBuilder();
+                p.OutputDataReceived += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
                 p.Start();
-                var output = p.StandardOutput.ReadToEnd();
-                // I-3: bounded wait. If the capture completes but the process
-                // hangs on exit (e.g. blocked stderr pipe), force-kill so the
-                // process isn't left running.
+                p.BeginOutputReadLine();
                 if (!p.WaitForExit(ProcessTimeoutMs))
                 {
                     try { p.Kill(); } catch { /* already exited */ }
-                    throw new Exception($"Process '{exe} {args}' did not exit within {ProcessTimeoutMs} ms; killed.");
+                    // Wait briefly/boundedly for the OS to reap the killed process
+                    // and for the async output pump to drain. Net472-compatible;
+                    // no async/await here on purpose.
+                    try { p.WaitForExit(5 * 1000); } catch { /* swallow */ }
+                    throw new Exception($"Process '{exe} {args}' did not exit within {ProcessTimeoutMs} ms; killed. Captured so far: {output}");
                 }
-                return output;
+                // Ensure all async output events are flushed before reading.
+                p.WaitForExit();
+                return output.ToString();
             }
         }
 

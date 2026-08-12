@@ -34,10 +34,9 @@
 
     <InstallExecuteSequence>
       <!-- WiX 5 syntax: <Custom Action="..." After="..." Condition="..."/> is
-           self-closing. The "virtual" prefix tells WiX to NOT generate a
-           CustomAction table entry for the scheduling entry — the actual
-           custom action (ScheduleConfigureAgent above) already exists, and
-           the virtual entry just places it in the sequence. The condition
+           a self-closing scheduling entry. It places the existing
+           <CustomAction> (ScheduleConfigureAgent above) into the sequence;
+           it does NOT generate a new CustomAction table row. The condition
            gates when it runs.
            NOT Installed OR REINSTALL: first install or reinstall (re-set
            NSSM params on upgrade). -->

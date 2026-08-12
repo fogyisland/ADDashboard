@@ -44,6 +44,15 @@
     <Property Id="AGENTTOKEN" Hidden="yes" />
     <Property Id="AGENTTYPE" Value="ad" />
     <Property Id="PRESERVE_APPSETTINGS" Value="0" />
+
+    <!-- Link CustomActions.wxs into the Package. WiX 5 fragments are only
+         pulled into the linker if something reachable from Package references
+         an element inside them. One <CustomActionRef> drags in the whole
+         fragment, including Binary "CA.dll", all three <CustomAction>s, and
+         the <InstallExecuteSequence>. Without this ref the fragment is an
+         orphan and the built MSI contains no CA.dll, no CustomAction rows,
+         and no sequence rows for our pipeline (C-1). -->
+    <CustomActionRef Id="ConfigureAgent" />
   </Package>
 
   <Fragment>
