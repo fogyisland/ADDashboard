@@ -110,6 +110,56 @@ cd ADDashboard
 
 每台 DC 上都需要一份 agent。脚本支持**本地安装**和**远程批量安装**（通过 WinRM `Invoke-Command`）。
 
+### Agent MSI 安装（推荐）
+
+自 v2.1 起，MSI 是 AD Dashboard Agent 的**首选**安装路径。MSI 自包含 Node.js 20 LTS、node_modules、NSSM，**装机时零网络访问**。服务以 LocalSystem 身份运行（与 `install-agent.ps1` 一致，不可配置）。
+
+#### 双击安装（GUI）
+
+1. 把 `addashboard-agent-x64-<version>.msi` 拷到目标机（DC 或成员服务器）
+2. 双击，按向导填：
+   - **Agent 类型**：ad（域控）或 non-ad（成员服务器）
+   - **CenterUrl + AgentToken**：从中心的 `appsettings.json` `agentToken` 字段复制
+   - **安装路径**：默认 `C:\addashboard\Agent`
+3. Finish — 服务 `ADReplicationAgent` 自动启动
+
+#### 静默安装（SCCM / Ansible / 命令行）
+
+```powershell
+msiexec /i addashboard-agent-x64-1.0.0.0.msi /qn /l*v "$env:TEMP\agent-install.log" `
+  CENTERURL="http://center:8081" `
+  AGENTTOKEN="456fb..." `
+  AGENTTYPE="ad"
+```
+
+可加 `INSTALLDIR="D:\addashboard\Agent"` 改安装路径。
+
+退出码：
+- `0` = 成功
+- `1603` = 属性校验失败（看 `$env:TEMP\agent-install.log`）
+
+#### 升级
+
+跑新版 MSI 即可，旧版自动卸载并升级（MajorUpgrade）。默认 `PRESERVE_APPSETTINGS=0`，会用本次安装时传的 `CENTERURL` / `AGENTTOKEN` **覆盖** `appsettings.json`；如需保留旧配置请传 `PRESERVE_APPSETTINGS=1`。
+
+#### 卸载
+
+```powershell
+msiexec /x addashboard-agent-x64-1.0.0.0.msi /qn
+```
+
+服务自动注销。`appsettings.json`（安装时由自定义动作生成，不在 MSI File 表中）和 `queue.db`（运行时 SQLite）不会被 MSI 自动删除；如需彻底清理请手动 `Remove-Item -Recurse $InstallDir`。
+
+#### 与 WinRM 推送的关系
+
+MSI 是**本地**装（双击或 msiexec）。要批量推到多台 DC/member 仍用 `.\scripts\install-agent.ps1 -ComputerName ...`（走 WinRM）。两条路径产生**同名服务 `ADReplicationAgent` + 同 NSSM 配置**，可任意切换。
+
+#### 验证
+
+- `Get-Service ADReplicationAgent` 状态应为 Running
+- `Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 50` 看启动日志
+- 中心侧：登录 → Agents 视图，新装机器 30 秒内应出现
+
 ### 单机本地安装（在 DC 上执行）
 
 ```powershell
