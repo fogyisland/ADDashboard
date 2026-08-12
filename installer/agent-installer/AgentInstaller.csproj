@@ -20,4 +20,11 @@
     <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
     <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Custom Action project. WiX 5 SDK auto-detects the referenced project's
+         <AssemblyName> and exposes it as $(var.AssemblyName.TargetPath).
+         The CA csproj sets <AssemblyName>AgentInstallerCA</AssemblyName>, so
+         CustomActions.wxs references $(var.AgentInstallerCA.TargetPath). -->
+    <ProjectReference Include="CA\AgentInstaller.CA.csproj" />
+  </ItemGroup>
 </Project>

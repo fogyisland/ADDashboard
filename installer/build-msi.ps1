@@ -115,6 +115,21 @@ if (-not (Test-Path $nodeModulesDst)) {
   }
 }
 
+# 5. Stage NSSM (copy from publish/nssm). Task 4's ConfigureAgentAction calls
+#    `nssm install ADReplicationAgent` at install time, so nssm.exe must be in
+#    the bundle. The installer copies it to staging\nssm\nssm.exe; the MSI
+#    ships it at INSTALLDIR\nssm\nssm.exe.
+$nssmSrc = Join-Path $root 'publish\nssm\nssm.exe'
+$nssmDstDir = Join-Path $staging 'nssm'
+$nssmDst = Join-Path $nssmDstDir 'nssm.exe'
+if (-not (Test-Path $nssmDst)) {
+  if (-not (Test-Path $nssmSrc)) {
+    throw "publish/nssm/nssm.exe not found. Run scripts/common/Ensure-Nssm.ps1 to download it."
+  }
+  if (-not (Test-Path $nssmDstDir)) { New-Item -ItemType Directory -Path $nssmDstDir -Force | Out-Null }
+  Copy-Item -Path $nssmSrc -Destination $nssmDst -Force
+}
+
 Push-Location (Join-Path $root 'installer\agent-installer')
 try {
   dotnet build -c Release -p:Platform=x64

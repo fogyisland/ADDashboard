@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
+    <ProjectGuid>{D7E9F3A1-AAAA-BBBB-CCCC-DDDDEEEEFFFF}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>ADDashboard.AgentInstaller.CA</RootNamespace>
+    <AssemblyName>AgentInstallerCA</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- WiX 5 DTF: WixToolset.Dtf.CustomAction brings in the SfxCA shim + the
+         [CustomAction] attribute + MSI runtime types. WixToolset.Dtf.WindowsInstaller
+         is a separate package exposing Session / CustomActionData / ActionResult. -->
+    <PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Dtf.WindowsInstaller" Version="5.0.2" />
+  </ItemGroup>
+</Project>

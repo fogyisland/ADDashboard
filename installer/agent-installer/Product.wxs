@@ -30,6 +30,20 @@
     </UI>
 
     <Property Id="WIXUI_INSTALLDIR" Value="C:\addashboard\Agent" />
+
+    <!-- MSI properties consumed by ConfigureAgentAction.
+         CenterUrl / AgentToken / AgentType are passed at install time via
+         `msiexec /i ... CENTERURL=... AGENTTOKEN=... AGENTTYPE=...`.
+         CENTERURL and AGENTTOKEN are marked Hidden to suppress them in the
+         verbose MSI log (msiexec /l*v) and to ensure they're persisted in
+         the Property table — without Hidden/Secure/Admin, WiX 5 ignores
+         empty <Property> elements.
+         AgentType defaults to "ad"; PreserveAppsettings defaults to "0" so a
+         fresh install always writes appsettings.json. -->
+    <Property Id="CENTERURL" Hidden="yes" />
+    <Property Id="AGENTTOKEN" Hidden="yes" />
+    <Property Id="AGENTTYPE" Value="ad" />
+    <Property Id="PRESERVE_APPSETTINGS" Value="0" />
   </Package>
 
   <Fragment>
@@ -40,6 +54,7 @@
       <Directory Id="INSTALLDIR.node" Name="node" />
       <Directory Id="INSTALLDIR.node_modules" Name="node_modules" />
       <Directory Id="INSTALLDIR.scripts" Name="scripts" />
+      <Directory Id="INSTALLDIR.nssm" Name="nssm" />
     </Directory>
   </Fragment>
 </Wix>
