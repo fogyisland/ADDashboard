@@ -1,22 +1,84 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Custom-action pipeline. The CustomActionData string assembled by
-  ScheduleConfigureAgent is consumed by the deferred ConfigureAgent at
-  install time. RollbackAgent runs in the rollback path so an install
-  failure mid-CustomAction cleans up the NSSM-registered service.
-  See installer/agent-installer/CA/ConfigureAgentAction.cs for the body.
+  Custom-action pipeline. Three deferred DLL entry points share the CA.dll
+  binary installed under INSTALLDIR:
+
+    ScheduleConfigureAgent   (immediate, install/reinstall) — emits
+                              CustomActionData for ConfigureAgent and
+                              RollbackAgent (the install-reinstall rollback
+                              companion that runs before ConfigureAgent in
+                              the rollback phase).
+    ConfigureAgent           (deferred, Impersonate=no) — runs NSSM
+                              install + register + set + recovery.
+
+    ScheduleRemoveAgentService (immediate, uninstall-only) — emits
+                              CustomActionData for RemoveAgentService.
+    RemoveAgentService       (deferred, Impersonate=no) — uninstall-path
+                              cleanup that runs `nssm remove
+                              ADReplicationAgent confirm` after MSI's
+                              built-in StopServices and before RemoveFiles,
+                              while nssm.exe still exists on disk.
+
+    RollbackAgent            (rollback, Impersonate=no) — install-reinstall
+                              rollback companion: runs as a Type=3393 in-
+                              script rollback DLL scheduled BEFORE
+                              ConfigureAgent. If any deferred CA in the
+                              install chain throws, MSI rolls back and this
+                              companion removes the partial service so the
+                              next install does not collide on the name.
 
   R1: Service runs as LocalSystem (NSSM default for `nssm install` when
   no ObjectName is set), matching install-agent.ps1.
+
+  R2: This branch still accepts uninstall deleting appsettings.json. Task 7
+  owns any NeverOverwrite-preservation logic.
+
+  See installer/agent-installer/CA/ConfigureAgentAction.cs and
+  CA/RollbackAgentAction.cs for the bodies.
+
+  Sequencing rationale:
+    Install/reinstall condition: NOT Installed OR REINSTALL.
+        - First install: Installed=0, NOT Installed=1 → fires.
+        - Upgrade / reinstall: Installed=1, REINSTALL=1 → fires.
+        - Uninstall: Installed=1, REINSTALL=0 (msiexec /x does not set
+          REINSTALL=1) → does NOT fire. Safe — the rollback companion does
+          not run during uninstall.
+
+    Uninstall condition: Installed AND NOT REINSTALL.
+        - Uninstall: Installed=1, REINSTALL=0 → fires.
+        - First install: NOT Installed=0 → does NOT fire.
+        - Reinstall: REINSTALL=1 → does NOT fire. Safe — the install
+          rollback companion handles the reinstall cleanup path.
+
+  CustomActionData plumbing:
+    Each deferred/rollback DLL entry reads INSTALLDIR only. Immediate CA
+    schedulers assemble the data string from MSI properties and assign it
+    via the Property= idiom (Type=51). The deferred CA's CustomActionData
+    is whatever MSI has stored on the CA's "Property" right before the
+    deferred runs; rollback CA data is set by the same named immediate CA.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <Binary Id="CA.dll" SourceFile="$(var.AgentInstaller.CA.TargetPath)" />
 
+    <!-- Install / reinstall path. Schedulers set INSTALLDIR for the deferred
+         ConfigureAgent AND for the rollback companion (RollbackAgent). -->
     <CustomAction Id="ScheduleConfigureAgent"
                   Return="check"
                   Property="ConfigureAgent"
                   Value="INSTALLDIR=[INSTALLDIR];CENTERURL=[CENTERURL];AGENTTOKEN=[AGENTTOKEN];AGENTTYPE=[AGENTTYPE];PRESERVE_APPSETTINGS=[PRESERVE_APPSETTINGS]" />
+
+    <!-- Populate the rollback CA's CustomActionData with INSTALLDIR. Required
+         because rollback CAs run in the rollback phase of an install that
+         failed mid-way; without explicit Property=RollbackAgent data MSI
+         would invoke RollbackAgent with an empty CustomActionData and the
+         CA would log "INSTALLDIR missing" and no-op. Scheduled immediately
+         before the corresponding ScheduleConfigureAgent row so both CAs
+         have data set before ConfigureAgent's scheduling fires. -->
+    <CustomAction Id="ScheduleRollbackAgent"
+                  Return="check"
+                  Property="RollbackAgent"
+                  Value="INSTALLDIR=[INSTALLDIR]" />
 
     <CustomAction Id="ConfigureAgent"
                   BinaryRef="CA.dll"
@@ -32,17 +94,56 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <!-- Uninstall path. Scheduler sets INSTALLDIR for the deferred
+         RemoveAgentService. Run as a deferred CA (not rollback) so it
+         executes in the normal install script, after StopServices and
+         before RemoveFiles, while nssm.exe is still on disk. -->
+    <CustomAction Id="ScheduleRemoveAgentService"
+                  Return="check"
+                  Property="RemoveAgentService"
+                  Value="INSTALLDIR=[INSTALLDIR]" />
+
+    <CustomAction Id="RemoveAgentService"
+                  BinaryRef="CA.dll"
+                  DllEntry="RemoveAgentService"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
-      <!-- WiX 5 syntax: <Custom Action="..." After="..." Condition="..."/> is
-           a self-closing scheduling entry. It places the existing
-           <CustomAction> (ScheduleConfigureAgent above) into the sequence;
-           it does NOT generate a new CustomAction table row. The condition
-           gates when it runs.
-           NOT Installed OR REINSTALL: first install or reinstall (re-set
-           NSSM params on upgrade). -->
-      <Custom Action="ScheduleConfigureAgent" After="InstallFiles" Condition="NOT Installed OR REINSTALL" />
-      <Custom Action="ConfigureAgent" After="ScheduleConfigureAgent" Condition="NOT Installed OR REINSTALL" />
-      <Custom Action="RollbackAgent" Before="ConfigureAgent" Condition="NOT Installed OR REINSTALL" />
+      <!-- WiX 5 syntax: <Custom Action="..." After="..."/> (self-closing) is
+           a scheduling entry. It places the existing <CustomAction>
+           (ScheduleXxx above) into the sequence; it does NOT generate a new
+           CustomAction table row. The condition gates when it runs.
+
+           Install / reinstall:
+             - ScheduleRollbackAgent fires first (so RollbackAgent has data
+               before its deferred companion ConfigureAgent runs).
+             - ScheduleConfigureAgent fires next (sets data for
+               ConfigureAgent).
+             - ConfigureAgent deferred CA runs (Type=3073, Impersonate=no).
+             - RollbackAgent is the rollback companion scheduled BEFORE
+               ConfigureAgent — its entry fires only when MSI rolls back. -->
+      <Custom Action="ScheduleRollbackAgent"     After="InstallFiles"  Condition="NOT Installed OR REINSTALL" />
+      <Custom Action="ScheduleConfigureAgent"    After="InstallFiles"  Condition="NOT Installed OR REINSTALL" />
+      <Custom Action="ConfigureAgent"           After="ScheduleConfigureAgent" Condition="NOT Installed OR REINSTALL" />
+      <Custom Action="RollbackAgent"            Before="ConfigureAgent"        Condition="NOT Installed OR REINSTALL" />
+
+      <!-- Uninstall:
+             - ScheduleRemoveAgentService fires immediately after MSI's
+               built-in StopServices (which has already issued sc stop).
+             - RemoveAgentService deferred CA runs (Type=3073,
+               Impersonate=no, Return="ignore") to call nssm remove.
+             - This is followed by MSI's built-in RemoveRegistryValues and
+               RemoveFiles, both of which were sequenced in the parent
+               fragment before our additions.
+
+           Condition Installed AND NOT REINSTALL guarantees this action does
+           NOT run on first install (Installed=0) and does NOT run on
+           reinstall (REINSTALL=1). It only runs when the user explicitly
+           uninstalls the package via msiexec /x. -->
+      <Custom Action="ScheduleRemoveAgentService" After="StopServices"  Condition="Installed AND NOT REINSTALL" />
+      <Custom Action="RemoveAgentService"         After="ScheduleRemoveAgentService" Condition="Installed AND NOT REINSTALL" />
     </InstallExecuteSequence>
   </Fragment>
 </Wix>

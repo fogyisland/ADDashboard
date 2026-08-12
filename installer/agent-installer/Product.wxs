@@ -47,12 +47,16 @@
 
     <!-- Link CustomActions.wxs into the Package. WiX 5 fragments are only
          pulled into the linker if something reachable from Package references
-         an element inside them. One <CustomActionRef> drags in the whole
-         fragment, including Binary "CA.dll", all three <CustomAction>s, and
-         the <InstallExecuteSequence>. Without this ref the fragment is an
-         orphan and the built MSI contains no CA.dll, no CustomAction rows,
-         and no sequence rows for our pipeline (C-1). -->
+         an element inside them. <CustomActionRef> to any element inside the
+         fragment drags in the whole fragment, including Binary "CA.dll", all
+         <CustomAction>s, and all scheduling entries in <InstallExecuteSequence>.
+         Without these refs the fragment is an orphan and the built MSI contains
+         no CA.dll, no CustomAction rows, and no sequence rows for our pipeline
+         (C-1 caught in Task 4 fix round). One ref to ConfigureAgent covers the
+         install path; the uninstall path's ref is added here as well so the
+         linker recognises RemoveAgentService is used. -->
     <CustomActionRef Id="ConfigureAgent" />
+    <CustomActionRef Id="RemoveAgentService" />
   </Package>
 
   <Fragment>
