@@ -3,6 +3,40 @@ using System.IO;
 using System.Text;
 using WixToolset.Dtf.WindowsInstaller;
 
+// ============================================================================
+//  Task 7 — appsettings.json ownership and upgrade preservation contract.
+//
+//  appsettings.json is GENERATED at install time by WriteAppsettingsJson
+//  below. It is NOT staged from the MSI File table (see Files.wxs header for
+//  why adding it as a <File> would conflict with Agent.AppsettingsTemplate's
+//  same-source staging). The agent process reads the CA-written file at
+//  startup; if the file is missing, the agent logs and exits.
+//
+//  REINSTALL / MAJOR UPGRADE PRESERVATION:
+//
+//  WriteAppsettingsJson short-circuits when:
+//    - data.PreserveAppsettings is true (PRESERVE_APPSETTINGS=1 on the
+//      msiexec command line, expanded into the deferred CA's
+//      CustomActionData via CustomActions.wxs ScheduleConfigureAgent), AND
+//    - appsettings.json already exists on disk.
+//
+//  Default PRESERVE_APPSETTINGS=0 means a reinstall or major upgrade
+//  rewrites appsettings.json with the new CENTERURL / AGENTTOKEN from the
+//  install command line — same as a fresh install. To preserve the file
+//  across a reinstall or upgrade, pass PRESERVE_APPSETTINGS=1.
+//
+//  UNINSTALL BEHAVIOR (R2, kept):
+//
+//  The ConfigureAgent CA only runs under NOT Installed OR REINSTALL — it
+//  does NOT fire on uninstall. RemoveAgentService (see RollbackAgentAction.cs)
+//  only runs `nssm remove ADReplicationAgent confirm`; it does not touch
+//  appsettings.json. appsettings.json therefore persists on disk after
+//  uninstall unless the user manually clears C:\addashboard\Agent. R2
+//  accepts this; reintroducing an appsettings.json as a File table entry
+//  would change the uninstall semantics (RemoveFiles would delete it)
+//  and must come with a deliberate R2 override.
+// ============================================================================
+
 namespace ADDashboard.AgentInstaller.CA
 {
     public class ConfigureAgentData

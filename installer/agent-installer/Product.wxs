@@ -13,6 +13,52 @@
                   AllowSameVersionUpgrades="no" />
 
     <!--
+      Task 7 — Major upgrade wiring (verified empirically, see report).
+
+      WiX 5's <MajorUpgrade> element auto-emits two rows in the Upgrade table:
+
+        Row 1 (Attributes=1): VersionMax = <ProductVersion>
+                              Prevents a newer installed package from being
+                              downgraded. Bumps automatically when we change
+                              <ProductVersion>.
+
+        Row 2 (Attributes=2): VersionMin = <ProductVersion>
+                              Used by FindRelatedProducts (InstallExecuteSequence
+                              action at sequence=25) to discover an installed
+                              related product to upgrade in-place. Bumps
+                              automatically when we change <ProductVersion>.
+
+      ProductCode MUST stay constant across versions (currently
+      {B5C7E17B-1234-4567-89AB-CDEF01234567}). MajorUpgrade is keyed on
+      UpgradeCode + ProductCode; bumping ProductCode would break upgrade —
+      MSI would see v1.0.1 as a NEW product family, not as an upgrade of
+      v1.0.0, and would install side-by-side instead of replacing in-place.
+      Only <ProductVersion> changes between v1.0.0 and v1.0.1.
+
+      UpgradeCode is also constant ({C6D8E28C-2345-5678-9ABC-DEF123456789}).
+      Bumping UpgradeCode would orphan the installed v1.0.0 product — its
+      UpgradeCode wouldn't match v1.0.1's, so FindRelatedProducts wouldn't
+      find it.
+
+      Bumping <ProductVersion> requires only a single .csproj edit and a
+      rebuild. Verified by probing both v1.0.0 and v1.0.1 built MSIs:
+
+        v1.0.0  ProductCode={B5C7E17B-...}  UpgradeCode={C6D8E28C-...}
+                ProductVersion=1.0.0.0
+                Upgrade(VersionMax=1.0.0.0, Attributes=1)  ← prevent downgrade
+                Upgrade(VersionMin=1.0.0.0, Attributes=2)  ← find related
+
+        v1.0.1  ProductCode={B5C7E17B-...}  UpgradeCode={C6D8E28C-...}
+                ProductVersion=1.0.1.0
+                Upgrade(VersionMax=1.0.1.0, Attributes=1)  ← prevent downgrade
+                Upgrade(VersionMin=1.0.1.0, Attributes=2)  ← find related
+
+      Real install / uninstall round-trip is deferred to Task 9 (Pester E2E
+      on a Windows VM); this task verifies the wiring via the linked MSI's
+      Property + Upgrade tables only.
+    -->
+
+    <!--
       Block install on anything below Windows 10 / Server 2016 (both report
       VersionNT64 = 1000). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt
     -->
