@@ -35,6 +35,8 @@ on:
       - 'agent/**'
       - 'scripts/install-agent.ps1'
       - 'scripts/common/**'
+      - 'publish/nssm/**'
+      - 'package-lock.json'
       - '.github/workflows/msi-ci.yml'
   pull_request:
     paths:
@@ -42,6 +44,8 @@ on:
       - 'agent/**'
       - 'scripts/install-agent.ps1'
       - 'scripts/common/**'
+      - 'publish/nssm/**'
+      - 'package-lock.json'
       - '.github/workflows/msi-ci.yml'
 
 permissions:
