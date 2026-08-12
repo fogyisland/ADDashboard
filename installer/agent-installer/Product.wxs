@@ -26,24 +26,56 @@
     </Feature>
 
     <UI>
-      <ui:WixUI Id="WixUI_Minimal" />
+      <!--
+        Task 6: pulled WixUI_InstallDir as the UI base. WixUI_InstallDir
+        supplies the standard button strings, the WelcomeDlg +
+        InstallDirDlg + VerifyReadyDlg flow, and WIXUI_INSTALLDIR.
+
+        Dialogs.wxs declares two extra dialogs (AgentTypeDlg,
+        CenterConfigDlg) and a <UI Id="WixUI_AgentInstaller"> fragment
+        whose Publish events override WixUI_InstallDir's transitions:
+          - WelcomeDlg.Next → AgentTypeDlg (replaces →LicenseAgreementDlg)
+          - AgentTypeDlg.Next → CenterConfigDlg
+          - CenterConfigDlg.Next → InstallDirDlg
+          - VerifyReadyDlg.Back → InstallDirDlg (kept from wixlib)
+        The <UIRef> pulls that fragment into the build; its Publish
+        events at higher Order override WixUI_InstallDir's defaults.
+
+        WixUICostingPopupOptOut (declared further below in <WixVariable>)
+        disables the "evaluating disk cost" popup that the wixext
+        ResumeDlg / PrepareDlg reference. Without that variable the WiX 5
+        bind lookup fails with WIX0197 ("bind variable
+        !(wix.WixUICostingPopupOptOut) is unknown").
+
+        Localization: ui/WixUI_zh_CN.wxl auto-loads from the csproj compile
+        root via its WixLocalization Culture="zh-CN" root element.
+        Language="2052" on Package above matches.
+      -->
+      <ui:WixUI Id="WixUI_InstallDir" />
+      <UIRef Id="WixUI_AgentInstaller" />
     </UI>
 
-    <Property Id="WIXUI_INSTALLDIR" Value="C:\addashboard\Agent" />
+    <!--
+      PropertyRefs pull CENTERURL / AGENTTOKEN / AGENTTYPE /
+      PRESERVE_APPSETTINGS from Properties.wxs (the source of truth, per
+      the controller's mandatory correction #3). Each ref makes the linker
+      add the Property table row from the Properties.wxs fragment.
+      WIXUI_INSTALLDIR / ApplicationFolderName / WixAppFolder are NOT
+      ref'd here — WixUI_InstallDir wixlib already declares them, and we
+      override WIXUI_INSTALLDIR's value inline below.
 
-    <!-- MSI properties consumed by ConfigureAgentAction.
-         CenterUrl / AgentToken / AgentType are passed at install time via
-         `msiexec /i ... CENTERURL=... AGENTTOKEN=... AGENTTYPE=...`.
-         CENTERURL and AGENTTOKEN are marked Hidden to suppress them in the
-         verbose MSI log (msiexec /l*v) and to ensure they're persisted in
-         the Property table — without Hidden/Secure/Admin, WiX 5 ignores
-         empty <Property> elements.
-         AgentType defaults to "ad"; PreserveAppsettings defaults to "0" so a
-         fresh install always writes appsettings.json. -->
-    <Property Id="CENTERURL" Hidden="yes" />
-    <Property Id="AGENTTOKEN" Hidden="yes" />
-    <Property Id="AGENTTYPE" Value="ad" />
-    <Property Id="PRESERVE_APPSETTINGS" Value="0" />
+      R1: NO SERVICECCOUNT / ServiceAccount PropertyRef. The service runs
+      as LocalSystem via NSSM's `nssm install` default.
+
+      The WixUI_InstallDir wixlib supplies WIXUI_INSTALLDIR with a default
+      of ProgramFiles64Folder\$(var.ProductName); we override inline to
+      C:\addashboard\Agent to match the PS1 installer.
+    -->
+    <PropertyRef Id="CENTERURL" />
+    <PropertyRef Id="AGENTTOKEN" />
+    <PropertyRef Id="AGENTTYPE" />
+    <PropertyRef Id="PRESERVE_APPSETTINGS" />
+    <Property Id="WIXUI_INSTALLDIR" Value="C:\addashboard\Agent" />
 
     <!-- Link CustomActions.wxs into the Package. WiX 5 fragments are only
          pulled into the linker if something reachable from Package references
