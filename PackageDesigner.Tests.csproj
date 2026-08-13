@@ -52,6 +52,10 @@
     <EmbeddedResource Remove="Views/**" />
     <EmbeddedResource Remove="Converters/**" />
     <EmbeddedResource Remove="Resources/**" />
+    <Compile Remove="installer/**/*.cs" />
+    <None Remove="installer/**" />
+    <Content Remove="installer/**" />
+    <EmbeddedResource Remove="installer/**" />
   </ItemGroup>
   <ItemGroup>
     <None Include="tests\fixtures\sandbox-cases.json" Link="fixtures\sandbox-cases.json">

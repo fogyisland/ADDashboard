@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using PackageDesigner.Models;
 using PackageDesigner.ViewModels;
 using Xunit;
@@ -7,65 +8,47 @@ namespace PackageDesigner.Tests.ViewModel;
 
 public class PackageTabViewModelTests
 {
-    [Fact]
-    public void Ctor_Creates_Manifest_And_Migrations_VMs()
+    private static PackageProject NewProject() => new()
     {
-        var p = new PackageProject();
+        Manifest = new PackageManifest
+        {
+            Name = "x", Version = "1.0.0", Type = "gauge",
+            Agent = new AgentConfig { MinVersion = "0.1.0", Script = "collect.ps1", IntervalSec = 60 },
+            Database = new DatabaseConfig
+            {
+                SchemaName = "pkg_x", Migrations = new() { "migrations/001_initial.sql" },
+                MetricTable = "metrics", MetricSchema = new(),
+            },
+        },
+    };
+
+    [Fact]
+    public void Ctor_Creates_Metric_Editor()
+    {
+        var p = NewProject();
         var vm = new PackageTabViewModel(p);
-        Assert.NotNull(vm.ManifestVM);
-        Assert.NotNull(vm.MigrationsVM);
+        Assert.NotNull(vm.MetricEditor);
         Assert.Same(p, vm.Project);
     }
 
     [Fact]
-    public void Ctor_Auto_Opens_Manifest_Tab()
+    public void Ctor_Auto_Opens_Metric_Editor_Tab()
     {
-        var vm = new PackageTabViewModel(new PackageProject());
+        var vm = new PackageTabViewModel(NewProject());
         Assert.Single(vm.OpenFiles);
-        Assert.Equal("manifest", vm.OpenFiles[0].Title);
+        Assert.Equal("package", vm.OpenFiles[0].Title);
     }
 
     [Fact]
-    public void OpenManifest_Does_Not_Add_Duplicate_When_Tab_Already_Open()
+    public void OpenEditor_Does_Not_Add_Duplicate_When_Tab_Already_Open()
     {
-        // Regression: clicking the "manifest" tree node repeatedly used to stack
-        // duplicate manifest tabs. After dedupe, re-opening focuses the same tab.
-        var vm = new PackageTabViewModel(new PackageProject());
-        Assert.Single(vm.OpenFiles);
+        var vm = new PackageTabViewModel(NewProject());
         var first = vm.SelectedFile;
-        vm.OpenManifest();
+        vm.OpenEditor();
         Assert.Single(vm.OpenFiles);
         Assert.Same(first, vm.SelectedFile);
-        vm.OpenManifest();
+        vm.OpenEditor();
         Assert.Single(vm.OpenFiles);
-    }
-
-    [Fact]
-    public void OpenSql_Dedupes_By_Same_File_Reference()
-    {
-        var vm = new PackageTabViewModel(new PackageProject());
-        var f = new PackageFile { Path = "001_init.sql", Role = "migration" };
-        var svm = new SqlFileViewModel(f);
-        vm.OpenSql(svm);
-        Assert.Equal(2, vm.OpenFiles.Count);  // manifest (auto) + sql
-        var first = vm.SelectedFile;
-        vm.OpenSql(svm);
-        Assert.Equal(2, vm.OpenFiles.Count);
-        Assert.Same(first, vm.SelectedFile);
-    }
-
-    [Fact]
-    public void OpenPs1_Dedupes_By_Same_File_Reference()
-    {
-        var vm = new PackageTabViewModel(new PackageProject());
-        var f = new PackageFile { Path = "collect.ps1", Role = "ps1" };
-        var pvm = new PowerShellFileViewModel(f);
-        vm.OpenPs1(pvm);
-        Assert.Equal(2, vm.OpenFiles.Count);
-        var first = vm.SelectedFile;
-        vm.OpenPs1(pvm);
-        Assert.Equal(2, vm.OpenFiles.Count);
-        Assert.Same(first, vm.SelectedFile);
     }
 
     [Fact]
@@ -73,38 +56,54 @@ public class PackageTabViewModelTests
     {
         // WPF XAML instantiates the view declaratively in MainWindow.xaml's
         // TabControl.ContentTemplate; this requires a parameterless ctor.
-        // A VM-taking ctor alone causes XamlParseException at first render.
+        // A VM-taking ctor alone causes XamlParseException at first render
+        // (Global Constraint #9).
         var ctor = typeof(PackageDesigner.Views.PackageTabView).GetConstructor(Type.EmptyTypes);
         Assert.NotNull(ctor);
     }
 
     [Fact]
-    public void Ctor_Auto_Selects_Manifest_Tab()
+    public void MetricEditorView_Has_Parameterless_Constructor()
     {
-        var vm = new PackageTabViewModel(new PackageProject());
+        // Same regression guard for the new editor view.
+        var ctor = typeof(PackageDesigner.Views.MetricEditorView).GetConstructor(Type.EmptyTypes);
+        Assert.NotNull(ctor);
+    }
+
+    [Fact]
+    public void MetricEditorView_Has_Named_CustomMigrationsList_Field()
+    {
+        // C-3 regression: the "−" button's code-behind used to read the
+        // CatalogList (catalog rows), so custom migrations could never be
+        // removed. The fix named the right ListBox. This test pins the name
+        // so a future XAML refactor cannot silently break the wiring.
+        var field = typeof(PackageDesigner.Views.MetricEditorView)
+            .GetField("CustomMigrationsList", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        Assert.Equal(typeof(System.Windows.Controls.ListBox), field!.FieldType);
+    }
+
+    [Fact]
+    public void Ctor_Auto_Selects_Editor_Tab()
+    {
+        var vm = new PackageTabViewModel(NewProject());
         Assert.Same(vm.OpenFiles[0], vm.SelectedFile);
     }
 
     [Fact]
     public void SelectedFile_Setter_Raises_PropertyChanged_When_Changing_To_New_Value()
     {
-        // WPF TwoWay binding to SelectedItem requires INPC; otherwise VM→UI
-        // push never happens and TabControl.SelectedItem stays null → blank.
-        var vm = new PackageTabViewModel(new PackageProject());
-        // Ctor auto-opens Manifest tab → SelectedFile = ManifestTab.
+        var vm = new PackageTabViewModel(NewProject());
         var original = vm.SelectedFile;
         Assert.NotNull(original);
 
         var fired = new System.Collections.Generic.List<string?>();
         vm.PropertyChanged += (_, e) => fired.Add(e.PropertyName);
 
-        // Re-assign to same instance: no change → no event (reference equality guard).
         vm.SelectedFile = original;
         Assert.Empty(fired);
 
-        // Build a non-null replacement by adding another tab — CollectionChanged handler
-        // will set SelectedFile to the new tab, which must raise PropertyChanged.
-        vm.OpenFiles.Add(new TestFileTab("manifest-2"));
+        vm.OpenFiles.Add(new TestFileTab("test"));
         Assert.Contains(nameof(vm.SelectedFile), fired);
         Assert.NotSame(original, vm.SelectedFile);
     }

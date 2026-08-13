@@ -1,6 +1,7 @@
 <ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:Converters="clr-namespace:PackageDesigner.Converters">
 
     <!-- Palette: light, neutral, low-saturation. Reads as a tool, not a brand. -->
     <Color x:Key="BgColor">#FAFAFA</Color>
@@ -202,9 +203,10 @@
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
     </Style>
 
-    <!-- Reusable form-section styles. Used across ManifestFormView, dialogs, etc.
+    <!-- Reusable form-section styles. Used across MetricEditorView, dialogs, etc.
          SectionHeader: section title (PACKAGE / AGENT / DATABASE / ...).
          FieldLabel:    right-of-grid form-field label. -->
+    <Converters:InvertBoolConverter x:Key="InvertBool"/>
     <Style x:Key="SectionHeader" TargetType="TextBlock">
         <Setter Property="FontSize" Value="14"/>
         <Setter Property="FontWeight" Value="SemiBold"/>

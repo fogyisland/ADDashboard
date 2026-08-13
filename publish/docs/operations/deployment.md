@@ -482,3 +482,14 @@ C:\addashboard\
     ├── ADReplicationAgent-stdout.log
     └── ADReplicationAgent-stderr.log
 ```
+
+## WPF Package Designer — Metric-Centric Redesign
+
+The Package Designer is now metric-centric. The 3-tab editor (form / SQL / PS1)
+has been replaced by a single editor that picks metrics from a 5-entry catalog
+and auto-generates `manifest.json`, `migrations/001_initial.sql`, and
+`collect.ps1`.
+
+**Build:** `dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained`
+**Output:** `bin/PackageDesigner/publish/PackageDesigner.exe`
+**Status:** Smoke deferred to Windows 11 VM (per plan's "Out-of-band" note); see `docs/superpowers/reports/2026-08-13-wpf-redesign-smoke.md`.
