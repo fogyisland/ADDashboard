@@ -19,6 +19,10 @@
     <None Remove="installer/**" />
     <Content Remove="installer/**" />
     <EmbeddedResource Remove="installer/**" />
+    <Compile Remove="smoke/**/*.cs" />
+    <None Remove="smoke/**" />
+    <Content Remove="smoke/**" />
+    <EmbeddedResource Remove="smoke/**" />
   </ItemGroup>
   <ItemGroup>
     <None Remove="Resources\manifest-schema.json" />

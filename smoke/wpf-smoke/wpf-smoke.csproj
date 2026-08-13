@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>WpfSmoke</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>wpf-smoke</AssemblyName>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="PackageDesigner">
+      <HintPath>../../PackageDesigner/bin/PackageDesigner/Release/net8.0-windows/win-x64/publish/PackageDesigner.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+=== collect.ps1 (504 chars) ===
+$ErrorActionPreference = 'Stop'
+$agent_id = $env:COMPUTERNAME
+$ts = (Get-Date).ToUniversalTime().ToString('o')
+$metrics = [ordered]@{
+  cpu_pct = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue
+  memory_pct = [math]::Round(($(Get-CimInstance Win32_OperatingSystem) | ForEach-Object { ($_.TotalVisibleMemorySize - $_.FreePhysicalMemory) / $_.TotalVisibleMemorySize * 100 })[0], 2)
+}
+@{ agent_id = $agent_id; ts = $ts; metrics = $metrics } | ConvertTo-Json -Compress
+
+=== running collect.ps1 under PS 5.1.26100.8972 ===
+{"metrics":{"cpu_pct":27.632655182150135,"memory_pct":97.86},"agent_id":"DESKTOP-G0P5C1T","ts":"2026-08-13T10:54:01.9218278Z"}
