@@ -87,4 +87,57 @@ public class MetricGeneratorTests
         var r = ManifestValidator.ValidateJson(json);
         Assert.True(r.Valid, string.Join("; ", r.Errors));
     }
+
+    // ---------- GenerateMigration001 ----------
+
+    [Fact]
+    public void GenerateMigration001_Creates_Table_With_SchemaName_And_MetricTable()
+    {
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var sql = MetricGenerator.GenerateMigration001("pkg_ad_foo", "metrics", sels);
+        Assert.Contains("CREATE TABLE pkg_ad_foo.metrics", sql);
+    }
+
+    [Fact]
+    public void GenerateMigration001_Includes_Agent_Id_And_Ts_Columns()
+    {
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var sql = MetricGenerator.GenerateMigration001("pkg_ad_foo", "metrics", sels);
+        Assert.Contains("agent_id VARCHAR(64) NOT NULL", sql);
+        Assert.Contains("ts DATETIME NOT NULL", sql);
+    }
+
+    [Fact]
+    public void GenerateMigration001_One_Column_Per_Picked_Metric()
+    {
+        var sels = new List<MetricGenerator.Selection>
+        {
+            Sel("cpu_pct", "CPU", "%", "double", 80, 95),
+            Sel("memory_pct", "Mem", "%", "double", 70, 90),
+        };
+        var sql = MetricGenerator.GenerateMigration001("pkg_ad_foo", "metrics", sels);
+        Assert.Contains("cpu_pct double", sql);
+        Assert.Contains("memory_pct double", sql);
+    }
+
+    [Fact]
+    public void GenerateMigration001_No_Extra_Columns_For_Unpicked_Metrics()
+    {
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var sql = MetricGenerator.GenerateMigration001("pkg_ad_foo", "metrics", sels);
+        Assert.DoesNotContain("memory_pct", sql);
+        Assert.DoesNotContain("disk_free_pct", sql);
+    }
+
+    [Fact]
+    public void GenerateMigration001_Respects_Nullable()
+    {
+        var sels = new List<MetricGenerator.Selection>
+        {
+            new(MetricCatalog.All.First(e => e.Key == "cpu_pct"),
+                new MetricDef { Type = "double", Nullable = false }),
+        };
+        var sql = MetricGenerator.GenerateMigration001("pkg_ad_foo", "metrics", sels);
+        Assert.Contains("cpu_pct double NOT NULL", sql);
+    }
 }

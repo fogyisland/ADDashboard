@@ -107,14 +107,30 @@ public static class MetricGenerator
     }
 
     /// <summary>
-    /// Build the auto-generated <c>migrations/001_initial.sql</c>. Implemented
-    /// in Task 3.
+    /// Build the auto-generated <c>migrations/001_initial.sql</c>. The output
+    /// pins the v2 metric table shape: agent_id + ts + one column per picked
+    /// metric. Columns are NULLable by default (the agent writes nullable
+    /// JSON values when a metric collection fails); the optional
+    /// <see cref="MetricDef.Nullable"/> override can force NOT NULL.
     /// </summary>
     public static string GenerateMigration001(
         string schemaName,
         string tableName,
-        IReadOnlyList<Selection> selections) =>
-        throw new System.NotImplementedException("Task 3");
+        IReadOnlyList<Selection> selections)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append("CREATE TABLE ").Append(schemaName).Append('.').Append(tableName).Append(" (\n");
+        sb.Append("  agent_id VARCHAR(64) NOT NULL,\n");
+        sb.Append("  ts DATETIME NOT NULL");
+        foreach (var s in selections)
+        {
+            sb.Append(",\n  ").Append(s.Catalog.Key).Append(' ').Append(s.Catalog.SqlType);
+            if (s.Column.Nullable == false)
+                sb.Append(" NOT NULL");
+        }
+        sb.Append("\n);\n");
+        return sb.ToString();
+    }
 
     /// <summary>
     /// Build the auto-generated <c>collect.ps1</c>. Implemented in Task 4.
