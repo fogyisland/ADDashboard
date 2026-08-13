@@ -9,6 +9,7 @@ import AgentsView from './views/AgentsView.vue';
 import UsersView from './views/admin/UsersView.vue';
 import RolesView from './views/admin/RolesView.vue';
 import ConfigView from './views/admin/ConfigView.vue';
+import EmailConfigView from './views/admin/EmailConfigView.vue';
 import AuditView from './views/admin/AuditView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
@@ -37,6 +38,7 @@ const routes = [
   { path: '/admin/users', component: UsersView, meta: { perm: 'admin:users' } },
   { path: '/admin/roles', component: RolesView, meta: { perm: 'admin:users' } },
   { path: '/admin/config', component: ConfigView, meta: { perm: 'admin:users' } },
+  { path: '/admin/email-config', component: EmailConfigView, meta: { perm: 'admin:users' } },
   { path: '/admin/audit', component: AuditView, meta: { perm: 'admin:users' } },
   { path: '/admin/sites-catalog', component: SitesCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/dcs-catalog', component: DcsCatalogView, meta: { perm: 'admin:users' } },
