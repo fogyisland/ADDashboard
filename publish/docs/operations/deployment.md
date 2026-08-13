@@ -490,6 +490,81 @@ has been replaced by a single editor that picks metrics from a 5-entry catalog
 and auto-generates `manifest.json`, `migrations/001_initial.sql`, and
 `collect.ps1`.
 
-**Build:** `dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained`
-**Output:** `bin/PackageDesigner/publish/PackageDesigner.exe`
-**Status:** Smoke deferred to Windows 11 VM (per plan's "Out-of-band" note); see `docs/superpowers/reports/2026-08-13-wpf-redesign-smoke.md`.
+### Build & publish
+
+```bash
+dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained
+```
+
+Output: `PackageDesigner/bin/PackageDesigner/Release/net8.0-windows/win-x64/publish/PackageDesigner.exe`
+(self-contained, ~163 MB). Run on Windows 10/11 — no .NET runtime required on the target.
+
+### Smoke test status (2026-08-13)
+
+The smoke driver lives at `smoke/wpf-smoke/` and drives the same VM/service API the
+UI uses — no display required. UI-only flows (clicking through New package → catalog
+checkboxes → file menu) need a real Windows VM with a display and remain a manual gate.
+
+**Automated smoke (run from this repo, no VM required):**
+
+```bash
+cd smoke/wpf-smoke && dotnet run -c Release
+```
+
+Result on this machine (2026-08-13, commit 26ada07): **38 passed / 0 failed**.
+
+| Flow | Spec smoke | Status |
+|---|---|---|
+| VM ctor + DataContext wiring (paramless ctor, Catalog/SelectedMetrics/CustomMigrations seeded) | 1 | ✅ verified by reflection |
+| Toggle cpu_pct + memory_pct → 2 rows, all 3 previews re-render | 2 | ✅ verified via `PreviewManifestJson` / `PreviewMigrationSql` / `PreviewCollectScript` |
+| Override cpu_pct warn→75 → preview manifest reflects new warn; PS1 stays threshold-free | 3 | ✅ verified — VM setter persists, generator applies override |
+| Add custom migration `002_add_ad_tables.sql` + save → manifest.migrations lists both, RawFiles has both files | 4 | ✅ verified via `PersistenceService.Load` round-trip |
+| Save → reopen → same metrics + custom migration content preserved | 5 | ⚠️ partial — metrics re-seed; **warn/crit values revert to catalog defaults** (see known gap below) |
+| Regenerated manifest validates against `Resources/manifest-schema.json`; `collect.ps1` runs in PS 5.1 and emits `{agent_id, ts, metrics}` JSON | 6 | ✅ verified — live run under PowerShell 5.1.26100 emitted `{"metrics":{"cpu_pct":39.96,"memory_pct":95.75},"agent_id":"DESKTOP-G0P5C1T","ts":"2026-08-13T05:18:52Z"}` |
+| Save with empty name → validation error visible in status, `.pkgproj` not written | 7 | ✅ verified |
+
+Live `collect.ps1` output is captured in `smoke/wpf-smoke/collect-ps1-live-run.txt`.
+
+### Known gaps (v2 follow-up)
+
+1. **Warn/Crit/Unit/Label overrides do not survive save → reopen.** The override lives only
+   on `MetricGenerator.Selection` in memory. `MetricEditorViewModel` ctor re-seeds
+   `SelectedMetrics` from `Database.MetricSchema`, which is the catalog type map (no per-metric
+   overrides). After reload, the user's warn=75 / crit=92 silently revert to catalog defaults.
+   `manifest.json` on disk DOES contain the edited thresholds (regenerated on each save), so
+   the published package is correct — only the editor's working state is wrong on reopen.
+   **Fix:** add a `Metrics` list (or parallel `MetricOverrides` dictionary) to `PackageManifest`
+   — currently violates R1 (Models layer is locked). Tracked as v2 backlog item I-3-adjacent.
+
+2. **Save button missing from editor save row.** Spec §Acceptance line 380 calls for both
+   "Save" and "Save As…" buttons; only "Save As…" is wired. Menu Ctrl+S delegates correctly
+   (post-C-2 fix). Tracked as v2 I-3.
+
+### Manual UI smoke (Windows 11 VM required)
+
+These flows need a real display and cannot be driven from this repo. Run them on the Windows
+11 VM before tagging a release:
+
+- Open Package Designer fresh → File → New package → pick template → name it. Verify the
+  metric-centric editor appears with 3 panes (catalog / configured / preview). Confirm
+  no raw manifest form, no raw SQL/PS1 editor is visible anywhere in the UI.
+- Click `cpu_pct` and `memory_pct` in the catalog; verify the configured-metrics table
+  populates and the 3 preview tabs re-render live.
+- Edit `cpu_pct`'s warn to 75; switch to the manifest preview tab; verify the regenerated
+  `metrics[]` block shows `"warn": 75`. Switch to the PS1 preview tab; verify the threshold
+  does NOT appear in the script.
+- Add a custom migration via the editor; save; reopen the saved `.pkgproj` (File → Open);
+  verify the editor re-seeds the custom migration and its content is preserved. (Warn/crit
+  reversion to defaults is the known gap above — verify the *catalog defaults* reappear, not
+  the user's edited values, and acknowledge it as a v2 limitation.)
+- Open the saved `.pkgproj` in a text editor / zip utility; verify `manifest.json`'s
+  `database.migrations` lists the auto-001 plus the custom migration; unzip and verify both
+  files are present; verify the auto-001 reflects the picked metrics.
+
+### Repro commands (Windows 11 VM)
+
+```powershell
+cd <repo-root>
+dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained
+.\PackageDesigner\bin\PackageDesigner\Release\net8.0-windows\win-x64\publish\PackageDesigner.exe
+```
