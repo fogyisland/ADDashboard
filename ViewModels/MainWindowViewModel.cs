@@ -1,7 +1,9 @@
+using System;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using PackageDesigner.Models;
 
 namespace PackageDesigner.ViewModels;
@@ -9,6 +11,16 @@ namespace PackageDesigner.ViewModels;
 public class MainWindowViewModel : INotifyPropertyChanged
 {
     public ObservableCollection<PackageTabViewModel> OpenTabs { get; } = new();
+
+    // Session counter for "Untitled Document N" default names. Increments
+    // atomically across the app lifetime; never reuses a number even if an
+    // earlier untitled tab is closed without saving (matches Office behavior).
+    private static int _untitledCounter;
+
+    /// <summary>Returns the next default display name for a brand-new package,
+    /// e.g. <c>未命名文档1</c>, <c>未命名文档2</c>, ...</summary>
+    public string NextUntitledName() =>
+        $"未命名文档{Interlocked.Increment(ref _untitledCounter)}";
 
     private PackageTabViewModel? _activeTab;
     public PackageTabViewModel? ActiveTab

@@ -130,7 +130,7 @@
               <DataGridTextColumn Header="Unit"  Binding="{Binding Unit}"  Width="60"/>
               <DataGridTextColumn Header="Warn"  Binding="{Binding Warn}"  Width="60"/>
               <DataGridTextColumn Header="Crit"  Binding="{Binding Crit}"  Width="60"/>
-              <DataGridCheckBoxColumn Header="Custom" Binding="{Binding IsCustom}" IsReadOnly="True" Width="60"/>
+              <DataGridCheckBoxColumn Header="Custom" Binding="{Binding IsCustom, Mode=OneWay}" IsReadOnly="True" Width="60"/>
             </DataGrid.Columns>
           </DataGrid>
         </DockPanel>

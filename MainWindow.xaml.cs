@@ -28,6 +28,10 @@ public partial class MainWindow : Window
         if (dlg.ShowDialog() == true)
         {
             var p = dlg.ViewModel.Create();
+            // User typed no name in the New dialog → assign the next
+            // "未命名文档N" placeholder. The user can still edit it inline.
+            if (string.IsNullOrWhiteSpace(p.Manifest.Name))
+                p.Manifest.Name = VM.NextUntitledName();
             VM.OpenTabs.Add(new PackageTabViewModel(p));
         }
     }
