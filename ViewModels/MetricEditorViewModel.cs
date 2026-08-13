@@ -25,6 +25,15 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
 {
     public PackageProject Project { get; }
     public PackageMetaViewModel PackageMeta { get; }
+
+    // Mirrors ManifestValidator.SerializerOptions + adds PropertyNameCaseInsensitive
+    // for read-back of the regenerated JSON. Kept separate because R2 forbids
+    // changing ManifestValidator's API.
+    private static readonly JsonSerializerOptions _loadOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.KebabCaseLower) },
+    };
     public ObservableCollection<MetricCatalogEntry> Catalog { get; } =
         new(MetricCatalog.All);
     public ObservableCollection<MetricSelectionViewModel> SelectedMetrics { get; } = new();
@@ -91,9 +100,7 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
                 foreach (MetricSelectionViewModel item in e.OldItems!)
                     item.Changed -= OnMetricChanged;
             else if (e.Action == NotifyCollectionChangedAction.Reset)
-                // Collection was cleared; old-item references are gone with the GC.
-                // Nothing to unsubscribe individually.
-                ;
+                _ = e.OldItems;  // suppress unused-warning; reset = no per-item unsubscription
             RegeneratePreviews();
         };
 
@@ -240,11 +247,7 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
         // Build the project's Manifest from the current VM state.
         var selections = SelectedMetrics.Select(s => s.Selection).ToList();
         var json = MetricGenerator.GenerateManifestJson(Project.Manifest, selections);
-        var draft = JsonSerializer.Deserialize<PackageManifest>(json, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true,
-            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.KebabCaseLower) }
-        }) ?? new PackageManifest();
+        var draft = JsonSerializer.Deserialize<PackageManifest>(json, _loadOptions) ?? new PackageManifest();
         // Persist user-edited per-metric overrides (D3 fix). Skip entries with
         // no actual edit (all override fields null) to keep the JSON compact;
         // absence in the dictionary means "use catalog default".

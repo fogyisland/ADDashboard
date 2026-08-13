@@ -52,7 +52,7 @@ public class PersistenceServiceTests
     {
         // Simulate a write failure by giving an invalid path (drive that doesn't exist).
         var p = new PackageProject { Manifest = new PackageManifest { Name = "x", Version = "1.0.0", Type = "gauge" } };
-        var badPath = @"Z:\nonexistent-drive\out.pkgproj";
+        var badPath = Path.Combine(Path.GetTempPath(), Path.GetInvalidPathChars()[0] + "out.pkgproj");
         Assert.ThrowsAny<System.Exception>(() => PersistenceService.Save(p, badPath));
         // The atomic write pattern (temp + rename) ensures no partial file is left
         // at the target. The exception is the contract; the assertion is that

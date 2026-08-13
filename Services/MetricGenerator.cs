@@ -158,7 +158,7 @@ public static class MetricGenerator
         {
             var s = selections[i];
             sb.Append("  ").Append(s.Catalog.Key).Append(" = ").Append(s.Catalog.PowerShellSnippet);
-            sb.AppendLine(i == selections.Count - 1 ? "" : "");
+            sb.AppendLine();
         }
         sb.AppendLine("}");
         sb.AppendLine("@{ agent_id = $agent_id; ts = $ts; metrics = $metrics } | ConvertTo-Json -Compress");
