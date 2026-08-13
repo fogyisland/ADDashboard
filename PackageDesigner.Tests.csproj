@@ -56,6 +56,10 @@
     <None Remove="installer/**" />
     <Content Remove="installer/**" />
     <EmbeddedResource Remove="installer/**" />
+    <Compile Remove="smoke/**/*.cs" />
+    <None Remove="smoke/**" />
+    <Content Remove="smoke/**" />
+    <EmbeddedResource Remove="smoke/**" />
   </ItemGroup>
   <ItemGroup>
     <None Include="tests\fixtures\sandbox-cases.json" Link="fixtures\sandbox-cases.json">
