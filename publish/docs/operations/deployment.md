@@ -585,4 +585,4 @@ Closed 6 backlog items from the WPF redesign SDD:
 
 **Test counts:** 113 → 122 xUnit (+13 net new − 4 deleted in D2). 0 new warnings; 2 warnings eliminated (M-4 + M-6 dedup).
 
-**Smoke:** `smoke/wpf-smoke/` driver 41/41 (38 from v1 + 3 strengthened for D3). Live `collect.ps1` run under PS 5.1 still emits valid JSON.
+**Smoke:** `smoke/wpf-smoke/` driver 39/39 (38 from v1 + 1 strengthened for D3). Live `collect.ps1` run under PS 5.1 still emits valid JSON.
