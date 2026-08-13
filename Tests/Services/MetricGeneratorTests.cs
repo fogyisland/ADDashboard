@@ -203,4 +203,18 @@ public class MetricGeneratorTests
         Assert.Contains("$agent_id = $env:COMPUTERNAME", ps1);
         Assert.Contains("$ts = (Get-Date).ToUniversalTime().ToString('o')", ps1);
     }
+
+    [Fact]
+    public void GenerateManifestJson_Always_Emits_Runtime_Powershell_Even_When_Input_Is_Node()
+    {
+        var manifest = new PackageManifest
+        {
+            Name = "runtime-test", Version = "1.0.0", Type = "gauge",
+            Agent = new AgentConfig { Type = AgentType.NonAd, MinVersion = "0.1.0", Script = "collect.ps1", IntervalSec = 60, Runtime = "node" },
+            Database = new DatabaseConfig { SchemaName = "pkg_runtime_test", MetricTable = "metrics", MetricSchema = new() },
+        };
+        var json = MetricGenerator.GenerateManifestJson(manifest, System.Array.Empty<MetricGenerator.Selection>());
+        Assert.Contains("\"runtime\":\"powershell\"", json);
+        Assert.DoesNotContain("\"runtime\":\"node\"", json);
+    }
 }

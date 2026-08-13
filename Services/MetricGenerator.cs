@@ -97,7 +97,7 @@ public static class MetricGenerator
                 Type = draft.Agent.Type,
                 MinVersion = draft.Agent.MinVersion,
                 Platforms = draft.Agent.Platforms,
-                Runtime = draft.Agent.Runtime,
+                Runtime = "powershell",
                 Script = draft.Agent.Script,
                 TimeoutMs = draft.Agent.TimeoutMs,
                 IntervalSec = draft.Agent.IntervalSec,
