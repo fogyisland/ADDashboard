@@ -8,6 +8,8 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Windows.Input;
+using PackageDesigner.Common;
 using PackageDesigner.Models;
 using PackageDesigner.Services;
 
@@ -67,7 +69,14 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
         PackageMeta = new PackageMetaViewModel(Project.Manifest);
 
         // Re-run regeneration on any change to the metadata strip.
-        PackageMeta.PropertyChanged += (_, _) => RegeneratePreviews();
+        PackageMeta.PropertyChanged += (_, _) =>
+        {
+            RegeneratePreviews();
+            // Re-validate so HasValidationErrors stays in sync — SaveCommand
+            // binds to it and would otherwise see a stale value until the
+            // next SaveTo call.
+            ValidateBeforeSave();
+        };
 
         // Re-run on add/remove of picked metrics. The CollectionChanged handler
         // is the ONLY place that subscribes/unsubscribes per-item — items seeded
@@ -145,6 +154,14 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
         }
 
         RegeneratePreviews();
+
+        SaveCommand = new RelayCommand(
+            execute: _ => { _ = SaveTo(LastSavePath!); },
+            canExecute: _ => !HasValidationErrors && LastSavePath is not null);
+
+        SaveAsCommand = new RelayCommand(
+            execute: _ => PromptSaveAs(),
+            canExecute: _ => !HasValidationErrors);
     }
 
     public void ToggleMetric(MetricCatalogEntry entry)
@@ -284,6 +301,34 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
         }
         StatusMessage = $"Saved to {filePath}";
         return new ValidationResult(true, Array.Empty<string>());
+    }
+
+    public string? LastSavePath { get; private set; }
+
+    /// <summary>Save in-place to the path used by the last SaveAs. Disabled until at least one SaveAs.</summary>
+    public ICommand SaveCommand { get; }
+
+    /// <summary>Always available (when valid). Opens a Save File dialog and stores LastSavePath on success.</summary>
+    public ICommand SaveAsCommand { get; }
+
+    /// <summary>Test-friendly SaveAs: persists to the given path and records LastSavePath.</summary>
+    public void SaveAs(string filePath)
+    {
+        var result = SaveTo(filePath);
+        if (result.Valid)
+            LastSavePath = filePath;
+    }
+
+    private void PromptSaveAs()
+    {
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            FileName = string.IsNullOrWhiteSpace(PackageMeta.Name) ? "package.pkgproj" : PackageMeta.Name + ".pkgproj",
+            DefaultExt = ".pkgproj",
+            Filter = "Package Designer project (.pkgproj)|*.pkgproj|All files|*.*",
+        };
+        if (dlg.ShowDialog() == true)
+            SaveAs(dlg.FileName);
     }
 
     private static PackageManifest CloneManifest(PackageManifest m) => new()

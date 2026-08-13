@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using PackageDesigner.Models;
@@ -281,5 +283,53 @@ public class MetricEditorViewModelTests
         })!;
         var vm = new MetricEditorViewModel(p);
         Assert.Contains("junk_metric", vm.PreviewManifestJson);
+    }
+
+    [Fact]
+    public void Save_Command_Disabled_When_LastSavePath_Null()
+    {
+        var vm = new MetricEditorViewModel(NewProject());
+        vm.ToggleMetric(MetricCatalog.All.First(e => e.Key == "cpu_pct"));
+        Assert.False(vm.SaveCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Save_Command_Stores_LastSavePath_After_SaveAs()
+    {
+        // We can't drive Microsoft.Win32.SaveFileDialog in a unit test, so
+        // simulate by calling SaveAs logic directly — SaveAs(string) is the
+        // test-friendly surface used by the dialog handler (PromptSaveAs).
+        var vm = new MetricEditorViewModel(NewProject());
+        vm.ToggleMetric(MetricCatalog.All.First(e => e.Key == "cpu_pct"));
+        var tmp = Path.Combine(Path.GetTempPath(), $"savecmd-{Guid.NewGuid():N}.pkgproj");
+        try
+        {
+            vm.SaveAs(tmp);
+            Assert.Equal(tmp, vm.LastSavePath);
+            Assert.True(vm.SaveCommand.CanExecute(null));
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
+    }
+
+    [Fact]
+    public void Save_Command_Disabled_When_HasValidationErrors()
+    {
+        var vm = new MetricEditorViewModel(NewProject());
+        vm.ToggleMetric(MetricCatalog.All.First(e => e.Key == "cpu_pct"));
+        var tmp = Path.Combine(Path.GetTempPath(), $"savecmd-{Guid.NewGuid():N}.pkgproj");
+        try
+        {
+            vm.SaveAs(tmp);
+            vm.PackageMeta.Name = "";
+            Assert.True(vm.HasValidationErrors);
+            Assert.False(vm.SaveCommand.CanExecute(null));
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
     }
 }

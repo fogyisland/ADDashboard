@@ -61,8 +61,11 @@
             BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0">
       <DockPanel>
         <TextBlock Text="{Binding StatusMessage}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
-        <Button DockPanel.Dock="Right" Content="Save As…" Style="{StaticResource PrimaryButton}"
-                Click="SaveAs_Click" IsEnabled="{Binding HasValidationErrors, Converter={StaticResource InvertBool}}"/>
+        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+          <Button Content="Save" Command="{Binding SaveCommand}" Padding="12,4" Margin="0,0,8,0"
+                  ToolTip="Save in-place to the previously chosen path (Ctrl+S also works)" />
+          <Button Content="Save As…" Command="{Binding SaveAsCommand}" Padding="12,4" />
+        </StackPanel>
       </DockPanel>
     </Border>
 

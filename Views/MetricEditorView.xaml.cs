@@ -38,17 +38,4 @@ public partial class MetricEditorView : UserControl
         if (CustomMigrationsList.SelectedItem is CustomMigrationViewModel sel)
             ViewModel.RemoveCustomMigration(sel);
     }
-
-    private void SaveAs_Click(object sender, RoutedEventArgs e)
-    {
-        // The package tab wires Save; this view only triggers the action.
-        var dlg = new Microsoft.Win32.SaveFileDialog
-        {
-            Filter = "Package project (*.pkgproj)|*.pkgproj",
-            DefaultExt = ".pkgproj",
-            FileName = $"{ViewModel.PackageMeta.Name}.pkgproj",
-        };
-        if (dlg.ShowDialog() == true)
-            ViewModel.SaveTo(dlg.FileName);
-    }
 }
