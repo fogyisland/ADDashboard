@@ -14,11 +14,9 @@
             <TextBlock Text="{Binding Project.Manifest.Version, FallbackValue='0.1.0'}" Foreground="{StaticResource MutedBrush}" FontSize="11"/>
           </StackPanel>
         </Border>
-        <TextBlock DockPanel.Dock="Top" Text="PACKAGE FILES" Style="{StaticResource SectionHeader}" Margin="14,12,14,4"/>
+        <TextBlock DockPanel.Dock="Top" Text="PACKAGE" Style="{StaticResource SectionHeader}" Margin="14,12,14,4"/>
         <TreeView x:Name="Tree" BorderThickness="0" Background="Transparent" SelectedItemChanged="Tree_SelectedItemChanged">
-          <TreeViewItem Header="manifest" x:Name="ManifestNode" IsExpanded="True"/>
-          <TreeViewItem Header="migrations" ItemsSource="{Binding MigrationsVM.Items}" x:Name="MigrationsNode" IsExpanded="True"/>
-          <TreeViewItem Header="collect.ps1" x:Name="Ps1Node"/>
+          <TreeViewItem Header="package" x:Name="PackageNode" IsExpanded="True"/>
         </TreeView>
       </DockPanel>
     </Border>

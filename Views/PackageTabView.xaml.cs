@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using PackageDesigner.ViewModels;
@@ -18,16 +17,6 @@ public partial class PackageTabView : UserControl
     }
     private void Tree_SelectedItemChanged(object s, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (e.NewValue == ManifestNode) ViewModel.OpenManifest();
-        else if (e.NewValue is SqlFileViewModel sql) ViewModel.OpenSql(sql);
-        else if (e.NewValue == Ps1Node)
-        {
-            var ps1 = ViewModel.Project.Files.FirstOrDefault(f => f.Role == "ps1");
-            if (ps1 is not null)
-            {
-                var vm = new PowerShellFileViewModel(ps1);
-                ViewModel.OpenPs1(vm);
-            }
-        }
+        if (e.NewValue == PackageNode) ViewModel.OpenEditor();
     }
 }

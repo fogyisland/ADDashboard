@@ -9,8 +9,7 @@ namespace PackageDesigner.ViewModels;
 public class PackageTabViewModel : INotifyPropertyChanged
 {
     public PackageProject Project { get; }
-    public ManifestViewModel ManifestVM { get; }
-    public MigrationsListViewModel MigrationsVM { get; }
+    public MetricEditorViewModel MetricEditor { get; }
     public ObservableCollection<FileTabViewModel> OpenFiles { get; } = new();
 
     private FileTabViewModel? _selectedFile;
@@ -23,8 +22,7 @@ public class PackageTabViewModel : INotifyPropertyChanged
     public PackageTabViewModel(PackageProject p)
     {
         Project = p;
-        ManifestVM = new ManifestViewModel(p.Manifest);
-        MigrationsVM = new MigrationsListViewModel(p);
+        MetricEditor = new MetricEditorViewModel(p);
 
         // Keep SelectedFile in sync so PackageTabView's inner TabControl
         // SelectedItem always points to an item whose content area renders.
@@ -39,63 +37,27 @@ public class PackageTabViewModel : INotifyPropertyChanged
                 SelectedFile = null;
         };
 
-        // Auto-open Manifest tab so the three package elements are immediately
-        // visible. The user clicks MigrationsNode / Ps1Node in the tree to add
-        // the other two as needed; this matches the "三个要素" UX expectation.
-        OpenManifest();
+        // Auto-open the single metric editor tab.
+        OpenEditor();
     }
 
-    public void OpenSql(SqlFileViewModel svm)
-    {
-        // Dedupe: if a tab for this exact file is already open, focus it instead
-        // of stacking another copy. Without this, repeated tree-clicks on the
-        // same migration file accumulate identical editor tabs.
-        foreach (var f in OpenFiles)
-            if (f is SqlFileTab t && ReferenceEquals(t._vm, svm)) { SelectedFile = f; return; }
-        OpenFiles.Add(new SqlFileTab(svm));
-    }
-
-    public void OpenPs1(PowerShellFileViewModel pvm)
+    public void OpenEditor()
     {
         foreach (var f in OpenFiles)
-            if (f is Ps1FileTab t && ReferenceEquals(t._vm, pvm)) { SelectedFile = f; return; }
-        OpenFiles.Add(new Ps1FileTab(pvm));
-    }
-
-    public void OpenManifest()
-    {
-        // Only one manifest tab per package.
-        foreach (var f in OpenFiles)
-            if (f is ManifestTab) { SelectedFile = f; return; }
-        OpenFiles.Add(new ManifestTab(ManifestVM));
+            if (f is MetricEditorTab) { SelectedFile = f; return; }
+        OpenFiles.Add(new MetricEditorTab(MetricEditor));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-    private sealed class ManifestTab : FileTabViewModel
+    private sealed class MetricEditorTab : FileTabViewModel
     {
-        internal readonly ManifestViewModel _vm;
-        private Views.ManifestFormView? _view;
-        public ManifestTab(ManifestViewModel vm) { _vm = vm; }
-        public override string Title => "manifest";
-        public override object View => GetOrCreateView(ref _view, () => new Views.ManifestFormView(_vm));
-    }
-    private sealed class SqlFileTab : FileTabViewModel
-    {
-        internal readonly SqlFileViewModel _vm;
-        private Views.SqlEditorView? _view;
-        public SqlFileTab(SqlFileViewModel vm) { _vm = vm; }
-        public override string Title => _vm.File.Path;
-        public override object View => GetOrCreateView(ref _view, () => new Views.SqlEditorView(_vm));
-    }
-    private sealed class Ps1FileTab : FileTabViewModel
-    {
-        internal readonly PowerShellFileViewModel _vm;
-        private Views.PowerShellEditorView? _view;
-        public Ps1FileTab(PowerShellFileViewModel vm) { _vm = vm; }
-        public override string Title => _vm.File.Path;
-        public override object View => GetOrCreateView(ref _view, () => new Views.PowerShellEditorView(_vm));
+        internal readonly MetricEditorViewModel _vm;
+        private Views.MetricEditorView? _view;
+        public MetricEditorTab(MetricEditorViewModel vm) { _vm = vm; }
+        public override string Title => "package";
+        public override object View => GetOrCreateView(ref _view, () => new Views.MetricEditorView { DataContext = _vm });
     }
 }
