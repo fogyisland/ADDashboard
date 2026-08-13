@@ -60,6 +60,13 @@ public class PackageProjectRoundTripTests
             // memory_pct was never edited => catalog default.
             Assert.Equal(MetricCatalog.All.First(e => e.Key == "memory_pct").DefaultWarn,
                 memMetric.Thresholds?.Warn);
+
+            // D3 regression guard: the REHYDRATED VM's SelectedMetrics must see
+            // the edited thresholds, not catalog defaults.
+            var vmRehydrated = new MetricEditorViewModel(loaded);
+            var cpuRehydrated = vmRehydrated.SelectedMetrics.First(s => s.Selection.Catalog.Key == "cpu_pct");
+            Assert.Equal(75, cpuRehydrated.Warn);
+            Assert.Equal(92, cpuRehydrated.Crit);
         }
         finally
         {
@@ -83,6 +90,30 @@ public class PackageProjectRoundTripTests
             var raw = loaded.RawFiles["manifest.json"];
             var metricsArr = ParseMetricsBlock(raw);
             var cpu = metricsArr.First(m => m.Key == "cpu_pct");
+            Assert.Equal("My CPU", cpu.Label);
+            Assert.Equal("pct", cpu.Unit);
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
+    }
+
+    [Fact]
+    public void SaveThenLoad_RoundTrips_Label_And_Unit_Overrides()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"pkgproj-{Guid.NewGuid():N}.json");
+        try
+        {
+            var vm = new MetricEditorViewModel(NewProject());
+            vm.ToggleMetric(MetricCatalog.All.First(e => e.Key == "cpu_pct"));
+            vm.SelectedMetrics[0].Label = "My CPU";
+            vm.SelectedMetrics[0].Unit = "pct";
+            vm.SaveTo(tmp);
+
+            var loaded = PersistenceService.Load(tmp);
+            var vmRehydrated = new MetricEditorViewModel(loaded);
+            var cpu = vmRehydrated.SelectedMetrics.First(s => s.Selection.Catalog.Key == "cpu_pct");
             Assert.Equal("My CPU", cpu.Label);
             Assert.Equal("pct", cpu.Unit);
         }

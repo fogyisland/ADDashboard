@@ -228,6 +228,21 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
             PropertyNameCaseInsensitive = true,
             Converters = { new JsonStringEnumConverter(JsonNamingPolicy.KebabCaseLower) }
         }) ?? new PackageManifest();
+        // Persist user-edited per-metric overrides (D3 fix). Skip entries with
+        // no actual edit (all override fields null) to keep the JSON compact;
+        // absence in the dictionary means "use catalog default".
+        var nonEmptyOverrides = selections
+            .Where(s => s.Override is { Label: not null } or { Unit: not null } or { Warn: not null } or { Crit: not null })
+            .ToDictionary(
+                s => s.Catalog.Key,
+                s => new MetricOverride
+                {
+                    Label = s.Override!.Label,
+                    Unit = s.Override!.Unit,
+                    Warn = s.Override!.Warn,
+                    Crit = s.Override!.Crit,
+                });
+        draft.MetricOverrides = nonEmptyOverrides.Count > 0 ? nonEmptyOverrides : null;
         // Inject the auto-001 at the head of Migrations, custom migrations after.
         var migrations = new List<string> { "migrations/001_initial.sql" };
         migrations.AddRange(CustomMigrations.Select(m => m.Path));

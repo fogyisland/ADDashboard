@@ -74,6 +74,23 @@ const manifestSchema = {
         required: { type: 'array', items: { type: 'string' } },
       },
     },
+    // Editor-only per-metric user overrides (label/unit/thresholds). The
+    // agent runtime ignores this block; center preserves it through install
+    // so edits survive package re-imports. WPF designer's pre-flight schema
+    // mirror also accepts this field (D3 round-trip fix).
+    metricOverrides: {
+      type: 'object',
+      additionalProperties: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          label: { type: 'string' },
+          unit: { type: 'string' },
+          warn: { type: 'number' },
+          crit: { type: 'number' },
+        },
+      },
+    },
     widget: {
       type: 'object',
       additionalProperties: false,

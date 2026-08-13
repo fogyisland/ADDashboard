@@ -61,6 +61,19 @@
         "required": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "metricOverrides": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": { "type": "string" },
+          "unit": { "type": "string" },
+          "warn": { "type": "number" },
+          "crit": { "type": "number" }
+        }
+      }
+    },
     "widget": {
       "type": "object",
       "additionalProperties": false,
