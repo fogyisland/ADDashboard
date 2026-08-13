@@ -203,7 +203,7 @@
         <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
     </Style>
 
-    <!-- Reusable form-section styles. Used across ManifestFormView, dialogs, etc.
+    <!-- Reusable form-section styles. Used across MetricEditorView, dialogs, etc.
          SectionHeader: section title (PACKAGE / AGENT / DATABASE / ...).
          FieldLabel:    right-of-grid form-field label. -->
     <Converters:InvertBoolConverter x:Key="InvertBool"/>

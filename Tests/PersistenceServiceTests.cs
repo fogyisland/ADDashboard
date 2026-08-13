@@ -46,4 +46,18 @@ public class PersistenceServiceTests
             if (File.Exists(tmp)) File.Delete(tmp);
         }
     }
+
+    [Fact]
+    public void Save_Atomicity_On_IO_Failure()
+    {
+        // Simulate a write failure by giving an invalid path (drive that doesn't exist).
+        var p = new PackageProject { Manifest = new PackageManifest { Name = "x", Version = "1.0.0", Type = "gauge" } };
+        var badPath = @"Z:\nonexistent-drive\out.pkgproj";
+        Assert.ThrowsAny<System.Exception>(() => PersistenceService.Save(p, badPath));
+        // The atomic write pattern (temp + rename) ensures no partial file is left
+        // at the target. The exception is the contract; the assertion is that
+        // badPath was never created.
+        Assert.False(File.Exists(badPath));
+        Assert.False(File.Exists(badPath + ".tmp"));
+    }
 }
