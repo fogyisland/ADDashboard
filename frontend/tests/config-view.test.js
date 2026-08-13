@@ -230,6 +230,41 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   expect(labels.length).toBe(rawKeys.length);
 });
 
+// T17 regression: even when the backend returns smtp_* / alert_* keys
+// alongside the base keys, the main /admin/config page must not render them.
+// Those keys live on /admin/email-config. (Forgetting the projection at
+// load() time is what produced the v1 release of this branch.)
+test('ConfigView does not render email keys — they belong on /admin/email-config', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({
+    data: {
+      ...SAMPLE,
+      smtp_host: 'smtp.example.com',
+      smtp_port: 25,
+      smtp_secure: 'false',
+      smtp_user: 'alerts@example.com',
+      smtp_password: '********',
+      smtp_from: 'alerts@example.com',
+      alert_default_to: 'ops@corp.local',
+      alert_default_cc: '',
+      alert_eval_interval_seconds: 60,
+      alert_email_max_attempts: 5,
+      alert_email_initial_backoff_seconds: 30
+    }
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const table = w.find('table.t');
+  const rawKeys = table.findAll('.raw-key').map((el) => el.text());
+  for (const k of [
+    'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_password', 'smtp_from',
+    'alert_default_to', 'alert_default_cc',
+    'alert_eval_interval_seconds', 'alert_email_max_attempts', 'alert_email_initial_backoff_seconds'
+  ]) {
+    expect(rawKeys).not.toContain(k);
+  }
+});
+
 test('audit section: configKey column renders Chinese label as primary + raw key as small secondary code', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });

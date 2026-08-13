@@ -189,8 +189,15 @@ async function onCopyToken() {
 async function load() {
   const r = await adminApi.getConfig();
   const all = r.data || {};
-  initial.value = all;
-  current.value = { ...all };
+  // Project out email keys — they live on /admin/email-config. Without this
+  // step, smtp_host etc. would render here as raw-key rows with no Chinese
+  // labels (the audit filter excluded them but the table didn't).
+  const subset = {};
+  for (const [k, v] of Object.entries(all)) {
+    if (!EMAIL_KEYS.has(k)) subset[k] = v;
+  }
+  initial.value = subset;
+  current.value = { ...subset };
   markClean(current.value);
   validate(current.value);
   await loadAudit();
