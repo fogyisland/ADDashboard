@@ -133,11 +133,29 @@ public static class MetricGenerator
     }
 
     /// <summary>
-    /// Build the auto-generated <c>collect.ps1</c>. Implemented in Task 4.
+    /// Build the auto-generated <c>collect.ps1</c>. Emits one assignment per
+    /// picked metric into an ordered hashtable, then JSON-serializes the
+    /// result with <c>ConvertTo-Json -Compress</c>. Snippets are emitted
+    /// verbatim — the catalog is the source of truth and is validated by
+    /// <c>MetricCatalogTests</c>.
     /// </summary>
-    public static string GenerateCollectScript(
-        IReadOnlyList<Selection> selections) =>
-        throw new System.NotImplementedException("Task 4");
+    public static string GenerateCollectScript(IReadOnlyList<Selection> selections)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("$ErrorActionPreference = 'Stop'");
+        sb.AppendLine("$agent_id = $env:COMPUTERNAME");
+        sb.AppendLine("$ts = (Get-Date).ToUniversalTime().ToString('o')");
+        sb.AppendLine("$metrics = [ordered]@{");
+        for (int i = 0; i < selections.Count; i++)
+        {
+            var s = selections[i];
+            sb.Append("  ").Append(s.Catalog.Key).Append(" = ").Append(s.Catalog.PowerShellSnippet);
+            sb.AppendLine(i == selections.Count - 1 ? "" : "");
+        }
+        sb.AppendLine("}");
+        sb.AppendLine("@{ agent_id = $agent_id; ts = $ts; metrics = $metrics } | ConvertTo-Json -Compress");
+        return sb.ToString();
+    }
 
     // ------- DTOs (control JSON property order so the output matches the
     // embedded schema's expected shape and reads top-to-bottom the way a

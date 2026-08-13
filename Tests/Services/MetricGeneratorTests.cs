@@ -140,4 +140,67 @@ public class MetricGeneratorTests
         var sql = MetricGenerator.GenerateMigration001("pkg_ad_foo", "metrics", sels);
         Assert.Contains("cpu_pct double NOT NULL", sql);
     }
+
+    // ---------- GenerateCollectScript ----------
+
+    [Fact]
+    public void GenerateCollectScript_Imports_All_Picked_Metrics()
+    {
+        var sels = new List<MetricGenerator.Selection>
+        {
+            Sel("cpu_pct", "CPU", "%", "double", 80, 95),
+            Sel("memory_pct", "Mem", "%", "double", 70, 90),
+        };
+        var ps1 = MetricGenerator.GenerateCollectScript(sels);
+        Assert.Contains("cpu_pct = ", ps1);
+        Assert.Contains("memory_pct = ", ps1);
+    }
+
+    [Fact]
+    public void GenerateCollectScript_Outputs_Json_With_Metrics_Object()
+    {
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var ps1 = MetricGenerator.GenerateCollectScript(sels);
+        Assert.Contains("metrics = $metrics", ps1);
+        Assert.Contains("ConvertTo-Json -Compress", ps1);
+    }
+
+    [Fact]
+    public void GenerateCollectScript_No_Extra_Assignments_For_Unpicked_Metrics()
+    {
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var ps1 = MetricGenerator.GenerateCollectScript(sels);
+        Assert.DoesNotContain("memory_pct = ", ps1);
+        Assert.DoesNotContain("disk_free_pct = ", ps1);
+    }
+
+    [Fact]
+    public void GenerateCollectScript_Handles_Snippet_With_Single_Quotes()
+    {
+        // The four built-in catalog snippets include single quotes (e.g.,
+        // Get-Counter '\\Processor...'). The generator must emit them as-is.
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var ps1 = MetricGenerator.GenerateCollectScript(sels);
+        Assert.Contains("'\\Processor(_Total)\\% Processor Time'", ps1);
+    }
+
+    [Fact]
+    public void GenerateCollectScript_Handles_Snippet_With_Special_Characters()
+    {
+        // memory_pct's snippet uses $(...) and $_ — the generator must emit
+        // it verbatim so PowerShell can parse the result.
+        var sels = new List<MetricGenerator.Selection> { Sel("memory_pct", "Mem", "%", "double", 70, 90) };
+        var ps1 = MetricGenerator.GenerateCollectScript(sels);
+        Assert.Contains("$(Get-CimInstance Win32_OperatingSystem)", ps1);
+        Assert.Contains("$_", ps1);
+    }
+
+    [Fact]
+    public void GenerateCollectScript_Adds_Default_Agent_Id_And_Timestamp()
+    {
+        var sels = new List<MetricGenerator.Selection> { Sel("cpu_pct", "CPU", "%", "double", 80, 95) };
+        var ps1 = MetricGenerator.GenerateCollectScript(sels);
+        Assert.Contains("$agent_id = $env:COMPUTERNAME", ps1);
+        Assert.Contains("$ts = (Get-Date).ToUniversalTime().ToString('o')", ps1);
+    }
 }
