@@ -568,3 +568,21 @@ cd <repo-root>
 dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained
 .\PackageDesigner\bin\PackageDesigner\Release\net8.0-windows\win-x64\publish\PackageDesigner.exe
 ```
+
+### v2 backlog cleanup (2026-08-13)
+
+Closed 6 backlog items from the WPF redesign SDD:
+
+| Item | Severity | What changed |
+|---|---|---|
+| D3 | Important | Added `Models/MetricOverride` + `PackageManifest.MetricOverrides`. VM ctor rehydrates; `SaveTo` writes through. Round-trip tests assert rehydrated VM state, not just JSON. |
+| I-3 | Important | New `Common/RelayCommand` + `SaveCommand` / `SaveAsCommand` / `LastSavePath` on `MetricEditorViewModel`. Editor's save row now has Save + Save As… buttons. |
+| I-4 | Important | `MetricGenerator.GenerateManifestJson` always emits `"runtime":"powershell"` regardless of input. |
+| D2 | Minor | Deleted `SqlFileViewModel` / `PowerShellFileViewModel` + their tests (dead post-v1). |
+| M-3..M-7 | Minor | Dead ternary removed; CS0642 bare `;` removed; atomicity test portable; `JsonSerializerOptions` deduplicated; `PackageManifest` got a spec-rationale XML-doc summary. |
+
+**R1 waiver:** `PackageManifest` is the only Models file touched (added `MetricOverrides`). All other Models files remain locked. Services layer lock unchanged.
+
+**Test counts:** 119 → 126 xUnit (113 from v1 + 13 net new). 0 new warnings; 2 warnings eliminated (M-4 + M-6 dedup).
+
+**Smoke:** `smoke/wpf-smoke/` driver 39/39 (38 from v1 + 1 strengthened for D3). Live `collect.ps1` run under PS 5.1 still emits valid JSON.
