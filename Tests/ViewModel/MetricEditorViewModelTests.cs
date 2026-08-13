@@ -196,6 +196,72 @@ public class MetricEditorViewModelTests
     }
 
     [Fact]
+    public void Ctor_Rehydrates_Overrides_From_Manifest_MetricOverrides()
+    {
+        var project = new PackageProject
+        {
+            Manifest = new PackageManifest
+            {
+                Name = "rehydrate", Version = "1.0.0", Type = "gauge",
+                Agent = new AgentConfig { MinVersion = "0.1.0", Script = "collect.ps1", IntervalSec = 60 },
+                Database = new DatabaseConfig
+                {
+                    SchemaName = "pkg_rehydrate",
+                    Migrations = new List<string>(),
+                    MetricTable = "metrics",
+                    MetricSchema = new()
+                    {
+                        ["agent_id"] = new MetricDef { Type = "varchar(64)", Nullable = false },
+                        ["ts"] = new MetricDef { Type = "datetime", Nullable = false },
+                        ["cpu_pct"] = new MetricDef { Type = "double", Nullable = true },
+                    },
+                },
+                MetricOverrides = new()
+                {
+                    ["cpu_pct"] = new MetricOverride { Warn = 75, Crit = 92, Label = "My CPU" },
+                },
+            },
+        };
+        var vm = new MetricEditorViewModel(project);
+        var cpu = vm.SelectedMetrics.FirstOrDefault(s => s.Selection.Catalog.Key == "cpu_pct");
+        Assert.NotNull(cpu);
+        Assert.Equal(75, cpu!.Warn);
+        Assert.Equal(92, cpu.Crit);
+        Assert.Equal("My CPU", cpu.Label);
+    }
+
+    [Fact]
+    public void Ctor_Without_MetricOverrides_Defaults_To_Catalog()
+    {
+        var project = new PackageProject
+        {
+            Manifest = new PackageManifest
+            {
+                Name = "noovr", Version = "1.0.0", Type = "gauge",
+                Agent = new AgentConfig { MinVersion = "0.1.0", Script = "collect.ps1", IntervalSec = 60 },
+                Database = new DatabaseConfig
+                {
+                    SchemaName = "pkg_noovr",
+                    Migrations = new List<string>(),
+                    MetricTable = "metrics",
+                    MetricSchema = new()
+                    {
+                        ["agent_id"] = new MetricDef { Type = "varchar(64)", Nullable = false },
+                        ["ts"] = new MetricDef { Type = "datetime", Nullable = false },
+                        ["cpu_pct"] = new MetricDef { Type = "double", Nullable = true },
+                    },
+                },
+                // MetricOverrides intentionally null.
+            },
+        };
+        var vm = new MetricEditorViewModel(project);
+        var cpu = vm.SelectedMetrics.FirstOrDefault(s => s.Selection.Catalog.Key == "cpu_pct");
+        Assert.NotNull(cpu);
+        Assert.Null(cpu!.Selection.Override);
+        Assert.Equal(80, cpu.Warn);  // catalog default for cpu_pct
+    }
+
+    [Fact]
     public void Load_With_Unknown_Metric_Still_Updates_ManifestJson()
     {
         var p = NewProject();

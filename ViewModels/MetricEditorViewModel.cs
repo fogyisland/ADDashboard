@@ -93,39 +93,45 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
 
         // Populate SelectedMetrics from the loaded manifest's metrics[]
         // list. A metric is "custom" if its key is not in MetricCatalog.All.
+        // Editor-side MetricOverrides (Task 3, D3) are rehydrated onto the
+        // Selection so the row shows the user's Warn/Crit/Label rather than
+        // the catalog default after a round-trip.
         if (Project.Manifest.Database.MetricSchema is { } schema
             && schema.Count > 2)
         {
+            var overrides = Project.Manifest.MetricOverrides;
             foreach (var (key, def) in schema)
             {
                 if (key == "agent_id" || key == "ts") continue;
+                MetricGenerator.Selection sel;
                 if (MetricCatalog.TryGet(key, out var entry))
                 {
-                    var item = new MetricSelectionViewModel(
-                        new MetricGenerator.Selection(entry, def), isCustom: false);
-                    SelectedMetrics.Add(item);
+                    sel = new MetricGenerator.Selection(entry, def);
                 }
                 else
                 {
                     // Build a synthetic catalog entry so the VM still has a
                     // Catalog to render — the label comes from the user
                     // who authored the package, fall back to the key.
-                    var item = new MetricSelectionViewModel(
-                        new MetricGenerator.Selection(
-                            new MetricCatalogEntry
-                            {
-                                Key = key,
-                                Label = key,
-                                Unit = "",
-                                SqlType = def.Type,
-                                Category = "Custom",
-                                Description = "Loaded from package; not in built-in catalog.",
-                                PowerShellSnippet = "null",
-                            },
-                            def),
-                        isCustom: true);
-                    SelectedMetrics.Add(item);
+                    sel = new MetricGenerator.Selection(
+                        new MetricCatalogEntry
+                        {
+                            Key = key,
+                            Label = key,
+                            Unit = "",
+                            SqlType = def.Type,
+                            Category = "Custom",
+                            Description = "Loaded from package; not in built-in catalog.",
+                            PowerShellSnippet = "null",
+                        },
+                        def);
                 }
+                if (overrides is not null && overrides.TryGetValue(key, out var ov)
+                    && (ov.Label is not null || ov.Unit is not null || ov.Warn is not null || ov.Crit is not null))
+                {
+                    sel = sel with { Override = new MetricGenerator.Overrides(ov.Label, ov.Unit, ov.Warn, ov.Crit) };
+                }
+                SelectedMetrics.Add(new MetricSelectionViewModel(sel, isCustom: !MetricCatalog.TryGet(key, out _)));
             }
         }
 
