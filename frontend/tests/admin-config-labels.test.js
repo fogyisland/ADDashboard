@@ -34,8 +34,8 @@ test('ConfigView: renders listenPort/heartbeat_port/report_port rows with labels
   expect(wrapper.text()).toContain('中心 Web 端口');
   expect(wrapper.text()).toContain('心跳端口');
   expect(wrapper.text()).toContain('报告端口');
-  // Scope to the main config table only — T15 moved SMTP/alert numeric
-  // inputs into EmailConfigCard which adds 4 number inputs (smtp_port +
-  // 3 alert_*).
+  // One number input per port key. The table renders exactly the keys
+  // getConfig returned, so this fixture yields 3 regardless of how many
+  // numeric keys the real endpoint carries.
   expect(wrapper.find('table.t').findAll('input[type="number"]')).toHaveLength(3);
 });

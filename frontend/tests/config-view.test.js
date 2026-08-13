@@ -51,9 +51,8 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
-  // Find the polling_interval_minutes input by walking the rows in the main
-  // config table (T15 moved SMTP keys into EmailConfigCard so input[0] is
-  // no longer guaranteed to be polling_interval_minutes).
+  // Find the polling_interval_minutes input by walking the rows — row order
+  // follows getConfig's key order, so index-based lookup is brittle.
   const rows = w.findAll('table.t tbody tr');
   const pollingRow = rows.find((r) => r.text().includes('polling_interval_minutes'));
   const pollingInput = pollingRow.find('input');
@@ -71,9 +70,8 @@ test('edit risky field (ad_agent_token) shows confirm dialog; cancel aborts save
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
-  // Find the ad_agent_token input by walking the rows in the main config
-  // table (T15 moved SMTP keys into EmailConfigCard so input[4] is no
-  // longer guaranteed to be ad_agent_token).
+  // Find the ad_agent_token input by walking the rows — row order follows
+  // getConfig's key order, so index-based lookup is brittle.
   const rows = w.findAll('table.t tbody tr');
   const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
   const tokenInput = tokenRow.find('input');
@@ -115,8 +113,7 @@ test('cancel button restores the snapshot', async () => {
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   const w = mount(ConfigView);
   await flushPromises();
-  // Find polling_interval_minutes input by walking rows (T15 card moved
-  // input[0]).
+  // Find polling_interval_minutes input by walking rows.
   const rows = w.findAll('table.t tbody tr');
   const pollingRow = rows.find((r) => r.text().includes('polling_interval_minutes'));
   const pollingInput = pollingRow.find('input');
@@ -215,9 +212,6 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   const w = mount(ConfigView);
   await flushPromises();
-  // Scope to the main config table only (T15 moved SMTP keys into
-  // EmailConfigCard so its own `.key-label` / `.raw-key` pairs are
-  // intentionally excluded from this count).
   const tableScope = w.find('table.t');
   const labels = tableScope.findAll('.key-label').map(el => el.text());
   const rawKeys = tableScope.findAll('.raw-key').map(el => el.text());
