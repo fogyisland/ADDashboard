@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using PackageDesigner.Models;
 using PackageDesigner.ViewModels;
 using Xunit;
@@ -67,6 +68,19 @@ public class PackageTabViewModelTests
         // Same regression guard for the new editor view.
         var ctor = typeof(PackageDesigner.Views.MetricEditorView).GetConstructor(Type.EmptyTypes);
         Assert.NotNull(ctor);
+    }
+
+    [Fact]
+    public void MetricEditorView_Has_Named_CustomMigrationsList_Field()
+    {
+        // C-3 regression: the "−" button's code-behind used to read the
+        // CatalogList (catalog rows), so custom migrations could never be
+        // removed. The fix named the right ListBox. This test pins the name
+        // so a future XAML refactor cannot silently break the wiring.
+        var field = typeof(PackageDesigner.Views.MetricEditorView)
+            .GetField("CustomMigrationsList", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        Assert.Equal(typeof(System.Windows.Controls.ListBox), field!.FieldType);
     }
 
     [Fact]

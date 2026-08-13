@@ -46,7 +46,15 @@ public partial class MainWindow : Window
     {
         if (VM.ActiveTab is null) return;
         var dlg = new Microsoft.Win32.SaveFileDialog { Filter = "Package project (*.pkgproj)|*.pkgproj", FileName = VM.ActiveTab.Project.Manifest.Name + ".pkgproj" };
-        if (dlg.ShowDialog() == true) PersistenceService.Save(VM.ActiveTab.Project, dlg.FileName);
+        if (dlg.ShowDialog() != true) return;
+        // C-2 fix: route every save through MetricEditor.SaveTo so the editor's
+        // validation, override write-through, and custom-migration rebuilds all
+        // take effect. A bare PersistenceService.Save would silently drop every
+        // edit made in the editor (Spec Smokes 5 and 7 require this path).
+        var result = VM.ActiveTab.MetricEditor.SaveTo(dlg.FileName);
+        StatusText.Text = result.Valid
+            ? $"Saved to {dlg.FileName}"
+            : $"Save failed: {string.Join("; ", result.Errors)}";
     }
 
     private async void Publish_Click(object s, RoutedEventArgs e)

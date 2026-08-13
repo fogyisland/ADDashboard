@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq;
+using System.Reflection;
 using PackageDesigner.Models;
 using PackageDesigner.Services;
 using PackageDesigner.ViewModels;
@@ -124,11 +126,30 @@ public class MetricEditorViewModelTests
     [Fact]
     public void Validate_BeforeSave_Fails_On_Duplicate_Metric_Keys()
     {
+        // I-2 fix: the previous body was a tautology (it asserted the
+        // "no metrics picked" error rather than the duplicate-key path
+        // it claimed to test). Add the metric once via the public ToggleMetric
+        // surface, then inject a second item with the same catalog key via
+        // reflection on the private ObservableCollection<...> field — ToggleMetric
+        // removes on second call, so the public API cannot introduce duplicates.
         var vm = new MetricEditorViewModel(NewProject());
-        // Force two selections with the same key by toggling then manually
-        // adding a duplicate via reflection — easier path: skip, leave for
-        // an integration test. The validator is unit-tested directly.
-        Assert.True(vm.ValidateBeforeSave().Any(e => e.Contains("metric")));
+        vm.ToggleMetric(MetricCatalog.All.First(e => e.Key == "cpu_pct"));
+
+        var cpuEntry = MetricCatalog.All.First(e => e.Key == "cpu_pct");
+        var duplicate = new MetricSelectionViewModel(
+            new MetricGenerator.Selection(cpuEntry, new MetricDef { Type = "double" }),
+            isCustom: false);
+
+        // SelectedMetrics is a public read-only property (backing ObservableCollection),
+        // not a field; reach it via the property accessor.
+        var selected = typeof(MetricEditorViewModel)
+            .GetProperty("SelectedMetrics", BindingFlags.Public | BindingFlags.Instance)!
+            .GetValue(vm) as ObservableCollection<MetricSelectionViewModel>;
+        Assert.NotNull(selected);
+        selected!.Add(duplicate);
+
+        var errs = vm.ValidateBeforeSave();
+        Assert.Contains(errs, e => e.Contains("Duplicate metric key") && e.Contains("cpu_pct"));
     }
 
     [Fact]

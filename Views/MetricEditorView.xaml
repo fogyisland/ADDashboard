@@ -69,7 +69,7 @@
     <!-- Custom migrations expander (above body) -->
     <Expander DockPanel.Dock="Bottom" Header="Custom migrations" Padding="14,4">
       <DockPanel>
-        <ListBox DockPanel.Dock="Top" ItemsSource="{Binding CustomMigrations}" MinHeight="60" MaxHeight="120">
+        <ListBox x:Name="CustomMigrationsList" DockPanel.Dock="Top" ItemsSource="{Binding CustomMigrations}" MinHeight="60" MaxHeight="120">
           <ListBox.ItemTemplate>
             <DataTemplate>
               <DockPanel>

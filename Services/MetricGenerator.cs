@@ -16,7 +16,14 @@ namespace PackageDesigner.Services;
 public static class MetricGenerator
 {
     /// <summary>One picked metric: a catalog entry + the column def to emit.</summary>
-    public sealed record Selection(MetricCatalogEntry Catalog, MetricDef Column);
+    public sealed record Selection(MetricCatalogEntry Catalog, MetricDef Column, Overrides? Override = null);
+
+    /// <summary>
+    /// Per-metric user overrides for label/unit/thresholds. Null members mean
+    /// "fall back to the catalog default". The VM mutates these on every edit
+    /// so the generator emits the actual user value, not the catalog default.
+    /// </summary>
+    public sealed record Overrides(string? Label = null, string? Unit = null, double? Warn = null, double? Crit = null);
 
     /// <summary>
     /// Build the auto-generated <c>manifest.json</c>. Uses
@@ -48,21 +55,22 @@ public static class MetricGenerator
         };
 
         // Build metrics[] — one entry per selection, with thresholds.
-        var metricsList = selections.Select(s => new
+        var metricsDto = selections.Select(s =>
         {
-            key = s.Catalog.Key,
-            label = s.Column.Nullable == false ? "" : "",  // placeholder, replaced below
-        }).ToList();
-        // (Use anonymous types only for ordering; below is the real shape.)
-        // Note: System.Text.Json serializes properties in declaration order,
-        // so the metrics block must be carefully ordered. We construct a
-        // proper DTO to control the order.
-        var metricsDto = selections.Select(s => new MetricsDto
-        {
-            Key = s.Catalog.Key,
-            Label = s.Catalog.Label,
-            Unit = s.Catalog.Unit,
-            Thresholds = new ThresholdsDto { Warn = s.Catalog.DefaultWarn, Crit = s.Catalog.DefaultCrit },
+            // Apply per-metric overrides if set. Empty Label = use catalog;
+            // null Warn/Crit = use catalog default.
+            var ov = s.Override;
+            var label = (ov?.Label is { Length: > 0 } ol) ? ol : s.Catalog.Label;
+            var unit = (ov?.Unit is { Length: > 0 } ou) ? ou : s.Catalog.Unit;
+            var warn = ov?.Warn ?? s.Catalog.DefaultWarn;
+            var crit = ov?.Crit ?? s.Catalog.DefaultCrit;
+            return new MetricsDto
+            {
+                Key = s.Catalog.Key,
+                Label = label,
+                Unit = unit,
+                Thresholds = new ThresholdsDto { Warn = warn, Crit = crit },
+            };
         }).ToList();
 
         // Compose database block.

@@ -8,10 +8,13 @@ namespace PackageDesigner.ViewModels;
 
 /// <summary>
 /// One row in the metric editor's "Configured" pane. Wraps a
-/// <see cref="MetricGenerator.Selection"/> (catalog entry + column def) and
-/// exposes editable fields. The <see cref="IsCustom"/> flag is true for
-/// metrics loaded from a package that are not in the built-in catalog — they
-/// are surfaced for visibility but cannot be re-generated (GC #8).
+/// <see cref="MetricGenerator.Selection"/> (catalog entry + column def + user
+/// overrides) and exposes editable fields. The <see cref="IsCustom"/> flag is
+/// true for metrics loaded from a package that are not in the built-in
+/// catalog — they are surfaced for visibility but cannot be re-generated
+/// (GC #8). Setters mutate <see cref="Selection"/>'s <c>Overrides</c> record so
+/// the generator emits the actual user value, not the catalog default (fix for
+/// opus review finding C-1).
 /// </summary>
 public sealed class MetricSelectionViewModel : INotifyPropertyChanged
 {
@@ -35,23 +38,43 @@ public sealed class MetricSelectionViewModel : INotifyPropertyChanged
 
     public string Label
     {
-        get => Selection.Catalog.Label;
-        set { Selection = Selection with { Catalog = Selection.Catalog }; /* immutability keeps ref; no-op needed */ OnChanged(); Changed?.Invoke(this, EventArgs.Empty); }
+        get => Selection.Override?.Label ?? Selection.Catalog.Label;
+        set
+        {
+            var ov = Selection.Override ?? new MetricGenerator.Overrides();
+            Selection = Selection with { Override = ov with { Label = value } };
+            OnChanged(); Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
     public string Unit
     {
-        get => Selection.Catalog.Unit;
-        set { OnChanged(); Changed?.Invoke(this, EventArgs.Empty); }
+        get => Selection.Override?.Unit ?? Selection.Catalog.Unit;
+        set
+        {
+            var ov = Selection.Override ?? new MetricGenerator.Overrides();
+            Selection = Selection with { Override = ov with { Unit = value } };
+            OnChanged(); Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
     public double? Warn
     {
-        get => Selection.Catalog.DefaultWarn;
-        set { OnChanged(); Changed?.Invoke(this, EventArgs.Empty); }
+        get => Selection.Override?.Warn ?? Selection.Catalog.DefaultWarn;
+        set
+        {
+            var ov = Selection.Override ?? new MetricGenerator.Overrides();
+            Selection = Selection with { Override = ov with { Warn = value } };
+            OnChanged(); Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
     public double? Crit
     {
-        get => Selection.Catalog.DefaultCrit;
-        set { OnChanged(); Changed?.Invoke(this, EventArgs.Empty); }
+        get => Selection.Override?.Crit ?? Selection.Catalog.DefaultCrit;
+        set
+        {
+            var ov = Selection.Override ?? new MetricGenerator.Overrides();
+            Selection = Selection with { Override = ov with { Crit = value } };
+            OnChanged(); Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

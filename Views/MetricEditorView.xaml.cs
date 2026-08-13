@@ -32,7 +32,10 @@ public partial class MetricEditorView : UserControl
 
     private void RemoveCustom_Click(object sender, RoutedEventArgs e)
     {
-        if (CatalogList.SelectedItem is CustomMigrationViewModel sel)
+        // C-3 fix: read the custom-migrations ListBox (its named element),
+        // not CatalogList (which holds MetricCatalogEntry rows). Both share a
+        // ListBox type, so the wrong target silently no-oped on removal.
+        if (CustomMigrationsList.SelectedItem is CustomMigrationViewModel sel)
             ViewModel.RemoveCustomMigration(sel);
     }
 

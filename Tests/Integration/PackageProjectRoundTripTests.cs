@@ -1,4 +1,6 @@
 using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using PackageDesigner.Models;
 using PackageDesigner.Services;
 using PackageDesigner.ViewModels;
@@ -44,11 +46,75 @@ public class PackageProjectRoundTripTests
             // auto-generated metricSchema with the two picked metrics.
             Assert.Contains("cpu_pct", loaded.Manifest.Database!.MetricSchema.Keys);
             Assert.Contains("memory_pct", loaded.Manifest.Database.MetricSchema.Keys);
+
+            // The regenerated manifest.json on disk must carry the user-edited
+            // thresholds for cpu_pct (and the untouched catalog defaults for
+            // memory_pct). C-1 regression: previously the editor dropped these
+            // values and only the catalog defaults were written.
+            var raw = loaded.RawFiles["manifest.json"];
+            var metricsArr = ParseMetricsBlock(raw);
+            var cpuMetric = metricsArr.First(m => m.Key == "cpu_pct");
+            var memMetric = metricsArr.First(m => m.Key == "memory_pct");
+            Assert.Equal(75, cpuMetric.Thresholds?.Warn);
+            Assert.Equal(92, cpuMetric.Thresholds?.Crit);
+            // memory_pct was never edited => catalog default.
+            Assert.Equal(MetricCatalog.All.First(e => e.Key == "memory_pct").DefaultWarn,
+                memMetric.Thresholds?.Warn);
         }
         finally
         {
             if (File.Exists(tmp)) File.Delete(tmp);
         }
+    }
+
+    [Fact]
+    public void SaveThenLoad_Preserves_Edited_Label_And_Unit()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), $"pkgproj-{Guid.NewGuid():N}.json");
+        try
+        {
+            var vm = new MetricEditorViewModel(NewProject());
+            vm.ToggleMetric(MetricCatalog.All.First(e => e.Key == "cpu_pct"));
+            vm.SelectedMetrics[0].Label = "My CPU";
+            vm.SelectedMetrics[0].Unit = "pct";
+            vm.SaveTo(tmp);
+
+            var loaded = PersistenceService.Load(tmp);
+            var raw = loaded.RawFiles["manifest.json"];
+            var metricsArr = ParseMetricsBlock(raw);
+            var cpu = metricsArr.First(m => m.Key == "cpu_pct");
+            Assert.Equal("My CPU", cpu.Label);
+            Assert.Equal("pct", cpu.Unit);
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
+    }
+
+    // Local DTO used only to introspect the regenerated manifest.json's
+    // metrics[] block during a round-trip. Avoids a round-trip through the
+    // full PackageManifest type (which strips Overrides via the column def).
+    private sealed class MetricsBlockDto
+    {
+        public string Key { get; set; } = "";
+        public string Label { get; set; } = "";
+        public string? Unit { get; set; }
+        public ThresholdsDto? Thresholds { get; set; }
+    }
+    private sealed class ThresholdsDto
+    {
+        public double? Warn { get; set; }
+        public double? Crit { get; set; }
+    }
+
+    private static System.Collections.Generic.IEnumerable<MetricsBlockDto> ParseMetricsBlock(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var metrics = doc.RootElement.GetProperty("metrics");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(metrics);
+        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        return JsonSerializer.Deserialize<MetricsBlockDto[]>(bytes, opts)!;
     }
 
     [Fact]
