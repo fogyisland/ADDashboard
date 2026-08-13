@@ -69,16 +69,18 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
         // Re-run regeneration on any change to the metadata strip.
         PackageMeta.PropertyChanged += (_, _) => RegeneratePreviews();
 
-        // Re-run on add/remove of picked metrics.
+        // Re-run on add/remove of picked metrics. The CollectionChanged handler
+        // is the ONLY place that subscribes/unsubscribes per-item — items seeded
+        // in the ctor and added via ToggleMetric both trigger CollectionChanged
+        // Add, so we never subscribe explicitly elsewhere.
         SelectedMetrics.CollectionChanged += (_, e) =>
         {
-            // Wire per-item Changed event so editing thresholds re-runs preview.
             if (e.Action == NotifyCollectionChangedAction.Add)
                 foreach (MetricSelectionViewModel item in e.NewItems!)
-                    item.Changed += (_, _) => RegeneratePreviews();
+                    item.Changed += OnMetricChanged;
             else if (e.Action == NotifyCollectionChangedAction.Remove)
                 foreach (MetricSelectionViewModel item in e.OldItems!)
-                    item.Changed -= (_, _) => RegeneratePreviews();
+                    item.Changed -= OnMetricChanged;
             else if (e.Action == NotifyCollectionChangedAction.Reset)
                 // Collection was cleared; old-item references are gone with the GC.
                 // Nothing to unsubscribe individually.
@@ -101,7 +103,6 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
                 {
                     var item = new MetricSelectionViewModel(
                         new MetricGenerator.Selection(entry, def), isCustom: false);
-                    item.Changed += (_, _) => RegeneratePreviews();
                     SelectedMetrics.Add(item);
                 }
                 else
@@ -123,7 +124,6 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
                             },
                             def),
                         isCustom: true);
-                    item.Changed += (_, _) => RegeneratePreviews();
                     SelectedMetrics.Add(item);
                 }
             }
@@ -154,7 +154,6 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
                 new MetricGenerator.Selection(entry, new MetricDef { Type = entry.SqlType, Nullable = true }),
                 isCustom: false);
             SelectedMetrics.Add(item);
-            item.Changed += (_, _) => RegeneratePreviews();
         }
     }
 
@@ -288,4 +287,10 @@ public sealed class MetricEditorViewModel : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     private void OnChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    // Single cached handler for per-item Changed events. Referenced as a
+    // method group so += and -= use the same delegate instance (a fresh
+    // lambda each time would silently no-op on -=, leaking the VM and
+    // wasting regeneration work).
+    private void OnMetricChanged(object? sender, EventArgs e) => RegeneratePreviews();
 }
