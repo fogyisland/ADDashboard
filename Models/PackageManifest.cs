@@ -15,4 +15,13 @@ public class PackageManifest
     public string? Description { get; set; }
     public AgentConfig Agent { get; set; } = new();
     public DatabaseConfig? Database { get; set; }
+
+    /// <summary>
+    /// Per-metric override values (Label/Unit/Warn/Crit). Editor-side only;
+    /// never serialized into the shipped manifest.json (which is regenerated
+    /// by <c>MetricGenerator</c> on each save and validated by
+    /// <c>ManifestValidator</c>). Nullable so existing .pkgproj files
+    /// deserialize cleanly — null/absent means "no overrides".
+    /// </summary>
+    public Dictionary<string, MetricOverride>? MetricOverrides { get; set; }
 }
