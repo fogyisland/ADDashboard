@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { postReport, postHeartbeat } from '../src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig } from '../src/reporter.js';
 
 async function withServer(handler, fn) {
   return new Promise((resolve) => {
@@ -87,5 +87,26 @@ test('postHeartbeat includes agentVersion (not version) for cross-task center co
     await postHeartbeat({ centerUrl: url, agentToken: 't', payload: { agentId: 'X', agentVersion: '0.1.0' } });
     assert.equal(received.agentVersion, '0.1.0');
     assert.equal(received.version, undefined, 'should NOT use the version key (renamed to agentVersion)');
+  });
+});
+
+// fetchConfig hits the web-port bootstrap endpoint /config.json (not the
+// legacy /api/agent/config on the report port). Sends X-Agent-Token and
+// parses the JSON response containing the agent's runtime config.
+test('fetchConfig hits /config.json with X-Agent-Token and parses response', async () => {
+  let receivedPath = null;
+  let receivedToken = null;
+  await withServer((req, res) => {
+    receivedPath = req.url;
+    receivedToken = req.headers['x-agent-token'];
+    res.end(JSON.stringify({ heartbeatPort: 8081, reportPort: 8082, pollingIntervalMinutes: 5, agentToken: 'tok' }));
+  }, async (url) => {
+    const r = await fetchConfig({ centerUrl: url, agentToken: 'tok' });
+    assert.equal(r.ok, true);
+    assert.equal(receivedPath, '/config.json');
+    assert.equal(receivedToken, 'tok');
+    assert.equal(r.data.heartbeatPort, 8081);
+    assert.equal(r.data.reportPort, 8082);
+    assert.equal(r.data.pollingIntervalMinutes, 5);
   });
 });

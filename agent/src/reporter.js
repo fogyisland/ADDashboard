@@ -80,9 +80,14 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
 }
 
 export function fetchConfig({ centerUrl, agentToken }) {
+  // Bootstrap endpoint lives on the web port. Fetching from centerUrl
+  // (which now points at the web port, e.g. http://localhost:8080) means
+  // we always know where to look without a port override. The legacy
+  // /api/agent/config on the report port is kept around for backward
+  // compat with older agents — this code path doesn't use it anymore.
   return requestJson({
     method: 'GET',
-    url: `${centerUrl}/api/agent/config`,
+    url: `${centerUrl}/config.json`,
     headers: { 'X-Agent-Token': agentToken }
   });
 }

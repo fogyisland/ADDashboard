@@ -137,6 +137,46 @@ test('GET /api/agent/config with missing keys -> defaults fill in', async () => 
   assert.equal(res.body.heartbeatIntervalSeconds, 5);
 });
 
+// /config.json is the web-port bootstrap endpoint. Same payload shape as
+// /api/agent/config so existing agent code keeps working when the URL
+// changes; same X-Agent-Token auth contract.
+test('GET /config.json with correct token -> 200 returns full agent config', async () => {
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'polling_interval_minutes', config_value: '5' },
+      { config_key: 'heartbeat_port', config_value: '9081' },
+      { config_key: 'report_port', config_value: '9082' },
+      { config_key: 'agent_token', config_value: 'tok' }
+    ]}
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp({ agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .get('/config.json')
+    .set('X-Agent-Token', 'tok');
+  assert.equal(res.status, 200);
+  assert.equal(res.body.pollingIntervalMinutes, 5);
+  assert.equal(res.body.heartbeatPort, 9081);
+  assert.equal(res.body.reportPort, 9082);
+  assert.equal(res.body.agentToken, 'tok');
+});
+
+test('GET /config.json with wrong token -> 401', async () => {
+  _setDbForTest(buildRecordingPool([]));
+  const app = buildApp({ agentTokenValue: 'tok' });
+  const res = await supertest(app)
+    .get('/config.json')
+    .set('X-Agent-Token', 'WRONG');
+  assert.equal(res.status, 401);
+});
+
+test('GET /config.json without token -> 401', async () => {
+  _setDbForTest(buildRecordingPool([]));
+  const app = buildApp({ agentTokenValue: 'tok' });
+  const res = await supertest(app).get('/config.json');
+  assert.equal(res.status, 401);
+});
+
 test('POST /api/agent/report with wrong token -> 401', async () => {
   const records = [];
   _setDbForTest(buildRecordingPool(records));

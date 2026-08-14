@@ -261,10 +261,13 @@ await ((async () => {
     logger.info('init mode: serving /api/init/* and /init');
   } else {
     app.use(authRouter({ config: finalConfig, logger }));
-    // Note: agentRouter is intentionally NOT mounted on the web app in normal
-    // mode — heartbeat/report traffic now flows through apps.heartbeatApp /
-    // apps.reportApp which are bound to dedicated ports. The webApp keeps
-    // every other admin-facing route below.
+    // Bootstrap endpoint for agents (web mount — /config.json only). Lets an
+    // agent learn heartbeat/report ports + intervals from the web port
+    // without needing to know any other port number up front. The dedicated
+    // heartbeatApp / reportApp carry the bulk of agent traffic; web just
+    // exposes the bootstrap config the agent reads on startup and on
+    // periodic config-refresh ticks.
+    app.use(agentRouter({ config: finalConfig, logger, mount: 'web' }));
     app.use(dashboardRouter({ config: finalConfig, logger }));
     app.use(adminRouter({ config: finalConfig, logger }));
     // DC summary endpoint (Task 4). Mirrors the adminRouter's per-route
