@@ -102,6 +102,18 @@ const EMAIL_KEYS = new Set([
   'alert_eval_interval_seconds', 'alert_email_max_attempts', 'alert_email_initial_backoff_seconds'
 ]);
 
+// Internal bookkeeping keys the backend piggybacks on the GET response —
+// they're not operator-facing config values. `restartRequired` is a
+// computed object the badge logic reads off `initial.restartRequired`
+// (no key in the table); `center_listen_port_started_version` is the
+// hash the bootstrap IIFE writes every startup. Both would render as
+// raw-key rows with no Chinese label, which is noise. Filter at load
+// time so the table iteration only sees the real config keys.
+const INTERNAL_KEYS = new Set([
+  'center_listen_port_started_version',
+  'restartRequired'
+]);
+
 const descriptions = {
   polling_interval_minutes: 'Agent 复制指标采集周期 (分钟)。',
   latency_threshold_minutes: '复制延迟告警阈值 (分钟),超过即在仪表盘标红。',
@@ -189,17 +201,25 @@ async function onCopyToken() {
 async function load() {
   const r = await adminApi.getConfig();
   const all = r.data || {};
-  // Project out email keys — they live on /admin/email-config. Without this
-  // step, smtp_host etc. would render here as raw-key rows with no Chinese
-  // labels (the audit filter excluded them but the table didn't).
+  // `current` is what the table iterates and what edits/saves operate on.
+  // Email keys live on /admin/email-config (T17). Internal bookkeeping
+  // (`center_listen_port_started_version` hash + `restartRequired` object)
+  // is backend state, not operator config — without this filter they'd
+  // render as raw-key rows with no Chinese label.
   const subset = {};
   for (const [k, v] of Object.entries(all)) {
-    if (!EMAIL_KEYS.has(k)) subset[k] = v;
+    if (EMAIL_KEYS.has(k)) continue;
+    if (INTERNAL_KEYS.has(k)) continue;
+    subset[k] = v;
   }
-  initial.value = subset;
   current.value = { ...subset };
   markClean(current.value);
   validate(current.value);
+  // `initial` keeps `restartRequired` for the "⚠ 待重启" badge on the
+  // listenPort row (template reads initial.restartRequired?.listenPort).
+  // Storing the full backend response is fine — only `current` is shown
+  // and PUT; `initial` is the dirty-state snapshot baseline.
+  initial.value = { ...all };
   await loadAudit();
 }
 

@@ -230,6 +230,29 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   expect(labels.length).toBe(rawKeys.length);
 });
 
+// Internal bookkeeping the backend piggybacks on the GET response:
+//   - center_listen_port_started_version: hash written every startup
+//   - restartRequired: { listenPort: bool } computed object
+// Neither is operator-facing config. `restartRequired` is consumed via
+// `initial.restartRequired?.listenPort` for the "⚠ 待重启" badge on the
+// listenPort row — it must not also become a raw-key row in the table.
+test('ConfigView does not render internal bookkeeping keys as rows', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({
+    data: {
+      ...SAMPLE,
+      center_listen_port_started_version: 'bdbe11dd4ac9ed75',
+      restartRequired: { listenPort: false }
+    }
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const table = w.find('table.t');
+  const rawKeys = table.findAll('.raw-key').map((el) => el.text());
+  expect(rawKeys).not.toContain('center_listen_port_started_version');
+  expect(rawKeys).not.toContain('restartRequired');
+});
+
 // T17 regression: even when the backend returns smtp_* / alert_* keys
 // alongside the base keys, the main /admin/config page must not render them.
 // Those keys live on /admin/email-config. (Forgetting the projection at
