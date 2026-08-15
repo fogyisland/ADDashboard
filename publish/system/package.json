@@ -1,0 +1,15 @@
+{
+  "name": "ad-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AD Replication Dashboard (green-bundle runtime)",
+  "workspaces": [
+    "center",
+    "frontend",
+    "agent"
+  ],
+  "scripts": {
+    "build:frontend": "npm run build --workspace=frontend"
+  }
+}
