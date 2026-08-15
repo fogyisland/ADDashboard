@@ -52,7 +52,24 @@ function replacePortInUrl(url, newPort) {
   return trimmed.replace(/:\d+$/, '') + ':' + Number(newPort);
 }
 
+// Spec §4 row 204: single-flight guard so two concurrent triggers
+// (e.g. boot + first configRefresh tick) don't race on the same
+// appsettings.json + .tmp file. Second caller awaits the first.
+let inFlightRecovery = null;
+
 async function tryRecoverCenterPort({ config, configPath, logger, trigger }) {
+  if (inFlightRecovery) return inFlightRecovery;
+  inFlightRecovery = (async () => {
+    try {
+      return await _tryRecoverCenterPortImpl({ config, configPath, logger, trigger });
+    } finally {
+      inFlightRecovery = null;
+    }
+  })();
+  return inFlightRecovery;
+}
+
+async function _tryRecoverCenterPortImpl({ config, configPath, logger, trigger }) {
   const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
   if (r.ok) return { ok: true, recovered: false };
 
