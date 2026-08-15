@@ -18,7 +18,10 @@
     <main>
       <header class="topbar">
         <span>{{ auth.user?.username }} <small>({{ auth.user?.role }})</small></span>
-        <button @click="logout">退出</button>
+        <div class="topbar-actions">
+          <button class="theme-toggle" :title="theme === 'dark' ? '切换到白天' : '切换到黑夜'" @click="toggleTheme">{{ theme === 'dark' ? '☀' : '🌙' }}</button>
+          <button @click="logout">退出</button>
+        </div>
       </header>
       <section class="content">
         <slot />
@@ -30,9 +33,11 @@
 <script setup>
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
+import { useTheme } from '../composables/useTheme.js';
 const auth = useAuthStore();
 const router = useRouter();
 function logout() { auth.logout(); router.push('/login'); }
+const { theme, toggleTheme } = useTheme();
 
 const groups = [
   { title: '账号管理', items: [
@@ -55,6 +60,7 @@ const groups = [
   ]},
   { title: '系统设置', items: [
     { label: '系统配置', path: '/admin/config' },
+    { label: '邮件配置', path: '/admin/email-config' },
     { label: '审计日志', path: '/admin/audit' },
     { label: '迁移管理', path: '/admin/migrations' },
     { label: '未签名 Schema 残留', path: '/admin/orphan-schemas' }
@@ -64,15 +70,18 @@ const groups = [
 
 <style scoped>
 .layout { display: grid; grid-template-columns: 220px 1fr; height: 100vh; }
-.sidebar { background: #0b1220; padding: 20px; }
+.sidebar { background: var(--sidebar-bg); padding: 20px; }
 .sidebar .back { display: block; color: var(--muted); font-size: 12px; margin-bottom: 12px; text-decoration: none; }
 .sidebar .back:hover { color: var(--accent); }
 .sidebar h3 { color: var(--accent); margin: 0 0 16px; font-size: 14px; }
 .sidebar nav { display: flex; flex-direction: column; gap: 6px; }
 .sidebar a { padding: 8px 10px; border-radius: 4px; color: var(--text); text-decoration: none; }
-.sidebar a.router-link-active, .sidebar a:hover { background: #1e293b; }
+.sidebar a.router-link-active, .sidebar a:hover { background: var(--border); }
 main { display: flex; flex-direction: column; }
-.topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid #1e293b; }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.topbar-actions button { padding: 6px 14px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; background: var(--input-bg); color: var(--text); }
+.topbar-actions .theme-toggle { font-size: 14px; min-width: 32px; padding: 6px 8px; }
 .content { padding: 20px; overflow: auto; }
 .nav-group { margin-bottom: 8px; }
 .nav-group { display: flex; flex-direction: column; gap: 6px; }

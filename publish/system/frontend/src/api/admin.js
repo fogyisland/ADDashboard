@@ -9,7 +9,7 @@ export const adminApi = {
   updateConfig: (body) => api.put('/api/admin/config', body),
   getConfigAudit: () => api.get('/api/admin/config/audit'),
   rollbackConfig: (auditId) => api.post('/api/admin/config/rollback', { auditId }),
-  // EmailConfigCard (T15) — one-off SMTP test send. Response shape:
+  // One-off SMTP test send from the config page. Response shape:
   //   { ok: bool, error: string|null } — error is verbatim SMTP message on
   //   failure so the operator can debug without round-tripping the logs.
   sendTestEmail: ({ to }) => api.post('/api/admin/config/email/test', { to }),

@@ -162,5 +162,28 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     });
   }
 
+  // Web mount: stable bootstrap endpoint for agents. Lives on the web port
+  // (default 8080) so agents can fetch their connection config without
+  // needing to know any port number besides the one in `centerUrl`. Same
+  // payload shape as /api/agent/config on the report port (compat) — the
+  // only difference is the URL an agent hits. Auth is X-Agent-Token, same
+  // as the rest of agentRouter.
+  //
+  // Without this, an agent whose `centerUrl` pointed at the heartbeat port
+  // (8081) could never reach /api/agent/config (which only lives on report
+  // port 8082 / web port 8080) — fetchConfig returned 404, cachedPorts
+  // stayed null, and operator-driven port changes had no effect.
+  if (mount === 'web' || mount === 'full') {
+    r.get('/config.json', agentMw, async (_req, res) => {
+      try {
+        const full = await getAgentConfig();
+        res.json(full);
+      } catch (e) {
+        logger.error({ err: e }, 'agent config bootstrap fetch failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
+  }
+
   return r;
 }
