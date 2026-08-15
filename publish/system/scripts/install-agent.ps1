@@ -66,7 +66,7 @@ function Install-LocalAgent {
     -Description 'AD Replication collection agent' `
     -Start SERVICE_AUTO_START
   if (Start-ServiceSafe -Name 'ADReplicationAgent' -WaitSeconds 20) { Write-Ok "agent started on $env:COMPUTERNAME" }
-  else { Write-Err2 "Agent 启动失败 ($env:COMPUTERNAME) — 请查看日志 (agent failed to start — see log)" }
+  else { Write-Err2 "agent failed to start on $env:COMPUTERNAME" }
 }
 
 foreach ($cn in $ComputerName) {

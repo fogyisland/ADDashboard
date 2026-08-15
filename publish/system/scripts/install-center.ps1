@@ -23,7 +23,7 @@ Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 # the user sees a bare ENOENT from npm; pre-check gives the actual cause.
 $rootPkg = Join-Path $projectRoot 'package.json'
 if (-not (Test-Path $rootPkg)) {
-  Write-Err2 "缺根目录 package.json: $rootPkg — 发布包不完整, 请重新解压 publish/system/ (publish bundle incomplete — re-extract from latest main)"
+  Write-Err2 "missing root package.json: $rootPkg — publish bundle is incomplete, re-extract publish/system/ from latest main"
   exit 1
 }
 
@@ -46,7 +46,7 @@ function Assert-RouterImportsResolve {
       $rel = $m.Groups[1].Value
       $full = Join-Path $routerDir $rel.Substring(2)
       if (-not (Test-Path $full)) {
-        Write-Err2 "frontend/src/router.js 引用了 '$rel' 但文件缺失 ($full) — publish 包漂了, 请重新解压 publish/system/ (publish bundle drift — re-extract from latest main)"
+        Write-Err2 "frontend/src/router.js imports '$rel' but file is missing ($full) — publish bundle drift, re-extract publish/system/ from latest main"
         exit 1
       }
     }
@@ -107,7 +107,7 @@ if ($needFrontendInstall) {
 # npm install` (non-workspace, runs from the workspace directly) places it
 # under frontend/node_modules/.bin/. Accept either.
 if (-not (Test-Path $viteBinRoot) -and -not (Test-Path $viteBinLocal)) {
-  Write-Err2 "未找到 vite (检查了 $viteBinRoot 和 $viteBinLocal) — 前端依赖安装失败, 请查看日志 $Script:LogDir 后重试 (vite not installed — npm install --workspace=frontend failed)"
+  Write-Err2 "vite not installed (checked $viteBinRoot and $viteBinLocal) — npm install --workspace=frontend failed. Check $Script:LogDir for details, then re-run."
   exit 1
 }
 
@@ -224,7 +224,7 @@ Set-ServiceRecovery -Name 'ADDashboardCenter'
 if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   Write-Ok "service started"
 } else {
-  Write-Err2 "服务启动失败, 请查看日志: $(Join-Path $Script:LogDir 'ADDashboardCenter-stderr.log') (service failed to start — see log)"
+  Write-Err2 "service failed to start; see $(Join-Path $Script:LogDir 'ADDashboardCenter-stderr.log')"
   exit 1
 }
 

@@ -21,9 +21,9 @@ Invoke-Expression $Matches[0]
 
 # Test-only wrapper: same logic as Assert-RouterImportsResolve but `throw`
 # instead of `exit 1` so the test runner can observe the failure.
-# Mirrors the bilingual production message (中文 + English). The patterns below
-# match ASCII-only markers (file names, recovery hint) to avoid cp1252 vs UTF-8
-# mismatch on Chinese chars when PowerShell reads the .ps1 file without BOM.
+# Mirrors the production message (English). The patterns below match
+# ASCII-only markers (file names, recovery hint) — purely for readability,
+# since the production message itself is now ASCII.
 function Test-RouterImportsResolve {
   param([Parameter(Mandatory)][string]$ProjectRoot)
   $router = Join-Path $ProjectRoot 'frontend\src\router.js'
@@ -39,7 +39,7 @@ function Test-RouterImportsResolve {
       $rel = $m.Groups[1].Value
       $full = Join-Path $routerDir $rel.Substring(2)
       if (-not (Test-Path $full)) {
-        throw "frontend/src/router.js 引用了 '$rel' 但文件缺失 ($full) — publish 包漂了, 请重新解压 publish/system/ (publish bundle drift — re-extract from latest main)"
+        throw "frontend/src/router.js imports '$rel' but file is missing ($full) — publish bundle drift, re-extract publish/system/ from latest main"
       }
     }
   }
@@ -95,16 +95,16 @@ function Run-Scenario($Name, [scriptblock]$Setup, [scriptblock]$Body, [string]$E
 }
 
 # --- Guard 1: missing root package.json ---
-$ok1 = Run-Scenario -Name 'Guard 1: missing root package.json (bilingual: 中文 + English)' `
+$ok1 = Run-Scenario -Name 'Guard 1: missing root package.json' `
   -Setup { param($t)
     New-Item -ItemType Directory -Path (Join-Path $t 'frontend\src') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $t 'center') -Force | Out-Null
   } `
-  -ExpectedPattern 'package\.json.*publish/system/.*publish bundle' `
+  -ExpectedPattern 'package\.json.*publish bundle' `
   -Body { param($t)
     $rootPkg = Join-Path $t 'package.json'
     if (-not (Test-Path $rootPkg)) {
-      throw "缺根目录 package.json: $rootPkg — 发布包不完整, 请重新解压 publish/system/ (publish bundle incomplete — re-extract from latest main)"
+      throw "missing root package.json: $rootPkg — publish bundle is incomplete, re-extract publish/system/ from latest main"
     }
   }
 
@@ -127,7 +127,7 @@ const routes = [{ path: '/admin/x', component: () => import('./views/admin/Admin
   -Body { param($t) Test-RouterImportsResolve -ProjectRoot $t }
 
 # --- Guard 3: missing static import ---
-$ok3 = Run-Scenario -Name 'Guard 3: missing static import (bilingual: 中文 + English)' `
+$ok3 = Run-Scenario -Name 'Guard 3: missing static import' `
   -Setup { param($t)
     $src = Join-Path $t 'frontend\src'
     New-Item -ItemType Directory -Path $src -Force | Out-Null
@@ -138,7 +138,7 @@ $ok3 = Run-Scenario -Name 'Guard 3: missing static import (bilingual: 中文 + E
   -Body { param($t) Test-RouterImportsResolve -ProjectRoot $t }
 
 # --- Guard 3: missing dynamic import ---
-$ok4 = Run-Scenario -Name 'Guard 3: missing dynamic import (bilingual: 中文 + English)' `
+$ok4 = Run-Scenario -Name 'Guard 3: missing dynamic import' `
   -Setup { param($t)
     $src = Join-Path $t 'frontend\src'
     New-Item -ItemType Directory -Path $src -Force | Out-Null
