@@ -87,7 +87,9 @@ export async function discoverCenterPort({
     concurrency,
     async ({ port }) => {
       if (signal?.aborted) return null;
-      return probeOnce({ host, port, agentToken, perPortTimeoutMs });
+      const result = await probeOnce({ host, port, agentToken, perPortTimeoutMs });
+      if (result) stopped = true;
+      return result;
     },
     () => stopped
   );

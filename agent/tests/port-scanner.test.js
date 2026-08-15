@@ -133,26 +133,32 @@ test('returns null on DNS-unreachable host without throwing', async () => {
   assert.equal(r, null);
 });
 
-test('early-exits after first hit (probes at most ~concurrency extra ports)', async () => {
+test('early-exits after first hit (priority wins, range probe never completes)', async () => {
   // Priority port wins over range — proves scanner returned on first hit
-  // without probing range. The rangeStart/End below are coincidentally in
-  // [20000, 20001] which has no listener, so any range probe returns null;
-  // a non-early-exit scanner would still return the priority hit, but the
-  // priority-source assertion proves it stopped there.
+  // without waiting for the slow range probe. With early-exit broken, the
+  // scanner would dispatch the range probe AND wait for its 500ms delay
+  // before returning (~550ms total). With early-exit, it returns after the
+  // priority probe (~50ms), abandoning the in-flight range request.
   const [priorityPort, closeA] = await startServer(configJsonHandler);
-  const [, closeB] = await startServer(configJsonHandler);
+  const [rangePort, closeB] = await startServer(async (_req, res) => {
+    await new Promise(r => setTimeout(r, 500));
+    configJsonHandler(_req, res);
+  });
   try {
     const r = await discoverCenterPort({
       host: '127.0.0.1',
       agentToken: 'tok',
       priorityPorts: [priorityPort],
-      rangeStart: 20000,
-      rangeEnd: 20001,
+      rangeStart: rangePort,
+      rangeEnd: rangePort,
       concurrency: 1,
-      perPortTimeoutMs: 500
+      perPortTimeoutMs: 2000
     });
     assert.equal(r.port, priorityPort);
     assert.equal(r.source, 'priority');
+    // Without early-exit: ~550ms (priority + slow range).
+    // With early-exit: ~50ms (priority only, range abandoned).
+    assert.ok(r.probedIn < 300, `expected early-exit (<300ms), got ${r.probedIn}ms`);
   } finally {
     await closeA();
     await closeB();
