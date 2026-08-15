@@ -47,6 +47,8 @@ publish/agent/node_modules/
 publish/frontend/node_modules/
 publish/center/dist/
 publish/frontend/dist/
+# WPF PackageDesigner self-contained build output (rebuilt via `dotnet publish`)
+publish/designer/
 
 # Built-in package sources (shipped via publish.zip, versioned in git so the
 # seeder has a stable on-disk source — see center/src/services/builtin-packages.js).
