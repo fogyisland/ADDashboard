@@ -2,6 +2,7 @@
   --bg: #0f172a;
   --panel: #1e293b;
   --panel-alt: #283548;
+  --sidebar-bg: #0b1220;
   --border: #334155;
   --fg: #e2e8f0;
   --text: #e2e8f0;
@@ -12,10 +13,55 @@
   --red: #ef4444;
   --red-bg: rgba(239, 68, 68, 0.12);
   --accent: #38bdf8;
+  --input-bg: #0b1220;
+  /* Foreground for buttons rendered on the accent fill — needs to contrast
+     against the accent, not against the page. Cyan on dark, white on light. */
+  --button-fg: #0b1220;
+}
+/* Light theme. Same variable names, light values. Every component reads
+   CSS vars; toggling data-theme on <html> swaps the whole palette. */
+:root[data-theme="light"] {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --panel-alt: #f1f5f9;
+  --sidebar-bg: #ffffff;
+  --border: #cbd5e1;
+  --fg: #1e293b;
+  --text: #1e293b;
+  --muted: #64748b;
+  --green: #16a34a;
+  --green-bg: rgba(22, 163, 74, 0.10);
+  --yellow: #ca8a04;
+  --red: #dc2626;
+  --red-bg: rgba(220, 38, 38, 0.10);
+  --accent: #0284c7;
+  --input-bg: #ffffff;
+  --button-fg: #ffffff;
 }
 * { box-sizing: border-box; }
 body, html, #app { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
 a { color: var(--accent); text-decoration: none; }
-button { background: var(--accent); color: #0b1220; border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
-input, select { background: #0b1220; color: var(--text); border: 1px solid #334155; padding: 6px 8px; border-radius: 4px; }
+button { background: var(--accent); color: var(--button-fg); border: 0; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+input, select { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); padding: 6px 8px; border-radius: 4px; }
+
+/* Light theme overrides for hardcoded dark surfaces. Most components read
+   CSS vars and adapt automatically; the rules below patch up the most
+   visible patterns where scoped styles hardcode #0b1220 / #1e293b —
+   scoping `body` here bumps specificity above component-scoped selectors
+   so these win without touching every file.
+   pre/code/sql blocks stay dark intentionally (terminal convention). */
+:root[data-theme="light"] body .sidebar { background: var(--sidebar-bg); border-right: 1px solid var(--border); }
+:root[data-theme="light"] body .topbar { background: var(--panel); border-bottom: 1px solid var(--border); }
+:root[data-theme="light"] body .t th,
+:root[data-theme="light"] body .audit th,
+:root[data-theme="light"] body .meta-table th,
+:root[data-theme="light"] body .probe-t th,
+:root[data-theme="light"] body .matrix th { background: var(--panel-alt); color: var(--muted); }
+:root[data-theme="light"] body button { color: var(--button-fg); }
+:root[data-theme="light"] body button.cancel,
+:root[data-theme="light"] body .token-action { background: var(--panel-alt); color: var(--text); border-color: var(--border); }
+:root[data-theme="light"] body button.cancel:hover:not(:disabled),
+:root[data-theme="light"] body .token-action:hover:not(:disabled) { background: var(--accent); color: var(--button-fg); }
+:root[data-theme="light"] body .modal { background: var(--panel); border: 1px solid var(--border); }
+:root[data-theme="light"] body .modal-bg { background: rgba(0, 0, 0, 0.35); }

@@ -1,5 +1,6 @@
-import { test, expect, beforeEach } from 'vitest';
+import { test, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 import AdminLayout from '../src/components/AdminLayout.vue';
 
@@ -23,7 +24,10 @@ const EXPECTED_PATHS = [
 ];
 
 beforeEach(() => {
+  localStorage.clear();
+  document.documentElement.dataset.theme = '';
   setActivePinia(createPinia());
+  vi.resetModules();
 });
 
 test('renders 5 nav groups', () => {
@@ -63,4 +67,47 @@ test('clicking summary toggles open state', async () => {
   await w.findAll('details')[0].find('summary').trigger('click');
   await flushPromises();
   expect(w.findAll('details')[0].attributes('open')).toBeDefined();
+});
+
+test('theme toggle button is present in topbar (left of 退出)', async () => {
+  const w = mountLayout();
+  const buttons = w.findAll('.topbar-actions button');
+  // last two must be: theme toggle, then 退出
+  const labels = buttons.map(b => b.text());
+  expect(labels[labels.length - 1]).toBe('退出');
+  expect(buttons[buttons.length - 2].classes()).toContain('theme-toggle');
+});
+
+test('clicking the theme toggle flips data-theme on <html>', async () => {
+  const w = mountLayout();
+  const toggle = w.find('.theme-toggle');
+  // Get to a known starting state (dark) by toggling if needed.
+  let safety = 3;
+  while (document.documentElement.dataset.theme !== 'dark' && safety-- > 0) {
+    await toggle.trigger('click');
+    await nextTick();
+  }
+  expect(document.documentElement.dataset.theme).toBe('dark');
+  await toggle.trigger('click');
+  await nextTick();
+  expect(document.documentElement.dataset.theme).toBe('light');
+  await toggle.trigger('click');
+  await nextTick();
+  expect(document.documentElement.dataset.theme).toBe('dark');
+});
+
+test('theme toggle icon matches current theme (☀ when dark, 🌙 when light)', async () => {
+  const w = mountLayout();
+  // Get to a known starting state (dark) by toggling if needed.
+  let safety = 3;
+  while (document.documentElement.dataset.theme !== 'dark' && safety-- > 0) {
+    await w.find('.theme-toggle').trigger('click');
+    await nextTick();
+  }
+  expect(document.documentElement.dataset.theme).toBe('dark');
+  expect(w.find('.theme-toggle').text()).toBe('☀');
+  await w.find('.theme-toggle').trigger('click');
+  await nextTick();
+  expect(document.documentElement.dataset.theme).toBe('light');
+  expect(w.find('.theme-toggle').text()).toBe('🌙');
 });

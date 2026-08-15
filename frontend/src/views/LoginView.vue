@@ -43,8 +43,11 @@ async function onSubmit() {
 
 <style scoped>
 .login-bg { display: flex; align-items: center; justify-content: center; height: 100vh; background: linear-gradient(135deg, #0b1220, #1e293b); }
-.login-card { background: var(--panel); padding: 32px; border-radius: 8px; min-width: 320px; display: flex; flex-direction: column; gap: 14px; }
+.login-card { background: var(--panel); padding: 32px; border-radius: 8px; min-width: 320px; display: flex; flex-direction: column; gap: 14px; border: 1px solid var(--border); }
 .login-card h2 { margin: 0 0 8px; font-size: 18px; color: var(--accent); }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .err { color: var(--red); font-size: 13px; margin: 0; }
+/* Light theme: swap the gradient for a soft cool wash so the card stands
+   out without inheriting dark-mode chrome. */
+:root[data-theme="light"] .login-bg { background: linear-gradient(135deg, #e0e7ef, #f5f7fb); }
 </style>
