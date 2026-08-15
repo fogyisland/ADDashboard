@@ -1,18 +1,22 @@
 // Unit tests for mssql driver `execute()` behavior — focused on the
-// isInsert heuristic and the affectedRows contract.
+// isInsert heuristic, the affectedRows contract, and the IF-block →
+// request.batch() routing.
 //
 // These tests do not require a live SQL Server. We mock the `mssql`
 // package at module-load time, drive the driver's execute() /
 // transaction() surface, and assert what SQL the driver actually
 // sends to the underlying mssql client (rewrite placeholders, SCOPE_IDENTITY
-// batching, MERGE exclusion, etc.) plus what comes back in the return
-// shape. Captures regressions for:
+// batching, MERGE exclusion, IF-block routing to batch, etc.) plus what
+// comes back in the return shape. Captures regressions for:
 //   - Task 2 review CRITICAL 1: non-INSERT (UPDATE/DELETE/MERGE) execute()
 //     must return affectedRows = the real count, not 0.
 //   - Task 2 review IMPORTANT 3: MERGE must not be classified as an
 //     INSERT (the SCOPE_IDENTITY probe would throw on tables without
 //     IDENTITY such as ad_agent_port_status, ad_dcs, ad_agent_heartbeat,
 //     system_config).
+//   - 2026-08-15 wizard fix: `IF NOT EXISTS (...) CREATE INDEX ...` must
+//     route through request.batch() — request.query() wraps in sp_executesql
+//     which silently drops the IF guard, causing re-run failures.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,6 +46,7 @@ function makeMssqlMock() {
     input(name, value) { this.inputs.push({ name, value }); }
     async query(sqlStr) {
       calls.push({
+        method: 'query',
         sql: sqlStr,
         inputs: this.inputs.slice(),
         multiple: this.multiple
@@ -58,6 +63,26 @@ function makeMssqlMock() {
         return { recordsets: r.recordsets, rowsAffected: r.rowsAffected };
       }
       return { recordset: r.recordset ?? [], rowsAffected: r.rowsAffected ?? [1] };
+    }
+    async batch(sqlStr) {
+      calls.push({
+        method: 'batch',
+        sql: sqlStr,
+        inputs: this.inputs.slice(),
+        multiple: this.multiple
+      });
+      const r = state.nextBatch ?? state.nextResult;
+      if (!r) throw new Error('FakeRequest.batch: state.nextBatch / state.nextResult not set');
+      if (r.throwOnQuery) {
+        const err = new Error(r.throwOnQuery.message || 'driver error');
+        if (r.throwOnQuery.number != null) err.number = r.throwOnQuery.number;
+        if (r.throwOnQuery.code != null) err.code = r.throwOnQuery.code;
+        throw err;
+      }
+      // batch() returns recordsets[] (no single recordset). Fake one matching
+      // shape so the driver's recordsets normalization path is exercised.
+      const recordsets = r.recordsets ?? [[]];
+      return { recordsets, rowsAffected: r.rowsAffected ?? [0] };
     }
   }
 
@@ -231,4 +256,75 @@ test('INSERT INTO with no IDENTITY column still appends SCOPE_IDENTITY probe (pr
     () => drv.execute('INSERT INTO ad_agent_port_status (agent_id, port) VALUES (?, ?)', ['a1', 135]),
     /SCOPE_IDENTITY.*returned NULL/
   );
+});
+
+test('IF NOT EXISTS (...) CREATE INDEX routes through request.batch() (NOT request.query())', async () => {
+  // Regression for wizard failure: `request.query()` wraps every SQL string in
+  // sp_executesql, which silently drops IF guards. DDL like
+  // `IF NOT EXISTS (...) CREATE INDEX ...` must therefore go through
+  // `request.batch()` so the IF guard is honored — otherwise re-applying the
+  // migration hits "index already exists" instead of skipping. This test pins
+  // the routing decision: prefix with `IF` → batch; otherwise → query.
+  const mock = makeMssqlMock();
+  mock.state.nextResult = { recordsets: [[]], rowsAffected: [0] };
+  const createMssqlDriver = await loadDriverWithMock(mock);
+  const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });
+  // Exact shape from db/migrations/mssql/005-sys-config-audit.sql
+  const ifSql = `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'idx_changed_at' AND object_id = OBJECT_ID('sys_config_audit'))
+CREATE INDEX idx_changed_at ON sys_config_audit (changed_at DESC)`;
+  const out = await drv.execute(ifSql, []);
+  assert.equal(out.affectedRows, 0);
+  assert.equal(out.insertId, undefined);
+  // The IF-prefixed statement MUST have hit .batch(), not .query().
+  assert.equal(mock.calls.length, 1, `expected exactly 1 driver call, got ${mock.calls.length}`);
+  assert.equal(mock.calls[0].method, 'batch',
+    `IF-prefixed DDL must use request.batch(); got ${mock.calls[0].method}. ` +
+    `request.query() wraps in sp_executesql which drops the IF guard.`);
+  // SQL sent is unchanged (no SCOPE_IDENTITY append for non-INSERT).
+  assert.equal(mock.calls[0].sql, ifSql);
+});
+
+test('CREATE TABLE (no IF) still uses request.query() — control-flow routing is opt-in', async () => {
+  // Counter-test: regular DDL without IF guard must NOT be routed to batch().
+  // batch() doesn't use sp_executesql → no plan reuse. We want query() (sp_executesql
+  // with plan reuse) for the hot path and only switch to batch() when IF blocks
+  // demand it.
+  const mock = makeMssqlMock();
+  mock.state.nextResult = { recordset: [], rowsAffected: [0] };
+  const createMssqlDriver = await loadDriverWithMock(mock);
+  const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });
+  await drv.execute('CREATE TABLE foo (id INT PRIMARY KEY)', []);
+  assert.equal(mock.calls.length, 1);
+  assert.equal(mock.calls[0].method, 'query',
+    `non-IF DDL must stay on request.query(); got ${mock.calls[0].method}`);
+});
+
+test('IF EXISTS (...) ALTER TABLE inside transaction routes through request.batch()', async () => {
+  // Same routing rule inside db.transaction(): IF-prefixed DDL must use batch.
+  const mock = makeMssqlMock();
+  mock.state.nextResult = { recordsets: [[]], rowsAffected: [0] };
+  const createMssqlDriver = await loadDriverWithMock(mock);
+  const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });
+  let observedMethod = null;
+  await drv.transaction(async (tx) => {
+    const ifSql = `IF EXISTS (SELECT * FROM sysobjects WHERE name='foo' AND xtype='U')
+ALTER TABLE foo ADD bar INT`;
+    await tx.execute(ifSql, []);
+    observedMethod = mock.calls[0].method;
+  });
+  assert.equal(observedMethod, 'batch',
+    `IF-prefixed DDL inside tx must use request.batch(); got ${observedMethod}`);
+});
+
+test('leading-whitespace IF still routes to batch() (regex is `^\\s*IF\\b`)', async () => {
+  // splitSqlStatements strips most whitespace but the leading `\n` may remain
+  // depending on parser path. The driver must tolerate it.
+  const mock = makeMssqlMock();
+  mock.state.nextResult = { recordsets: [[]], rowsAffected: [0] };
+  const createMssqlDriver = await loadDriverWithMock(mock);
+  const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });
+  const ifSql = `\n  IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name='x')\nCREATE TABLE x (id INT)`;
+  await drv.execute(ifSql, []);
+  assert.equal(mock.calls[0].method, 'batch',
+    `leading-whitespace IF must still route to batch(); got ${mock.calls[0].method}`);
 });

@@ -76,14 +76,36 @@ export function createMssqlDriver(config) {
     // ad_dcs, ad_agent_heartbeat, system_config) and would trip the
     // SCOPE_IDENTITY() NULL guard below. MERGE callers do not consume insertId.
     const isInsert = /^\s*INSERT\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
+    // Control-flow guard: mssql npm's `request.query()` wraps every SQL string in
+    // `sp_executesql` (tedious/lib/connection.js:1627-1661). sp_executesql does
+    // NOT execute IF/ELSE blocks as written — the IF guard is dropped and the
+    // body runs unconditionally. For DDL like `IF NOT EXISTS (...) CREATE INDEX
+    // idx_changed_at ON ...`, this means re-applying the migration hits "index
+    // already exists" instead of skipping. Route IF-prefixed statements through
+    // `request.batch()` which sends a raw SQL_BATCH TDS packet (bypassing
+    // sp_executesql) so the IF guard is honored. This is critical for the
+    // idempotent CREATE TABLE/INDEX guards in db/migrations/mssql/* (esp. 005).
+    const hasControlFlow = /^\s*IF\b/i.test(sqlStr);
     const sqlWithId = isInsert
       ? `${rewritePlaceholders(sqlStr)};\nSELECT CAST(SCOPE_IDENTITY() AS bigint) AS id`
       : rewritePlaceholders(sqlStr);
     const request = pool.request();
     if (isInsert) request.multiple = true;
     bindInputs(request, params);
-    const result = await request.query(sqlWithId);
-    const recordsets = isInsert ? result.recordsets : [result.recordset];
+    // INSERT + IF control-flow would need both batch mode AND a SCOPE_IDENTITY
+    // probe batch — that combination isn't expected in our DDL files (no
+    // migration inserts rows with conditional logic). If a future caller needs
+    // it, route through db.transaction() instead. For now, batch path drops the
+    // SCOPE_IDENTITY append; insertId stays undefined.
+    const result = hasControlFlow
+      ? await request.batch(sqlWithId)
+      : await request.query(sqlWithId);
+    // Batch returns `{recordsets: [...], rowsAffected: [...]}` (no `recordset`).
+    // Query returns `{recordset, recordsets, rowsAffected}`. Normalize both
+    // shapes to a recordsets[] so downstream extraction is uniform.
+    const recordsets = hasControlFlow
+      ? (result.recordsets ?? [])
+      : (isInsert ? result.recordsets : [result.recordset]);
     const first = recordsets?.[0] ?? [];
     const rows = normalizeRows(Array.isArray(first) ? first : []);
     // Always read the first batch's rowsAffected so UPDATE/DELETE/MERGE callers
@@ -92,7 +114,7 @@ export function createMssqlDriver(config) {
     // SCOPE_IDENTITY() probe (=1). Use [0] for the meaningful count.
     const affectedRows = result.rowsAffected?.[0] ?? 0;
     let insertId;
-    if (isInsert) {
+    if (isInsert && !hasControlFlow) {
       // mssql@11 collapses INSERT batches that return no columns out of
       // `recordsets` (see tedious/request.js: `if (Object.keys(columns).length === 0) return`).
       // So for `INSERT ... SELECT` (no OUTPUT) followed by `SELECT SCOPE_IDENTITY()`,
@@ -122,21 +144,26 @@ export function createMssqlDriver(config) {
     try {
       const txWrapper = {
         async execute(sqlStr, params = []) {
-          // Same INSERT/MERGE heuristic as pool.execute — see execute() above.
+          // Same INSERT/MERGE/IF heuristics as pool.execute — see execute() above.
           const isInsert = /^\s*INSERT\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);
+          const hasControlFlow = /^\s*IF\b/i.test(sqlStr);
           const sqlWithId = isInsert
             ? `${rewritePlaceholders(sqlStr)};\nSELECT CAST(SCOPE_IDENTITY() AS bigint) AS id`
             : rewritePlaceholders(sqlStr);
           const request = new sql.Request(tx);
           if (isInsert) request.multiple = true;
           bindInputs(request, params);
-          const result = await request.query(sqlWithId);
-          const recordsets = isInsert ? result.recordsets : [result.recordset];
+          const result = hasControlFlow
+            ? await request.batch(sqlWithId)
+            : await request.query(sqlWithId);
+          const recordsets = hasControlFlow
+            ? (result.recordsets ?? [])
+            : (isInsert ? result.recordsets : [result.recordset]);
           const first = recordsets?.[0] ?? [];
           const rows = normalizeRows(Array.isArray(first) ? first : []);
           const affectedRows = result.rowsAffected?.[0] ?? 0;
           let insertId;
-          if (isInsert) {
+          if (isInsert && !hasControlFlow) {
             const idRow = recordsets[recordsets.length - 1]?.[0];
             if (idRow?.id != null) {
               insertId = Number(idRow.id);
