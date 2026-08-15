@@ -71,8 +71,21 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
       await deps.backfillMigrations(dialect, db);
       res.json(applied);
     } catch (e) {
-      logger.error({ err: e.message }, 'init db apply failed');
-      res.status(500).json({ error: e.message });
+      // MSSQL wraps the actionable error in `precedingErrors[]` — the top-level
+      // `e.message` is often just "Could not create constraint or index. See
+      // previous errors." which is useless on its own. Surface the chain so the
+      // operator can see the actual constraint/line that failed.
+      const preceding = Array.isArray(e.precedingErrors)
+        ? e.precedingErrors.map(pe => pe?.message).filter(Boolean)
+        : [];
+      logger.error({
+        err: e.message,
+        code: e.code,
+        lineNumber: e.lineNumber,
+        precedingErrors: preceding
+      }, 'init db apply failed');
+      const detail = preceding.length ? `${e.message}\n  ${preceding.join('\n  ')}` : e.message;
+      res.status(500).json({ error: detail, code: e.code, lineNumber: e.lineNumber, precedingErrors: preceding });
     }
   });
 

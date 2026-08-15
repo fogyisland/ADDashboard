@@ -133,6 +133,38 @@ test('db/apply returns 500 when backfillMigrations fails', async () => {
   assert.match(r.body.error, /backfill boom/);
 });
 
+// MSSQL wraps the actionable error in `precedingErrors[]` — the top-level
+// `e.message` is often just "Could not create constraint or index. See previous
+// errors." which is useless on its own. The wizard route must surface the
+// chain so the operator can see the real constraint / FK / permission problem.
+test('db/apply surfaces MSSQL precedingErrors in 500 response', async () => {
+  const mssqlErr = new Error('Could not create constraint or index. See previous errors.');
+  mssqlErr.code = 'EREQUEST';
+  mssqlErr.lineNumber = 95;
+  mssqlErr.precedingErrors = [
+    Object.assign(new Error('Foreign key "fk_dcs_site" references invalid column "site_id" in referenced table.'), { code: 'EFK' }),
+    Object.assign(new Error("The REFERENCES permission was denied on the object 'ad_sites', database 'ad_dashboard', schema 'dbo'."), { code: 'Eperm' })
+  ];
+  const app = makeApp({
+    depOverrides: { applyAll: async () => { throw mssqlErr; } }
+  });
+  const r = await call(app, 'POST', '/api/init/db/apply', {
+    dialect: 'mssql',
+    connParams: { server: 's', database: 'd', user: 'u', password: 'p' },
+    createDatabase: false
+  });
+  assert.strictEqual(r.status, 500);
+  assert.match(r.body.error, /Could not create constraint or index/);
+  assert.match(r.body.error, /fk_dcs_site/);
+  assert.match(r.body.error, /REFERENCES permission/);
+  assert.strictEqual(r.body.code, 'EREQUEST');
+  assert.strictEqual(r.body.lineNumber, 95);
+  assert.deepStrictEqual(r.body.precedingErrors, [
+    'Foreign key "fk_dcs_site" references invalid column "site_id" in referenced table.',
+    "The REFERENCES permission was denied on the object 'ad_sites', database 'ad_dashboard', schema 'dbo'."
+  ]);
+});
+
 test('POST /api/init/admin/create returns 409 on AdminConflictError', async () => {
   const conflictErr = new Error('admin exists');
   conflictErr.code = 'ADMIN_EXISTS';
