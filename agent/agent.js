@@ -11,6 +11,8 @@ import { createScheduler } from './src/scheduler.js';
 import { PackageManager } from './src/package-manager.js';
 import { requestJson } from './src/reporter.js';
 import { getOsInfo } from './src/os-info.js';
+import { discoverCenterPort } from './src/port-scanner.js';
+import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import {
   applyPackageList,
   clearAllTimers
@@ -27,6 +29,67 @@ const defaultConfigPath = joinPath(__dirname, 'appsettings.json');
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || defaultConfigPath;
 const config = loadConfig(configPath);
 const logger = createLogger({ component: 'agent', level: config.logLevel });
+
+// ============================================================================
+// 2026-08-15 port-scanning bootstrap (spec §1.2, §1.3):
+// When fetchConfig(/config.json) fails (operator changed web port but
+// appsettings.json still points at the old one), scan for the new port and
+// rewrite appsettings.json. Used by both AD and non-AD runtimes.
+//
+// trigger: 'boot' for first attempt at startup; 'runtime' for the
+// configRefresh interval (only after `scanFailureThreshold` consecutive
+// failures). Each runtime owns its own consecutive-failure counter.
+function deriveScanHost(config) {
+  if (typeof config.centerHost === 'string' && config.centerHost.trim()) {
+    return config.centerHost.trim();
+  }
+  try { return new URL(config.centerUrl).hostname; }
+  catch { return 'localhost'; }
+}
+
+function replacePortInUrl(url, newPort) {
+  const trimmed = String(url).replace(/\/+$/, '');
+  return trimmed.replace(/:\d+$/, '') + ':' + Number(newPort);
+}
+
+async function tryRecoverCenterPort({ config, configPath, logger, trigger }) {
+  const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
+  if (r.ok) return { ok: true, recovered: false };
+
+  // fetchConfig failed. Decide whether to scan based on trigger + config flags.
+  const enabled = trigger === 'boot' ? config.scanOnBoot : config.scanOnRuntimeFail;
+  if (!enabled) {
+    logger.warn({ trigger, centerUrl: config.centerUrl }, 'fetchConfig failed; scan disabled by config');
+    return { ok: false, recovered: false };
+  }
+
+  const host = deriveScanHost(config);
+  const scan = await discoverCenterPort({ host, agentToken: config.agentToken, logger });
+  if (!scan) {
+    logger.error({ trigger, host, centerUrl: config.centerUrl }, 'port scan missed; agent will retry on next tick');
+    return { ok: false, recovered: false };
+  }
+
+  const oldUrl = config.centerUrl;
+  const newUrl = replacePortInUrl(oldUrl, scan.port);
+  const w = writeCenterUrlAtomic({ path: configPath, newUrl });
+  if (w.ok) {
+    logger.info({ trigger, oldUrl, newUrl, port: scan.port, source: scan.source }, 'appsettings.json rewritten to discovered port');
+  } else {
+    // In-memory swap regardless — this run uses the discovered port. Next
+    // restart will re-scan if appsettings.json is still stale.
+    logger.error({ trigger, oldUrl, newUrl, error: w.error }, 'appsettings.json rewrite failed; using new port in-memory only');
+  }
+  config.centerUrl = newUrl;
+
+  // Retry once with the new port. Whatever the outcome, report recovered=true
+  // so the caller can reset its failure counter.
+  const retry = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
+  if (!retry.ok) {
+    logger.error({ trigger, newUrl }, 'fetchConfig still failing after scan recovery');
+  }
+  return { ok: retry.ok, recovered: true };
+}
 
 // T16: agent type discriminator. 'ad' = legacy DC collector flow (default).
 // 'non-ad' = member-server runtime: self-register on boot, fetch packages
@@ -70,14 +133,32 @@ async function runAdRuntime({ config, logger }) {
   // the existing config refresh; null = no override (use centerUrl verbatim).
   let cachedPorts = { heartbeatPort: null, reportPort: null };
 
+  let consecutivePortFailures = 0;
+
   async function refreshAgentPorts() {
     const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
     if (r.ok && r.data) {
       cachedPorts.heartbeatPort = Number(r.data.heartbeatPort) || null;
       cachedPorts.reportPort    = Number(r.data.reportPort)    || null;
+      return true;
     }
+    return false;
   }
-  await refreshAgentPorts();
+
+  async function refreshAgentPortsWithRecovery(trigger) {
+    const ok = await refreshAgentPorts();
+    if (ok) { consecutivePortFailures = 0; return; }
+    consecutivePortFailures++;
+    const enabled = trigger === 'boot' ? config.scanOnBoot : config.scanOnRuntimeFail;
+    if (consecutivePortFailures < config.scanFailureThreshold || !enabled) {
+      logger.warn({ trigger, consecutivePortFailures, threshold: config.scanFailureThreshold }, 'config fetch failed; will retry on next tick');
+      return;
+    }
+    const rec = await tryRecoverCenterPort({ config, configPath, logger, trigger });
+    if (rec.recovered) consecutivePortFailures = 0;
+  }
+
+  await refreshAgentPortsWithRecovery('boot');
 
   const packageManager = new PackageManager({
     agentId: config.agentId,
@@ -141,7 +222,9 @@ async function runAdRuntime({ config, logger }) {
   // service restart. Acceptable trade-off; a runtime restart would require
   // recreating pollTimer / discovery scheduler.
   const configRefresh = setInterval(async () => {
-    await refreshAgentPorts();
+    await refreshAgentPortsWithRecovery('runtime');
+    // After recovery, config.centerUrl may have changed — re-fetch the dynamic
+    // polling/discovery intervals from the new endpoint.
     const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
     if (r.ok && r.data?.pollingIntervalMinutes) {
       config.pollingIntervalMinutes = Number(r.data.pollingIntervalMinutes);
