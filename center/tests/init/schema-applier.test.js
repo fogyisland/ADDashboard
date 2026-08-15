@@ -100,10 +100,33 @@ test('splitSqlStatements handles migration 002 (JSON permissions → role_permis
   // CREATE PROCEDURE body kept whole (uses $$ delimiter)
   const procStmt = stmts.find(s => /CREATE PROCEDURE migrate_002_permissions_table/.test(s));
   assert.ok(procStmt, 'expected a single CREATE PROCEDURE statement');
-  assert.match(procStmt, /WITH RECURSIVE nums/);
+  // Body must contain the JSON-unwrapping logic. The implementation changed
+  // from WITH RECURSIVE (MySQL 8.0+ only) to a WHILE loop (MySQL 5.7+ OK),
+  // so we assert on the discriminator that survives both implementations.
+  assert.match(procStmt, /JSON_UNQUOTE\(JSON_EXTRACT/);
   // CALL + DROP PROCEDURE on default ; delimiter
   assert.ok(stmts.some(s => /CALL migrate_002_permissions_table/.test(s)));
   assert.ok(stmts.some(s => /^DROP PROCEDURE migrate_002_permissions_table/.test(s)));
+});
+
+test('splitSqlStatements handles MSSQL migration 002 (CTE-based JSON unwrap)', () => {
+  // MSSQL version uses native CTE without the `RECURSIVE` keyword (MSSQL
+  // auto-detects recursion). The parser must keep each IF...BEGIN...END block
+  // as a single statement (the IF/BEGIN/END tracker already handles this,
+  // but this test pins the MSSQL shape so a refactor doesn't silently break
+  // it).
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/mssql/002-permissions-table.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  assert.ok(stmts.length >= 3, `expected >= 3 statements, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  // Defensive CREATE TABLE role_permissions wrapped in IF OBJECT_ID guard
+  assert.ok(stmts.some(s => /IF OBJECT_ID\('role_permissions'/.test(s)));
+  // CTE body (no WITH RECURSIVE on MSSQL — MSSQL auto-detects recursion)
+  const cteStmt = stmts.find(s => /WITH nums\(n\) AS \(/.test(s));
+  assert.ok(cteStmt, 'expected a single CTE-driven INSERT statement');
+  assert.doesNotMatch(cteStmt, /RECURSIVE/, 'MSSQL does not use the RECURSIVE keyword');
+  assert.match(cteStmt, /JSON_VALUE\(r\.permissions/);
+  // Legacy column drop, guarded by COL_LENGTH check
+  assert.ok(stmts.some(s => /ALTER TABLE sys_roles DROP COLUMN permissions/.test(s)));
 });
 
 test('splitSqlStatements parses migration 003 (port healthcheck tables)', () => {

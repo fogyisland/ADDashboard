@@ -9,7 +9,8 @@
 -- (which already has the new schema and no legacy column) and on an upgraded
 -- DB (which still has the legacy column with JSON-encoded permission arrays).
 --
--- For MySQL 8+.
+-- MySQL 5.7+ compatible (no WITH RECURSIVE — that syntax was added in 8.0;
+-- the WHILE loop iterates the JSON array indexes 0..19 instead).
 
 -- Defensive: create role_permissions if the schema file wasn't applied (e.g.
 -- someone is running this migration against an older 01-tables.sql).
@@ -27,6 +28,8 @@ CREATE PROCEDURE migrate_002_permissions_table()
 BEGIN
   DECLARE has_legacy_col INT DEFAULT 0;
   DECLARE target_count INT DEFAULT 0;
+  DECLARE i INT DEFAULT 0;
+  DECLARE max_perms INT DEFAULT 20;
 
   SELECT COUNT(*) INTO has_legacy_col
     FROM information_schema.COLUMNS
@@ -37,18 +40,20 @@ BEGIN
   SELECT COUNT(*) INTO target_count FROM role_permissions;
 
   IF has_legacy_col > 0 AND target_count = 0 THEN
-    -- Unwrap the JSON array into role_permissions rows. Recursive CTE generates
-    -- a 0..20 sequence — generous cap, no real role has more than a handful of
-    -- permissions.
-    INSERT INTO role_permissions (role_id, permission)
-    WITH RECURSIVE nums(n) AS (
-      SELECT 0 UNION ALL SELECT n + 1 FROM nums WHERE n < 20
-    )
-    SELECT r.id, JSON_UNQUOTE(JSON_EXTRACT(r.permissions, CONCAT('$[', n.n, ']')))
-    FROM sys_roles r, nums n
-    WHERE r.permissions IS NOT NULL
-      AND JSON_VALID(r.permissions) = 1
-      AND JSON_LENGTH(r.permissions) > n.n;
+    -- Unwrap the JSON array into role_permissions rows. WHILE loop walks the
+    -- array indexes 0..max_perms-1 — generous cap, no real role has more than
+    -- a handful of permissions. INSERT IGNORE keeps the loop safe to re-run if
+    -- the procedure is interrupted mid-iteration.
+    SET i = 0;
+    WHILE i < max_perms DO
+      INSERT IGNORE INTO role_permissions (role_id, permission)
+        SELECT r.id, JSON_UNQUOTE(JSON_EXTRACT(r.permissions, CONCAT('$[', i, ']')))
+        FROM sys_roles r
+        WHERE r.permissions IS NOT NULL
+          AND JSON_VALID(r.permissions) = 1
+          AND JSON_LENGTH(r.permissions) > i;
+      SET i = i + 1;
+    END WHILE;
   END IF;
 
   IF has_legacy_col > 0 THEN
