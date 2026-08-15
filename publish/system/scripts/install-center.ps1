@@ -18,6 +18,41 @@ Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 
+# Guard 1: root package.json must exist for the workspace install commands
+# below (npm install --workspace=…, npm run build:frontend). Without it
+# the user sees a bare ENOENT from npm; pre-check gives the actual cause.
+$rootPkg = Join-Path $projectRoot 'package.json'
+if (-not (Test-Path $rootPkg)) {
+  Write-Err2 "missing root package.json: $rootPkg — publish bundle is incomplete, re-extract publish/system/ from latest main"
+  exit 1
+}
+
+# Guard 3 (helper): router.js declares every top-level view; if any import
+# is missing on disk the build fails late with a confusing vite error.
+# Walk both static and dynamic imports and fail fast with a publish-drift
+# message.
+function Assert-RouterImportsResolve {
+  param([Parameter(Mandatory)][string]$ProjectRoot)
+  $router = Join-Path $ProjectRoot 'frontend\src\router.js'
+  if (-not (Test-Path $router)) { return }
+  $routerDir = Split-Path $router -Parent
+  $patterns = @(
+    "from '(\./.+?)'",
+    "import\('(\./.+?)'\)"
+  )
+  foreach ($pat in $patterns) {
+    $ms = Select-String -Path $router -Pattern $pat -AllMatches
+    foreach ($m in $ms.Matches) {
+      $rel = $m.Groups[1].Value
+      $full = Join-Path $routerDir $rel.Substring(2)
+      if (-not (Test-Path $full)) {
+        Write-Err2 "frontend/src/router.js imports '$rel' but file is missing ($full) — publish bundle drift, re-extract publish/system/ from latest main"
+        exit 1
+      }
+    }
+  }
+}
+
 if ($InPlace) {
   $InstallPath = Join-Path $projectRoot 'center'
   Write-Info "in-place install: service will point at $InstallPath (no file copy to C:\addashboard)"
@@ -49,6 +84,16 @@ if (-not (Test-Path $frontendNm)) {
   Push-Location $projectRoot
   try { npm install --workspace=frontend --include-workspace-root --no-audit --no-fund }
   finally { Pop-Location }
+}
+
+# Guard 2: vite must be on disk after the workspace install. npm can fail
+# silently (network/registry hiccup, postinstall errors swallowed); without
+# this guard the failure surfaces much later as 'vite' 不是内部或外部命令
+# with no clue why.
+$viteBin = Join-Path $projectRoot 'frontend\node_modules\.bin\vite.cmd'
+if (-not (Test-Path $viteBin)) {
+  Write-Err2 "vite not installed at $viteBin — npm install --workspace=frontend failed. Check $Script:LogDir for details, then re-run."
+  exit 1
 }
 
 # Idempotent node_modules install: hash-checked against package.json+package-lock.json.
@@ -118,6 +163,7 @@ if (-not $InPlace) {
   # 3. Build frontend if dist missing
   $distPath = Join-Path $projectRoot 'frontend\dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
+    Assert-RouterImportsResolve -ProjectRoot $projectRoot
     Write-Step "building frontend"
     Push-Location $projectRoot
     try { npm run build:frontend } finally { Pop-Location }
@@ -134,6 +180,7 @@ if (-not $InPlace) {
   Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   $distPath = Join-Path $InstallPath 'dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
+    Assert-RouterImportsResolve -ProjectRoot $projectRoot
     Write-Step "building frontend (in-place)"
     # Workspace deps installed at step 0a; just run the build from projectRoot
     # so npm's workspace context resolves correctly.
