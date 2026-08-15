@@ -40,3 +40,40 @@ test('loadConfig rejects empty-string required value', () => {
   assert.throws(() => loadConfig(p), /agentToken/);
   rmSync(dir, { recursive: true });
 });
+
+test('loadConfig provides centerHost empty default', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-cfg-'));
+  const p = join(dir, 'a.json');
+  writeFileSync(p, JSON.stringify({
+    centerUrl: 'http://center:8080', agentId: 'DC1', agentToken: 'tok'
+  }));
+  const c = loadConfig(p);
+  assert.equal(c.centerHost, '');
+  rmSync(dir, { recursive: true });
+});
+
+test('loadConfig provides scan defaults (scanOnBoot=true, scanOnRuntimeFail=true, threshold=5)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-cfg-'));
+  const p = join(dir, 'a.json');
+  writeFileSync(p, JSON.stringify({
+    centerUrl: 'http://center:8080', agentId: 'DC1', agentToken: 'tok'
+  }));
+  const c = loadConfig(p);
+  assert.equal(c.scanOnBoot, true);
+  assert.equal(c.scanOnRuntimeFail, true);
+  assert.equal(c.scanFailureThreshold, 5);
+  rmSync(dir, { recursive: true });
+});
+
+test('loadConfig respects explicit scanOnBoot=false override', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-cfg-'));
+  const p = join(dir, 'a.json');
+  writeFileSync(p, JSON.stringify({
+    centerUrl: 'http://center:8080', agentId: 'DC1', agentToken: 'tok',
+    scanOnBoot: false, scanFailureThreshold: 10
+  }));
+  const c = loadConfig(p);
+  assert.equal(c.scanOnBoot, false);
+  assert.equal(c.scanFailureThreshold, 10);
+  rmSync(dir, { recursive: true });
+});

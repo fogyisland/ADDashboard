@@ -16,7 +16,16 @@ const DEFAULTS = {
   // = member-server heartbeat + self-register + per-host package fetch.
   // Default stays 'ad' so existing deployments keep working without a
   // config-file change.
-  agentType: 'ad'
+  agentType: 'ad',
+  // 2026-08-15 port-scanning bootstrap (spec §3):
+  // centerHost: scan target (default = derive from centerUrl hostname).
+  // scanOnBoot: trigger discovery if first fetchConfig fails on startup.
+  // scanOnRuntimeFail: trigger discovery after N consecutive runtime failures.
+  // scanFailureThreshold: runtime failures before scan triggers.
+  centerHost: '',
+  scanOnBoot: true,
+  scanOnRuntimeFail: true,
+  scanFailureThreshold: 5
 };
 
 export function loadConfig(path) {
