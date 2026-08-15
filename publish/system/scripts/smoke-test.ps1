@@ -45,12 +45,14 @@ try {
   Step 'static index' ($r.StatusCode -eq 200 -and $r.Content -match 'AD Replication Dashboard')
 } catch { Step 'static index' $false $_.Exception.Message }
 
-# 5. install-center -InPlace: C:\addashboard\Center must NOT exist (green-bundle did not copy files)
+# 5. install-center -InPlace: <publish-root>/Center must NOT exist as a file copy
+#    (green-bundle mode runs the service from <publish-root>/center in place —
+#    no separate copy under <publish-root>/Center is made).
 try {
-  $copyMarker = 'C:\addashboard\Center'
+  $copyMarker = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center'
   $exists = Test-Path -LiteralPath $copyMarker
-  Step 'no C:\addashboard\Center copy (in-place)' (-not $exists) "path exists: $exists"
-} catch { Step 'no C:\addashboard\Center copy (in-place)' $false $_.Exception.Message }
+  Step 'no <publish-root>/Center copy (in-place)' (-not $exists) "path exists: $exists"
+} catch { Step 'no <publish-root>/Center copy (in-place)' $false $_.Exception.Message }
 
 # 6. NSSM AppExit=Default Restart and AppRestartDelay=2000 (Set-ServiceRecovery).
 # `nssm get AppExit` prints something like "Default\Restart" or "Default: Restart"

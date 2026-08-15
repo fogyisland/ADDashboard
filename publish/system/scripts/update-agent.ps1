@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$InstallPath = 'C:\addashboard\Agent')
+param([string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'))
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force

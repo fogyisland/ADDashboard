@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$InstallPath = 'C:\addashboard\Center',
+  [string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center'),
   [switch]$RebuildFrontend
 )
 $ErrorActionPreference = 'Stop'

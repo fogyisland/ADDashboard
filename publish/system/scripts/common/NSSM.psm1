@@ -2,7 +2,10 @@
 # the caller's scope, so each module that wants shared state owns its own
 # $Script: variable plus an explicit setter. See Set-NssmLogDir / Set-NssmPath.
 $Script:NssmPath = $null
-$Script:LogDir = 'C:\addashboard\Logs'
+# Default LogDir resolves relative to the script's own publish root (parent of
+# scripts/common/) — install/update/uninstall callers always override this via
+# Set-NssmLogDir, but the fallback matters for any ad-hoc use of the module.
+$Script:LogDir = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'Logs'
 if (-not (Test-Path $Script:LogDir)) {
   New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null
 }

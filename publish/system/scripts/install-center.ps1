@@ -5,7 +5,7 @@
 # register NSSM service, start service.
 [CmdletBinding()]
 param(
-  [string]$InstallPath = 'C:\addashboard\Center',
+  [string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center'),
   [int]$ListenPort = 8080,
   [string]$AgentToken,   # generated if missing
   [string]$JwtSecret,    # generated if missing
@@ -55,7 +55,7 @@ function Assert-RouterImportsResolve {
 
 if ($InPlace) {
   $InstallPath = Join-Path $projectRoot 'center'
-  Write-Info "in-place install: service will point at $InstallPath (no file copy to C:\addashboard)"
+  Write-Info "in-place install: service will point at $InstallPath (no file copy to <publish-root>/Center)"
 }
 
 Write-Step "install-center: $InstallPath (deployment only — wizard handles app init)"
@@ -154,13 +154,14 @@ function Ensure-CenterNodeModules {
   }
 }
 
-# Set log directory inside the NSSM module's own $Script: scope — module
+# Set log directory inside the NSSM/Logger modules' own $Script: scope — module
 # functions can't see the caller's $Script:LogDir, so we have to push the
-# value across explicitly via the module's setter. Same value is held in
-# this script's $Script:LogDir for the Write-Err2 path below.
-$Script:LogDir = 'C:\addashboard\Logs'
+# value across explicitly via the modules' setters. Co-located under the
+# install dir so uninstall/upgrade scripts find it without an extra path arg.
+$Script:LogDir = Join-Path $InstallPath 'Logs'
 if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
 Set-NssmLogDir $Script:LogDir
+Set-LogDir $Script:LogDir
 
 # When -InPlace, skip file copy / dist mirror / npm install of the install target.
 # node_modules is still installed if missing (green-bundle first-time setup).
@@ -209,11 +210,13 @@ if (-not $InPlace) {
 
 # 5. Copy db/ tree so schema-applier.js can resolve SQL files. The runtime
 # resolves them as <process.cwd()>/../db/{schema,migrations}/<file>, where
-# process.cwd() is the install dir (NSSM AppDirectory default). For default
-# InstallPath C:\addashboard\Center\ this lands at C:\addashboard\db\.
+# process.cwd() is the install dir (NSSM AppDirectory default). For the
+# default script-relative InstallPath <publish-root>/Center/, that lands
+# at <publish-root>/db/ (a copy of the bundle's db/ directory sits next
+# to Center/ for the runtime to read).
 # InPlace: <InstallPath>/.. = projectRoot which already has db/; copy is a
 # in-place overwrite (no-op structurally). Non-InPlace: creates the db/ dir
-# at the install-parent path.
+# at the install-parent path (sibling to <publish-root>/Center).
 $dbSrc = Join-Path $projectRoot 'db'
 $dbDst = Join-Path $InstallPath '..\db'
 if (Test-Path $dbSrc) {

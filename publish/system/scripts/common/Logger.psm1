@@ -1,5 +1,18 @@
-$Script:LogDir = 'C:\addashboard\Logs'
+# Default LogDir resolves relative to the script's own publish root (parent of
+# scripts/common/) — install/update/uninstall callers always override this via
+# Set-LogDir, but the fallback matters for any ad-hoc use of the module.
+$Script:LogDir = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'Logs'
 if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
+
+function Set-LogDir {
+  param([string]$Path)
+  if ($Path) {
+    $Script:LogDir = $Path
+    if (-not (Test-Path $Script:LogDir)) {
+      New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null
+    }
+  }
+}
 
 function Write-Log {
   param([string]$Level, [string]$Message)
