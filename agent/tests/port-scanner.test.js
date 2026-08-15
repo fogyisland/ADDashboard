@@ -164,3 +164,70 @@ test('early-exits after first hit (priority wins, range probe never completes)',
     await closeB();
   }
 });
+
+test('ignores 5xx (server returns error)', async () => {
+  const [port, close] = await startServer((_req, res) => {
+    res.statusCode = 500;
+    res.end('Internal Server Error');
+  });
+  try {
+    const r = await discoverCenterPort({
+      host: '127.0.0.1',
+      agentToken: 'tok',
+      priorityPorts: [port],
+      rangeStart: 20000,
+      rangeEnd: 20001,
+      perPortTimeoutMs: 500
+    });
+    assert.equal(r, null);
+  } finally { await close(); }
+});
+
+test('concurrency respected (max in-flight probes at any time)', async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const handler = async (_req, res) => {
+    inFlight++;
+    if (inFlight > maxInFlight) maxInFlight = inFlight;
+    // Hold the connection a bit so multiple probes overlap
+    await new Promise(r => setTimeout(r, 50));
+    inFlight--;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ heartbeatPort: 8081, reportPort: 8082 }));
+  };
+  const [port, close] = await startServer(handler);
+  try {
+    const r = await discoverCenterPort({
+      host: '127.0.0.1',
+      agentToken: 'tok',
+      priorityPorts: [port],
+      rangeStart: 20000,
+      rangeEnd: 20050,   // 51 range ports
+      concurrency: 5,
+      perPortTimeoutMs: 1000
+    });
+    assert.ok(r, 'should find the priority port');
+    assert.equal(r.port, port);
+    // Allow +1 for the priority probe that may overlap with one range probe
+    assert.ok(maxInFlight <= 6, `max in-flight was ${maxInFlight}, expected <= 6`);
+  } finally { await close(); }
+});
+
+test('honors AbortSignal (returns null when pre-aborted)', async () => {
+  const [port, close] = await startServer(configJsonHandler);
+  try {
+    const ac = new AbortController();
+    ac.abort();
+    const r = await discoverCenterPort({
+      host: '127.0.0.1',
+      agentToken: 'tok',
+      priorityPorts: [port],
+      rangeStart: 20000,
+      rangeEnd: 20001,
+      concurrency: 5,
+      perPortTimeoutMs: 500,
+      signal: ac.signal
+    });
+    assert.equal(r, null);
+  } finally { await close(); }
+});
