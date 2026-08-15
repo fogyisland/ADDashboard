@@ -18,6 +18,41 @@ Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 
+# Guard 1: root package.json must exist for the workspace install commands
+# below (npm install --workspace=…, npm run build:frontend). Without it
+# the user sees a bare ENOENT from npm; pre-check gives the actual cause.
+$rootPkg = Join-Path $projectRoot 'package.json'
+if (-not (Test-Path $rootPkg)) {
+  Write-Err2 "missing root package.json: $rootPkg — publish bundle is incomplete, re-extract publish/system/ from latest main"
+  exit 1
+}
+
+# Guard 3 (helper): router.js declares every top-level view; if any import
+# is missing on disk the build fails late with a confusing vite error.
+# Walk both static and dynamic imports and fail fast with a publish-drift
+# message.
+function Assert-RouterImportsResolve {
+  param([Parameter(Mandatory)][string]$ProjectRoot)
+  $router = Join-Path $ProjectRoot 'frontend\src\router.js'
+  if (-not (Test-Path $router)) { return }
+  $routerDir = Split-Path $router -Parent
+  $patterns = @(
+    "from '(\./.+?)'",
+    "import\('(\./.+?)'\)"
+  )
+  foreach ($pat in $patterns) {
+    $ms = Select-String -Path $router -Pattern $pat -AllMatches
+    foreach ($m in $ms.Matches) {
+      $rel = $m.Groups[1].Value
+      $full = Join-Path $routerDir $rel.Substring(2)
+      if (-not (Test-Path $full)) {
+        Write-Err2 "frontend/src/router.js imports '$rel' but file is missing ($full) — publish bundle drift, re-extract publish/system/ from latest main"
+        exit 1
+      }
+    }
+  }
+}
+
 if ($InPlace) {
   $InstallPath = Join-Path $projectRoot 'center'
   Write-Info "in-place install: service will point at $InstallPath (no file copy to C:\addashboard)"
@@ -27,6 +62,54 @@ Write-Step "install-center: $InstallPath (deployment only — wizard handles app
 
 # 0. Ensure NSSM is available locally (downloads to <projectRoot>/nssm/ on first run)
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
+
+# 0a. Install center + frontend workspace deps at projectRoot if either's
+#     node_modules is missing, OR if vite is missing (catches stale --omit=dev
+#     installs that populated node_modules but skipped vite). The init-state
+#     bundle ships without package-lock.json (so first run resolves fresh);
+#     without this, `npm run build:frontend` later would fail because vite
+#     isn't in any .bin/ yet. Idempotent: exits fast when both node_modules
+#     are populated AND vite is present. Agent deps installed by
+#     install-agent.ps1 only. Two-step: center with --omit=dev (prod only);
+#     frontend WITH devDeps so vite gets installed (build step needs it).
+$centerNm = Join-Path $projectRoot 'center\node_modules'
+$frontendNm = Join-Path $projectRoot 'frontend\node_modules'
+# Peek at the vite paths now (same paths Guard 2 checks below) so we can
+# decide whether frontend needs a reinstall even when frontend/node_modules
+# already exists.
+$viteBinRoot = Join-Path $projectRoot 'node_modules\.bin\vite.cmd'
+$viteBinLocal = Join-Path $projectRoot 'frontend\node_modules\.bin\vite.cmd'
+$needCenterInstall = -not (Test-Path $centerNm)
+$needFrontendInstall = -not (Test-Path $frontendNm)
+if (-not (Test-Path $viteBinRoot) -and -not (Test-Path $viteBinLocal)) {
+  $needFrontendInstall = $true
+  Write-Info "vite missing — will reinstall frontend deps to ensure devDependencies are present"
+}
+if ($needCenterInstall) {
+  Write-Info "installing center deps (npm install --workspace=center --include-workspace-root --omit=dev)"
+  Push-Location $projectRoot
+  try { npm install --workspace=center --include-workspace-root --omit=dev --no-audit --no-fund }
+  finally { Pop-Location }
+}
+if ($needFrontendInstall) {
+  Write-Info "installing frontend deps (npm install --workspace=frontend --include-workspace-root --no-audit --no-fund)"
+  Push-Location $projectRoot
+  try { npm install --workspace=frontend --include-workspace-root --no-audit --no-fund }
+  finally { Pop-Location }
+}
+
+# Guard 2: vite must be on disk after the workspace install. npm can fail
+# silently (network/registry hiccup, postinstall errors swallowed); without
+# this guard the failure surfaces much later as 'vite' 不是内部或外部命令
+# with no clue why. (Variables $viteBinRoot / $viteBinLocal declared in step
+# 0a so the install-or-skip check above can reuse them.) npm workspaces hoists
+# vite to <projectRoot>/node_modules/.bin/ by default; only `cd frontend &&
+# npm install` (non-workspace, runs from the workspace directly) places it
+# under frontend/node_modules/.bin/. Accept either.
+if (-not (Test-Path $viteBinRoot) -and -not (Test-Path $viteBinLocal)) {
+  Write-Err2 "vite not installed (checked $viteBinRoot and $viteBinLocal) — npm install --workspace=frontend failed. Check $Script:LogDir for details, then re-run."
+  exit 1
+}
 
 # Idempotent node_modules install: hash-checked against package.json+package-lock.json.
 # Reinstalls when the source deps change (added/removed/upgraded) or node_modules is missing.
@@ -95,6 +178,7 @@ if (-not $InPlace) {
   # 3. Build frontend if dist missing
   $distPath = Join-Path $projectRoot 'frontend\dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
+    Assert-RouterImportsResolve -ProjectRoot $projectRoot
     Write-Step "building frontend"
     Push-Location $projectRoot
     try { npm run build:frontend } finally { Pop-Location }
@@ -111,13 +195,30 @@ if (-not $InPlace) {
   Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   $distPath = Join-Path $InstallPath 'dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
+    Assert-RouterImportsResolve -ProjectRoot $projectRoot
     Write-Step "building frontend (in-place)"
-    Push-Location (Join-Path $projectRoot 'frontend')
-    try { npm run build } finally { Pop-Location }
+    # Workspace deps installed at step 0a; just run the build from projectRoot
+    # so npm's workspace context resolves correctly.
+    Push-Location $projectRoot
+    try { npm run build:frontend } finally { Pop-Location }
     if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
     New-Item -ItemType Directory -Path $distPath -Force | Out-Null
     Copy-Item -Path (Join-Path $projectRoot 'frontend\dist\*') -Destination $distPath -Recurse -Force
   }
+}
+
+# 5. Copy db/ tree so schema-applier.js can resolve SQL files. The runtime
+# resolves them as <process.cwd()>/../db/{schema,migrations}/<file>, where
+# process.cwd() is the install dir (NSSM AppDirectory default). For default
+# InstallPath C:\addashboard\Center\ this lands at C:\addashboard\db\.
+# InPlace: <InstallPath>/.. = projectRoot which already has db/; copy is a
+# in-place overwrite (no-op structurally). Non-InPlace: creates the db/ dir
+# at the install-parent path.
+$dbSrc = Join-Path $projectRoot 'db'
+$dbDst = Join-Path $InstallPath '..\db'
+if (Test-Path $dbSrc) {
+  New-Item -ItemType Directory -Path $dbDst -Force | Out-Null
+  Copy-Item -Path (Join-Path $dbSrc '*') -Destination $dbDst -Recurse -Force
 }
 
 # 5. Register and start service
@@ -141,7 +242,17 @@ if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   exit 1
 }
 
-# 6. Probe health (server boots in init mode if appsettings.json missing → /init responds)
-$health = try { (Invoke-WebRequest -Uri "http://localhost:$ListenPort/api/init/status" -UseBasicParsing -TimeoutSec 10).Content } catch { "unreachable: $($_.Exception.Message)" }
-Write-Ok "init status: $health"
-Write-Ok "open browser to: http://localhost:$ListenPort/init to complete application initialization"
+# 6. Probe health — wait for HTTP to come up instead of single-shot. SCM
+# "Running" only means NSSM launched node; Express still needs to bind the
+# port (cold cache: 2-15s). Wait-ForHttpOk polls until 2xx or 30s timeout.
+$probeUrl = "http://localhost:$ListenPort/api/init/status"
+if (Wait-ForHttpOk -Url $probeUrl -TimeoutSeconds 30 -IntervalSeconds 1) {
+  $health = try { (Invoke-WebRequest -Uri $probeUrl -UseBasicParsing -TimeoutSec 5).Content } catch { "unreachable: $($_.Exception.Message)" }
+  Write-Ok "init status: $health"
+  Write-Ok "open browser to: http://localhost:$ListenPort/init to complete application initialization"
+} else {
+  # Service is up (Start-ServiceSafe returned true) but HTTP didn't bind in time.
+  # Don't fail the install — log a clear warning instead. The browser will retry.
+  Write-Info "service started but HTTP probe at $probeUrl did not return 2xx within 30s"
+  Write-Info "this usually means Express is still loading modules; check $(Join-Path $Script:LogDir 'ADDashboardCenter-stderr.log') and try http://localhost:$ListenPort/init in a few seconds"
+}
