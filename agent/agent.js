@@ -341,14 +341,39 @@ async function runNonAdRuntime({ config, logger }) {
   //    lightweight one-shot runner, NOT PackageManager (which would
   //    re-derive intervals / disk cache from a different endpoint).
   let cachedPorts = { heartbeatPort: null, reportPort: null };
+  let consecutivePortFailures = 0;
+
   async function refreshAgentPorts() {
     const r = await fetchConfig({ centerUrl: config.centerUrl, agentToken: config.agentToken });
     if (r.ok && r.data) {
       cachedPorts.heartbeatPort = Number(r.data.heartbeatPort) || null;
       cachedPorts.reportPort    = Number(r.data.reportPort)    || null;
+      return true;
     }
+    return false;
   }
-  await refreshAgentPorts();
+
+  async function refreshAgentPortsWithRecovery(trigger) {
+    const ok = await refreshAgentPorts();
+    if (ok) { consecutivePortFailures = 0; return; }
+    consecutivePortFailures++;
+    const enabled = trigger === 'boot' ? config.scanOnBoot : config.scanOnRuntimeFail;
+    if (!enabled) {
+      logger.warn({ trigger, centerUrl: config.centerUrl }, 'fetchConfig failed; scan disabled by config');
+      return;
+    }
+    // At boot: scan on first failure (spec §1.2 — agent must self-heal on
+    // startup when appsettings.json is stale). At runtime: only after
+    // scanFailureThreshold consecutive failures (spec §1.3).
+    if (trigger === 'runtime' && consecutivePortFailures < config.scanFailureThreshold) {
+      logger.warn({ trigger, consecutivePortFailures, threshold: config.scanFailureThreshold }, 'config fetch failed; will retry on next tick');
+      return;
+    }
+    const rec = await tryRecoverCenterPort({ config, configPath, logger, trigger });
+    if (rec.recovered) consecutivePortFailures = 0;
+  }
+
+  await refreshAgentPortsWithRecovery('boot');
 
   // Local cache of which packages are currently scheduled. The center is
   // the source of truth; on every poll we diff against the previously-
@@ -454,7 +479,7 @@ async function runNonAdRuntime({ config, logger }) {
   //    self-register every 30 minutes (in case the agent started
   //    before center or before DNS).
   const configRefresh = setInterval(async () => {
-    await refreshAgentPorts();
+    await refreshAgentPortsWithRecovery('runtime');
     selfRegister();
   }, 30 * 60_000);
 
