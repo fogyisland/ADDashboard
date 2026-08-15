@@ -165,6 +165,28 @@ test('applyAll mysql createDatabase option issues CREATE DATABASE', async () => 
   assert.ok(sqls.some(s => /CREATE DATABASE IF NOT EXISTS `ad_test`/i.test(s)));
 });
 
+test('splitSqlStatements parses migration 005 mssql (3 guarded statements: CREATE TABLE + 2 CREATE INDEX)', () => {
+  // MSSQL: CREATE TABLE wrapped in IF NOT EXISTS (sysobjects) + 2 CREATE INDEX
+  // each guarded by IF NOT EXISTS (sys.indexes). Each guard is its own logical
+  // statement. The CREATE INDEX guards are load-bearing for idempotency:
+  // without them, re-applying on a partial-state DB (CREATE TABLE succeeded
+  // but a previous attempt failed before the indexes ran) throws
+  // "index or statistics with name 'idx_changed_at' already exists" — the
+  // underlying cause of the wizard's "Could not create constraint or index" 500.
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/mssql/005-sys-config-audit.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  assert.strictEqual(stmts.length, 3, `expected 3 statements, got ${stmts.length}: ${JSON.stringify(stmts)}`);
+  // CREATE TABLE: guarded by sysobjects lookup
+  assert.match(stmts[0], /IF NOT EXISTS \(SELECT \* FROM sysobjects/i);
+  assert.match(stmts[0], /CREATE TABLE sys_config_audit/i);
+  assert.match(stmts[0], /change_type/i);
+  // Each CREATE INDEX: guarded by sys.indexes lookup
+  assert.match(stmts[1], /IF NOT EXISTS \(SELECT \* FROM sys\.indexes WHERE name = 'idx_changed_at'/i);
+  assert.match(stmts[1], /CREATE INDEX idx_changed_at ON sys_config_audit/i);
+  assert.match(stmts[2], /IF NOT EXISTS \(SELECT \* FROM sys\.indexes WHERE name = 'idx_config_key'/i);
+  assert.match(stmts[2], /CREATE INDEX idx_config_key ON sys_config_audit/i);
+});
+
 test('splitSqlStatements parses migration 006 (drop center_public_host/port)', () => {
   // 006 is a single DELETE statement guarded by IN (...) — covers the
   // stock single-semicolon-terminated case for both dialects, and ensures
