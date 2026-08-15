@@ -207,6 +207,20 @@ if (-not $InPlace) {
   }
 }
 
+# 5. Copy db/ tree so schema-applier.js can resolve SQL files. The runtime
+# resolves them as <process.cwd()>/../db/{schema,migrations}/<file>, where
+# process.cwd() is the install dir (NSSM AppDirectory default). For default
+# InstallPath C:\addashboard\Center\ this lands at C:\addashboard\db\.
+# InPlace: <InstallPath>/.. = projectRoot which already has db/; copy is a
+# in-place overwrite (no-op structurally). Non-InPlace: creates the db/ dir
+# at the install-parent path.
+$dbSrc = Join-Path $projectRoot 'db'
+$dbDst = Join-Path $InstallPath '..\db'
+if (Test-Path $dbSrc) {
+  New-Item -ItemType Directory -Path $dbDst -Force | Out-Null
+  Copy-Item -Path (Join-Path $dbSrc '*') -Destination $dbDst -Recurse -Force
+}
+
 # 5. Register and start service
 Install-NssmService -Name 'ADDashboardCenter' `
   -Application $node `

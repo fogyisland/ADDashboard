@@ -120,8 +120,40 @@ function resolveMigrationsDir(repoRoot, dialect) {
   return join(repoRoot, 'db', 'migrations');
 }
 
+// Find the repo root at runtime. An explicit caller-pinned path (opts.repoRoot)
+// always wins — tests use it to point at a fixture, prod config can pin a
+// non-standard layout. The candidate fallback only runs when no path is given:
+// the install script copies db/ to <InstallPath>/../db/ so cwd/.. works for the
+// default layout, but older installs (pre-db-copy-fix) or operators who keep
+// db/ at the publish-root only land at cwd/../.. or cwd itself.
+//
+//   1. opts.repoRoot (caller-provided — used verbatim, NOT validated against
+//      the candidate list; honoring the caller's pin is the whole point)
+//   2. ADDASHBOARD_REPO_ROOT env var (set on the NSSM service for non-standard
+//      layouts without re-running install)
+//   3. cwd/.. (default install layout — <InstallPath>/.. = <parent>)
+//   4. cwd/../.. (InPlace layout — <publish-root>/center/../.. = <publish-root>)
+//   5. cwd itself (db/ co-located with install dir, rare)
+// Each fallback candidate is only accepted if it actually contains a db/
+// subdir; otherwise we keep looking. Falling back to cwd/.. at the end
+// preserves the legacy default so the ENOENT surfaces where to look.
+function resolveRepoRoot(opts) {
+  if (opts.repoRoot) return opts.repoRoot;
+  const cwd = process.cwd();
+  const candidates = [
+    process.env.ADDASHBOARD_REPO_ROOT,
+    join(cwd, '..'),
+    join(cwd, '..', '..'),
+    cwd,
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (existsSync(join(c, 'db'))) return c;
+  }
+  return join(cwd, '..');
+}
+
 export async function applyAll(dialect, db, opts = {}) {
-  const repoRoot = opts.repoRoot ?? join(process.cwd(), '..');
+  const repoRoot = resolveRepoRoot(opts);
 
   const applied = { schema: [], seed: [], migrations: [] };
 
@@ -164,7 +196,7 @@ function sha256(s) { return createHash('sha256').update(s).digest('hex'); }
 // 'system-init' and execution_ms 0 — we did not time the original run.
 // Idempotent: the upsert keys on `version`, so re-running is a no-op update.
 export async function backfillMigrations(dialect, db, opts = {}) {
-  const repoRoot = opts.repoRoot ?? join(process.cwd(), '..');
+  const repoRoot = resolveRepoRoot(opts);
   const dir = resolveMigrationsDir(repoRoot, dialect);
   if (!existsSync(dir)) return { count: 0, skipped: [] };
   const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
@@ -228,7 +260,7 @@ export async function bootstrapMigrations(dialect, db, opts = {}) {
   } catch {
     // Table doesn't exist — fall through to create + backfill.
   }
-  const repoRoot = opts.repoRoot ?? join(process.cwd(), '..');
+  const repoRoot = resolveRepoRoot(opts);
   const migrationFile = resolveSqlPath(repoRoot, 'migrations', dialect, '009-schema-migrations.sql');
   // A deployment can legitimately ship without db/migrations (runtime-only
   // bundles). Nothing to bootstrap from, so leave the DB untouched.
