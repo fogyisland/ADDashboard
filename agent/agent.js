@@ -150,7 +150,14 @@ async function runAdRuntime({ config, logger }) {
     if (ok) { consecutivePortFailures = 0; return; }
     consecutivePortFailures++;
     const enabled = trigger === 'boot' ? config.scanOnBoot : config.scanOnRuntimeFail;
-    if (consecutivePortFailures < config.scanFailureThreshold || !enabled) {
+    if (!enabled) {
+      logger.warn({ trigger, centerUrl: config.centerUrl }, 'fetchConfig failed; scan disabled by config');
+      return;
+    }
+    // At boot: scan on first failure (spec §1.2 — agent must self-heal on
+    // startup when appsettings.json is stale). At runtime: only after
+    // scanFailureThreshold consecutive failures (spec §1.3).
+    if (trigger === 'runtime' && consecutivePortFailures < config.scanFailureThreshold) {
       logger.warn({ trigger, consecutivePortFailures, threshold: config.scanFailureThreshold }, 'config fetch failed; will retry on next tick');
       return;
     }
