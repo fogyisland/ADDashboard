@@ -64,22 +64,34 @@ Write-Step "install-center: $InstallPath (deployment only — wizard handles app
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
 # 0a. Install center + frontend workspace deps at projectRoot if either's
-#     node_modules is missing. The init-state bundle ships without
-#     package-lock.json (so first run resolves fresh); without this,
-#     `npm run build:frontend` later would fail because vite isn't in
-#     frontend/node_modules/.bin yet. Idempotent: exits fast when both are
-#     already populated. Agent deps installed by install-agent.ps1 only.
-#     Two-step: center with --omit=dev (prod only); frontend WITH devDeps so
-#     vite gets installed (build step needs it).
+#     node_modules is missing, OR if vite is missing (catches stale --omit=dev
+#     installs that populated node_modules but skipped vite). The init-state
+#     bundle ships without package-lock.json (so first run resolves fresh);
+#     without this, `npm run build:frontend` later would fail because vite
+#     isn't in any .bin/ yet. Idempotent: exits fast when both node_modules
+#     are populated AND vite is present. Agent deps installed by
+#     install-agent.ps1 only. Two-step: center with --omit=dev (prod only);
+#     frontend WITH devDeps so vite gets installed (build step needs it).
 $centerNm = Join-Path $projectRoot 'center\node_modules'
 $frontendNm = Join-Path $projectRoot 'frontend\node_modules'
-if (-not (Test-Path $centerNm)) {
+# Peek at the vite paths now (same paths Guard 2 checks below) so we can
+# decide whether frontend needs a reinstall even when frontend/node_modules
+# already exists.
+$viteBinRoot = Join-Path $projectRoot 'node_modules\.bin\vite.cmd'
+$viteBinLocal = Join-Path $projectRoot 'frontend\node_modules\.bin\vite.cmd'
+$needCenterInstall = -not (Test-Path $centerNm)
+$needFrontendInstall = -not (Test-Path $frontendNm)
+if (-not (Test-Path $viteBinRoot) -and -not (Test-Path $viteBinLocal)) {
+  $needFrontendInstall = $true
+  Write-Info "vite missing — will reinstall frontend deps to ensure devDependencies are present"
+}
+if ($needCenterInstall) {
   Write-Info "installing center deps (npm install --workspace=center --include-workspace-root --omit=dev)"
   Push-Location $projectRoot
   try { npm install --workspace=center --include-workspace-root --omit=dev --no-audit --no-fund }
   finally { Pop-Location }
 }
-if (-not (Test-Path $frontendNm)) {
+if ($needFrontendInstall) {
   Write-Info "installing frontend deps (npm install --workspace=frontend --include-workspace-root --no-audit --no-fund)"
   Push-Location $projectRoot
   try { npm install --workspace=frontend --include-workspace-root --no-audit --no-fund }
@@ -89,12 +101,11 @@ if (-not (Test-Path $frontendNm)) {
 # Guard 2: vite must be on disk after the workspace install. npm can fail
 # silently (network/registry hiccup, postinstall errors swallowed); without
 # this guard the failure surfaces much later as 'vite' 不是内部或外部命令
-# with no clue why.
-# npm workspaces hoists vite to <projectRoot>/node_modules/.bin/ by default;
-# only `cd frontend && npm install` (non-workspace, runs from the workspace
-# directly) places it under frontend/node_modules/.bin/. Accept either.
-$viteBinRoot = Join-Path $projectRoot 'node_modules\.bin\vite.cmd'
-$viteBinLocal = Join-Path $projectRoot 'frontend\node_modules\.bin\vite.cmd'
+# with no clue why. (Variables $viteBinRoot / $viteBinLocal declared in step
+# 0a so the install-or-skip check above can reuse them.) npm workspaces hoists
+# vite to <projectRoot>/node_modules/.bin/ by default; only `cd frontend &&
+# npm install` (non-workspace, runs from the workspace directly) places it
+# under frontend/node_modules/.bin/. Accept either.
 if (-not (Test-Path $viteBinRoot) -and -not (Test-Path $viteBinLocal)) {
   Write-Err2 "未找到 vite (检查了 $viteBinRoot 和 $viteBinLocal) — 前端依赖安装失败, 请查看日志 $Script:LogDir 后重试 (vite not installed — npm install --workspace=frontend failed)"
   exit 1
