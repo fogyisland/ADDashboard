@@ -90,9 +90,13 @@ if (-not (Test-Path $frontendNm)) {
 # silently (network/registry hiccup, postinstall errors swallowed); without
 # this guard the failure surfaces much later as 'vite' 不是内部或外部命令
 # with no clue why.
-$viteBin = Join-Path $projectRoot 'frontend\node_modules\.bin\vite.cmd'
-if (-not (Test-Path $viteBin)) {
-  Write-Err2 "未找到 vite ($viteBin) — 前端依赖安装失败, 请查看日志 $Script:LogDir 后重试 (vite not installed — npm install --workspace=frontend failed)"
+# npm workspaces hoists vite to <projectRoot>/node_modules/.bin/ by default;
+# only `cd frontend && npm install` (non-workspace, runs from the workspace
+# directly) places it under frontend/node_modules/.bin/. Accept either.
+$viteBinRoot = Join-Path $projectRoot 'node_modules\.bin\vite.cmd'
+$viteBinLocal = Join-Path $projectRoot 'frontend\node_modules\.bin\vite.cmd'
+if (-not (Test-Path $viteBinRoot) -and -not (Test-Path $viteBinLocal)) {
+  Write-Err2 "未找到 vite (检查了 $viteBinRoot 和 $viteBinLocal) — 前端依赖安装失败, 请查看日志 $Script:LogDir 后重试 (vite not installed — npm install --workspace=frontend failed)"
   exit 1
 }
 
