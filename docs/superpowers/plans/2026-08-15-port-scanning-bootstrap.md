@@ -1260,3 +1260,22 @@ One concern: Task 6 originally had a typo in the import — fixed during plan se
 **5. Scope check:** Single subsystem (agent bootstrap). Focused. No decomposition needed.
 
 **6. Integration test scope:** Task 6 uses `discoverCenterPort` + `writeCenterUrlAtomic` directly (mirroring the helper), not the helper itself, because importing agent.js requires DB + heartbeat setup. Acceptable trade-off — the helper is thin orchestration, well-covered by inspection.
+## Deferred follow-ups (whole-branch review residuals)
+
+The opus whole-branch review (Task 7) flagged 2 Important issues that were intentionally deferred to keep the branch shippable per `feedback_ship_clean.md`:
+
+### Follow-up A: Integration test exercises the actual `tryRecoverCenterPort`
+
+**Current state:** `agent/tests/bootstrap-recovery.test.js` re-implements the recovery flow inline using the same modules (`discoverCenterPort`, `writeCenterUrlAtomic`, `fetchConfig`). It does NOT exercise the actual `tryRecoverCenterPort` function in `agent.js`.
+
+**Future fix:** Either (a) export `tryRecoverCenterPort` from `agent.js` and call it from the test with a minimal `config` object + temp `appsettings.json`; or (b) refactor `tryRecoverCenterPort` out of `agent.js` into `agent/src/port-recovery.js` and import it. Option (a) is faster; option (b) is cleaner.
+
+**Why deferred:** Importing `agent.js` requires DB + heartbeat setup. The current indirect testing strategy validates the modules + reporter chain.
+
+### Follow-up B: Atomic-on-Windows test
+
+**Current state:** Spec §6.2 lists "Write succeeds even if original file is read-only after init" as a test. The implemented `chmod 0o555` test is skipped on Windows because Node.js on Win32 ignores POSIX chmod bits. The only platform that needs this test (Windows) is the one that gets skipped.
+
+**Future fix:** Write a Windows-specific test using a Win32 API to set a deny-write ACL on the file (e.g., via `child_process` running `icacls`). Alternatively, write a test that opens an exclusive file lock on the original file via `fs.openSync(path, 'r+')` and verifies the atomic write still succeeds (the tmp + rename pattern should bypass the lock).
+
+**Why deferred:** Cross-platform testing of POSIX-vs-NTFS file semantics requires Win32 API access. The other 4 `appsettings-writer` tests cover the happy/error paths adequately.
