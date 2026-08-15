@@ -21,6 +21,9 @@ Invoke-Expression $Matches[0]
 
 # Test-only wrapper: same logic as Assert-RouterImportsResolve but `throw`
 # instead of `exit 1` so the test runner can observe the failure.
+# Mirrors the bilingual production message (中文 + English). The patterns below
+# match ASCII-only markers (file names, recovery hint) to avoid cp1252 vs UTF-8
+# mismatch on Chinese chars when PowerShell reads the .ps1 file without BOM.
 function Test-RouterImportsResolve {
   param([Parameter(Mandatory)][string]$ProjectRoot)
   $router = Join-Path $ProjectRoot 'frontend\src\router.js'
@@ -36,7 +39,7 @@ function Test-RouterImportsResolve {
       $rel = $m.Groups[1].Value
       $full = Join-Path $routerDir $rel.Substring(2)
       if (-not (Test-Path $full)) {
-        throw "router.js imports '$rel' but file is missing ($full) — publish bundle drift"
+        throw "frontend/src/router.js 引用了 '$rel' 但文件缺失 ($full) — publish 包漂了, 请重新解压 publish/system/ (publish bundle drift — re-extract from latest main)"
       }
     }
   }
@@ -66,7 +69,8 @@ function Run-Scenario($Name, [scriptblock]$Setup, [scriptblock]$Body, [string]$E
       return $true
     }
     if ($ExpectedPattern -and $caught) {
-      if ($msg -match $ExpectedPattern) {
+      $m = $msg -match $ExpectedPattern
+      if ($m) {
         Write-Host "  PASS — fired with expected pattern" -ForegroundColor Green
         Write-Host "  message: $msg"
         return $true
@@ -91,16 +95,16 @@ function Run-Scenario($Name, [scriptblock]$Setup, [scriptblock]$Body, [string]$E
 }
 
 # --- Guard 1: missing root package.json ---
-$ok1 = Run-Scenario -Name 'Guard 1: missing root package.json' `
+$ok1 = Run-Scenario -Name 'Guard 1: missing root package.json (bilingual: 中文 + English)' `
   -Setup { param($t)
     New-Item -ItemType Directory -Path (Join-Path $t 'frontend\src') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $t 'center') -Force | Out-Null
   } `
-  -ExpectedPattern 'publish bundle is incomplete, re-extract publish/system/' `
+  -ExpectedPattern 'package\.json.*publish/system/.*publish bundle' `
   -Body { param($t)
     $rootPkg = Join-Path $t 'package.json'
     if (-not (Test-Path $rootPkg)) {
-      throw "missing root package.json: $rootPkg — publish bundle is incomplete, re-extract publish/system/ from latest main"
+      throw "缺根目录 package.json: $rootPkg — 发布包不完整, 请重新解压 publish/system/ (publish bundle incomplete — re-extract from latest main)"
     }
   }
 
@@ -123,25 +127,25 @@ const routes = [{ path: '/admin/x', component: () => import('./views/admin/Admin
   -Body { param($t) Test-RouterImportsResolve -ProjectRoot $t }
 
 # --- Guard 3: missing static import ---
-$ok3 = Run-Scenario -Name 'Guard 3: missing static import' `
+$ok3 = Run-Scenario -Name 'Guard 3: missing static import (bilingual: 中文 + English)' `
   -Setup { param($t)
     $src = Join-Path $t 'frontend\src'
     New-Item -ItemType Directory -Path $src -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $src 'views') -Force | Out-Null
     "import DashboardView from './views/DashboardView.vue';" | Set-Content -Path (Join-Path $src 'router.js')
   } `
-  -ExpectedPattern 'imports ''\./views/DashboardView\.vue'' but file is missing' `
+  -ExpectedPattern 'DashboardView\.vue.*publish/system/' `
   -Body { param($t) Test-RouterImportsResolve -ProjectRoot $t }
 
 # --- Guard 3: missing dynamic import ---
-$ok4 = Run-Scenario -Name 'Guard 3: missing dynamic import' `
+$ok4 = Run-Scenario -Name 'Guard 3: missing dynamic import (bilingual: 中文 + English)' `
   -Setup { param($t)
     $src = Join-Path $t 'frontend\src'
     New-Item -ItemType Directory -Path $src -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $src 'views') -Force | Out-Null
     "component: () => import('./views/GhostView.vue')" | Set-Content -Path (Join-Path $src 'router.js')
   } `
-  -ExpectedPattern 'imports ''\./views/GhostView\.vue'' but file is missing' `
+  -ExpectedPattern 'GhostView\.vue.*publish/system/' `
   -Body { param($t) Test-RouterImportsResolve -ProjectRoot $t }
 
 Write-Host ""
