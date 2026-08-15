@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
-$root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$staging = Join-Path $root 'installer\staging'
+$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+$staging = Join-Path $root 'publish\installer\staging'
 if (-not (Test-Path $staging)) { New-Item -ItemType Directory -Force -Path $staging | Out-Null }
 
 # 1. Stage agent source (exclude tests + appsettings.json + node_modules).
@@ -119,7 +119,7 @@ if (-not (Test-Path $nodeModulesDst)) {
 #    `nssm install ADReplicationAgent` at install time, so nssm.exe must be in
 #    the bundle. The installer copies it to staging\nssm\nssm.exe; the MSI
 #    ships it at INSTALLDIR\nssm\nssm.exe.
-$nssmSrc = Join-Path $root 'publish\nssm\nssm.exe'
+$nssmSrc = Join-Path $root 'publish\system\nssm\nssm.exe'
 $nssmDstDir = Join-Path $staging 'nssm'
 $nssmDst = Join-Path $nssmDstDir 'nssm.exe'
 if (-not (Test-Path $nssmDst)) {
@@ -130,7 +130,7 @@ if (-not (Test-Path $nssmDst)) {
   Copy-Item -Path $nssmSrc -Destination $nssmDst -Force
 }
 
-Push-Location (Join-Path $root 'installer\agent-installer')
+Push-Location (Join-Path $root 'publish\installer\agent-installer')
 try {
   dotnet build -c Release -p:Platform=x64
   if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $LASTEXITCODE" }

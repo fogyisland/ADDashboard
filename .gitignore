@@ -75,3 +75,5 @@ installer/staging/
 # MSI build output (WiX 5 writes under installer/agent-installer/bin/, but a
 # future `wix build` invocation could drop a .msi outside that directory)
 *.msi
+# Published MSI installer is a release artifact — track it
+!publish/installer/ADDashboardAgent.msi

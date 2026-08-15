@@ -6,7 +6,7 @@
 publish/
 ├── system/         ← 系统运行时（绿色版，便携包，双击 start.bat 启动）
 ├── designer/       ← WPF 包设计器（自包含 exe，双击 PackageDesigner.exe 启动）
-└── installer/      ← MSI 安装包源码（含 build-msi.ps1，运行后产出 .msi）
+└── installer/      ← MSI 安装包（双击 ADDashboardAgent.msi 安装 Agent）
 ```
 
 每个子目录都自带 README，按需阅读：
@@ -15,7 +15,7 @@ publish/
 |---|---|---|
 | `system/` | [`system/README.md`](system/README.md) | 部署中心 + 节点代理到目标机器 |
 | `designer/` | （双击 `PackageDesigner.exe`） | 设计 / 编辑 / 发布 Agent 包 |
-| `installer/` | （执行 `build-msi.ps1`） | 把 Agent 打包成 Windows MSI 安装包 |
+| `installer/` | （双击 `ADDashboardAgent.msi`） | 把 Agent 装到目标 DC |
 
 ## 三个包的对应场景
 
@@ -23,7 +23,7 @@ publish/
 |---|---|
 | 试用 / POC / 小规模部署 | `system/` 直接解压运行 |
 | 在 Windows 工作站上设计 Agent 包 | `designer/` 双击 exe |
-| 把 Agent 推到成百上千台 DC 上 | `installer/` → 跑 build-msi.ps1 → 拿 .msi 走 GPO / SCCM |
+| 把 Agent 推到成百上千台 DC 上 | `installer/ADDashboardAgent.msi` 走 GPO / SCCM |
 
 ## system/ 初始化状态
 
@@ -44,15 +44,19 @@ publish/
 
 ## installer/ 用法
 
-需要本机装好：
+双击 `installer/ADDashboardAgent.msi` 启动安装向导。
 
-- .NET SDK 8.0+（`dotnet --version`）
-- WiX Toolset 5.0+（`wix --version`）
+静默安装（适合脚本 / GPO / SCCM）：
+
+```cmd
+msiexec /i installer\ADDashboardAgent.msi /qn
+```
+
+需要重新构建 MSI：
 
 ```powershell
 cd installer
 .\build-msi.ps1
-# 产物：installer\agent-installer\bin\Release\net8.0-windows\win-x64\ADDashboardAgent.msi
 ```
 
-或者 `build-msi.cmd`（cmd 镜像脚本）。
+需要本机装好：.NET 8 SDK + WiX Toolset 5.0+。
