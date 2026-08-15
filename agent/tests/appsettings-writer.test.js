@@ -56,7 +56,7 @@ test('returns {ok:false, error:parse-failed} when file is not JSON', () => {
   } finally { cleanup(); }
 });
 
-test('returns {ok:false, error:write-failed} when target dir is not writable', () => {
+test('returns {ok:false, error:write-failed} when target dir is not writable', { skip: process.platform === 'win32' }, () => {
   const { dir, cleanup } = freshDir();
   try {
     const p = join(dir, 'a.json');
@@ -65,8 +65,10 @@ test('returns {ok:false, error:write-failed} when target dir is not writable', (
     chmodSync(dir, 0o555);
     const r = writeCenterUrlAtomic({ path: p, newUrl: 'http://y:2' });
     assert.equal(r.ok, false);
-    // The error must be present (some Windows variants may not honor 0o555;
-    // we accept any failure marker that starts with `write-` or `rename-`).
+    // POSIX chmod bits don't propagate to Windows NTFS ACLs; Node.js on
+    // Win32 ignores chmodSync. The error-return path is verified by the
+    // other 4 tests; this one only validates on POSIX where the mechanism
+    // actually works.
     assert.ok(/^(write-|rename-)/.test(r.error || ''), `expected write-/rename- error, got ${r.error}`);
     // Restore permissions so cleanup() can remove the dir
     chmodSync(dir, 0o755);
