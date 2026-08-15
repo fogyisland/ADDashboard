@@ -1,70 +1,80 @@
 <template>
   <AdminLayout>
-    <h2>邮件配置 (SMTP / 告警)</h2>
-    <p class="page-desc">
-      配置中心告警邮件的 SMTP 服务器、信件内容、收件人,以及告警评估循环与重试策略。
-      全部通过 <code>PUT /api/admin/config</code> 与主配置走同一保存链路,审计日志可回滚。
-    </p>
-    <table class="t">
-      <thead><tr><th>键</th><th>值</th><th>说明</th></tr></thead>
-      <tbody>
-        <tr v-for="(v, k) in current" :key="k">
-          <td>
-            <div class="key-label">{{ labels[k] || k }}</div>
-            <code class="raw-key">{{ k }}</code>
-          </td>
-          <td>
-            <!--
-              smtp_password has its own row (no ConfigFieldRow): the value
-              T12-fix1 contract requires the input itself to stay empty while
-              the placeholder shows `********` so the operator can type a new
-              password to overwrite the existing one.
-            -->
-            <template v-if="k === 'smtp_password'">
-              <input
-                type="password"
-                :value="''"
-                :placeholder="passwordPlaceholder"
-                autocomplete="new-password"
-                class="has-password-mask"
-                @input="onInput(k, $event.target.value)"
-              />
-            </template>
-            <!--
-              smtp_secure is a boolean stored as the string 'true'/'false'.
-              Inlined because ConfigFieldRow uses @input/$event.target.value,
-              which doesn't work for a checkbox.
-            -->
-            <template v-else-if="k === 'smtp_secure'">
-              <label class="secure-toggle">
+    <header class="page-head">
+      <h2>邮件配置 (SMTP / 告警)</h2>
+      <p class="page-summary">SMTP 发送通道、发件人、收件人与告警评估策略。</p>
+    </header>
+
+    <section v-for="sec in SECTIONS" :key="sec.title" class="config-section">
+      <header class="section-head">
+        <h3>{{ sec.title }}</h3>
+        <span v-if="sectionDirtyCounts[sec.title] > 0" class="section-dirty">
+          本节 {{ sectionDirtyCounts[sec.title] }} 项未保存
+        </span>
+      </header>
+      <table class="t">
+        <tbody>
+          <tr v-for="row in sec.rows" :key="row.key">
+            <td>
+              <div class="key-label">{{ row.label }}</div>
+              <code class="raw-key">{{ row.key }}</code>
+            </td>
+            <td>
+              <!--
+                smtp_password has its own row (no ConfigFieldRow): the value
+                T12-fix1 contract requires the input itself to stay empty while
+                the placeholder shows `********` so the operator can type a new
+                password to overwrite the existing one.
+              -->
+              <template v-if="row.key === 'smtp_password'">
                 <input
-                  type="checkbox"
-                  :checked="String(current[k]) === 'true'"
-                  @change="onInput(k, $event.target.checked ? 'true' : 'false')"
+                  type="password"
+                  :value="''"
+                  :placeholder="passwordPlaceholder"
+                  autocomplete="new-password"
+                  class="has-password-mask"
+                  @input="onInput(row.key, $event.target.value)"
                 />
-                <span>{{ String(current[k]) === 'true' ? '启用' : '关闭' }}</span>
-              </label>
-            </template>
-            <ConfigFieldRow
-              v-else
-              :value="v"
-              :type="numericFields.includes(k) ? 'number' : 'text'"
-              @update:value="onInput(k, $event)"
-            />
-          </td>
-          <td>
-            <span class="desc-text">{{ descriptions[k] || '' }}</span>
-            <div v-if="k === 'smtp_from'" class="action-row">
-              <button class="token-action" :disabled="testing || !smtpReady" @click="openTestDialog">发送测试邮件</button>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-    <span v-if="dirty" class="dirty">⚠ 有未保存的修改</span>
-    <button class="save" @click="onSaveClick" :disabled="!dirty || saving || hasErrors">{{ saving ? '保存中...' : '保存' }}</button>
-    <button class="cancel" @click="onCancel" :disabled="!dirty || saving">取消修改</button>
-    <span v-if="topLevelMsg" class="msg">{{ topLevelMsg }}</span>
+              </template>
+              <!--
+                smtp_secure is a boolean stored as the string 'true'/'false'.
+                Inlined because ConfigFieldRow uses @input/$event.target.value,
+                which doesn't work for a checkbox.
+              -->
+              <template v-else-if="row.key === 'smtp_secure'">
+                <label class="secure-toggle">
+                  <input
+                    type="checkbox"
+                    :checked="String(current[row.key]) === 'true'"
+                    @change="onInput(row.key, $event.target.checked ? 'true' : 'false')"
+                  />
+                  <span>{{ String(current[row.key]) === 'true' ? '启用' : '关闭' }}</span>
+                </label>
+              </template>
+              <ConfigFieldRow
+                v-else
+                :value="current[row.key]"
+                :type="row.type"
+                @update:value="onInput(row.key, $event)"
+              />
+            </td>
+            <td>
+              <span class="desc-text">{{ row.description }}</span>
+              <div v-if="row.key === 'smtp_from'" class="action-row">
+                <button class="token-action" :disabled="testing || !smtpReady" @click="openTestDialog">发送测试邮件</button>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer class="save-bar">
+      <span v-if="dirty" class="dirty">⚠ 有未保存的修改</span>
+      <button class="save" @click="onSaveClick" :disabled="!dirty || saving || hasErrors">{{ saving ? '保存中...' : '保存' }}</button>
+      <button class="cancel" @click="onCancel" :disabled="!dirty || saving">取消修改</button>
+      <span v-if="topLevelMsg" class="msg">{{ topLevelMsg }}</span>
+    </footer>
 
     <div v-if="showTestDialog" class="modal-bg" @click.self="closeTestDialog">
       <div class="modal">
@@ -137,19 +147,38 @@ const EMAIL_KEYS = [
   'alert_eval_interval_seconds', 'alert_email_max_attempts', 'alert_email_initial_backoff_seconds'
 ];
 
-const descriptions = {
-  smtp_host: 'SMTP 服务器主机名或 IP,空表示未配置邮件告警。',
-  smtp_port: 'SMTP 端口,常用 25 / 465 / 587。',
-  smtp_secure: '是否使用 SSL/TLS (SMTPS),取决于服务器要求。',
-  smtp_user: 'SMTP 鉴权用户名,部分服务器可留空。',
-  smtp_password: 'SMTP 鉴权密码,保存后再次读取显示 `********`。',
-  smtp_from: '告警邮件发件人地址,需被 SMTP 服务器允许。',
-  alert_default_to: '告警默认收件人 (逗号分隔多个)。',
-  alert_default_cc: '告警默认抄送 (逗号分隔多个)。',
-  alert_eval_interval_seconds: '告警评估循环间隔 (秒)。',
-  alert_email_max_attempts: '告警邮件发送失败最大重试次数。',
-  alert_email_initial_backoff_seconds: '告警邮件重试初始退避 (秒),后续按指数翻倍。',
-};
+const SECTIONS = [
+  {
+    title: 'SMTP 服务',
+    rows: [
+      { key: 'smtp_host',     label: 'SMTP 主机',  description: 'SMTP 服务器主机名或 IP,空表示未配置邮件告警。',         type: 'text' },
+      { key: 'smtp_port',     label: 'SMTP 端口',  description: 'SMTP 端口,常用 25 / 465 / 587。',                        type: 'number' },
+      { key: 'smtp_secure',   label: 'SSL/TLS',    description: '是否使用 SSL/TLS (SMTPS),取决于服务器要求。',          type: 'text' },
+      { key: 'smtp_user',     label: 'SMTP 用户名',description: 'SMTP 鉴权用户名,部分服务器可留空。',                    type: 'text' },
+      { key: 'smtp_password', label: 'SMTP 密码',  description: 'SMTP 鉴权密码,保存后再次读取显示 `********`。',        type: 'text' },
+    ]
+  },
+  {
+    title: '发件人',
+    rows: [
+      { key: 'smtp_from', label: '发件人地址', description: '告警邮件发件人地址,需被 SMTP 服务器允许。', type: 'text' },
+    ]
+  },
+  {
+    title: '收件人与策略',
+    rows: [
+      { key: 'alert_default_to',                    label: '默认收件人', description: '告警默认收件人 (逗号分隔多个)。',          type: 'text' },
+      { key: 'alert_default_cc',                    label: '默认抄送',   description: '告警默认抄送 (逗号分隔多个)。',            type: 'text' },
+      { key: 'alert_eval_interval_seconds',         label: '评估间隔',   description: '告警评估循环间隔 (秒)。',                  type: 'number' },
+      { key: 'alert_email_max_attempts',            label: '最大重试次数', description: '告警邮件发送失败最大重试次数。',         type: 'number' },
+      { key: 'alert_email_initial_backoff_seconds', label: '初始退避',   description: '告警邮件重试初始退避 (秒),后续按指数翻倍。', type: 'number' },
+    ]
+  },
+];
+
+// Audit rows can reference keys that aren't in SECTIONS. The audit column
+// falls back to the raw key if no label is registered — keep this map
+// non-exhaustive on purpose.
 const labels = {
   smtp_host: 'SMTP 主机',
   smtp_port: 'SMTP 端口',
@@ -163,20 +192,25 @@ const labels = {
   alert_email_max_attempts: '最大重试次数',
   alert_email_initial_backoff_seconds: '初始退避',
 };
-const numericFields = [
-  'smtp_port',
-  'alert_eval_interval_seconds',
-  'alert_email_max_attempts',
-  'alert_email_initial_backoff_seconds'
-];
 
 const initial = ref({});
-const { current, dirty, markClean, reset } = useDirtyState({});
+const { current, snapshot, dirty, markClean, reset } = useDirtyState({});
 // SMTP keys don't have client-side validation rules (their constraints are
 // server-side: port range, email format, etc.). Keep the save button enabled
 // whenever the user has dirty edits — ConfigView's useConfigValidation
 // composable only knows the base keys and would mark everything invalid.
 const hasErrors = computed(() => false);
+
+// Per-section dirty count drives the "[本节 N 项未保存]" badge.
+const sectionDirtyCounts = computed(() => {
+  const map = {};
+  for (const sec of SECTIONS) {
+    map[sec.title] = sec.rows.filter(
+      (r) => String(current.value[r.key]) !== String(snapshot.value[r.key])
+    ).length;
+  }
+  return map;
+});
 
 const saving = ref(false);
 const topLevelMsg = ref('');
@@ -334,20 +368,46 @@ onMounted(load);
 </script>
 
 <style scoped>
-.page-desc { color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 720px; }
-.page-desc code { background: #0b1220; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
-.t { width: 100%; border-collapse: collapse; background: var(--panel); margin-bottom: 12px; }
-.t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; vertical-align: top; }
+.page-head { margin-bottom: 18px; }
+.page-head h2 { margin: 0 0 4px; }
+.page-summary { margin: 0; color: var(--muted); font-size: 13px; }
+
+.config-section { margin-bottom: 22px; }
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.section-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+.section-dirty { color: #d97706; font-size: 12px; }
+
+.t { width: 100%; border-collapse: collapse; background: var(--panel); }
+.t th, .t td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #1e293b; vertical-align: top; }
 .t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .desc-text { color: var(--muted); font-size: 12px; display: block; }
 .action-row { margin-top: 6px; display: flex; gap: 4px; align-items: center; }
 .secure-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .secure-toggle input[type=checkbox] { width: auto; }
+
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0;
+  margin-top: 8px;
+  background: var(--bg);
+  border-top: 1px solid #1e293b;
+}
 .dirty { color: #f59e0b; margin-right: 12px; }
 button.save, button.cancel { padding: 6px 14px; border: 1px solid #1e293b; background: var(--accent); color: #0b1220; border-radius: 3px; cursor: pointer; margin-right: 8px; }
 button.save:disabled, button.cancel:disabled { opacity: 0.5; cursor: not-allowed; }
 button.cancel { background: #0b1220; color: var(--text); }
 .msg { margin-left: 12px; color: var(--accent); }
+
 .audit { margin-top: 24px; }
 .audit h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
 .audit table { width: 100%; border-collapse: collapse; background: var(--panel); }
@@ -360,7 +420,7 @@ button.cancel { background: #0b1220; color: var(--text); }
 .token-action:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
 .token-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .key-label { font-weight: 600; color: var(--text); }
-.raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; font-style: italic; }
 .err { display: block; color: #ef4444; font-size: 12px; margin-top: 4px; }
 .has-password-mask { font-family: monospace; }
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }

@@ -212,9 +212,13 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   const w = mount(ConfigView);
   await flushPromises();
-  const tableScope = w.find('table.t');
-  const labels = tableScope.findAll('.key-label').map(el => el.text());
-  const rawKeys = tableScope.findAll('.raw-key').map(el => el.text());
+  // Sections split the rows across multiple <table class="t"> blocks (one
+  // per operational concern). Walk all of them to assemble the full
+  // label/raw-key pairing — `find('table.t')` would only see the first
+  // section and silently miss keys that live in later sections.
+  const tables = w.findAll('table.t');
+  const labels = tables.flatMap((t) => t.findAll('.key-label').map((el) => el.text()));
+  const rawKeys = tables.flatMap((t) => t.findAll('.raw-key').map((el) => el.text()));
   // Primary label is Chinese, raw key still visible for DB / API mapping
   expect(labels).toContain('采集周期');
   expect(labels).toContain('延迟阈值');
@@ -247,8 +251,9 @@ test('ConfigView does not render internal bookkeeping keys as rows', async () =>
   });
   const w = mount(ConfigView);
   await flushPromises();
-  const table = w.find('table.t');
-  const rawKeys = table.findAll('.raw-key').map((el) => el.text());
+  // Sections split rows across multiple <table class="t"> blocks —
+  // check all of them, not just the first.
+  const rawKeys = w.findAll('table.t .raw-key').map((el) => el.text());
   expect(rawKeys).not.toContain('center_listen_port_started_version');
   expect(rawKeys).not.toContain('restartRequired');
 });
@@ -277,8 +282,7 @@ test('ConfigView does not render email keys — they belong on /admin/email-conf
   });
   const w = mount(ConfigView);
   await flushPromises();
-  const table = w.find('table.t');
-  const rawKeys = table.findAll('.raw-key').map((el) => el.text());
+  const rawKeys = w.findAll('table.t .raw-key').map((el) => el.text());
   for (const k of [
     'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_password', 'smtp_from',
     'alert_default_to', 'alert_default_cc',
@@ -307,4 +311,90 @@ test('audit section: configKey column renders Chinese label as primary + raw key
   expect(rawKeys).toContain('polling_interval_minutes');
   expect(rawKeys).toContain('ad_agent_token');
   expect(labels.length).toBe(rawKeys.length);
+});
+
+// ----- T18: domain sections -----
+// Settings grouped by operational concern (采集节奏 / 告警阈值 / Agent 连接 /
+// 中心端口) instead of one flat key list. Sections are the structural unit:
+// each gets its own <h3> + table, and the page header is reduced to a single
+// muted line so it doesn't read like a marketing landing page.
+
+test('renders the four section titles in order', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const titles = w.findAll('.config-section .section-head h3').map((el) => el.text());
+  expect(titles).toEqual(['采集节奏', '告警阈值', 'Agent 连接', '中心端口']);
+});
+
+test('section-dirty indicator is hidden before any edit', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  expect(w.findAll('.section-dirty').length).toBe(0);
+});
+
+test('section-dirty indicator appears next to the affected section only', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  // 采集节奏: edit polling_interval_minutes (采集周期)
+  const rows = w.findAll('table.t tbody tr');
+  const pollingRow = rows.find((r) => r.text().includes('polling_interval_minutes'));
+  await pollingRow.find('input').setValue('7');
+  await flushPromises();
+  // The badge itself only shows the count + label, the section title is
+  // in the sibling <h3>. Walk up to .section-head to verify the pairing.
+  const dirtyHeads = w.findAll('.section-head').filter((h) => h.find('.section-dirty').exists());
+  expect(dirtyHeads.length).toBe(1);
+  expect(dirtyHeads[0].find('h3').text()).toBe('采集节奏');
+  expect(dirtyHeads[0].find('.section-dirty').text()).toContain('本节 1 项未保存');
+});
+
+test('section-dirty indicator accumulates within a section', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  // Edit two rows in 采集节奏 (polling + heartbeat)
+  const rows = w.findAll('table.t tbody tr');
+  await rows.find((r) => r.text().includes('polling_interval_minutes')).find('input').setValue('7');
+  await rows.find((r) => r.text().includes('heartbeat_interval_seconds')).find('input').setValue('15');
+  await flushPromises();
+  const dirtyBadges = w.findAll('.section-dirty').map((el) => el.text());
+  expect(dirtyBadges.length).toBe(1);
+  expect(dirtyBadges[0]).toContain('本节 2 项未保存');
+});
+
+test('section-dirty indicators vanish after a successful save', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  await rows.find((r) => r.text().includes('polling_interval_minutes')).find('input').setValue('7');
+  await flushPromises();
+  expect(w.findAll('.section-dirty').length).toBe(1);
+  await w.find('button.save').trigger('click');
+  await flushPromises();
+  expect(w.findAll('.section-dirty').length).toBe(0);
+});
+
+test('page header is a single muted summary line — no marketing chrome', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const head = w.find('.page-head');
+  expect(head.exists()).toBe(true);
+  const summary = w.find('.page-summary');
+  expect(summary.exists()).toBe(true);
+  // Summary must be plain prose, not a counted eyebrow / tagline stack.
+  expect(summary.text().length).toBeLessThan(60);
+  expect(summary.text().length).toBeGreaterThan(5);
+  expect(w.find('.eyebrow').exists()).toBe(false);
 });

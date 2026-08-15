@@ -207,3 +207,80 @@ test('audit row: smtp_password rollback button disabled with tooltip', async () 
   expect(hostBtn).toBeTruthy();
   expect(hostBtn.attributes('disabled')).toBeUndefined();
 });
+
+// ----- T18: domain sections -----
+// Settings grouped by operational concern (SMTP 服务 / 发件人 / 收件人与策略).
+// Page header is a single muted summary — not a paragraph block. No
+// marketing chrome (no eyebrow, no tagline stack).
+
+test('renders the three section titles in order', async () => {
+  adminApi.getConfig.mockResolvedValue({ data: FULL_CFG });
+  const w = mount(EmailConfigView);
+  await flushPromises();
+  const titles = w.findAll('.config-section .section-head h3').map((el) => el.text());
+  expect(titles).toEqual(['SMTP 服务', '发件人', '收件人与策略']);
+});
+
+test('section-dirty indicator is hidden before any edit', async () => {
+  adminApi.getConfig.mockResolvedValue({ data: FULL_CFG });
+  const w = mount(EmailConfigView);
+  await flushPromises();
+  expect(w.findAll('.section-dirty').length).toBe(0);
+});
+
+test('section-dirty indicator appears next to the affected section only', async () => {
+  adminApi.getConfig.mockResolvedValue({ data: FULL_CFG });
+  const w = mount(EmailConfigView);
+  await flushPromises();
+  // Edit smtp_host → 收件人与策略 should NOT be dirty, only SMTP 服务.
+  const hostRow = rowFor(w, 'smtp_host');
+  await hostRow.find('input').setValue('smtp2.example.com');
+  await flushPromises();
+  // The badge itself only shows the count + label, the section title is
+  // in the sibling <h3>. Walk up to .section-head to verify the pairing.
+  const dirtyHeads = w.findAll('.section-head').filter((h) => h.find('.section-dirty').exists());
+  expect(dirtyHeads.length).toBe(1);
+  expect(dirtyHeads[0].find('h3').text()).toBe('SMTP 服务');
+  expect(dirtyHeads[0].find('.section-dirty').text()).toContain('本节 1 项未保存');
+});
+
+test('section-dirty indicator accumulates within a section', async () => {
+  adminApi.getConfig.mockResolvedValue({ data: FULL_CFG });
+  const w = mount(EmailConfigView);
+  await flushPromises();
+  // Edit two SMTP 服务 rows (smtp_host + smtp_port).
+  await rowFor(w, 'smtp_host').find('input').setValue('smtp2.example.com');
+  await rowFor(w, 'smtp_port').find('input').setValue('465');
+  await flushPromises();
+  const dirtyBadges = w.findAll('.section-dirty').map((el) => el.text());
+  expect(dirtyBadges.length).toBe(1);
+  expect(dirtyBadges[0]).toContain('本节 2 项未保存');
+});
+
+test('section-dirty indicators vanish after a successful save', async () => {
+  adminApi.getConfig.mockResolvedValue({ data: FULL_CFG });
+  adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
+  const w = mount(EmailConfigView);
+  await flushPromises();
+  await rowFor(w, 'smtp_host').find('input').setValue('smtp2.example.com');
+  await flushPromises();
+  expect(w.findAll('.section-dirty').length).toBe(1);
+  await w.find('button.save').trigger('click');
+  await flushPromises();
+  expect(w.findAll('.section-dirty').length).toBe(0);
+});
+
+test('page header is a single muted summary line — no marketing chrome', async () => {
+  adminApi.getConfig.mockResolvedValue({ data: FULL_CFG });
+  const w = mount(EmailConfigView);
+  await flushPromises();
+  const head = w.find('.page-head');
+  expect(head.exists()).toBe(true);
+  const summary = w.find('.page-summary');
+  expect(summary.exists()).toBe(true);
+  // Old page had a 3-line .page-desc paragraph — that must NOT come back.
+  expect(w.find('.page-desc').exists()).toBe(false);
+  expect(summary.text().length).toBeLessThan(60);
+  expect(summary.text().length).toBeGreaterThan(5);
+  expect(w.find('.eyebrow').exists()).toBe(false);
+});
