@@ -71,7 +71,7 @@ cd ADDashboard
 
 1. 校验 Node.js 可达
 2. **自动下载 NSSM 2.24**（如果 `<repo>/nssm/nssm.exe` 不存在）到项目本地
-3. `npm run build:frontend`（仅当 `frontend/dist/index.html` 不存在时）
+3. `npm run build:frontend`（仅当 `frontend/dist/index.html` 不存在时）— 从**项目根**调用（npm workspaces 把 vite hoist 到根 `node_modules/.bin/`；`cd frontend && npm run build` 找不到 vite）
 4. 拷贝 `center/` + `frontend/dist/` → `C:\addashboard\Center\`
 5. `npm install --omit=dev` 安装 center 的运行时依赖
 6. 用 NSSM 注册 `ADDashboardCenter` 服务（启动类型=自动）
@@ -486,6 +486,7 @@ npm start
 | `Agent 心跳正常但无数据` | 验证 `Test-NetConnection center -Port 8080`；检查 DC 上 appsettings.json 的 `agentToken` 是否与 center 的 `system_config.ad_agent_token` 一致 |
 | `前端 502 Bad Gateway` | center 进程退出，查 stderr log；常见 OOM（`Get-Process | Sort WorkingSet` 查 top 5） |
 | `install-center.ps1 报 'nssm.exe not found'` | 检查 `<repo>/publish/nssm/nssm.exe` 是否存在（被 .gitignore 排除的情况：需 `git checkout HEAD -- publish/` 或手动 `Ensure-Nssm.ps1`） |
+| `'vite' 不是内部或外部命令 / 'vite' is not recognized` | 在 `frontend/` 手动跑 `npm run build` 找不到 vite — npm workspaces 把 vite **hoist 到项目根 `node_modules/.bin/`**，不会落到 `frontend/node_modules/.bin/`。<br/>**正确做法**：跑 `install-center.ps1`（自动 install + build），或回到项目根跑 `npm install` 后用 `npm run build:frontend`。**不要** `cd frontend && npm run build`。<br/>install-center.ps1 自带 Guard 2（v2.1+）会在 build 前双向检查 `<root>/node_modules/.bin/vite.cmd` 和 `frontend/node_modules/.bin/vite.cmd`，缺哪个都直接报中文+英文双语错误并 exit 1 |
 | `首次启动没出现 /init` | 检查 `.env` 是否已被错误写入 `ADDASHBOARD_INITIALIZED=1`；清掉后重启 |
 
 更多故障模式参见 [`troubleshooting.md`](troubleshooting.md)。
