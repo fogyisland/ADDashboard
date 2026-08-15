@@ -28,6 +28,29 @@ Write-Step "install-center: $InstallPath (deployment only — wizard handles app
 # 0. Ensure NSSM is available locally (downloads to <projectRoot>/nssm/ on first run)
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
+# 0a. Install center + frontend workspace deps at projectRoot if either's
+#     node_modules is missing. The init-state bundle ships without
+#     package-lock.json (so first run resolves fresh); without this,
+#     `npm run build:frontend` later would fail because vite isn't in
+#     frontend/node_modules/.bin yet. Idempotent: exits fast when both are
+#     already populated. Agent deps installed by install-agent.ps1 only.
+#     Two-step: center with --omit=dev (prod only); frontend WITH devDeps so
+#     vite gets installed (build step needs it).
+$centerNm = Join-Path $projectRoot 'center\node_modules'
+$frontendNm = Join-Path $projectRoot 'frontend\node_modules'
+if (-not (Test-Path $centerNm)) {
+  Write-Info "installing center deps (npm install --workspace=center --include-workspace-root --omit=dev)"
+  Push-Location $projectRoot
+  try { npm install --workspace=center --include-workspace-root --omit=dev --no-audit --no-fund }
+  finally { Pop-Location }
+}
+if (-not (Test-Path $frontendNm)) {
+  Write-Info "installing frontend deps (npm install --workspace=frontend --include-workspace-root --no-audit --no-fund)"
+  Push-Location $projectRoot
+  try { npm install --workspace=frontend --include-workspace-root --no-audit --no-fund }
+  finally { Pop-Location }
+}
+
 # Idempotent node_modules install: hash-checked against package.json+package-lock.json.
 # Reinstalls when the source deps change (added/removed/upgraded) or node_modules is missing.
 # Writes the new hash to <InstallPath>\.install-hash after a successful install.
@@ -112,8 +135,10 @@ if (-not $InPlace) {
   $distPath = Join-Path $InstallPath 'dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
     Write-Step "building frontend (in-place)"
-    Push-Location (Join-Path $projectRoot 'frontend')
-    try { npm run build } finally { Pop-Location }
+    # Workspace deps installed at step 0a; just run the build from projectRoot
+    # so npm's workspace context resolves correctly.
+    Push-Location $projectRoot
+    try { npm run build:frontend } finally { Pop-Location }
     if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
     New-Item -ItemType Directory -Path $distPath -Force | Out-Null
     Copy-Item -Path (Join-Path $projectRoot 'frontend\dist\*') -Destination $distPath -Recurse -Force
