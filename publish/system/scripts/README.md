@@ -7,7 +7,7 @@
 ## Center（中心服务）
 
 ```powershell
-# 安装 center 服务（默认路径 C:\addashboard\Center\）
+# 安装 center 服务（默认安装到脚本所在的父目录的 Center\ 子目录，如 publish 镜像默认 <publish-root>\Center）
 .\install-center.ps1
 
 # 自定义端口 / 路径

@@ -19,10 +19,11 @@ Describe 'update-center.ps1' {
     $paramNames | Should -Contain 'RebuildFrontend'
   }
 
-  It 'has a default for InstallPath of C:\addashboard\Center' {
+  It 'has a script-relative default for InstallPath (Join-Path $PSScriptRoot/../Center)' {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
     $installPathParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'InstallPath' }
     $defaultValue = $installPathParam.DefaultValue.Extent.Text
-    $defaultValue | Should -Match 'C:\\addashboard\\Center'
+    $defaultValue | Should -Match "Join-Path.*Center"
+    $defaultValue | Should -Not -Match 'C:\\addashboard'
   }
 }

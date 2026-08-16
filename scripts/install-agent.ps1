@@ -13,7 +13,7 @@ param(
   # who omit the param keep the pre-T16 behavior.
   [ValidateSet('ad','non-ad')]
   [string]$AgentType = 'ad',
-  [string]$InstallPath = 'C:\addashboard\Agent',
+  [string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'),
   # Internal-use parameters for remote-install forwarding. When the script runs
   # in a remote session, $PSScriptRoot is null; we pre-resolve and pass these
   # explicitly so the scriptblock always knows where to copy from.
@@ -43,12 +43,14 @@ Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
 # Ensure NSSM is available locally (no-op when remote — only used on the orchestrator)
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
-# Set log directory inside the NSSM module's own $Script: scope — module
+# Set log directory inside the NSSM/Logger modules' own $Script: scope — module
 # functions can't see the caller's $Script:LogDir, so we have to push the
-# value across explicitly via the module's setter.
-$Script:LogDir = 'C:\addashboard\Logs'
+# value across explicitly via the modules' setters. Co-located under the
+# install dir so uninstall/upgrade scripts find it without an extra path arg.
+$Script:LogDir = Join-Path $InstallPath 'Logs'
 if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
 Set-NssmLogDir $Script:LogDir
+Set-LogDir $Script:LogDir
 
 if (-not $AgentSrc) { $AgentSrc = Join-Path $projectRoot 'agent' }
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
@@ -57,7 +59,7 @@ $node = (Get-Command node.exe -ErrorAction Stop).Source
 
 function Install-LocalAgent {
   Write-Step "installing local agent to $InstallPath (agentType=$AgentType)"
-  @($InstallPath, $psScriptDstDir, 'C:\addashboard\Logs', 'C:\addashboard\Agent') | ForEach-Object {
+  @($InstallPath, $psScriptDstDir, $Script:LogDir) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
   Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
@@ -72,7 +74,7 @@ function Install-LocalAgent {
     agentToken = $AgentToken
     logLevel = 'info'
     pollingIntervalMinutes = 15
-    queueDbPath = 'C:\addashboard\Agent\queue.db'
+    queueDbPath = (Join-Path $InstallPath 'queue.db')
     psScriptPath = "$InstallPath\scripts\collect-replication.ps1"
     healthCheckIntervalMs = 600000
     # T16: persist agentType so the running process picks it up on next

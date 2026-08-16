@@ -29,7 +29,7 @@ Describe 'install-center -InPlace switch' {
 
   It 'overrides InstallPath when -InPlace is set' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
-    # When InPlace is set, InstallPath must resolve to <projectRoot>\center, not C:\addashboard\Center.
+    # When InPlace is set, InstallPath must resolve to <projectRoot>\center (script-relative).
     # Match the branch: if -not $InPlace use param default; else override.
     $content | Should -Match 'if\s*\(\s*\$InPlace\s*\)\s*\{'
     $content | Should -Match '\$projectRoot.{0,5}''center'''
@@ -122,8 +122,8 @@ Describe 'install-center service recovery' {
     # own the state via Set-NssmLogDir, and every install script must call it.
     $nssmPath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'NSSM.psm1'
     $nssmContent = Get-Content $nssmPath -Raw
-    $nssmContent | Should -Match '\$Script:LogDir\s*=.*addashboard.*Logs' `
-      'NSSM.psm1 must seed its own $Script:LogDir at module load.'
+    $nssmContent | Should -Match '\$Script:LogDir\s*=.*Split-Path.*''Logs''' `
+      'NSSM.psm1 must seed its own $Script:LogDir at module load (script-relative default).'
     $nssmContent | Should -Match 'function Set-NssmLogDir' `
       'NSSM.psm1 must export a Set-NssmLogDir setter for callers to push updates.'
     $nssmContent | Should -Not -Match 'requires Logger.psm1' `

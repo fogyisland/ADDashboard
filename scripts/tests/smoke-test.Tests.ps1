@@ -29,10 +29,13 @@ Describe 'smoke-test.ps1' {
 }
 
 Describe 'smoke-test.ps1 in-place + recovery probes' {
-  It 'probes Test-Path on C:\addashboard\Center (in-place guard)' {
+  It 'probes Test-Path on publish-root/Center (in-place guard, script-relative path)' {
     $content = Get-Content $scriptPath -Raw
     $content | Should -Match 'Test-Path'
-    $content | Should -Match 'C:\\addashboard\\Center'
+    # Must use the script-relative form (Join-Path $PSScriptRoot/.. + 'Center')
+    # — never a hardcoded C:\addashboard\Center path.
+    $content | Should -Match "Join-Path.*PSScriptRoot"
+    $content | Should -Not -Match 'C:\\addashboard\\Center'
   }
 
   It 'probes nssm AppExit (Default Restart) and AppRestartDelay=2000' {

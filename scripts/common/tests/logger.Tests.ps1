@@ -1,8 +1,10 @@
 BeforeAll {
   Import-Module "$PSScriptRoot/../Logger.psm1" -Force
-  # Logger writes to C:\addashboard\Logs\install.log on import.
-  # We just verify the last line(s) in that file after each call.
-  $logDir = 'C:\addashboard\Logs'
+  # Logger.psm1's default $Script:LogDir resolves relative to the module's own
+  # $PSScriptRoot (scripts/common/), going up 2 levels to the repo root. From
+  # the test's location (scripts/common/tests/) we need to go up 3 levels to
+  # reach the same repo root and find install.log.
+  $logDir = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent | Join-Path -ChildPath 'Logs'
   $script:LogFile = Join-Path $logDir 'install.log'
   if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 }
