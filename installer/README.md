@@ -59,6 +59,14 @@ installer\agent-installer\bin\x64\Release\zh-CN\addashboard-agent-x64-1.0.0.0.ms
 
 构建完成后 `build-msi.ps1` 自动把 MSI 拷到 `publish/installer/ADDashboardAgent.msi`（publish 包唯一对外交付的产物）。
 
+> ⚠️ **改源后必须本地 rebuild**。本仓库**不**自动 rebuild MSI — 编辑 `installer/agent-installer/`（`.wxs` / `.cs` / `appsettings.template.json` 等）后,`publish/installer/ADDashboardAgent.msi` 仍是上次 build 的旧版。Operator 拿到旧 MSI 装会装到旧行为(Launch message、旧 CA 逻辑等)。commit 前必须跑 `build-msi.ps1` 一次,把新 MSI 一起 commit。
+>
+> Pre-commit checklist:
+> ```bash
+> git diff --stat installer/ publish/installer/ADDashboardAgent.msi
+> ```
+> installer/ 有改动但 MSI 没动 → 先 build 再 commit。
+
 ## 目录结构
 
 ```
