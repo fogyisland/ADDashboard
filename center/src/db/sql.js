@@ -332,7 +332,7 @@ const VARIANTS = {
       lastHeartbeat: 'SELECT TOP 1 last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC'
     },
     replication: {
-      upsertStatus: `MERGE INTO ad_replication_status AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at, agent_id = s.agent_id, source_site = s.source_site, dest_site = s.dest_site, last_success_time = s.last_success_time, last_attempt_time = s.last_attempt_time, status_code = s.status_code, error_message = s.error_message, users_count = s.users_count, groups_count = s.groups_count, gpos_count = s.gpos_count, locked_count = s.locked_count WHEN NOT MATCHED THEN INSERT (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count)`,
+      upsertStatus: `MERGE INTO ad_replication_status AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at, agent_id = s.agent_id, source_site = s.source_site, dest_site = s.dest_site, last_success_time = s.last_success_time, last_attempt_time = s.last_attempt_time, status_code = s.status_code, error_message = s.error_message, users_count = s.users_count, groups_count = s.groups_count, gpos_count = s.gpos_count, locked_count = s.locked_count WHEN NOT MATCHED THEN INSERT (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count);`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
       listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
@@ -340,7 +340,7 @@ const VARIANTS = {
       partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN DATEADD(MINUTE, -?, ?) AND DATEADD(MINUTE, ?, ?)`
     },
     discovery: {
-      upsertDc: `MERGE INTO ad_dcs AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) ON t.dc_name = s.dc_name WHEN MATCHED THEN UPDATE SET site_hint = s.site_hint, os_version = s.os_version, when_created = s.when_created, is_pdc = s.is_pdc, is_gc = s.is_gc, is_rid_master = s.is_rid_master, is_schema_master = s.is_schema_master, is_domain_naming_master = s.is_domain_naming_master, is_infrastructure_master = s.is_infrastructure_master, discovered_at = SYSUTCDATETIME(), discovered_by_agent_id = s.discovered_by_agent_id WHEN NOT MATCHED THEN INSERT (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (s.dc_name, s.site_hint, s.os_version, s.when_created, s.is_pdc, s.is_gc, s.is_rid_master, s.is_schema_master, s.is_domain_naming_master, s.is_infrastructure_master, s.discovered_at, s.discovered_by_agent_id)`
+      upsertDc: `MERGE INTO ad_dcs AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) ON t.dc_name = s.dc_name WHEN MATCHED THEN UPDATE SET site_hint = s.site_hint, os_version = s.os_version, when_created = s.when_created, is_pdc = s.is_pdc, is_gc = s.is_gc, is_rid_master = s.is_rid_master, is_schema_master = s.is_schema_master, is_domain_naming_master = s.is_domain_naming_master, is_infrastructure_master = s.is_infrastructure_master, discovered_at = SYSUTCDATETIME(), discovered_by_agent_id = s.discovered_by_agent_id WHEN NOT MATCHED THEN INSERT (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (s.dc_name, s.site_hint, s.os_version, s.when_created, s.is_pdc, s.is_gc, s.is_rid_master, s.is_schema_master, s.is_domain_naming_master, s.is_infrastructure_master, s.discovered_at, s.discovered_by_agent_id);`
     },
     users: {
       findByUsername: `SELECT TOP 1 u.id, u.username, u.password_hash, u.role_id, u.status, r.role_name, STRING_AGG(rp.permission, ',') AS permissions FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id LEFT JOIN role_permissions rp ON rp.role_id = r.id WHERE u.username = ? GROUP BY u.id, u.username, u.password_hash, u.role_id, u.status, r.role_name`,
@@ -358,8 +358,8 @@ const VARIANTS = {
     },
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
-      upsert: `MERGE INTO system_config AS t USING (SELECT ? AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value)`,
-      setAgentToken: `MERGE INTO system_config AS t USING (SELECT 'agent_token' AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value)`,
+      upsert: `MERGE INTO system_config AS t USING (SELECT ? AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`,
+      setAgentToken: `MERGE INTO system_config AS t USING (SELECT 'agent_token' AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`,
       audit: {
         write: 'INSERT INTO sys_config_audit (config_key, old_value, new_value, changed_by, change_type) VALUES (?, ?, ?, ?, ?)',
         list: `SELECT TOP 20 a.id, a.config_key, a.old_value, a.new_value, a.changed_by, a.change_type, a.changed_at, u.username AS changed_by_username FROM sys_config_audit a LEFT JOIN sys_users u ON a.changed_by = u.id ORDER BY a.changed_at DESC, a.id DESC`,
@@ -412,7 +412,7 @@ const VARIANTS = {
       refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
     },
     heartbeat: {
-      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size)`,
+      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size);`,
       agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
              FROM ad_agent_heartbeat h
              ORDER BY h.agent_id`,
@@ -490,7 +490,7 @@ const VARIANTS = {
           (name, version, type, manifest_json, enabled, params_json, installed_at, updated_at, source)
           VALUES
           (s.name, s.version, s.type, s.manifest_json, s.enabled, s.params_json,
-           s.installed_at, s.updated_at, s.source)`,
+           s.installed_at, s.updated_at, s.source);`,
       list: `SELECT * FROM installed_packages ORDER BY name`,
       listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
       get: `SELECT * FROM installed_packages WHERE name = ?`,
@@ -505,7 +505,7 @@ const VARIANTS = {
           last_seen_at = s.last_seen_at,
           note = s.note
         WHEN NOT MATCHED THEN INSERT (name, last_seen_at, note)
-          VALUES (s.name, s.last_seen_at, s.note)`,
+          VALUES (s.name, s.last_seen_at, s.note);`,
       list: `SELECT * FROM orphan_schemas ORDER BY last_seen_at DESC`,
       delete: `DELETE FROM orphan_schemas WHERE name = ?`
     },
@@ -524,7 +524,7 @@ const VARIANTS = {
           threshold_crit = s.threshold_crit
         WHEN NOT MATCHED THEN INSERT
           (agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit)
-          VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.unit, s.threshold_warn, s.threshold_crit)`,
+          VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.unit, s.threshold_warn, s.threshold_crit);`,
       listByAgent: (metricIdPlaceholder) =>
         metricIdPlaceholder
           ? `SELECT * FROM metric_gauge WHERE agent_id = ? AND metric_id = ?`
@@ -543,7 +543,7 @@ const VARIANTS = {
           unit = s.unit
         WHEN NOT MATCHED THEN INSERT
           (agent_id, metric_id, ts, value, delta, unit)
-          VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.delta, s.unit)`,
+          VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.delta, s.unit);`,
       listByAgent: (metricIdPlaceholder) =>
         metricIdPlaceholder
           ? `SELECT * FROM metric_counter WHERE agent_id = ? AND metric_id = ?`
@@ -572,7 +572,7 @@ const VARIANTS = {
           message = s.message
         WHEN NOT MATCHED THEN INSERT
           (agent_id, metric_id, ts, status, message)
-          VALUES (s.agent_id, s.metric_id, s.ts, s.status, s.message)`,
+          VALUES (s.agent_id, s.metric_id, s.ts, s.status, s.message);`,
       listByAgent: (metricIdPlaceholder) =>
         metricIdPlaceholder
           ? `SELECT * FROM metric_status WHERE agent_id = ? AND metric_id = ?`
@@ -648,7 +648,7 @@ const VARIANTS = {
            last_up_at = s.last_up_at,
            consecutive_failures = s.consecutive_failures
          WHEN NOT MATCHED THEN INSERT (port_role, status, latency_ms, last_probe_at, last_up_at, consecutive_failures)
-           VALUES (s.port_role, s.status, s.latency_ms, s.last_probe_at, s.last_up_at, s.consecutive_failures)`
+           VALUES (s.port_role, s.status, s.latency_ms, s.last_probe_at, s.last_up_at, s.consecutive_failures);`
     },
     // Existence probes for migration verify markers. Returns one row when the
     // artifact exists, zero rows when it doesn't. INFORMATION_SCHEMA views are

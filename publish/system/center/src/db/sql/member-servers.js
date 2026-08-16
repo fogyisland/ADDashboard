@@ -43,7 +43,7 @@ const UPSERT_MSSQL = `MERGE INTO ad_member_servers AS t
   WHEN NOT MATCHED THEN INSERT
     (hostname, site_id, ip_address, os_version, agent_type, enabled, discovered_via)
     VALUES
-    (s.hostname, s.site_id, s.ip_address, s.os_version, s.agent_type, s.enabled, s.discovered_via)`;
+    (s.hostname, s.site_id, s.ip_address, s.os_version, s.agent_type, s.enabled, s.discovered_via);`;
 
 const FIND_BY_HOSTNAME_MYSQL = `SELECT * FROM ad_member_servers WHERE hostname = ?`;
 const FIND_BY_HOSTNAME_MSSQL = `SELECT * FROM ad_member_servers WHERE hostname = ?`;

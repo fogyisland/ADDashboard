@@ -43,7 +43,7 @@ const UPSERT_MSSQL = `MERGE INTO installed_packages AS t
     (name, version, type, manifest_json, enabled, params_json, installed_at, updated_at, source)
     VALUES
     (s.name, s.version, s.type, s.manifest_json, s.enabled, s.params_json,
-     s.installed_at, s.updated_at, s.source)`;
+     s.installed_at, s.updated_at, s.source);`;
 
 const LIST_MYSQL = (enabledOnly) =>
   enabledOnly

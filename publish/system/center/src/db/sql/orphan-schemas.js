@@ -29,7 +29,7 @@ const UPSERT_MSSQL = `MERGE INTO orphan_schemas AS t
     last_seen_at = s.last_seen_at,
     note = s.note
   WHEN NOT MATCHED THEN INSERT (name, last_seen_at, note)
-    VALUES (s.name, s.last_seen_at, s.note)`;
+    VALUES (s.name, s.last_seen_at, s.note);`;
 
 // Sort by recency — admin wants the freshest failures first.
 const LIST_MYSQL = `SELECT * FROM orphan_schemas ORDER BY last_seen_at DESC`;

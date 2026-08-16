@@ -94,7 +94,7 @@ export const serverGroups = {
     addMember: `MERGE INTO ad_server_group_members AS t
       USING (SELECT ? AS group_id, ? AS hostname) AS s
       ON t.group_id = s.group_id AND t.hostname = s.hostname
-      WHEN NOT MATCHED THEN INSERT (group_id, hostname) VALUES (s.group_id, s.hostname)`,
+      WHEN NOT MATCHED THEN INSERT (group_id, hostname) VALUES (s.group_id, s.hostname);`,
     removeMember: `DELETE FROM ad_server_group_members WHERE group_id = ? AND hostname = ?`,
     listMembers: `SELECT m.group_id, m.hostname, m.created_at, s.site_name
                   FROM ad_server_group_members m
@@ -113,7 +113,7 @@ export const serverGroups = {
       USING (SELECT ? AS hostname, ? AS package_name, ? AS enabled) AS s
       ON t.hostname = s.hostname AND t.package_name = s.package_name
       WHEN MATCHED THEN UPDATE SET enabled = s.enabled
-      WHEN NOT MATCHED THEN INSERT (hostname, package_name, enabled) VALUES (s.hostname, s.package_name, s.enabled)`,
+      WHEN NOT MATCHED THEN INSERT (hostname, package_name, enabled) VALUES (s.hostname, s.package_name, s.enabled);`,
     removePackage: `DELETE FROM ad_member_server_packages WHERE hostname = ? AND package_name = ?`,
     listPackagesForHost: `SELECT msp.hostname, msp.package_name, msp.enabled,
                                  msp.installed_at, msp.last_run_at,

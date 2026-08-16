@@ -34,7 +34,7 @@ const GAUGE_UPSERT_MSSQL = `MERGE INTO metric_gauge AS t
     threshold_crit = s.threshold_crit
   WHEN NOT MATCHED THEN INSERT
     (agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit)
-    VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.unit, s.threshold_warn, s.threshold_crit)`;
+    VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.unit, s.threshold_warn, s.threshold_crit);`;
 
 const GAUGE_LIST_MYSQL = (metricId) =>
   metricId
@@ -67,7 +67,7 @@ const COUNTER_UPSERT_MSSQL = `MERGE INTO metric_counter AS t
     unit = s.unit
   WHEN NOT MATCHED THEN INSERT
     (agent_id, metric_id, ts, value, delta, unit)
-    VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.delta, s.unit)`;
+    VALUES (s.agent_id, s.metric_id, s.ts, s.value, s.delta, s.unit);`;
 
 const COUNTER_LIST_MYSQL = (metricId) =>
   metricId
@@ -118,7 +118,7 @@ const STATUS_UPSERT_MSSQL = `MERGE INTO metric_status AS t
     message = s.message
   WHEN NOT MATCHED THEN INSERT
     (agent_id, metric_id, ts, status, message)
-    VALUES (s.agent_id, s.metric_id, s.ts, s.status, s.message)`;
+    VALUES (s.agent_id, s.metric_id, s.ts, s.status, s.message);`;
 
 const STATUS_LIST_MYSQL = (metricId) =>
   metricId

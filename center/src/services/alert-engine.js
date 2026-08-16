@@ -206,7 +206,7 @@ const STATE_UPSERT_MSSQL = `MERGE INTO alert_rule_state AS t
                             WHEN NOT MATCHED THEN INSERT
                               (rule_id, state, first_hit_at, last_evaluated_at, last_fired_at, last_recovered_at, suppressed_until)
                             VALUES
-                              (s.rule_id, s.state, s.first_hit_at, SYSUTCDATETIME(), s.last_fired_at, s.last_recovered_at, s.suppressed_until)`;
+                              (s.rule_id, s.state, s.first_hit_at, SYSUTCDATETIME(), s.last_fired_at, s.last_recovered_at, s.suppressed_until);`;
 
 // inFlight guard pattern (matches createProbeLoop at probe.js:111):
 //   - setInterval callback captures the in-flight tick via `inFlight = tick().catch(...)`.

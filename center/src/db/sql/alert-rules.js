@@ -101,7 +101,7 @@ export const alertRules = {
                   WHEN NOT MATCHED THEN INSERT
                     (rule_id, state, first_hit_at, last_evaluated_at, last_fired_at, last_recovered_at, suppressed_until)
                     VALUES
-                    (s.rule_id, s.state, s.first_hit_at, SYSUTCDATETIME(), s.last_fired_at, s.last_recovered_at, s.suppressed_until)`,
+                    (s.rule_id, s.state, s.first_hit_at, SYSUTCDATETIME(), s.last_fired_at, s.last_recovered_at, s.suppressed_until);`,
     getState: `SELECT rule_id, state, first_hit_at, last_evaluated_at, last_fired_at, last_recovered_at, suppressed_until
                FROM alert_rule_state WHERE rule_id = ?`,
     listStatesForEval: `SELECT s.rule_id, s.state, s.first_hit_at, s.last_evaluated_at, s.last_fired_at, s.last_recovered_at, s.suppressed_until,
