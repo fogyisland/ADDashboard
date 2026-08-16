@@ -18,6 +18,18 @@ msiexec /i ADDashboardAgent.msi /qn
 msiexec /i ADDashboardAgent.msi /qn /l*v install.log
 ```
 
+### 自定义安装路径
+
+默认装到 `C:\addashboard\Agent`。要装到其他路径，在 `msiexec` 命令行加 `INSTALLDIR=`：
+
+```cmd
+msiexec /i ADDashboardAgent.msi /qn INSTALLDIR="D:\Dashboard\Agent"
+```
+
+日志路径自动跟随 INSTALLDIR：装到 `D:\Dashboard\Agent` 时日志落到 `D:\Dashboard\Logs\`，跟 PS1 installer (`<InstallPath>\Logs`) 行为一致。带空格的路径也支持（如 `C:\Program Files\ADDashboard\Agent`），但需用英文双引号包住。
+
+不传 `INSTALLDIR=` 时保持向后兼容（v1.0.0 升级路径不变，MajorUpgrade 原地升级）。
+
 ## 重新构建
 
 源码 + 构建脚本：
@@ -82,5 +94,5 @@ MSI 安装的 Agent 数据在目标机器上：
 |---|---|
 | Agent 程序文件 | `C:\Program Files\ADDashboard\Agent\` |
 | `appsettings.json` | `C:\Program Files\ADDashboard\Agent\appsettings.json` |
-| Agent 日志 | `C:\addashboard\Logs\ADDashboardAgent-{stdout,stderr}.log` |
+| Agent 日志 | `<INSTALLDIR>\..\Logs\ADReplicationAgent-{stdout,stderr}.log`（默认 `C:\addashboard\Logs`） |
 | 服务名 | `ADDashboardAgent`（NSSM 管理） |
