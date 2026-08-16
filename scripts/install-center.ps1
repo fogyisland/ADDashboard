@@ -104,6 +104,14 @@ if (-not $InPlace) {
   $distPath = Join-Path $projectRoot 'frontend\dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
     Write-Step "building frontend"
+    # Fresh publish bundle has no <publish-root>/node_modules. Install at root so
+    # vite is hoisted via workspaces; `npm run build:frontend` delegates to the
+    # frontend workspace. Dev installs always have root node_modules — no-op.
+    if (-not (Test-Path (Join-Path $projectRoot 'node_modules'))) {
+      Write-Step "installing root workspaces (vite missing)"
+      Push-Location $projectRoot
+      try { npm install } finally { Pop-Location }
+    }
     Push-Location $projectRoot
     try { npm run build:frontend } finally { Pop-Location }
   }
@@ -120,6 +128,14 @@ if (-not $InPlace) {
   $distPath = Join-Path $InstallPath 'dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
     Write-Step "building frontend (in-place)"
+    # Fresh publish bundle has no frontend/node_modules. Install in frontend/
+    # so vite is locally available; `npm run build` runs `vite build` from here.
+    # Dev installs always have frontend/node_modules — no-op.
+    if (-not (Test-Path (Join-Path $projectRoot 'frontend\node_modules'))) {
+      Write-Step "installing frontend node_modules (vite missing)"
+      Push-Location (Join-Path $projectRoot 'frontend')
+      try { npm install } finally { Pop-Location }
+    }
     Push-Location (Join-Path $projectRoot 'frontend')
     try { npm run build } finally { Pop-Location }
     if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }

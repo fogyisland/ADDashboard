@@ -42,6 +42,66 @@ Describe 'install-center -InPlace switch' {
   }
 }
 
+Describe 'install-center frontend build dependencies (fresh publish bundle)' {
+  # Bug fixed 2026-08-16: in-place branch ran `npm run build` from frontend/ but
+  # fresh publish bundle has no frontend/node_modules → `vite build` failed with
+  # "'vite' 不是内部或外部命令". Non-in-place branch had the same gap (relied on
+  # root node_modules existing; fresh publish bundle doesn't have one). Guard:
+  # both branches must check node_modules and install before running the build.
+  BeforeAll {
+    $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
+    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'install-center.ps1'
+    $script:srcContent = Get-Content $script:installCenterPath -Raw
+    $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
+  }
+
+  It 'in-place branch installs frontend/node_modules before npm run build' {
+    # `npm run build` runs `vite build`, which needs the vite binary. Fresh
+    # publish bundle has no frontend/node_modules, so the install must happen
+    # before the build is attempted.
+    $script:srcContent | Should -Match 'installing frontend node_modules' `
+      'in-place branch must log "installing frontend node_modules" when missing.'
+    # The install guard must appear BEFORE the actual `npm run build` invocation
+    # in the in-place branch. Match the command line specifically (`try { npm
+    # run build }`) so the comments above the call don't false-match.
+    $buildIdx = $script:srcContent.IndexOf('try { npm run build }')
+    $installIdx = $script:srcContent.IndexOf('installing frontend node_modules')
+    $buildIdx | Should -BeGreaterThan -1 'in-place build command line must exist'
+    $installIdx | Should -BeGreaterThan -1 'frontend install guard must exist'
+    $installIdx | Should -BeLessThan $buildIdx `
+      'frontend install guard must appear BEFORE `npm run build` so vite is available.'
+    # Guard checks the correct directory.
+    $script:srcContent | Should -Match 'frontend\\node_modules' `
+      'install guard must check frontend\node_modules.'
+  }
+
+  It 'non-in-place branch installs root node_modules before npm run build:frontend' {
+    # `npm run build:frontend` from root uses workspaces hoisting. Fresh
+    # publish bundle has no <publish-root>/node_modules, so the install must
+    # happen before the build is attempted.
+    $script:srcContent | Should -Match 'installing root workspaces' `
+      'non-in-place branch must log "installing root workspaces" when missing.'
+    # The install guard must appear BEFORE the actual `npm run build:frontend`
+    # invocation. Match the command line specifically.
+    $buildIdx = $script:srcContent.IndexOf('try { npm run build:frontend }')
+    $installIdx = $script:srcContent.IndexOf('installing root workspaces')
+    $buildIdx | Should -BeGreaterThan -1 'non-in-place build command line must exist'
+    $installIdx | Should -BeGreaterThan -1 'root install guard must exist'
+    $installIdx | Should -BeLessThan $buildIdx `
+      'root install guard must appear BEFORE `npm run build:frontend` so vite is hoisted.'
+    # Guard checks the correct directory (root node_modules, not frontend).
+    $script:srcContent | Should -Match 'Test-Path\s+\(Join-Path\s+\$projectRoot\s+''node_modules''\)' `
+      'install guard must check <publish-root>/node_modules for the root install.'
+  }
+
+  It 'mirror sync: both install guards present in publish/system/scripts/install-center.ps1' {
+    $script:pubContent | Should -Match 'installing frontend node_modules' `
+      'publish mirror missing in-place install guard — must match scripts/ source.'
+    $script:pubContent | Should -Match 'installing root workspaces' `
+      'publish mirror missing non-in-place install guard — must match scripts/ source.'
+  }
+}
+
 Describe 'install-center service recovery' {
   It 'calls Set-ServiceRecovery helper (single source of truth)' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1') -Raw
