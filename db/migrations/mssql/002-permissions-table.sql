@@ -26,29 +26,32 @@ END;
 -- Unwrap the JSON array into role_permissions rows. CTE generates a 0..19
 -- sequence (generous cap, no real role has more than a handful of permissions).
 -- Skip the entire block when role_permissions is already populated OR the
--- legacy column doesn't exist (fresh installs). MSSQL has no MySQL-style
--- procedure wrapper here — top-level SELECT is fine because we're not in a
--- batch context where partial failure would matter.
+-- legacy column doesn't exist (fresh installs).
+--
+-- IMPORTANT: MSSQL validates column references at PARSE time, even inside
+-- IF...BEGIN...END blocks. The IF condition here is FALSE on a fresh install
+-- (`sys_roles.permissions` doesn't exist), so the body shouldn't run — but
+-- the parser still fails with "Invalid column name 'permissions'" on every
+-- `r.permissions` reference in the SELECT/WHERE. Wrapping the backfill in
+-- `EXEC sp_executesql N'...'` makes the body a string literal that is only
+-- parsed at runtime, AFTER the IF check has already returned FALSE. MySQL
+-- doesn't have this gotcha because the entire body lives inside a stored
+-- procedure whose body is parsed at CREATE PROCEDURE time in a context that
+-- tolerates the legacy column reference (the table has `permissions` in the
+-- upgrade path's schema, just not in 01-tables.sql).
 IF COL_LENGTH('sys_roles', 'permissions') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM role_permissions)
-BEGIN
-  WITH nums(n) AS (
-    SELECT 0 UNION ALL SELECT n + 1 FROM nums WHERE n < 19
-  )
-  INSERT INTO role_permissions (role_id, permission)
-  SELECT r.id, JSON_VALUE(r.permissions, '$[' + CAST(n.n AS NVARCHAR(3)) + ']')
-  FROM sys_roles r, nums n
-  WHERE r.permissions IS NOT NULL
-    AND ISJSON(r.permissions) = 1
-    -- MSSQL has no JSON_LENGTH; the same "is this index in range" guard is
-    -- `JSON_VALUE(...) IS NOT NULL`. The path lookup returns NULL for an
-    -- out-of-range index (and for any non-array JSON), so the row is skipped.
-    -- JSON_VALUE is duplicated in SELECT + WHERE (SQL has no row-local alias
-    -- for SELECT expressions in WHERE); the cost is one extra JSON parse per
-    -- role × index pair — acceptable because sys_roles is a handful of rows.
-    AND JSON_VALUE(r.permissions, '$[' + CAST(n.n AS NVARCHAR(3)) + ']') IS NOT NULL
-  OPTION (MAXRECURSION 100);
-END;
+  EXEC sp_executesql N'
+    WITH nums(n) AS (
+      SELECT 0 UNION ALL SELECT n + 1 FROM nums WHERE n < 19
+    )
+    INSERT INTO role_permissions (role_id, permission)
+    SELECT r.id, JSON_VALUE(r.permissions, ''$['' + CAST(n.n AS NVARCHAR(3)) + '']'')
+    FROM sys_roles r, nums n
+    WHERE r.permissions IS NOT NULL
+      AND ISJSON(r.permissions) = 1
+      AND JSON_VALUE(r.permissions, ''$['' + CAST(n.n AS NVARCHAR(3)) + '']'') IS NOT NULL
+    OPTION (MAXRECURSION 100);';
 
 -- Drop the legacy column only if it still exists (fresh installs already
 -- have role_permissions and never had sys_roles.permissions).

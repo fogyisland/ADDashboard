@@ -134,6 +134,24 @@ test('splitSqlStatements handles MSSQL migration 002 (CTE-based JSON unwrap)', (
   assert.doesNotMatch(cteStmt, /JSON_LENGTH/, 'MSSQL does not have JSON_LENGTH — use JSON_VALUE(...) IS NOT NULL for "index in range" check.');
   // Legacy column drop, guarded by COL_LENGTH check
   assert.ok(stmts.some(s => /ALTER TABLE sys_roles DROP COLUMN permissions/.test(s)));
+
+  // Bug fixed 2026-08-16 (second time on this migration): MSSQL validates
+  // column references at PARSE time, even inside IF...BEGIN...END blocks. The
+  // original backfill had `r.permissions` referenced 4× in the SELECT/WHERE.
+  // On a fresh install (column doesn't exist), the IF condition is FALSE so
+  // the body shouldn't run — but the parser still fails with 4 "Invalid
+  // column name 'permissions'" errors. The fix wraps the backfill body in
+  // EXEC sp_executesql N'...' — the string body is opaque to the parser and
+  // only parsed at runtime, AFTER the IF check. Guard against regression.
+  assert.ok(
+    cteStmt.includes('EXEC sp_executesql N'),
+    'MSSQL 002 backfill must wrap body in EXEC sp_executesql N\'...\' to defer parse-time column validation'
+  );
+  assert.match(
+    cteStmt,
+    /EXEC sp_executesql N'[^']*r\.permissions/,
+    'MSSQL 002 must put r.permissions references inside the sp_executesql string body'
+  );
 });
 
 test('splitSqlStatements parses migration 003 (port healthcheck tables)', () => {
