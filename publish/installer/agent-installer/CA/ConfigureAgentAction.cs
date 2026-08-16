@@ -46,7 +46,10 @@ namespace ADDashboard.AgentInstaller.CA
         public string AgentToken;
         public string AgentType;
         public bool PreserveAppsettings;
-        public string LogDir = @"C:\addashboard\Logs";
+        // LogDir is derived from InstallDir at install time via DeriveLogDir()
+        // (see SetNssmParameters). It is intentionally NOT a stored field —
+        // when InstallDir is supplied via INSTALLDIR=, the log dir must follow,
+        // not stay at a hardcoded C:\addashboard\Logs.
     }
 
     public static class ConfigureAgentAction
@@ -160,6 +163,7 @@ namespace ADDashboard.AgentInstaller.CA
         {
             var nssm = Path.Combine(data.InstallDir, "nssm", "nssm.exe");
             var hostname = Environment.MachineName;
+            var logDir = DeriveLogDir(data.InstallDir);
             var displayName = data.AgentType == "non-ad"
                 ? "AD Dashboard Agent (Member)"
                 : $"AD Replication Agent (on {hostname})";
@@ -173,8 +177,8 @@ namespace ADDashboard.AgentInstaller.CA
             RunNssmSet(nssm, "Description",          description);
             RunNssmSet(nssm, "Start",                "SERVICE_AUTO_START");
             RunNssmSet(nssm, "DependOnService",      "DNS Client,Netlogon");
-            RunNssmSet(nssm, "AppStdout",            Path.Combine(data.LogDir, "ADReplicationAgent-stdout.log"));
-            RunNssmSet(nssm, "AppStderr",            Path.Combine(data.LogDir, "ADReplicationAgent-stderr.log"));
+            RunNssmSet(nssm, "AppStdout",            Path.Combine(logDir, "ADReplicationAgent-stdout.log"));
+            RunNssmSet(nssm, "AppStderr",            Path.Combine(logDir, "ADReplicationAgent-stderr.log"));
             RunNssmSet(nssm, "AppRotateFiles",       "1");
             RunNssmSet(nssm, "AppRotateOnline",      "1");
             RunNssmSet(nssm, "AppRotateBytes",       "10485760");
@@ -272,6 +276,20 @@ namespace ADDashboard.AgentInstaller.CA
         // MSI deferred CAs run synchronously inside the install transaction; an
         // unbounded WaitForExit() turns a misbehaving child into a stuck install.
         private const int ProcessTimeoutMs = 30 * 1000;
+
+        /// <summary>
+        /// Derive the log directory from the install directory.
+        /// LogDir = InstallDir's parent + "\Logs", resolved to an absolute
+        /// path via Path.GetFullPath. When InstallDir = C:\addashboard\Agent
+        /// (the un-overridden default), LogDir = C:\addashboard\Logs — byte-
+        /// identical to the v1.0.0 hardcoded value. When InstallDir = D:\foo
+        /// \Agent, LogDir = D:\foo\Logs — follows the install (symmetric with
+        /// PS1 install-agent.ps1 which uses `<InstallPath>\Logs`).
+        /// </summary>
+        internal static string DeriveLogDir(string installDir)
+        {
+            return Path.GetFullPath(Path.Combine(installDir, "..", "Logs"));
+        }
 
         internal static void RunNssmSet(string nssm, string key, string value)
         {

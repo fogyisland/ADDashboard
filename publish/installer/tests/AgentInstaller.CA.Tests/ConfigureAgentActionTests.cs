@@ -366,5 +366,41 @@ namespace ADDashboard.AgentInstaller.CA.Tests
             Assert.Null(d.AgentType);
             Assert.False(d.PreserveAppsettings);
         }
+
+        // ---------------------------------------------------------------------
+        //  DeriveLogDir — LogDir follows InstallDir
+        //
+        //  Production rule (per 2026-08-16 design): LogDir is derived from
+        //  InstallDir at install time, not stored as a hardcoded field. The
+        //  derived value is `<InstallDir>\..\Logs` resolved to an absolute path
+        //  via Path.GetFullPath. When InstallDir = C:\addashboard\Agent (the
+        //  un-overridden default), LogDir = C:\addashboard\Logs (byte-identical
+        //  to the v1.0.0 hardcoded value). When InstallDir = D:\Dashboard\Agent,
+        //  LogDir = D:\Dashboard\Logs.
+        // ---------------------------------------------------------------------
+
+        [Theory]
+        [InlineData(@"C:\addashboard\Agent", @"C:\addashboard\Logs")]
+        [InlineData(@"D:\Dashboard\Agent", @"D:\Dashboard\Logs")]
+        [InlineData(@"C:\Program Files\ADDashboard\Agent", @"C:\Program Files\ADDashboard\Logs")]
+        [InlineData(@"C:\Agent", @"C:\Logs")]
+        public void DeriveLogDir_FollowsInstallDir(string installDir, string expected)
+        {
+            Assert.Equal(expected, ConfigureAgentAction.DeriveLogDir(installDir));
+        }
+
+        [Fact]
+        public void DeriveLogDir_NormalisesRelativeSegment()
+        {
+            // Path.GetFullPath must collapse the ".." segment. Equivalent
+            // inputs (trailing slash, no slash, redundant dots) all resolve
+            // to the same absolute path.
+            Assert.Equal(
+                ConfigureAgentAction.DeriveLogDir(@"C:\addashboard\Agent"),
+                ConfigureAgentAction.DeriveLogDir(@"C:\addashboard\Agent\"));
+            Assert.Equal(
+                ConfigureAgentAction.DeriveLogDir(@"C:\addashboard\Agent"),
+                ConfigureAgentAction.DeriveLogDir(@"C:\addashboard\Agent\.\"));
+        }
     }
 }
