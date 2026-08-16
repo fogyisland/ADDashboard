@@ -93,7 +93,7 @@
 [CmdletBinding()]
 param(
   [string]$MsiPath = (Join-Path -Path $PSScriptRoot -ChildPath '..\agent-installer\bin\x64\Release\zh-CN\addashboard-agent-x64-1.0.0.0.msi'),
-  [string]$InstallDir = 'C:\addashboard\Agent',
+  [string]$InstallDir = (Join-Path -Path $env:TEMP -ChildPath 'msi-agent-test'),
   [string]$CenterUrl = 'http://test-center:8081',
   [string]$AgentToken = 'test-token-1234567890abcdef',
   [string]$AgentType = 'ad',
@@ -216,6 +216,15 @@ Describe 'MSI Agent Installer smoke' {
     $cfg.heartbeatIntervalSeconds   | Should -Be 5
     $cfg.psScriptPath               | Should -BeLike '*\scripts\collect-replication.ps1'
     $cfg.psDiscoveryScriptPath      | Should -BeLike '*\scripts\collect-discovery.ps1'
+
+    $expectedLogDir = Join-Path -Path $script:InstallDir -ChildPath '..\Logs'
+    # Resolve to absolute so the qc output strings line up on cross-drive
+    # cases (InstallDir = D:\foo\Agent → expectedLogDir = D:\foo\Logs).
+    $expectedLogDir = [System.IO.Path]::GetFullPath($expectedLogDir)
+
+    $qcOut = sc.exe qc $script:ServiceName | Out-String
+    # NSSM's AppStdout = <LogDir>\ADReplicationAgent-stdout.log via SetNssmParameters.
+    $qcOut | Should -Match ([regex]::Escape($expectedLogDir))
   }
 
   It 'sets NSSM recovery via sc.exe qfailure' {
