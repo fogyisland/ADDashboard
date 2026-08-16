@@ -2,13 +2,13 @@
 // center/src/services/builtin-packages.js.
 //
 // On first normal-mode start, the seeder copies the bundled built-in
-// package directory (publish/center/data/packages/<name>/<version>/) into
+// package directory (publish/system/center/data/packages/<name>/<version>/) into
 // the runtime data dir (data/packages/<name>/<version>/) so the agent
 // runner can read it. The seeder is idempotent: subsequent runs detect
 // the manifest.json and skip copy + audit write.
 //
 // Source dir layout under test:
-//   publish/center/data/packages/ad_os_baseline/1.0.0/
+//   publish/system/center/data/packages/ad_os_baseline/1.0.0/
 //     manifest.json
 //     collect.ps1
 //     migrations/001_initial.sql
@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { seedBuiltinPackages } from '../../src/services/builtin-packages.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SOURCE_DIR = path.join(__dirname, '..', '..', '..', 'publish', 'center', 'data', 'packages');
+const SOURCE_DIR = path.join(__dirname, '..', '..', '..', 'publish', 'system', 'center', 'data', 'packages');
 
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'builtin-pkg-'));

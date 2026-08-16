@@ -128,14 +128,14 @@ const repoRoot = dirname(__dirname);
 
 // Locate the built-in package source from either the source-tree view
 // (cwd=center, __dirname=repo/center) or the bundled publish view
-// (cwd=publish, __dirname=publish/center). The bundled view puts the
-// package source alongside the script; the source view walks up to the
-// repo root then descends into publish/. Both layouts are tried so the
-// same server.js works whether launched via `npm start` (cwd=repo-root),
-// `cd center && node server.js` (cwd=center), or from the bundled
-// publish/center/server.js.
+// (cwd=publish, __dirname=publish/system/center). The bundled view puts
+// the package source alongside the script; the source view walks up to
+// the repo root then descends into publish/system/. Both layouts are
+// tried so the same server.js works whether launched via `npm start`
+// (cwd=repo-root), `cd center && node server.js` (cwd=center), or from
+// the bundled publish/system/center/server.js.
 const builtinSourceCandidates = [
-  join(repoRoot, 'publish', 'center', 'data', 'packages'),
+  join(repoRoot, 'publish', 'system', 'center', 'data', 'packages'),
   join(__dirname, 'data', 'packages')
 ];
 const resolveBuiltinSourceDir = () => {
