@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia';
 import * as initApi from '../api/init.js';
 import { resetInitStatusCache } from '../router.js';
+// Side-effect import: installs crypto.randomUUID polyfill for browsers that
+// lack it (Chrome <92, Firefox <95, Safari <15.4, or any browser in a non-
+// secure context). Must be imported BEFORE any code calls crypto.randomUUID().
+import { randomUUID as polyfilledUUID } from '../utils/random.js';
 
 const DEFAULTS = {
   mysql: { host: '127.0.0.1', port: 3306, database: '', user: 'root', password: '' },
@@ -68,7 +72,7 @@ export const useInitStore = defineStore('init', {
     async finalize() {
       this.finalizeError = null;
       try {
-        const agentToken = crypto.randomUUID().replace(/-/g, '');
+        const agentToken = polyfilledUUID().replace(/-/g, '');
         const jwtSecret = Array.from(crypto.getRandomValues(new Uint8Array(48)))
           .map(b => String.fromCharCode(33 + (b % 94))).join('');
         const r = await initApi.finalize({
