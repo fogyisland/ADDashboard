@@ -1,5 +1,7 @@
 # AD Dashboard Troubleshooting
 
+> **路径约定**：本文示例用 `$DashboardRoot` 占位 dashboard 安装根目录。脚本默认 install 路径是脚本相对的 `<publish-root>/Center` 和 `<publish-root>/Agent`（可解压到任意位置运行）；若你想装到其他位置（典型如 `D:\dashboard`），复制命令前先 `Set-Variable DashboardRoot 'D:\dashboard'`，所有示例的 `$DashboardRoot` 即解析为该路径。
+
 ## Quick Triage
 
 ```powershell
@@ -13,8 +15,8 @@ Invoke-WebRequest http://center:8080/healthz
 # Sign in → Agent 列表 (or GET /api/dashboard/agents)
 
 # 4. What do logs say?
-Get-Content "C:\addashboard\Logs\ADDashboardCenter-stderr.log" -Tail 200
-Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 200
+Get-Content "$DashboardRoot\Logs\ADDashboardCenter-stderr.log" -Tail 200
+Get-Content "$DashboardRoot\Logs\ADReplicationAgent-stderr.log" -Tail 200
 ```
 
 ## Common Symptoms
@@ -25,24 +27,24 @@ Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 200
 
 **Steps:**
 1. `Get-EventLog Application -Source NSSM -Newest 20`
-2. `Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 100`
+2. `Get-Content "$DashboardRoot\Logs\ADReplicationAgent-stderr.log" -Tail 100`
 3. Look for: `Cannot find module 'ActiveDirectory'` → install RSAT
 4. Look for: `appsettings.json: ENOENT` → path contains spaces or wrong location
-5. Manually run: `& "C:\addashboard\Agent\agent.js"` to see Node.js stack trace
+5. Manually run: `& "$DashboardRoot\Agent\agent.js"` to see Node.js stack trace
 
 ### Symptom: Agent心跳正常但无数据
 
 **Steps:**
 1. Verify `Test-NetConnection center -Port 8080` from the DC
 2. Compare `appsettings.json` `agentToken` to `system_config.ad_agent_token` (sign in as admin → 管理 → 系统配置)
-3. On the DC, manually invoke PS: `powershell -File "C:\addashboard\Agent\scripts\collect-replication.ps1"` — should output JSON
+3. On the DC, manually invoke PS: `powershell -File "$DashboardRoot\Agent\scripts\collect-replication.ps1"` — should output JSON
 4. If PS errors out with "active directory module not loaded": `Install-WindowsFeature -Name RSAT-AD-PowerShell`
 
 ### Symptom: Center启动失败 (status: Stopped immediately)
 
 **Steps:**
 1. `nssm get ADDashboardCenter` — show full config
-2. `Get-Content "C:\addashboard\Logs\ADDashboardCenter-stderr.log" -Tail 100`
+2. `Get-Content "$DashboardRoot\Logs\ADDashboardCenter-stderr.log" -Tail 100`
 3. Most common:
    - `ECONNREFUSED 127.0.0.1:1433` → SQL Server not running or wrong port
    - `Login failed for user 'sa'` → wrong SQL password in `appsettings.json`
@@ -54,7 +56,7 @@ Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 200
 **Likely cause:** Center process exited; check `center-stderr.log` for unhandled exception
 **Steps:**
 1. `Get-Service ADDashboardCenter` (likely Stopped)
-2. `Get-Content "C:\addashboard\Logs\ADDashboardCenter-stderr.log" -Tail 200`
+2. `Get-Content "$DashboardRoot\Logs\ADDashboardCenter-stderr.log" -Tail 200`
 3. Common: OOM (check `Get-Process | Sort-Object WorkingSet -Descending | Select -First 5`); reduce log level
 4. Restart: `Start-Service ADDashboardCenter`
 
@@ -83,7 +85,7 @@ Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 200
 
 **Steps:**
 1. 从该 DC 直接验证：`Test-NetConnection -ComputerName localhost -Port <port>`（应该是 True/False）
-2. 若 True 但 agent 报红：检查 `C:\addashboard\Logs\ADReplicationAgent-stderr.log` 看 `tcpProbe` 异常
+2. 若 True 但 agent 报红：检查 `$DashboardRoot\Logs\ADReplicationAgent-stderr.log` 看 `tcpProbe` 异常
 3. 若 False：业务停或服务没启，跟端口业务核对
 4. 跨 DC 对比：若只有某台 DC 报红，检查该 DC 的 Windows Firewall inbound 规则
 
@@ -103,7 +105,7 @@ Get-Content "C:\addashboard\Logs\ADReplicationAgent-stderr.log" -Tail 200
 **Likely cause:** agent 拉取端口清单失败（`fetchPortList` 永不抛错，所以 agent 不会因此退出）
 
 **Steps:**
-1. `Get-Content "C:\addashboard\Logs\ADReplicationAgent-stdout.log" -Tail 200` — 找 `fetchPortList` 相关错误
+1. `Get-Content "$DashboardRoot\Logs\ADReplicationAgent-stdout.log" -Tail 200` — 找 `fetchPortList` 相关错误
 2. 验证 center 端：`Invoke-WebRequest http://center:8080/api/agent/ports -Headers @{Authorization="Bearer <agentToken>"}`（用 `appsettings.json` 里的 agentToken）
 3. 401 → agentToken 不匹配；500 → center 端 DB 故障
 
@@ -129,8 +131,8 @@ nssm get ADDashboardCenter > nssm-center.txt
 nssm get ADReplicationAgent > nssm-agent.txt
 
 # Recent logs
-Copy-Item "C:\addashboard\Logs\*-stdout.log" .
-Copy-Item "C:\addashboard\Logs\*-stderr.log" .
+Copy-Item "$DashboardRoot\Logs\*-stdout.log" .
+Copy-Item "$DashboardRoot\Logs\*-stderr.log" .
 
 # Health snapshot
 Invoke-WebRequest http://center:8080/healthz | % Content

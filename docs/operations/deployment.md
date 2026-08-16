@@ -1,6 +1,8 @@
 # AD Dashboard 部署指南
 
 > 适用版本：**v1.0.0+**。本文档是从「拿到一台新机器」到「dashboard 在浏览器可用」的完整流程；日常运维与灾难恢复参见 [`runbook.md`](runbook.md)。
+>
+> **路径约定**：本文示例用 `$DashboardRoot` 占位 dashboard 安装根目录。脚本默认 install 路径是脚本相对的 `<publish-root>/Center` 和 `<publish-root>/Agent`（可解压到任意位置运行）；若你想装到其他位置（典型如 `D:\dashboard`），复制命令前先 `Set-Variable DashboardRoot 'D:\dashboard'`，所有示例的 `$DashboardRoot` 即解析为该路径。
 
 ## 目录
 
@@ -72,7 +74,7 @@ cd ADDashboard
 1. 校验 Node.js 可达
 2. **自动下载 NSSM 2.24**（如果 `<repo>/nssm/nssm.exe` 不存在）到项目本地
 3. `npm run build:frontend`（仅当 `frontend/dist/index.html` 不存在时）
-4. 拷贝 `center/` + `frontend/dist/` → `C:\addashboard\Center\`
+4. 拷贝 `center/` + `frontend/dist/` → `$DashboardRoot\Center\`
 5. `npm install --omit=dev` 安装 center 的运行时依赖
 6. 用 NSSM 注册 `ADDashboardCenter` 服务（启动类型=自动）
 7. 启动服务
@@ -82,8 +84,8 @@ cd ADDashboard
 
 | 项 | 路径 |
 |---|---|
-| Center | `C:\addashboard\Center\` |
-| 日志 | `C:\addashboard\Logs\ADDashboardCenter-{stdout,stderr}.log` |
+| Center | `$DashboardRoot\Center\` |
+| 日志 | `$DashboardRoot\Logs\ADDashboardCenter-{stdout,stderr}.log` |
 
 ### 自定义路径
 
@@ -95,7 +97,7 @@ cd ADDashboard
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `-InstallPath` | `C:\addashboard\Center` | 安装根目录 |
+| `-InstallPath` | `$DashboardRoot\Center` | 安装根目录 |
 | `-ListenPort` | `8080` | HTTP 监听端口 |
 | `-AgentToken` | 自动生成 UUID | center 与 agent 共享的鉴权 token（首次随机生成后保留在同一目录的 appsettings 中） |
 | `-JwtSecret` | 自动生成 64 字符 | JWT 签名密钥 |
@@ -120,7 +122,7 @@ cd ADDashboard
 2. 双击，按向导填：
    - **Agent 类型**：ad（域控）或 non-ad（成员服务器）
    - **CenterUrl + AgentToken**：从中心的 `appsettings.json` `agentToken` 字段复制
-   - **安装路径**：默认 `C:\addashboard\Agent`
+   - **安装路径**：默认 `$DashboardRoot\Agent`
 3. Finish — 服务 `ADReplicationAgent` 自动启动
 
 #### 静默安装（SCCM / Ansible / 命令行）
@@ -157,7 +159,7 @@ MSI 是**本地**装（双击或 msiexec）。要批量推到多台 DC/member �
 #### 验证
 
 - `Get-Service ADReplicationAgent` 状态应为 Running
-- `Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 50` 看启动日志
+- `Get-Content $DashboardRoot\Logs\ADReplicationAgent-stdout.log -Tail 50` 看启动日志
 - 中心侧：登录 → Agents 视图，新装机器 30 秒内应出现
 
 ### 单机本地安装（在 DC 上执行）
@@ -185,11 +187,11 @@ MSI 是**本地**装（双击或 msiexec）。要批量推到多台 DC/member �
 
 | 项 | 路径 |
 |---|---|
-| Agent 服务 | `C:\addashboard\Agent\` |
-| Node 脚本 | `C:\addashboard\Agent\agent.js` |
-| PowerShell 采集脚本 | `C:\addashboard\Agent\scripts\collect-replication.ps1` |
-| 离线队列 (SQLite WAL) | `C:\addashboard\Agent\queue.db` |
-| 日志 | `C:\addashboard\Logs\ADReplicationAgent-{stdout,stderr}.log` |
+| Agent 服务 | `$DashboardRoot\Agent\` |
+| Node 脚本 | `$DashboardRoot\Agent\agent.js` |
+| PowerShell 采集脚本 | `$DashboardRoot\Agent\scripts\collect-replication.ps1` |
+| 离线队列 (SQLite WAL) | `$DashboardRoot\Agent\queue.db` |
+| 日志 | `$DashboardRoot\Logs\ADReplicationAgent-{stdout,stderr}.log` |
 | NSSM 服务名 | `ADReplicationAgent`（启动类型=自动，依赖 `DNS Client` + `Netlogon`） |
 
 ### 验证 Agent 已上线
@@ -255,8 +257,8 @@ nssm get ADDashboardCenter
 ### 跟踪日志
 
 ```powershell
-Get-Content 'C:\addashboard\Logs\ADDashboardCenter-stdout.log' -Tail 100 -Wait
-Get-Content 'C:\addashboard\Logs\ADReplicationAgent-stdout.log' -Tail 100 -Wait
+Get-Content '$DashboardRoot\Logs\ADDashboardCenter-stdout.log' -Tail 100 -Wait
+Get-Content '$DashboardRoot\Logs\ADReplicationAgent-stdout.log' -Tail 100 -Wait
 ```
 
 ### 健康探针
@@ -463,16 +465,16 @@ npm start
 
 新默认下，`start.bat` / `start.ps1` 会以 **管理员身份** 调用 `scripts/install-center.ps1 -InPlace`：
 
-- `InstallPath` 覆盖为 `<publish 根>\center`（**不拷贝**到 `C:\addashboard\Center`，与生产路径隔离）。
+- `InstallPath` 覆盖为 `<publish 根>\center`（**不拷贝**到 `$DashboardRoot\Center`，与生产路径隔离）。
 - `node_modules` 与 `frontend/dist/` 缺失时会自动补齐。
 - NSSM 注册的服务名仍是 `ADDashboardCenter`，启动类型 = 自动。
-- 日志落到 `C:\addashboard\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
+- 日志落到 `$DashboardRoot\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
 - `appsettings.json` 与 `.env` 初始化标记仍按 init 向导逻辑写入 `<InstallPath>` 下。
 
 适用与限制：
 
 - **必须以管理员身份运行** `start.bat` / `start.ps1`（默认模式），否则立即报错并退出。改用 `--console` / `-Console` 无需管理员。
-- 同一台机器上 `publish/center` 路径下的服务实例与 `C:\addashboard\Center` 下的生产实例 **共享服务名 `ADDashboardCenter`**，二者不能同时跑 —— 绿色版适合作为「试用 + 排错」入口，生产部署仍走仓库根 `scripts/install-center.ps1`（无 `-InPlace`）。
+- 同一台机器上 `publish/center` 路径下的服务实例与 `$DashboardRoot\Center` 下的生产实例 **共享服务名 `ADDashboardCenter`**，二者不能同时跑 —— 绿色版适合作为「试用 + 排错」入口，生产部署仍走仓库根 `scripts/install-center.ps1`（无 `-InPlace`）。
 - 想看完整的服务管理 / 卸载 / 日志路径说明见 [`publish/README.md`](../../publish/README.md)。
 
 ---
@@ -481,7 +483,7 @@ npm start
 
 | 症状 | 排查起点 |
 |---|---|
-| `Center 启动失败，状态 Stopped` | `Get-Content C:\addashboard\Logs\ADDashboardCenter-stderr.log -Tail 100` |
+| `Center 启动失败，状态 Stopped` | `Get-Content $DashboardRoot\Logs\ADDashboardCenter-stderr.log -Tail 100` |
 | `Agent 反复重启 (StartPending → Stopped)` | `Get-EventLog Application -Source NSSM -Newest 20`；日志同上 |
 | `Agent 心跳正常但无数据` | 验证 `Test-NetConnection center -Port 8080`；检查 DC 上 appsettings.json 的 `agentToken` 是否与 center 的 `system_config.ad_agent_token` 一致 |
 | `前端 502 Bad Gateway` | center 进程退出，查 stderr log；常见 OOM（`Get-Process | Sort WorkingSet` 查 top 5） |
@@ -515,10 +517,10 @@ ADDashboard/                     # 仓库根
 └── frontend\                    # Vue 3 前端源码（installer build 后拷贝到 InstallPath\dist）
 ```
 
-**目标机器上的安装产物（`C:\addashboard\`）：**
+**目标机器上的安装产物（`$DashboardRoot\`）：**
 
 ```
-C:\addashboard\
+$DashboardRoot\
 ├── Center\
 │   ├── server.js              # Express 入口
 │   ├── package.json

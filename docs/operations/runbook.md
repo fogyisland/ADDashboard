@@ -1,6 +1,8 @@
 # AD Dashboard 运维 Runbook
 
 > **首次部署请看 [deployment.md](deployment.md)** — 本文是已部署之后的日常运维、恢复与故障排查。
+>
+> **路径约定**：本文示例用 `$DashboardRoot` 占位 dashboard 安装根目录。脚本默认 install 路径是脚本相对的 `<publish-root>/Center` 和 `<publish-root>/Agent`（可解压到任意位置运行）；若你想装到其他位置（典型如 `D:\dashboard`），复制命令前先 `Set-Variable DashboardRoot 'D:\dashboard'`，所有示例的 `$DashboardRoot` 即解析为该路径。
 
 ## 环境依赖（Prerequisites）
 
@@ -27,10 +29,10 @@ Get-Service ADReplicationAgent, ADDashboardCenter | Format-Table Name, Status, S
 Restart-Service ADReplicationAgent -Force
 
 # 跟踪 agent 日志
-Get-Content "C:\addashboard\Logs\ADReplicationAgent-stdout.log" -Tail 100 -Wait
+Get-Content "$DashboardRoot\Logs\ADReplicationAgent-stdout.log" -Tail 100 -Wait
 
 # 跟踪 center 日志
-Get-Content "C:\addashboard\Logs\ADDashboardCenter-stdout.log" -Tail 100 -Wait
+Get-Content "$DashboardRoot\Logs\ADDashboardCenter-stdout.log" -Tail 100 -Wait
 
 # 健康检查
 Invoke-WebRequest http://center:8080/healthz | Select -ExpandProperty Content
@@ -78,7 +80,7 @@ sqlcmd -S localhost -Q "BACKUP DATABASE [AD_Monitoring] TO DISK='D:\Backups\AD_M
 
 1. 生成新 UUID：`[Guid]::NewGuid().Guid`
 2. 用 admin 登录 → 管理 → 系统配置 → 把 `ad_agent_token` 改为新值
-3. 在每台 DC 上：编辑 `C:\addashboard\Agent\appsettings.json` 的 `agentToken`，然后 `Restart-Service ADReplicationAgent`
+3. 在每台 DC 上：编辑 `$DashboardRoot\Agent\appsettings.json` 的 `agentToken`，然后 `Restart-Service ADReplicationAgent`
 
 ## 灾难恢复
 
@@ -288,7 +290,7 @@ Restart-Service ADDashboardCenter
 
 ```powershell
 # 1. 部署（install-center.ps1 — 仅做部署，不做应用初始化）
-.\scripts\install-center.ps1 -InstallPath 'C:\addashboard\Center'
+.\scripts\install-center.ps1 -InstallPath '$DashboardRoot\Center'
 
 # 2. 浏览器打开 http://server:8080/init
 # 3. 完成 3 屏向导

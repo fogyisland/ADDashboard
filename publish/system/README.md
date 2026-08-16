@@ -10,6 +10,8 @@
 
 ---
 
+> **路径约定**：本文示例用 `$DashboardRoot` 占位 dashboard 安装根目录。脚本默认 install 路径是脚本相对的 `<publish-root>/Center` 和 `<publish-root>/Agent`（可解压到任意位置运行）；若你想装到其他位置（典型如 `D:\dashboard`），复制命令前先 `Set-Variable DashboardRoot 'D:\dashboard'`，所有示例的 `$DashboardRoot` 即解析为该路径。
+
 ## 快速开始（默认 = 服务模式）
 
 ```powershell
@@ -27,7 +29,7 @@
 4. 启动服务
 5. 探测 `http://localhost:8080/api/init/status`
 
-服务日志：`C:\addashboard\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 自动滚动）。
+服务日志：`$DashboardRoot\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 自动滚动）。
 
 首次运行后浏览器打开 **<http://localhost:8080/init>** 完成 3 屏初始化向导：
 
@@ -83,8 +85,8 @@ nssm get ADDashboardCenter
 
 ```powershell
 # 实时 tail（10MB 自动滚动，多文件保留在同目录）
-Get-Content 'C:\addashboard\Logs\ADDashboardCenter-stdout.log' -Tail 100 -Wait
-Get-Content 'C:\addashboard\Logs\ADDashboardCenter-stderr.log' -Tail 100 -Wait
+Get-Content '$DashboardRoot\Logs\ADDashboardCenter-stdout.log' -Tail 100 -Wait
+Get-Content '$DashboardRoot\Logs\ADDashboardCenter-stderr.log' -Tail 100 -Wait
 ```
 
 ### 卸载
@@ -152,7 +154,7 @@ publish/                                  ← 解压后的根目录
 |---|---|
 | `appsettings.json` | `system\center\appsettings.json` |
 | 初始化标记（`.env` + 注册表） | `system\center\.env` + `HKLM\SOFTWARE\ADDashboard\Initialized` |
-| center 日志 | `C:\addashboard\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 自动滚动） |
+| center 日志 | `$DashboardRoot\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 自动滚动） |
 
 `--console` 前台模式（开发）下，所有数据写到 system/ 同级目录（不污染 `C:\`）：
 
@@ -168,7 +170,7 @@ publish/                                  ← 解压后的根目录
 
 ## 跨机器批量安装 / 生产部署
 
-绿色版默认就在 `system\center\` 跑服务（日志写到 `C:\addashboard\Logs\`）。多机批量安装（含远程 WinRM 部署 Agent）见仓库根目录的 [`docs/operations/deployment.md`](../docs/operations/deployment.md) 和 [`scripts/README.md`](scripts/README.md)。
+绿色版默认就在 `system\center\` 跑服务（日志写到 `$DashboardRoot\Logs\`）。多机批量安装（含远程 WinRM 部署 Agent）见仓库根目录的 [`docs/operations/deployment.md`](../docs/operations/deployment.md) 和 [`scripts/README.md`](scripts/README.md)。
 
 ---
 
@@ -184,7 +186,7 @@ A: 正常。首次需要 `npm install`（约 30-60 秒）和 `npm run build`（�
 A: 编辑 `system\center\appsettings.json`（首次跑过后才会生成），改 `listenPort`，然后 `Restart-Service ADDashboardCenter`。
 
 **Q: 服务起不来，去哪看错？**
-A: `Get-Content 'C:\addashboard\Logs\ADDashboardCenter-stderr.log' -Tail 100`。常见 OOM、DB 连接失败、`node` 不在服务 PATH 中（install 阶段会自动修，但若手动注册 NSSM 服务可能漏配）。
+A: `Get-Content '$DashboardRoot\Logs\ADDashboardCenter-stderr.log' -Tail 100`。常见 OOM、DB 连接失败、`node` 不在服务 PATH 中（install 阶段会自动修，但若手动注册 NSSM 服务可能漏配）。
 
 **Q: 想前台看实时日志？**
 A: `Stop-Service ADDashboardCenter`，然后 `.\start.bat --console`（或 `.\start.ps1 -Console`）。改回服务模式只需再跑 `.\start.bat`（默认）即可。
@@ -199,7 +201,7 @@ A: `.\scripts\uninstall-center.ps1`（默认保留数据），或 `Stop-Service 
 
 ## 附录：本地纯前端开发模式
 
-如果只想本地纯前端调试（不动 `C:\addashboard\`、不注册服务），仓库根目录还有：
+如果只想本地纯前端调试（不动默认安装路径、不注册服务），仓库根目录还有：
 
 ```bash
 npm install
