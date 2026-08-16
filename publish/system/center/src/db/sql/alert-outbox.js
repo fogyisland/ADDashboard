@@ -44,7 +44,7 @@ export const alertOutbox = {
   mssql: {
     enqueue: `INSERT INTO alert_email_outbox
       (alert_event_id, to_addrs, cc_addrs, subject, body_text, body_html, next_attempt_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?); SELECT SCOPE_IDENTITY() AS id`,
+      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     findById: `SELECT id, alert_event_id, to_addrs, cc_addrs, subject, body_text, body_html,
                       attempt_count, next_attempt_at, last_error, sent_at, created_at
                FROM alert_email_outbox WHERE id = ?`,

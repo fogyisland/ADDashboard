@@ -26,7 +26,7 @@ export const alertEvents = {
   },
   mssql: {
     insert: `INSERT INTO alert_events (rule_id, event, hostname, detail)
-             VALUES (?, ?, ?, ?); SELECT SCOPE_IDENTITY() AS id`,
+             VALUES (?, ?, ?, ?)`,
     findById: `SELECT id, rule_id, hostname, event, detail, created_at
                FROM alert_events WHERE id = ?`,
     listByRule: `SELECT id, rule_id, hostname, event, detail, created_at

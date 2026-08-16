@@ -149,3 +149,29 @@ test('mssql ports.* queries use ? placeholders', () => {
     assert.doesNotMatch(sql, /@p\d/i, `ports.${name} contains hand-rolled @pN`);
   }
 });
+
+// --- T3: inline SCOPE_IDENTITY() collisions in 4 INSERT helpers ---
+
+test('mssql alertRules.create does not append inline SCOPE_IDENTITY (driver auto-appends)', () => {
+  const sql = buildSql('mssql').alertRules.create;
+  assert.doesNotMatch(sql, /SCOPE_IDENTITY/i);
+  assert.match(sql, /^\s*INSERT\b/i);
+});
+
+test('mssql alertEvents.insert does not append inline SCOPE_IDENTITY', () => {
+  const sql = buildSql('mssql').alertEvents.insert;
+  assert.doesNotMatch(sql, /SCOPE_IDENTITY/i);
+  assert.match(sql, /^\s*INSERT\b/i);
+});
+
+test('mssql alertOutbox.enqueue does not append inline SCOPE_IDENTITY', () => {
+  const sql = buildSql('mssql').alertOutbox.enqueue;
+  assert.doesNotMatch(sql, /SCOPE_IDENTITY/i);
+  assert.match(sql, /^\s*INSERT\b/i);
+});
+
+test('mssql serverGroups.create does not append inline SCOPE_IDENTITY', () => {
+  const sql = buildSql('mssql').serverGroups.create;
+  assert.doesNotMatch(sql, /SCOPE_IDENTITY/i);
+  assert.match(sql, /^\s*INSERT\b/i);
+});

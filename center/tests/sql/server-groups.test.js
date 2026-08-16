@@ -19,10 +19,13 @@ test('serverGroups: mysql groups upsert keyed on group_name (UNIQUE)', () => {
   assert.match(serverGroups.mysql.delete, /DELETE FROM ad_server_groups WHERE group_id = \?/i);
 });
 
-test('serverGroups: mssql groups upsert uses MERGE keyed on group_name', () => {
-  assert.match(serverGroups.mssql.upsert, /MERGE INTO ad_server_groups/i);
-  assert.match(serverGroups.mssql.upsert, /ON t\.group_name = s\.group_name/i);
-  assert.match(serverGroups.mssql.upsert, /WHEN NOT MATCHED THEN INSERT/i);
+test('serverGroups: mssql upsert is dead code (deleted — no caller; create is the entry point)', () => {
+  // Audit 2026-08-16: serverGroups.mssql.upsert was a MERGE with an inline
+  // SCOPE_IDENTITY() probe that returned NULL on the UPDATE branch. grep
+  // confirmed no caller; the dead function was removed. If a future caller
+  // needs upsert semantics, use serverGroups.upsertPackage pattern or
+  // route through the driver's own INSERT-prefixed auto-probe.
+  assert.equal(serverGroups.mssql.upsert, undefined, 'mssql upsert must remain removed');
 });
 
 // ---- ad_server_group_members ----

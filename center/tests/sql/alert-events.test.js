@@ -174,9 +174,9 @@ test('alertEvents: listRecent (MySQL) caps with LIMIT ? — caller passes limit'
   assert.match(alertEvents.mysql.listRecent, /LIMIT \?/);
 });
 
-test('alertEvents: insert (MSSQL) has 4 placeholders + SCOPE_IDENTITY for the inserted id', () => {
+test('alertEvents: insert (MSSQL) has 4 placeholders — no inline SCOPE_IDENTITY (driver auto-appends)', () => {
   assert.match(alertEvents.mssql.insert, /INSERT INTO alert_events/i);
-  assert.match(alertEvents.mssql.insert, /SELECT SCOPE_IDENTITY\(\) AS id/);
+  assert.doesNotMatch(alertEvents.mssql.insert, /SCOPE_IDENTITY/i);
   assert.strictEqual((alertEvents.mssql.insert.match(/\?/g) || []).length, 4);
 });
 

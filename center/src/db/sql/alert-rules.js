@@ -62,7 +62,7 @@ export const alertRules = {
   mssql: {
     // ---- alert_rules ----
     create: `INSERT INTO alert_rules (hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled)
-             VALUES (?, ?, ?, ?, ?, ?, ?); SELECT SCOPE_IDENTITY() AS id`,
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
     findById: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                FROM alert_rules WHERE rule_id = ?`,
     list: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at

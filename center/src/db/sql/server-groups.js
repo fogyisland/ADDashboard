@@ -75,12 +75,7 @@ export const serverGroups = {
   },
   mssql: {
     // ---- ad_server_groups ----
-    create: `INSERT INTO ad_server_groups (group_name, description) VALUES (?, ?); SELECT SCOPE_IDENTITY() AS id`,
-    upsert: `MERGE INTO ad_server_groups AS t
-      USING (SELECT ? AS group_name, ? AS description) AS s
-      ON t.group_name = s.group_name
-      WHEN MATCHED THEN UPDATE SET description = s.description, updated_at = SYSUTCDATETIME()
-      WHEN NOT MATCHED THEN INSERT (group_name, description) VALUES (s.group_name, s.description); SELECT SCOPE_IDENTITY() AS id`,
+    create: `INSERT INTO ad_server_groups (group_name, description) VALUES (?, ?)`,
     findByName: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_name = ?`,
     findById: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_id = ?`,
     list: `SELECT g.group_id, g.group_name, g.description,

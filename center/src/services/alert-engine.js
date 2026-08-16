@@ -274,13 +274,13 @@ export function createAlertEvaluationLoop({ db, getIntervalSeconds, getSystemCon
   }
 
   // Insert event + outbox row, both via the same SQL registry used by
-  // alertRoutes. alert_events.insert for MySQL is plain; for MSSQL it
-  // appends SELECT SCOPE_IDENTITY() so the returned insertId is the
-  // freshly-allocated event row's id.
+  // alertRoutes. alert_events.insert is dialect-plain INSERT (the mssql
+  // driver auto-appends its own SCOPE_IDENTITY probe — see
+  // drivers/mssql.js:89-90), so the returned insertId is the freshly-
+  // allocated event row's id on both dialects.
   async function recordTransition(tx, { ruleId, hostname, event, detail, recipients, subject, body }) {
     const insertEvent = db.sql.alertEvents.insert;
     const insertResult = await tx.execute(insertEvent, [ruleId, event, hostname, JSON.stringify(detail)]);
-    // MySQL returns insertId; MSSQL returns recordset[0].id from OUTPUT INSERTED.id.
     const eventId = insertResult.insertId ?? insertResult.recordset?.[0]?.id;
     if (eventId == null) {
       throw new Error(`alert_events insert returned no id for rule=${ruleId} event=${event}`);
