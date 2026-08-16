@@ -57,7 +57,7 @@ build-msi.cmd
 installer\agent-installer\bin\x64\Release\zh-CN\addashboard-agent-x64-1.0.0.0.msi
 ```
 
-构建完成后 `build-msi.ps1` 自动把 MSI 拷到 `installer/ADDashboardAgent.msi`。
+构建完成后 `build-msi.ps1` 自动把 MSI 拷到 `publish/installer/ADDashboardAgent.msi`（publish 包唯一对外交付的产物）。
 
 ## 目录结构
 

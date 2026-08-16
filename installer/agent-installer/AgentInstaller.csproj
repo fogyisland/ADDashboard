@@ -14,7 +14,7 @@
     <DefineConstants>$(DefineConstants);Manufacturer=$(Manufacturer)</DefineConstants>
     <DefineConstants>$(DefineConstants);ProductCode=$(ProductCode)</DefineConstants>
     <DefineConstants>$(DefineConstants);UpgradeCode=$(UpgradeCode)</DefineConstants>
-    <DefineConstants>$(DefineConstants);StagingDir=..\staging</DefineConstants>
+    <DefineConstants>$(DefineConstants);StagingDir=..\..\publish\installer\staging</DefineConstants>
     <!--
       Task 6: Suppress ICE17/ICE20 during link-time validation. The built-in
       wixlib dialogs (WelcomeDlg, ExitDialog, BrowseDlg, ProgressDlg, ...)

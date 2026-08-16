@@ -62,7 +62,7 @@
       Block install on anything below Windows 10 / Server 2016 (both report
       VersionNT64 = 1000). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt
     -->
-    <Launch Message="AD Dashboard Agent requires Windows 10 / Server 2016 or later (x64)."
+    <Launch Message="AD Dashboard Agent requires Windows 10 / Server 2016+ (Server 2019 / 2022 / 2025) (x64)."
             Condition="Installed OR VersionNT64 &gt;= 1000" />
 
     <Media Id="1" Cabinet="agent" EmbedCab="yes" CompressionLevel="high" />

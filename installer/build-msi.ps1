@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
-$root = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+# build-msi.ps1 lives at <repo>/installer/, so $root is the repo root.
+$root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $staging = Join-Path $root 'publish\installer\staging'
 if (-not (Test-Path $staging)) { New-Item -ItemType Directory -Force -Path $staging | Out-Null }
 
@@ -130,8 +131,24 @@ if (-not (Test-Path $nssmDst)) {
   Copy-Item -Path $nssmSrc -Destination $nssmDst -Force
 }
 
-Push-Location (Join-Path $root 'publish\installer\agent-installer')
+Push-Location (Join-Path $root 'installer\agent-installer')
 try {
   dotnet build -c Release -p:Platform=x64
   if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $LASTEXITCODE" }
 } finally { Pop-Location }
+
+# Copy the built MSI into publish/installer/ (the only artifact the publish
+# bundle ships from this tree). The csproj's OutputName includes the full
+# 4-segment version (e.g. addashboard-agent-x64-1.0.0.0.msi); we copy it to
+# the stable artifact path so users see a single MSI named the same way
+# regardless of which version was just built. Recursive search picks up the
+# zh-CN folder layout (current default) and any future flat layout.
+$builtMsi = Get-ChildItem -Path (Join-Path $root 'installer\agent-installer\bin') -Filter '*.msi' -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'addashboard-agent-x64-' } |
+            Select-Object -First 1 -ExpandProperty FullName
+$publishedMsi = Join-Path $root 'publish\installer\ADDashboardAgent.msi'
+if (-not $builtMsi) {
+  throw "Built MSI not found under installer\agent-installer\bin. dotnet build succeeded but emitted no MSI matching 'addashboard-agent-x64-*.msi'?"
+}
+Copy-Item -Path $builtMsi -Destination $publishedMsi -Force
+Write-Host "Copied MSI to $publishedMsi"
