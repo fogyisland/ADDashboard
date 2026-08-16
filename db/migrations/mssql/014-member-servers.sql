@@ -67,7 +67,7 @@ IF OBJECT_ID('ad_member_server_packages', 'U') IS NULL
 BEGIN
   CREATE TABLE ad_member_server_packages (
     hostname      VARCHAR(128) NOT NULL,
-    package_name  VARCHAR(128) NOT NULL,
+    package_name  NVARCHAR(128) NOT NULL,
     enabled       BIT          NOT NULL CONSTRAINT df_msp_enabled DEFAULT 1,
     installed_at  DATETIME2    NOT NULL CONSTRAINT df_msp_installed DEFAULT SYSUTCDATETIME(),
     last_run_at   DATETIME2    NULL,

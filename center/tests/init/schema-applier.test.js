@@ -302,6 +302,48 @@ test('splitSqlStatements parses migration 009 mssql (schema_migrations: 1 IF/BEG
   assert.match(stmts[0], /CREATE INDEX ix_schema_migrations_status/i);
 });
 
+test('splitSqlStatements parses migration 014 mssql (FK package_name must match installed_packages.name NVARCHAR type)', () => {
+  // Bug fixed 2026-08-16: MSSQL FK requires referencing column and referenced
+  // column to be the SAME data type (including unicode / non-unicode). MySQL
+  // does not enforce this strictly, so the same schema applies cleanly on
+  // MySQL but fails on MSSQL with:
+  //   "Column 'installed_packages.name' is not the same data type as
+  //    referencing column 'ad_member_server_packages.package_name' in
+  //    foreign key 'fk_msp_pkg'."
+  // 004 (package-system) migrated name from VARCHAR to NVARCHAR for Unicode
+  // support; 014 (member-servers) was written later with VARCHAR for the
+  // same semantic column. Fix: pin package_name to NVARCHAR(128) in 014 so
+  // it matches installed_packages.name.
+  const sql = readFileSync(join(__dirname, '../../../db/migrations/mssql/014-member-servers.sql'), 'utf8');
+  const stmts = splitSqlStatements(sql);
+  // 8 IF OBJECT_ID-guarded blocks, each holding 1 CREATE TABLE
+  assert.strictEqual(stmts.length, 8, `expected 8 IF-guarded statements, got ${stmts.length}: ${JSON.stringify(stmts.map(s => s.slice(0, 60)))}`);
+  // Find the ad_member_server_packages block and assert package_name type
+  const mspStmt = stmts.find(s => /CREATE TABLE ad_member_server_packages/i.test(s));
+  assert.ok(mspStmt, 'expected ad_member_server_packages CREATE TABLE statement');
+  assert.match(
+    mspStmt,
+    /package_name\s+NVARCHAR\(128\)\s+NOT NULL/i,
+    'ad_member_server_packages.package_name must be NVARCHAR(128) to match installed_packages.name (MSSQL FK requires same data type)'
+  );
+  // The FK itself must still reference installed_packages(name)
+  assert.match(
+    mspStmt,
+    /FOREIGN KEY\s*\(\s*package_name\s*\)\s*REFERENCES\s+installed_packages\s*\(\s*name\s*\)/i,
+    'fk_msp_pkg must reference installed_packages(name)'
+  );
+  // Sanity: assert that VARCHAR (without the N) is NOT used in the ad_member_server_packages block
+  // for the package_name column specifically. Other VARCHAR columns (hostname, ip_address, etc.)
+  // are intentionally VARCHAR — only package_name must be NVARCHAR.
+  const packageNameLine = mspStmt.split(/\r?\n/).find(line => /\bpackage_name\b/.test(line));
+  assert.ok(packageNameLine, 'package_name column line must exist in ad_member_server_packages CREATE TABLE');
+  assert.doesNotMatch(
+    packageNameLine,
+    /\bpackage_name\s+VARCHAR\b/i,
+    'package_name must NOT be VARCHAR — would break MSSQL FK fk_msp_pkg with NVARCHAR parent column'
+  );
+});
+
 test('backfillMigrations inserts all migration files as status=applied with applied_by=system-init', async () => {
   const { backfillMigrations } = await import('../../src/init/schema-applier.js');
   const upsertCalls = [];
