@@ -11,10 +11,10 @@ Import-Module (Join-Path $PSScriptRoot 'Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'NSSM.psm1') -Force
 
 # Single source of truth for "where is nssm?": NSSM.psm1::Get-NssmPath
-# searches both <root>/publish/nssm/ and <root>/nssm/, so it works for
+# searches both <root>/publish/system/nssm/ and <root>/nssm/, so it works for
 # the canonical install (ProjectRoot = repo root, nssm bundled at
-# <root>/publish/nssm/) AND the green-bundle -InPlace install
-# (ProjectRoot = publish/, nssm bundled at publish/nssm/).
+# <root>/publish/system/nssm/) AND the green-bundle -InPlace install
+# (ProjectRoot = publish/system/, nssm bundled at publish/system/nssm/).
 try {
   $existing = Get-NssmPath
   if ($existing -and (Test-Path $existing)) {
@@ -25,9 +25,9 @@ try {
   # No nssm found in any candidate path. Fall through to download.
 }
 
-# Download to <ProjectRoot>/publish/nssm/ — keeps the bundle layout
+# Download to <ProjectRoot>/publish/system/nssm/ — keeps the bundle layout
 # consistent regardless of which root called us.
-$nssmDir  = Join-Path $ProjectRoot (Join-Path 'publish' 'nssm')
+$nssmDir  = Join-Path (Join-Path (Join-Path $ProjectRoot 'publish') 'system') 'nssm'
 $nssmExe  = Join-Path $nssmDir 'nssm.exe'
 
 if (-not (Test-Path $nssmDir)) {
