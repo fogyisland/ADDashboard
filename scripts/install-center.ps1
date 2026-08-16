@@ -5,12 +5,19 @@
 # register NSSM service, start service.
 [CmdletBinding()]
 param(
-  [string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center'),
+  [string]$InstallPath,
   [int]$ListenPort = 8080,
   [string]$AgentToken,   # generated if missing
   [string]$JwtSecret,    # generated if missing
   [switch]$InPlace       # green-bundle: install service pointing at <projectRoot>\center, no file copy
 )
+
+# $PSScriptRoot is empty in [CmdletBinding()] default param values (parameter
+# binding scope is a child of script scope; auto-vars only set in script scope).
+# Resolve default InstallPath in the body where $PSScriptRoot is available.
+if (-not $InstallPath) {
+  $InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center')
+}
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')

@@ -1,8 +1,16 @@
 [CmdletBinding()]
 param(
-  [string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center'),
+  [string]$InstallPath,
   [switch]$RemoveData
 )
+
+# $PSScriptRoot is empty in [CmdletBinding()] default param values (parameter
+# binding scope is a child of script scope; auto-vars only set in script scope).
+# Resolve default InstallPath in the body where $PSScriptRoot is available.
+if (-not $InstallPath) {
+  $InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Center')
+}
+
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force

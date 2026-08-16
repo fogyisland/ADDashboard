@@ -13,13 +13,20 @@ param(
   # who omit the param keep the pre-T16 behavior.
   [ValidateSet('ad','non-ad')]
   [string]$AgentType = 'ad',
-  [string]$InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'),
+  [string]$InstallPath,
   # Internal-use parameters for remote-install forwarding. When the script runs
   # in a remote session, $PSScriptRoot is null; we pre-resolve and pass these
   # explicitly so the scriptblock always knows where to copy from.
   [string]$AgentSrc,
   [string]$PsScriptSrc
 )
+
+# $PSScriptRoot is empty in [CmdletBinding()] default param values (parameter
+# binding scope is a child of script scope; auto-vars only set in script scope).
+# Resolve default InstallPath in the body where $PSScriptRoot is available.
+if (-not $InstallPath) {
+  $InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent')
+}
 
 # ============================================================================
 # Local / WinRM remote install for AD Dashboard Agent. As of v2.1+, this is
