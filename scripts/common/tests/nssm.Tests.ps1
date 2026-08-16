@@ -73,11 +73,11 @@ Describe 'Install-NssmService (refresh on existing)' {
   }
 }
 
-Describe 'Install-NssmService mirror sync (publish/scripts/common/NSSM.psm1)' {
+Describe 'Install-NssmService mirror sync (publish/system/scripts/common/NSSM.psm1)' {
   # Defence against the recurring "fix one, forget the other" failure mode.
   It 'publish mirror contains the same Install-NssmService body' {
     $canon = Get-Content "$PSScriptRoot/../NSSM.psm1" -Raw
-    $pub   = Get-Content "$PSScriptRoot/../../../publish/scripts/common/NSSM.psm1" -Raw
+    $pub   = Get-Content "$PSScriptRoot/../../../publish/system/scripts/common/NSSM.psm1" -Raw
     # The bug class was "Get-Service → return early". Mirror must contain the
     # fix shape: capture $existed AND call Set-NssmParameters outside the if.
     $canon | Should -Match '\$existed\s*=\s*Get-Service'

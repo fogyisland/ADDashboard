@@ -73,10 +73,10 @@ Describe 'install-center service recovery' {
     $serviceContent | Should -Not -Match 'AppExit\s+Restart\s*\|\s*Out-Null' `
       'Service.psm1 must NOT call bare `nssm set Name AppExit Restart` — NSSM 2.24 rejects this with "AppExit requires a subparameter!".'
     # Mirror sync.
-    $publishPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts\common') 'Service.psm1'
+    $publishPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts\common') 'Service.psm1'
     $publishContent = Get-Content $publishPath -Raw
     $publishContent | Should -Match 'AppExit\s+Default\s+Restart' `
-      'publish/scripts/common/Service.psm1 mirror out of sync — must contain "AppExit Default Restart".'
+      'publish/system/scripts/common/Service.psm1 mirror out of sync — must contain "AppExit Default Restart".'
   }
 
   It 'Set-ServiceRecovery helper in Service.psm1 configures Windows Service Recovery via sc.exe failure' {
@@ -84,8 +84,8 @@ Describe 'install-center service recovery' {
     $serviceContent | Should -Match 'sc\.exe\s+failure\s+\$Name'
     $serviceContent | Should -Match 'reset=\s*60'
     $serviceContent | Should -Match 'restart/5000/restart/10000/restart/30000'
-    # Mirror sync: publish/scripts/common/Service.psm1 must contain the same strings.
-    $publishServiceContent = Get-Content (Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts\common') 'Service.psm1') -Raw
+    # Mirror sync: publish/system/scripts/common/Service.psm1 must contain the same strings.
+    $publishServiceContent = Get-Content (Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts\common') 'Service.psm1') -Raw
     $publishServiceContent | Should -Match 'sc\.exe\s+failure\s+\$Name'
     $publishServiceContent | Should -Match 'reset=\s*60'
     $publishServiceContent | Should -Match 'restart/5000/restart/10000/restart/30000'
@@ -107,9 +107,9 @@ Describe 'install-center service recovery' {
       $content | Should -Match '\-Start\s+SERVICE_AUTO_START'  "$script must pass the enum name."
 
       # Mirror sync
-      $publishScript = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts') $script
+      $publishScript = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') $script
       $pub = Get-Content $publishScript -Raw
-      $pub | Should -Match '\-Start\s+SERVICE_AUTO_START'  "publish/$script mirror out of sync."
+      $pub | Should -Match '\-Start\s+SERVICE_AUTO_START'  "publish/system/$script mirror out of sync."
     }
   }
 
@@ -137,9 +137,9 @@ Describe 'install-center service recovery' {
         "$script must call Set-NssmLogDir to push the log dir into NSSM module scope."
 
       # Mirror sync
-      $publishScript = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts') $script
+      $publishScript = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') $script
       $pub = Get-Content $publishScript -Raw
-      $pub | Should -Match 'Set-NssmLogDir'  "publish/$script mirror out of sync."
+      $pub | Should -Match 'Set-NssmLogDir'  "publish/system/$script mirror out of sync."
     }
   }
 
@@ -148,7 +148,7 @@ Describe 'install-center service recovery' {
     # produce no stderr trace because pino's default async buffer drains
     # after process.exit(). These handlers + the sync destination together
     # guarantee any fatal exit lands a line on stderr before exit.
-    foreach ($tree in @('center','publish\center')) {
+    foreach ($tree in @('center','publish\system\center')) {
       $serverPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') $tree) 'server.js'
       $content = Get-Content $serverPath -Raw
       $content | Should -Match "process\.on\('uncaughtException'" `
@@ -160,7 +160,7 @@ Describe 'install-center service recovery' {
     }
     # Logger must use a sync destination. We can't read the runtime
     # destination object directly, so we assert the literal is present.
-    foreach ($tree in @('center','publish\center','agent','publish\agent')) {
+    foreach ($tree in @('center','publish\system\center','agent','publish\system\agent')) {
       $loggerPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') $tree) 'src\logger.js'
       $content = Get-Content $loggerPath -Raw
       $content | Should -Match 'pino\.destination\(' `
@@ -179,7 +179,7 @@ Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
   # reinstall whenever the hash changes.
   BeforeAll {
     $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
-    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\scripts') 'install-center.ps1'
+    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'install-center.ps1'
     $script:srcContent = Get-Content $script:installCenterPath -Raw
     $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
   }
@@ -230,7 +230,7 @@ Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
     $script:srcContent | Should -Not -Match "if\s*\(\s*-not\s+\(Test-Path\s+\(Join-Path\s+\$InstallPath\s+'node_modules'\)\)\)"
   }
 
-  It 'mirror sync: function block identical in publish/scripts/install-center.ps1' {
+  It 'mirror sync: function block identical in publish/system/scripts/install-center.ps1' {
     $extractBlock = {
       param($content)
       $start = $content.IndexOf("function Ensure-CenterNodeModules")
@@ -245,7 +245,7 @@ Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
     }
     $srcBlock = & $extractBlock $script:srcContent
     $pubBlock = & $extractBlock $script:pubContent
-    $pubBlock | Should -Be $srcBlock 'publish/scripts/install-center.ps1 mirror must match scripts/install-center.ps1 exactly.'
+    $pubBlock | Should -Be $srcBlock 'publish/system/scripts/install-center.ps1 mirror must match scripts/install-center.ps1 exactly.'
   }
 
   It 'defines $srcDir at script scope BEFORE the if (-not $InPlace) branch (regression guard)' {

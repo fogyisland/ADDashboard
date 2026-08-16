@@ -119,7 +119,7 @@ Describe 'plugin-system: mirror sync' {
   It 'metric tile components are mirrored to publish/' {
     foreach ($name in @('GaugeTile','CounterTile','TimeseriesTile','StatusTile')) {
       $srcPath = Join-Path $script:repoRoot "frontend\src\components\metrics\$name.vue"
-      $pubPath = Join-Path $script:repoRoot "publish\frontend\src\components\metrics\$name.vue"
+      $pubPath = Join-Path $script:repoRoot "publish\system\frontend\src\components\metrics\$name.vue"
       if (Test-Path $srcPath) {
         Test-Path $pubPath | Should -BeTrue "publish mirror missing for $name.vue"
         Get-Content $srcPath -Raw | Should -Be (Get-Content $pubPath -Raw) "mirror drift: $name.vue"
@@ -129,19 +129,19 @@ Describe 'plugin-system: mirror sync' {
 
   It 'MetricDashboardView is mirrored to publish/' {
     $src = Get-Content (Join-Path $script:repoRoot 'frontend\src\views\MetricDashboardView.vue') -Raw
-    $pub = Get-Content (Join-Path $script:repoRoot 'publish\frontend\src\views\MetricDashboardView.vue') -Raw
+    $pub = Get-Content (Join-Path $script:repoRoot 'publish\system\frontend\src\views\MetricDashboardView.vue') -Raw
     $pub | Should -Be $src 'MetricDashboardView mirror out of sync'
   }
 
   It 'AppLayout is mirrored to publish/' {
     $src = Get-Content (Join-Path $script:repoRoot 'frontend\src\components\AppLayout.vue') -Raw
-    $pub = Get-Content (Join-Path $script:repoRoot 'publish\frontend\src\components\AppLayout.vue') -Raw
+    $pub = Get-Content (Join-Path $script:repoRoot 'publish\system\frontend\src\components\AppLayout.vue') -Raw
     $pub | Should -Be $src 'AppLayout mirror out of sync'
   }
 
   It 'dashboard.js is mirrored to publish/' {
     $src = Get-Content (Join-Path $script:repoRoot 'center\src\routes\dashboard.js') -Raw
-    $pubPath = Join-Path $script:repoRoot 'publish\center\src\routes\dashboard.js'
+    $pubPath = Join-Path $script:repoRoot 'publish\system\center\src\routes\dashboard.js'
     if (Test-Path $pubPath) {
       $pub = Get-Content $pubPath -Raw
       $pub | Should -Be $src 'dashboard.js mirror out of sync'
@@ -152,7 +152,7 @@ Describe 'plugin-system: mirror sync' {
 
   It 'router.js is mirrored to publish/' {
     $src = Get-Content (Join-Path $script:repoRoot 'frontend\src\router.js') -Raw
-    $pubPath = Join-Path $script:repoRoot 'publish\frontend\src\router.js'
+    $pubPath = Join-Path $script:repoRoot 'publish\system\frontend\src\router.js'
     if (Test-Path $pubPath) {
       $pub = Get-Content $pubPath -Raw
       $pub | Should -Be $src 'router.js mirror out of sync'
