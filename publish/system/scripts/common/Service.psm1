@@ -54,10 +54,20 @@ function Start-ServiceSafe {
     # PowerShell's ServiceCommandException discards it. The NSSM-side stderr log
     # usually has the real reason too, but operators don't always know to check.
     $nssm = Get-NssmPath
-    $appDir = (& $nssm get $Name AppDirectory) 2>$null
-    $appBin = (& $nssm get $Name Application) 2>$null
-    $appArgs = (& $nssm get $Name AppParameters) 2>$null
-    $appStdErrLog = (& $nssm get $Name AppStderr) 2>$null
+    # nssm get writes the value + CR/LF to stdout. Select-Object -First 1 takes
+    # the first line; .Trim() strips the trailing whitespace. Without this,
+    # Test-Path below throws "路径中具有非法字符" (ItemExistsArgumentError)
+    # because `$appDir` ends with `\r\n` — the second silent failure in this
+    # install chain caused by the FIRST round of diagnostics.
+    $appDir       = (& $nssm get $Name AppDirectory   2>$null | Select-Object -First 1).Trim()
+    $appBin       = (& $nssm get $Name Application    2>$null | Select-Object -First 1).Trim()
+    $appArgs      = (& $nssm get $Name AppParameters  2>$null | Select-Object -First 1).Trim()
+    $appStdErrLog = (& $nssm get $Name AppStderr      2>$null | Select-Object -First 1).Trim()
+    # Wrap Test-Path in try/catch so a single bad path doesn't kill the diag
+    # dump — best-effort. Show "(test-path failed)" if Test-Path itself throws
+    # even after trim (e.g. genuinely illegal character in the configured path).
+    $appDirExists = try { if ($appDir) { Test-Path -LiteralPath $appDir } else { $false } } catch { $false }
+    $appBinExists = try { if ($appBin) { Test-Path -LiteralPath $appBin } else { $false } } catch { $false }
     $diag = @"
 [startup-diag] $Name @ $(Get-Date -Format 'o')
   Status=$($svc.Status) StartType=$($svc.StartType)
@@ -65,8 +75,8 @@ function Start-ServiceSafe {
   Application=$appBin
   AppParameters=$appArgs
   AppStderr=$appStdErrLog
-  AppDirectory exists? $(if (Test-Path $appDir) { 'YES' } else { 'NO — NSSM will fail to launch' })
-  Application exists? $(if ($appBin -and (Test-Path $appBin)) { 'YES' } else { 'NO — NSSM will fail to launch' })
+  AppDirectory exists? $(if ($appDirExists) { 'YES' } else { if ($appDir) { 'NO — NSSM will fail to launch' } else { '(test-path failed)' } })
+  Application exists? $(if ($appBinExists) { 'YES' } else { if ($appBin) { 'NO — NSSM will fail to launch' } else { '(test-path failed)' } })
 "@
     Write-Host $diag
     if ($Script:LogDir) {

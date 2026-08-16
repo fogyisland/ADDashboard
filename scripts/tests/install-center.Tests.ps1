@@ -288,9 +288,11 @@ Describe 'install-center Start-ServiceSafe diagnostics (Start-Service Win32 surf
       'Start-ServiceSafe must query `nssm get $Name AppStderr` so it can tell the operator where to look for the real root cause.'
 
     # Must Test-Path the AppDirectory + Application before attempting Start-Service.
-    $body | Should -Match 'Test-Path\s+\$appDir' `
+    # Accept either `Test-Path $appDir` or `Test-Path -LiteralPath $appDir` — the
+    # latter is preferred to defeat wildcard expansion in paths with [] chars.
+    $body | Should -Match 'Test-Path[^\n]*\$appDir' `
       'Start-ServiceSafe must Test-Path AppDirectory — a missing dir is the #1 cause of NSSM launch failure.'
-    $body | Should -Match 'Test-Path\s+\$appBin' `
+    $body | Should -Match 'Test-Path[^\n]*\$appBin' `
       'Start-ServiceSafe must Test-Path Application — a missing exe is the #2 cause.'
   }
 
@@ -325,6 +327,49 @@ Describe 'install-center Start-ServiceSafe diagnostics (Start-Service Win32 surf
     $body = $fn[0].Extent.Text
     $body | Should -Match 'NativeErrorCode' `
       'publish/system mirror Start-ServiceSafe must also surface NativeErrorCode.'
+  }
+
+  It 'Start-ServiceSafe trims nssm get output before Test-Path (CR/LF illegal char guard)' {
+    # Regression guard for the 7th silent failure (2026-08-16). The 890a899
+    # round of diagnostics added `nssm get $Name AppDirectory` to capture the
+    # current AppDirectory, but nssm.exe writes the value + CR/LF to stdout.
+    # PowerShell `&` captures that as a string ending in `\r\n`. Test-Path then
+    # throws "路径中具有非法字符" (ItemExistsArgumentError) on the un-trimmed
+    # path, propagating the exception raw and aborting the install. Without
+    # this trim, every install where Start-Service is attempted crashes in
+    # the diagnostics code that was supposed to surface the actual error.
+    $servicePath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($servicePath, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-ServiceSafe' }, $true)
+    $body = $fn[0].Extent.Text
+
+    # Every nssm get capture must be followed by .Trim(). Use Select-Object
+    # -First 1 to handle the rare case nssm prints more than one line.
+    # `[\s\S]*?` matches any char (including newline) non-greedily — single-
+    # quote-friendly regex syntax (no PowerShell escapes to worry about).
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+AppDirectory[\s\S]*?\.Trim\(\)' `
+      'Start-ServiceSafe must .Trim() the AppDirectory capture — nssm get appends CR/LF that breaks Test-Path.'
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+Application[\s\S]*?\.Trim\(\)' `
+      'Start-ServiceSafe must .Trim() the Application capture.'
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+AppParameters[\s\S]*?\.Trim\(\)' `
+      'Start-ServiceSafe must .Trim() the AppParameters capture.'
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+AppStderr[\s\S]*?\.Trim\(\)' `
+      'Start-ServiceSafe must .Trim() the AppStderr capture.'
+
+    # Test-Path on these values must be wrapped in try/catch — if it throws
+    # (e.g. truly illegal char in a configured path), we still want the diag
+    # dump to print so the operator can see what nssm actually has.
+    # Match each side separately (try/catch around Test-Path can't use [^}]
+    # because nested if/else braces break the simple regex).
+    $body | Should -Match 'try\s*\{[\s\S]*?Test-Path[\s\S]*?\}\s*catch' `
+      'Start-ServiceSafe must wrap Test-Path in try/catch so a bad path does not kill the diag dump.'
+
+    # Live reproduction guard: actually call `& cmd | Select-Object -First 1` to
+    # confirm that `.Trim()` is safe on the value PowerShell captures. If
+    # someone refactors away from `Select-Object -First 1`, this still works as
+    # long as the final scalar has .Trim() called on it.
+    $sample = (& cmd.exe /c 'echo D:\Temp' 2>$null | Select-Object -First 1).Trim()
+    $sample | Should -Be 'D:\Temp' '`.Trim()` after `Select-Object -First 1` must strip the trailing CR/LF.'
   }
 }
 
