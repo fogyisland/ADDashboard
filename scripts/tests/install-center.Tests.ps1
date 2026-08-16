@@ -384,4 +384,24 @@ Describe 'install-center HTTP readiness probe (Wait-ForHttpOk)' {
       'publish mirror must use Wait-ForHttpOk — runtime bundle is what users actually run.'
     $script:pubContent | Should -Match '\$probeUrl\s*=\s*"http://localhost:\$ListenPort/api/init/status"'
   }
+
+  It 'Wait-ForHttpOk is self-contained — works without Logger.psm1 pre-imported' {
+    # Regression: a previous version called Write-Info (Logger.psm1 export).
+    # When Logger isn't pre-imported, Write-Info throws CommandNotFoundException
+    # which the outer try/catch swallows, making the function silently return $false
+    # even when the probe succeeded. install-center.ps1 sets $ErrorActionPreference=Stop
+    # and only imports Logger AFTER importing Service — so this helper must not
+    # depend on Logger being in scope. Use Write-Host (always available) instead.
+    # Note: Set-ServiceRecovery also uses Write-Info but Logger IS imported first
+    # by install-center.ps1, so it's safe there. This test scopes to Wait-ForHttpOk only.
+    $serviceModule = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $svcContent = Get-Content $serviceModule -Raw
+    # Extract the Wait-ForHttpOk function block via AST.
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($serviceModule, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Wait-ForHttpOk' }, $true)
+    $fn | Should -Not -BeNullOrEmpty 'Wait-ForHttpOk function must exist'
+    $fnText = $fn[0].Extent.Text
+    $fnText | Should -Not -Match '(?m)^\s*Write-Info\s' `
+      'Wait-ForHttpOk must NOT call Write-Info — it can throw CommandNotFoundException when Logger.psm1 is not pre-imported, silently making the function always return $false. Use Write-Host instead.'
+  }
 }

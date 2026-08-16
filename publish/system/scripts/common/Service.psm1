@@ -5,6 +5,12 @@ function Wait-ForHttpOk {
   # + bind the listening socket, which is 2-15s on cold cache. Without this
   # wait the install script's "probe health" call races the boot and prints
   # "unreachable" even though the service is fine.
+  #
+  # Self-contained: does NOT call Write-Info (Logger.psm1 isn't always in
+  # scope at import time and a missing command throws a CommandNotFoundException
+  # that the outer catch swallows — making the function silently return $false
+  # even when the probe succeeded). Inline Write-Host with the same prefix
+  # is fine; install-center.ps1 routes Logger output the same way.
   param(
     [Parameter(Mandatory)][string]$Url,
     [int]$TimeoutSeconds = 30,
@@ -17,7 +23,7 @@ function Wait-ForHttpOk {
     try {
       $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
       if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
-        Write-Info "http probe: $Url returned $($resp.StatusCode) on attempt $attempt"
+        Write-Host "[INFO] http probe: $Url returned $($resp.StatusCode) on attempt $attempt"
         return $true
       }
     } catch {
