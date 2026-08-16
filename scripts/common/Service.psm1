@@ -1,3 +1,33 @@
+function Wait-ForHttpOk {
+  # Poll a local URL until it returns 2xx (or any HTTP response — the server
+  # binding the port is the signal we want). Service "Running" in SCM only
+  # means NSSM launched the node process; Express still has to load modules
+  # + bind the listening socket, which is 2-15s on cold cache. Without this
+  # wait the install script's "probe health" call races the boot and prints
+  # "unreachable" even though the service is fine.
+  param(
+    [Parameter(Mandatory)][string]$Url,
+    [int]$TimeoutSeconds = 30,
+    [int]$IntervalSeconds = 1
+  )
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $attempt = 0
+  while ((Get-Date) -lt $deadline) {
+    $attempt++
+    try {
+      $resp = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
+      if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
+        Write-Info "http probe: $Url returned $($resp.StatusCode) on attempt $attempt"
+        return $true
+      }
+    } catch {
+      # Connection refused / timeout — server still booting. Keep polling.
+    }
+    Start-Sleep $IntervalSeconds
+  }
+  return $false
+}
+
 # Requires NSSM.psm1 to be imported first (uses Get-NssmPath).
 function Start-ServiceSafe {
   param([Parameter(Mandatory)][string]$Name, [int]$WaitSeconds = 15)

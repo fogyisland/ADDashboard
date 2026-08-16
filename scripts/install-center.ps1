@@ -165,7 +165,17 @@ if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   exit 1
 }
 
-# 6. Probe health (server boots in init mode if appsettings.json missing → /init responds)
-$health = try { (Invoke-WebRequest -Uri "http://localhost:$ListenPort/api/init/status" -UseBasicParsing -TimeoutSec 10).Content } catch { "unreachable: $($_.Exception.Message)" }
-Write-Ok "init status: $health"
-Write-Ok "open browser to: http://localhost:$ListenPort/init to complete application initialization"
+# 6. Probe health — wait for HTTP to come up instead of single-shot. SCM
+# "Running" only means NSSM launched node; Express still needs to bind the
+# port (cold cache: 2-15s). Wait-ForHttpOk polls until 2xx or 30s timeout.
+$probeUrl = "http://localhost:$ListenPort/api/init/status"
+if (Wait-ForHttpOk -Url $probeUrl -TimeoutSeconds 30 -IntervalSeconds 1) {
+  $health = try { (Invoke-WebRequest -Uri $probeUrl -UseBasicParsing -TimeoutSec 5).Content } catch { "unreachable: $($_.Exception.Message)" }
+  Write-Ok "init status: $health"
+  Write-Ok "open browser to: http://localhost:$ListenPort/init to complete application initialization"
+} else {
+  # Service is up (Start-ServiceSafe returned true) but HTTP didn't bind in time.
+  # Don't fail the install — log a clear warning instead. The browser will retry.
+  Write-Info "service started but HTTP probe at $probeUrl did not return 2xx within 30s"
+  Write-Info "this usually means Express is still loading modules; check $(Join-Path $Script:LogDir 'ADDashboardCenter-stderr.log') and try http://localhost:$ListenPort/init in a few seconds"
+}

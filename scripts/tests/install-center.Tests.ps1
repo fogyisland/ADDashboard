@@ -322,3 +322,66 @@ Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
     $srcDirIdx | Should -BeLessThan $ifIdx '$srcDir must be defined BEFORE the if (-not $InPlace) branch so both install paths see it.'
   }
 }
+
+Describe 'install-center HTTP readiness probe (Wait-ForHttpOk)' {
+  # Regression for the silent failure chain: NSSM "Running" != HTTP ready.
+  # Cold cache (modules loading, DB pool init, route mount) takes 2-15s
+  # before Express binds the listening socket. A single Invoke-WebRequest
+  # immediately after Start-ServiceSafe races the boot and prints
+  # "init status: unreachable: 无法连接到远程服务器" even though the
+  # service is fine. Wait-ForHttpOk polls up to 30s and is the only way
+  # to make the install's success message trustworthy.
+  BeforeAll {
+    $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
+    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'install-center.ps1'
+    $script:srcContent = Get-Content $script:installCenterPath -Raw
+    $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
+  }
+
+  It 'Wait-ForHttpOk helper is defined in scripts/common/Service.psm1 (source tree)' {
+    $serviceModule = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $svcContent = Get-Content $serviceModule -Raw
+    $svcContent | Should -Match 'function Wait-ForHttpOk' `
+      'scripts/common/Service.psm1 must define Wait-ForHttpOk — install-center.ps1 imports it. Without it the install-center probe races the boot and prints "unreachable" on cold cache.'
+  }
+
+  It 'Wait-ForHttpOk helper is mirrored in publish/system/scripts/common/Service.psm1' {
+    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+    $serviceModule = Join-Path $repoRoot 'publish\system\scripts\common\Service.psm1'
+    $svcContent = Get-Content $serviceModule -Raw
+    $svcContent | Should -Match 'function Wait-ForHttpOk' `
+      'publish mirror missing Wait-ForHttpOk — runtime bundle will silently race the HTTP probe.'
+  }
+
+  It 'install-center.ps1 polls HTTP via Wait-ForHttpOk (not single-shot Invoke-WebRequest)' {
+    $script:srcContent | Should -Match 'Wait-ForHttpOk\s+-Url\s+\$probeUrl' `
+      'install-center.ps1 must use Wait-ForHttpOk to poll HTTP readiness. Single-shot Invoke-WebRequest after Start-ServiceSafe races the boot and prints "unreachable" even when the service is fine.'
+    $script:srcContent | Should -Match '\$probeUrl\s*=\s*"http://localhost:\$ListenPort/api/init/status"' `
+      'probe URL must be the actual init status endpoint with the configured port.'
+  }
+
+  It 'install-center.ps1 does NOT single-shot probe right after Start-ServiceSafe' {
+    # The bug: a bare `try { Invoke-WebRequest ... } catch { unreachable ... }` immediately
+    # after Start-ServiceSafe returns. With this pattern the install script always reports
+    # "unreachable" on cold cache (2-15s boot) even though the service binds successfully.
+    $content = $script:srcContent
+    $startIdx = $content.IndexOf('Start-ServiceSafe -Name ''ADDashboardCenter''')
+    $waitIdx = $content.IndexOf('Wait-ForHttpOk -Url $probeUrl')
+    $startIdx | Should -BeGreaterThan -1 'Start-ServiceSafe call must exist'
+    $waitIdx | Should -BeGreaterThan -1 'Wait-ForHttpOk call must exist'
+    $waitIdx | Should -BeGreaterThan $startIdx 'Wait-ForHttpOk must come AFTER Start-ServiceSafe (it polls the URL the service is supposed to bind)'
+  }
+
+  It 'install-center.ps1 on Wait-ForHttpOk timeout logs a clear warning instead of failing' {
+    # Important: don't fail the install if HTTP just hasn't bound yet — the
+    # service is up per SCM. Log a clear warning so the operator knows to retry.
+    $script:srcContent | Should -Match 'Write-Info.*did not return 2xx within 30s' `
+      'timeout branch must log a clear warning, not call Write-Err2 / exit 1 — service is up, HTTP just slow.'
+  }
+
+  It 'mirror sync: publish/system/scripts/install-center.ps1 uses Wait-ForHttpOk too' {
+    $script:pubContent | Should -Match 'Wait-ForHttpOk\s+-Url\s+\$probeUrl' `
+      'publish mirror must use Wait-ForHttpOk — runtime bundle is what users actually run.'
+    $script:pubContent | Should -Match '\$probeUrl\s*=\s*"http://localhost:\$ListenPort/api/init/status"'
+  }
+}
