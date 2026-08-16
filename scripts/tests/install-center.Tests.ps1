@@ -231,6 +231,103 @@ Describe 'install-center service recovery' {
   }
 }
 
+Describe 'install-center Start-ServiceSafe diagnostics (Start-Service Win32 surfacing)' {
+  # Regression guard for the 6th silent failure (2026-08-16). User reported:
+  #   Start-Service : 无法启动服务"AD Replication Dashboard Center (ADDashboardCenter)".
+  # at Service.psm1:41. The exception was propagated raw with no Win32 code
+  # surfaced, no stderr log hint, and no diagnostic dump of NSSM AppDirectory/
+  # Application. Operators couldn't tell whether the failure was a missing dir,
+  # missing exe, bad PATH, or something else. The fix adds pre-flight diagnostics
+  # + try/catch surfacing of NativeErrorCode. This test locks in that contract.
+  It 'Start-ServiceSafe is defined in Service.psm1 (source tree)' {
+    $servicePath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    Test-Path $servicePath | Should -BeTrue
+  }
+
+  It 'Start-ServiceSafe wraps Start-Service in try/catch and surfaces InnerException' {
+    # AST-scope the check to the Start-ServiceSafe function body to avoid
+    # matching unrelated catch blocks. The Iron Law: any helper that calls
+    # a cmdlet which can throw ServiceCommandException MUST catch and surface
+    # the actual Win32 code — raw re-throw hides the real cause.
+    $servicePath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($servicePath, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-ServiceSafe' }, $true)
+    $fn.Count | Should -BeGreaterThan 0 'Start-ServiceSafe must be defined in Service.psm1'
+    $body = $fn[0].Extent.Text
+
+    # Must contain a try-block wrapping Start-Service AND a catch block.
+    $body | Should -Match 'try\s*\{[^}]*Start-Service' `
+      'Start-ServiceSafe must wrap Start-Service in try { ... } to catch ServiceCommandException.'
+    $body | Should -Match 'catch\s*\{' `
+      'Start-ServiceSafe must have a catch block on the Start-Service call.'
+
+    # Must surface InnerException.Message (PowerShell wraps the real cause).
+    $body | Should -Match 'InnerException\.Message' `
+      'Start-ServiceSafe catch block must read $_.Exception.InnerException.Message — Start-Service wraps the real Win32 error in InnerException.'
+
+    # Must surface NativeErrorCode (the actual Win32 error code that Start-Service swallows).
+    $body | Should -Match 'NativeErrorCode' `
+      'Start-ServiceSafe catch block must read NativeErrorCode — the actual Win32 error code is the only thing that distinguishes ERROR_PATH_NOT_FOUND (3) from ERROR_FILE_NOT_FOUND (2) from ERROR_SERVICE_ALREADY_RUNNING (1056).'
+  }
+
+  It 'Start-ServiceSafe pre-flight dumps NSSM AppDirectory / Application / AppStderr' {
+    # Without the pre-flight dump, the operator sees only "Start-Service failed"
+    # and has no idea whether NSSM was configured wrong. The diag dump is what
+    # makes the failure self-explanatory.
+    $servicePath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($servicePath, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-ServiceSafe' }, $true)
+    $body = $fn[0].Extent.Text
+
+    # Must query NSSM for AppDirectory / Application / AppStderr before trying to start.
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+AppDirectory' `
+      'Start-ServiceSafe must query `nssm get $Name AppDirectory` for diagnostics.'
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+Application' `
+      'Start-ServiceSafe must query `nssm get $Name Application` for diagnostics.'
+    $body | Should -Match 'nssm\s+get\s+\$Name\s+AppStderr' `
+      'Start-ServiceSafe must query `nssm get $Name AppStderr` so it can tell the operator where to look for the real root cause.'
+
+    # Must Test-Path the AppDirectory + Application before attempting Start-Service.
+    $body | Should -Match 'Test-Path\s+\$appDir' `
+      'Start-ServiceSafe must Test-Path AppDirectory — a missing dir is the #1 cause of NSSM launch failure.'
+    $body | Should -Match 'Test-Path\s+\$appBin' `
+      'Start-ServiceSafe must Test-Path Application — a missing exe is the #2 cause.'
+  }
+
+  It 'Start-ServiceSafe uses Write-Host (NOT Logger exports) — module helper contract' {
+    # Same lesson as Wait-ForHttpOk (see feedback_powershell_module_write_info.md):
+    # common/*.psm1 helpers must not call Write-Info etc. because Logger may
+    # not be in scope, and a CommandNotFoundException thrown inside the
+    # helper's try/catch will be silently swallowed.
+    $servicePath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($servicePath, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-ServiceSafe' }, $true)
+    $body = $fn[0].Extent.Text
+    $body | Should -Not -Match '(?m)^\s*Write-(Info|Step|Ok|Err2)\s' `
+      'Start-ServiceSafe must not call Logger exports (Write-Info etc.) — common/*.psm1 helpers must use Write-Host. See feedback_powershell_module_write_info.md.'
+  }
+
+  It 'Start-ServiceSafe diagnostics are mirrored to publish/system/scripts/common/Service.psm1' {
+    # Mirror sync guard — install-center.ps1 + install scripts run from
+    # publish/system/scripts/ in production. Without mirror sync the
+    # improved diagnostics are useless to the user.
+    $publishPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts\common') 'Service.psm1'
+    $sourcePath  = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'Service.psm1'
+    $sourceContent  = Get-Content $sourcePath  -Raw
+    $publishContent = Get-Content $publishPath -Raw
+    # Source and publish must be byte-identical for this file.
+    ($sourceContent -eq $publishContent) | Should -BeTrue `
+      'publish/system/scripts/common/Service.psm1 must be byte-identical to scripts/common/Service.psm1 — the mirror is what production runs.'
+
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($publishPath, [ref]$null, [ref]$null)
+    $fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-ServiceSafe' }, $true)
+    $fn.Count | Should -BeGreaterThan 0 'Start-ServiceSafe must be defined in publish/system/scripts/common/Service.psm1 too.'
+    $body = $fn[0].Extent.Text
+    $body | Should -Match 'NativeErrorCode' `
+      'publish/system mirror Start-ServiceSafe must also surface NativeErrorCode.'
+  }
+}
+
 Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
   # Regression guard for the "only install if node_modules missing" bug. The
   # old guard skipped npm install when node_modules already existed, leaving

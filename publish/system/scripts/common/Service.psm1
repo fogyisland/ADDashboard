@@ -37,8 +37,55 @@ function Wait-ForHttpOk {
 # Requires NSSM.psm1 to be imported first (uses Get-NssmPath).
 function Start-ServiceSafe {
   param([Parameter(Mandatory)][string]$Name, [int]$WaitSeconds = 15)
-  if ((Get-Service -Name $Name -ErrorAction SilentlyContinue).Status -ne 'Running') {
-    Start-Service -Name $Name -ErrorAction Stop
+  $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+  if (-not $svc) {
+    Write-Host "[ERR] Start-ServiceSafe: service '$Name' is not registered. Run Install-NssmService first."
+    return $false
+  }
+  if ($svc.Status -eq 'Running') { return $true }
+  if ($svc.Status -eq 'StartPending') {
+    # Another caller is already starting the service. Wait for it instead of issuing
+    # a second Start-Service (which can fail with "service already starting").
+    Write-Host "[INFO] Start-ServiceSafe: $Name is StartPending; waiting for it to reach Running"
+  } else {
+    # Pre-flight: dump the NSSM parameters so the failure log makes the actual cause
+    # obvious. Start-Service's generic "cannot start service" wraps a useful Win32
+    # error code (e.g. ERROR_PATH_NOT_FOUND = 3 when AppDirectory is missing), but
+    # PowerShell's ServiceCommandException discards it. The NSSM-side stderr log
+    # usually has the real reason too, but operators don't always know to check.
+    $nssm = Get-NssmPath
+    $appDir = (& $nssm get $Name AppDirectory) 2>$null
+    $appBin = (& $nssm get $Name Application) 2>$null
+    $appArgs = (& $nssm get $Name AppParameters) 2>$null
+    $appStdErrLog = (& $nssm get $Name AppStderr) 2>$null
+    $diag = @"
+[startup-diag] $Name @ $(Get-Date -Format 'o')
+  Status=$($svc.Status) StartType=$($svc.StartType)
+  AppDirectory=$appDir
+  Application=$appBin
+  AppParameters=$appArgs
+  AppStderr=$appStdErrLog
+  AppDirectory exists? $(if (Test-Path $appDir) { 'YES' } else { 'NO — NSSM will fail to launch' })
+  Application exists? $(if ($appBin -and (Test-Path $appBin)) { 'YES' } else { 'NO — NSSM will fail to launch' })
+"@
+    Write-Host $diag
+    if ($Script:LogDir) {
+      $diagFile = Join-Path $Script:LogDir "$Name-startup-diag.log"
+      Add-Content -Path $diagFile -Value $diag -ErrorAction SilentlyContinue
+    }
+    try {
+      Start-Service -Name $Name -ErrorAction Stop
+    } catch {
+      $msg = $_.Exception.InnerException.Message
+      if (-not $msg) { $msg = $_.Exception.Message }
+      $win32 = ''
+      if ($_.Exception.InnerException -and $_.Exception.InnerException.GetType().FullName -match 'Win32Exception') {
+        $win32 = " (Win32: $($_.Exception.InnerException.NativeErrorCode))"
+      }
+      Write-Host "[ERR] Start-Service failed for $Name : $msg$win32"
+      Write-Host "[ERR] Check NSSM stderr log at: $appStdErrLog (most likely root cause lives there)"
+      return $false
+    }
   }
   for ($i=0; $i -lt $WaitSeconds; $i++) {
     if ((Get-Service -Name $Name).Status -eq 'Running') { return $true }
