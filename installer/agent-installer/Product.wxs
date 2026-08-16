@@ -59,11 +59,14 @@
     -->
 
     <!--
-      Block install on anything below Windows 10 / Server 2016 (both report
-      VersionNT64 = 1000). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt
+      Block install on anything below Windows 7 / Server 2008 R2 (both report
+      VersionNT = 601). See https://learn.microsoft.com/en-us/windows/win32/msi/versionnt.
+      Floor rationale: MSI is x64-only; Node 20 LTS requires Win7+/2008 R2+; NSSM
+      + .NET 8 runtime require the same floor. Using VersionNT (not VersionNT64)
+      keeps the check uniform across 32-bit and 64-bit OS contexts.
     -->
-    <Launch Message="AD Dashboard Agent requires Windows 10 / Server 2016+ (Server 2019 / 2022 / 2025) (x64)."
-            Condition="Installed OR VersionNT64 &gt;= 1000" />
+    <Launch Message="AD Dashboard Agent requires Windows 7 / Server 2008 R2 or later (x64)."
+            Condition="Installed OR VersionNT &gt;= 601" />
 
     <Media Id="1" Cabinet="agent" EmbedCab="yes" CompressionLevel="high" />
 
