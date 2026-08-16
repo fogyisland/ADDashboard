@@ -40,7 +40,13 @@ BEGIN
   FROM sys_roles r, nums n
   WHERE r.permissions IS NOT NULL
     AND ISJSON(r.permissions) = 1
-    AND JSON_LENGTH(r.permissions) > n.n
+    -- MSSQL has no JSON_LENGTH; the same "is this index in range" guard is
+    -- `JSON_VALUE(...) IS NOT NULL`. The path lookup returns NULL for an
+    -- out-of-range index (and for any non-array JSON), so the row is skipped.
+    -- JSON_VALUE is duplicated in SELECT + WHERE (SQL has no row-local alias
+    -- for SELECT expressions in WHERE); the cost is one extra JSON parse per
+    -- role × index pair — acceptable because sys_roles is a handful of rows.
+    AND JSON_VALUE(r.permissions, '$[' + CAST(n.n AS NVARCHAR(3)) + ']') IS NOT NULL
   OPTION (MAXRECURSION 100);
 END;
 

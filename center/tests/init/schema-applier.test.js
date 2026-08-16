@@ -125,6 +125,13 @@ test('splitSqlStatements handles MSSQL migration 002 (CTE-based JSON unwrap)', (
   assert.ok(cteStmt, 'expected a single CTE-driven INSERT statement');
   assert.doesNotMatch(cteStmt, /RECURSIVE/, 'MSSQL does not use the RECURSIVE keyword');
   assert.match(cteStmt, /JSON_VALUE\(r\.permissions/);
+  // Bug fixed 2026-08-16: previous version used `JSON_LENGTH(r.permissions) > n.n`
+  // — that's a MySQL-only function; MSSQL returns
+  // "is not a recognized built-in function name" when the upgrade-path IF
+  // block actually executes (i.e. legacy sys_roles.permissions column exists
+  // and role_permissions is empty). Guard against the regression so future
+  // edits don't reintroduce MySQL-only functions in the MSSQL dialect file.
+  assert.doesNotMatch(cteStmt, /JSON_LENGTH/, 'MSSQL does not have JSON_LENGTH — use JSON_VALUE(...) IS NOT NULL for "index in range" check.');
   // Legacy column drop, guarded by COL_LENGTH check
   assert.ok(stmts.some(s => /ALTER TABLE sys_roles DROP COLUMN permissions/.test(s)));
 });
