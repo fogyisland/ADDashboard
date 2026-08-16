@@ -390,7 +390,7 @@ const VARIANTS = {
       create: 'INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?)',
       upsert: `MERGE INTO ad_sites AS t USING (SELECT ? AS site_name, ? AS region_code, ? AS is_hub, ? AS description) AS s ON t.site_name = s.site_name WHEN MATCHED THEN UPDATE SET region_code = s.region_code, is_hub = s.is_hub, description = s.description WHEN NOT MATCHED THEN INSERT (site_name, region_code, is_hub, description) VALUES (s.site_name, s.region_code, s.is_hub, s.description);`,
       update: 'UPDATE ad_sites SET site_name = ?, region_code = ?, is_hub = ?, description = ? WHERE site_id = ?',
-      updatePartial: (fields) => `UPDATE ad_sites SET ${fields.map((_, i) => fields[i].replace(/\?/g, `@p${i + 1}`)).join(', ')} WHERE site_id = @p${fields.length + 1}`,
+      updatePartial: (fields) => `UPDATE ad_sites SET ${fields.join(', ')} WHERE site_id = ?`,
       delete: 'DELETE FROM ad_sites WHERE site_id = ?',
       unbindDcs: 'UPDATE ad_dcs SET site_id = NULL WHERE site_id = ?'
     },
@@ -449,12 +449,12 @@ const VARIANTS = {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
       listForAgent: `SELECT sp.port, sp.label, aps.ok, aps.latency_ms AS latencyMs, aps.last_checked_at AS lastCheckedAt
         FROM system_ports sp
-        INNER JOIN ad_agent_port_status aps ON aps.port = sp.port AND aps.agent_id = @p1
+        INNER JOIN ad_agent_port_status aps ON aps.port = sp.port AND aps.agent_id = ?
         ORDER BY sp.sort_order, sp.port`,
-      create: 'INSERT INTO system_ports (port, label, sort_order) VALUES (@p1, @p2, @p3)',
-      findByPort: 'SELECT id FROM system_ports WHERE port = @p1',
-      updatePartial: (fields) => `UPDATE system_ports SET ${fields.join(', ')} WHERE id = @p${fields.length + 1}`,
-      delete: 'DELETE FROM system_ports WHERE id = @p1'
+      create: 'INSERT INTO system_ports (port, label, sort_order) VALUES (?, ?, ?)',
+      findByPort: 'SELECT id FROM system_ports WHERE port = ?',
+      updatePartial: (fields) => `UPDATE system_ports SET ${fields.join(', ')} WHERE id = ?`,
+      delete: 'DELETE FROM system_ports WHERE id = ?'
     },
     portStatus: {
       // MSSQL uses MERGE for atomic upsert (no native ON DUPLICATE KEY).

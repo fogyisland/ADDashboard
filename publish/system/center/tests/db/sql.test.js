@@ -51,12 +51,12 @@ test('mysql: ports.updatePartial builds SET clauses with ?', () => {
   assert.match(sql, /SET port = \?, label = \? WHERE id = \?/);
 });
 
-test('mssql: ports.updatePartial caller is responsible for ? → @pN', () => {
-  // updatePartial itself just joins the field clauses; the caller substitutes
-  // placeholders. (The mssql versions of CREATE / DELETE stay in `?` form
-  // because db.execute remaps them per-adapter.)
-  const sql = buildSql('mssql').ports.updatePartial(['port = @p1', 'label = @p2']);
-  assert.match(sql, /SET port = @p1, label = @p2 WHERE id = @p3/);
+test('mssql: ports.updatePartial joins caller ? clauses + adds WHERE id = ?', () => {
+  // T2 fix: caller passes `?`-semantic field clauses; updatePartial joins them
+  // and appends `WHERE id = ?`. The driver's rewritePlaceholders then maps
+  // every ? to @pN uniformly.
+  const sql = buildSql('mssql').ports.updatePartial(['port = ?', 'label = ?']);
+  assert.match(sql, /SET port = \?, label = \? WHERE id = \?/);
 });
 
 test('mysql: portStatus.upsertOne uses ON DUPLICATE KEY UPDATE on (agent_id, port)', () => {
@@ -130,4 +130,22 @@ test('mssql dashboard.dcReplicationLinks uses DATEDIFF_BIG SECOND / 60.0', () =>
   assert.doesNotMatch(sql, /DATEDIFF\s*\(\s*MINUTE/i);
   assert.match(sql, /DATEDIFF_BIG\s*\(\s*SECOND/i);
   assert.match(sql, /\/ 60/i);
+});
+
+// --- T2: sites.updatePartial + ports.* hand-rolled @pN → ? ---
+
+test('mssql sites.updatePartial uses ? placeholders (not hand-rolled @pN)', () => {
+  const sql = buildSql('mssql').sites.updatePartial(['site_name = ?', 'region_code = ?']);
+  assert.doesNotMatch(sql, /@p\d/i);
+  // It IS an UPDATE, so isInsert heuristic doesn't fire — no SCOPE_IDENTITY probe
+  assert.match(sql, /UPDATE\s+ad_sites/i);
+});
+
+test('mssql ports.* queries use ? placeholders', () => {
+  const ports = buildSql('mssql').ports;
+  for (const [name, val] of Object.entries(ports)) {
+    // updatePartial is a function — invoke it with a sample fields array to get a string
+    const sql = typeof val === 'function' ? val(['port = ?', 'label = ?']) : val;
+    assert.doesNotMatch(sql, /@p\d/i, `ports.${name} contains hand-rolled @pN`);
+  }
 });
