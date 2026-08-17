@@ -90,3 +90,54 @@ test('POST /api/admin/dcs-catalog/bulk-assign: 401 without token', async () => {
     .send({ rows: [{ dcName: 'DC01', siteName: 'X' }] });
   assert.equal(r.status, 401);
 });
+
+// C2 fix: bulk-assign must enroll the whole loop in one tx and write
+// per-row audit + summary audit atomically with the data writes. Before
+// the fix, mid-loop failure left partial state and only a summary count
+// was audited.
+test('POST /api/admin/dcs-catalog/bulk-assign: writes per-row audit + summary audit inside the same tx', async () => {
+  const records = [];
+  const db = buildMockDb([
+    { match: /SELECT\s+site_id\s+FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i, rows: (params) => [{ site_id: 11 }] },
+    { match: /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*\?\s+WHERE\s+dc_name\s*=\s*\?/i, rows: [] }
+  ]).withRecording(records);
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .post('/api/admin/dcs-catalog/bulk-assign')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ rows: [
+      { dcName: 'DC01', siteName: 'Site-A' },
+      { dcName: 'DC02', siteName: 'Site-B' }
+    ] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.assigned, 2);
+  // 2 per-row audit rows + 1 summary audit row = 3 audit_logs INSERTs
+  const auditInserts = records.filter(rec => /INSERT\s+INTO\s+audit_logs/i.test(rec.sql));
+  assert.equal(auditInserts.length, 3, 'expected 3 audit_logs INSERTs (2 per-row + 1 summary)');
+  const perRowActions = auditInserts.map(rec => rec.params[1]);
+  assert.deepEqual(perRowActions.slice(0, 2), ['bulk_assign_dc_site_row', 'bulk_assign_dc_site_row']);
+  assert.equal(perRowActions[2], 'bulk_assign_dc_sites');
+  assert.equal(auditInserts[0].params[2], 'DC01');
+  assert.equal(auditInserts[1].params[2], 'DC02');
+});
+
+test('POST /api/admin/dcs-catalog/bulk-assign: unbind writes audit row inside tx', async () => {
+  const records = [];
+  const db = buildMockDb([
+    { match: /SELECT\s+site_id\s+FROM\s+ad_sites\s+WHERE\s+site_name\s*=\s*\?/i, rows: [] },
+    { match: /UPDATE\s+ad_dcs\s+SET\s+site_id\s*=\s*NULL\s+WHERE\s+dc_name\s*=\s*\?/i, rows: [] }
+  ]).withRecording(records);
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .post('/api/admin/dcs-catalog/bulk-assign')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ rows: [{ dcName: 'DC01', siteName: '' }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.unassigned, 1);
+  // 1 unbind audit row + 1 summary audit row
+  const auditInserts = records.filter(rec => /INSERT\s+INTO\s+audit_logs/i.test(rec.sql));
+  assert.equal(auditInserts.length, 2);
+  assert.equal(auditInserts[0].params[1], 'bulk_assign_dc_unbound');
+  assert.equal(auditInserts[0].params[2], 'DC01');
+  assert.equal(auditInserts[1].params[1], 'bulk_assign_dc_sites');
+});

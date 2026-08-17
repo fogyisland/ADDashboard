@@ -10,7 +10,10 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['delete_user',            'security'],
   ['update_config',          'changes'],
   ['bulk_import_sites',      'changes'],
+  ['bulk_import_site_row',   'changes'],
   ['bulk_assign_dc_sites',   'changes'],
+  ['bulk_assign_dc_site_row','changes'],
+  ['bulk_assign_dc_unbound', 'changes'],
   ['apply_migration',        'changes'],
   ['reset_failed_migration', 'changes']
 ]));
@@ -23,7 +26,10 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['delete_user',            'high'],
   ['update_config',          'medium'],
   ['bulk_import_sites',      'medium'],
+  ['bulk_import_site_row',   'low'],
   ['bulk_assign_dc_sites',   'medium'],
+  ['bulk_assign_dc_site_row','low'],
+  ['bulk_assign_dc_unbound', 'low'],
   ['apply_migration',        'medium'],
   ['reset_failed_migration', 'medium']
 ]));
@@ -36,7 +42,10 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['delete_user',            '删除用户'],
   ['update_config',          '修改系统配置'],
   ['bulk_import_sites',      '批量导入站点'],
+  ['bulk_import_site_row',   '批量导入站点(行)'],
   ['bulk_assign_dc_sites',   '批量分配 DC 站点'],
+  ['bulk_assign_dc_site_row','批量分配 DC 站点(行)'],
+  ['bulk_assign_dc_unbound', '批量解绑 DC 站点'],
   ['apply_migration',        '应用迁移'],
   ['reset_failed_migration', '重置失败迁移']
 ]));

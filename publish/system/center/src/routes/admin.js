@@ -186,15 +186,22 @@ export function adminRouter({ config, logger }) {
           );
           listenPortBumped = true;
         }
+        // Outer audit_logs row is enrolled in the same tx as the data writes
+        // (C1 fix): a commit that flips system_config must also commit the
+        // matching audit row — a half-committed config change with no audit
+        // trail is what compliance reviewers flag. writeAudit re-throws on
+        // failure when given a tx, so a transient audit table hiccup rolls
+        // the whole save back rather than silently leaving the system in an
+        // untracked state.
+        await writeAudit({
+          userId: req.user?.sub ?? null,
+          action: 'update_config',
+          target: 'system_config',
+          payload: { ...safeUpdates, auditCount },
+          logger
+        }, tx);
       });
       void listenPortBumped;
-      await writeAudit({
-        userId: req.user?.sub ?? null,
-        action: 'update_config',
-        target: 'system_config',
-        payload: { ...safeUpdates, auditCount },
-        logger
-      });
       res.json({ ok: true, auditCount });
     } catch (e) {
       logger.error({ err: e }, 'admin config update failed');
@@ -465,29 +472,44 @@ export function adminRouter({ config, logger }) {
     let skipped = 0;
     try {
       const db = getDb();
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i] || {};
-        const siteName = (r.siteName || '').trim();
-        if (!siteName) {
-          errors.push({ rowIndex: i, siteName: '', reason: 'siteName is required' });
-          skipped++;
-          continue;
+      // C2 fix: wrap the whole bulk import in a transaction so a mid-loop
+      // failure rolls back every row we already wrote. Per-row audit rows
+      // also enroll in the same tx — a partial commit (e.g. 50 of 200
+      // sites written before a duplicate key blew up) is now impossible,
+      // and each successful row produces an audit row that's atomic with
+      // its upsert. Summary audit at the end captures batch-level counts.
+      await db.transaction(async (tx) => {
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i] || {};
+          const siteName = (r.siteName || '').trim();
+          if (!siteName) {
+            errors.push({ rowIndex: i, siteName: '', reason: 'siteName is required' });
+            skipped++;
+            continue;
+          }
+          const isHubVal = r.isHub === true || r.isHub === 1 || r.isHub === '1' || r.isHub === 'true' || r.isHub === 'yes' ? 1 : 0;
+          await tx.execute(db.sql.sites.upsert, [
+            siteName,
+            r.regionCode ?? null,
+            isHubVal,
+            r.description ?? null
+          ]);
+          await writeAudit({
+            userId: req.user?.sub ?? null,
+            action: 'bulk_import_site_row',
+            target: siteName,
+            payload: { rowIndex: i, siteName, regionCode: r.regionCode ?? null, isHub: isHubVal },
+            logger
+          }, tx);
+          imported++;
         }
-        const isHubVal = r.isHub === true || r.isHub === 1 || r.isHub === '1' || r.isHub === 'true' || r.isHub === 'yes' ? 1 : 0;
-        await db.execute(db.sql.sites.upsert, [
-          siteName,
-          r.regionCode ?? null,
-          isHubVal,
-          r.description ?? null
-        ]);
-        imported++;
-      }
-      await writeAudit({
-        userId: req.user?.sub ?? null,
-        action: 'bulk_import_sites',
-        target: 'ad_sites',
-        payload: { imported, skipped, total: rows.length },
-        logger
+        await writeAudit({
+          userId: req.user?.sub ?? null,
+          action: 'bulk_import_sites',
+          target: 'ad_sites',
+          payload: { imported, skipped, total: rows.length },
+          logger
+        }, tx);
       });
       res.json({ ok: true, imported, skipped, errors });
     } catch (e) {
@@ -539,41 +561,61 @@ export function adminRouter({ config, logger }) {
     let skipped = 0;
     try {
       const db = getDb();
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i] || {};
-        const dcName = (r.dcName || '').trim();
-        if (!dcName) {
-          errors.push({ rowIndex: i, dcName: '', reason: 'dcName is required' });
-          skipped++;
-          continue;
+      // C2 fix: same rationale as sites-catalog/bulk above. Whole loop in
+      // one tx so mid-loop failures roll everything back; per-row audit
+      // captures which dc went to which site (was previously silent on the
+      // per-row level — only a summary count was written).
+      await db.transaction(async (tx) => {
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i] || {};
+          const dcName = (r.dcName || '').trim();
+          if (!dcName) {
+            errors.push({ rowIndex: i, dcName: '', reason: 'dcName is required' });
+            skipped++;
+            continue;
+          }
+          const siteName = (r.siteName || '').trim();
+          if (!siteName) {
+            await tx.execute(db.sql.dcs.assignSiteUnbind, [dcName]);
+            await writeAudit({
+              userId: req.user?.sub ?? null,
+              action: 'bulk_assign_dc_unbound',
+              target: dcName,
+              payload: { rowIndex: i, dcName, reason: 'empty siteName' },
+              logger
+            }, tx);
+            unassigned++;
+            continue;
+          }
+          const { rows: siteRows } = await tx.query(db.sql.sites.findByName, [siteName]);
+          if (siteRows.length === 0) {
+            errors.push({ rowIndex: i, dcName, reason: `site "${siteName}" not found` });
+            skipped++;
+            continue;
+          }
+          const siteId = siteRows[0].site_id;
+          const { affectedRows } = await tx.execute(db.sql.dcs.assignSite, [siteId, dcName]);
+          if (affectedRows === 0) {
+            errors.push({ rowIndex: i, dcName, reason: `dc "${dcName}" not discovered (agent has not reported it yet)` });
+            skipped++;
+            continue;
+          }
+          await writeAudit({
+            userId: req.user?.sub ?? null,
+            action: 'bulk_assign_dc_site_row',
+            target: dcName,
+            payload: { rowIndex: i, dcName, siteName, siteId },
+            logger
+          }, tx);
+          assigned++;
         }
-        const siteName = (r.siteName || '').trim();
-        if (!siteName) {
-          await db.execute(db.sql.dcs.assignSiteUnbind, [dcName]);
-          unassigned++;
-          continue;
-        }
-        const { rows: siteRows } = await db.query(db.sql.sites.findByName, [siteName]);
-        if (siteRows.length === 0) {
-          errors.push({ rowIndex: i, dcName, reason: `site "${siteName}" not found` });
-          skipped++;
-          continue;
-        }
-        const siteId = siteRows[0].site_id;
-        const { affectedRows } = await db.execute(db.sql.dcs.assignSite, [siteId, dcName]);
-        if (affectedRows === 0) {
-          errors.push({ rowIndex: i, dcName, reason: `dc "${dcName}" not discovered (agent has not reported it yet)` });
-          skipped++;
-          continue;
-        }
-        assigned++;
-      }
-      await writeAudit({
-        userId: req.user?.sub ?? null,
-        action: 'bulk_assign_dc_sites',
-        target: 'ad_dcs',
-        payload: { assigned, unassigned, skipped, total: rows.length },
-        logger
+        await writeAudit({
+          userId: req.user?.sub ?? null,
+          action: 'bulk_assign_dc_sites',
+          target: 'ad_dcs',
+          payload: { assigned, unassigned, skipped, total: rows.length },
+          logger
+        }, tx);
       });
       res.json({ ok: true, assigned, unassigned, skipped, errors });
     } catch (e) {

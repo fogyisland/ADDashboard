@@ -30,7 +30,7 @@ export async function init(config) {
     sql,
     execute: async (s, p) => { try { return await driver.execute(s, p); } catch (e) { throw DbError.wrap(e); } },
     query:   async (s, p) => { try { return await driver.query(s, p);   } catch (e) { throw DbError.wrap(e); } },
-    transaction: async (work) => { try { return await driver.transaction(work); } catch (e) { throw DbError.wrap(e); } },
+    transaction: async (work) => { try { return await driver.transaction(work, sql); } catch (e) { throw DbError.wrap(e); } },
     healthcheck: async () => { try { await driver.healthcheck(); } catch (e) { throw DbError.wrap(e); } },
     close: async () => { try { await driver.close(); } catch (e) { throw DbError.wrap(e); } }
   };

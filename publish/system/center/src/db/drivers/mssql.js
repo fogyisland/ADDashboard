@@ -170,12 +170,17 @@ export function createMssqlDriver(config) {
     return { rows };
   }
 
-  async function transaction(work) {
+  async function transaction(work, sqlRegistry) {
     await ensureConnected();
     const tx = new sql.Transaction(pool);
     await tx.begin();
     try {
+      // tx.sql mirrors the parent db's sql registry so helpers like
+      // writeAudit can resolve `tx.sql.audit.write` from inside a tx
+      // without threading the SQL string from the caller. Same shape
+      // mysql.js exposes for cross-driver consistency.
       const txWrapper = {
+        sql: sqlRegistry,
         async execute(sqlStr, params = []) {
           // Same INSERT/MERGE/IF heuristics as pool.execute — see execute() above.
           const isInsert = /^\s*INSERT\b/i.test(sqlStr) && /\bINTO\b/i.test(sqlStr);

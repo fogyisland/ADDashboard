@@ -69,11 +69,15 @@ export function createMysqlDriver(config) {
     return { rows };
   }
 
-  async function transaction(work) {
+  async function transaction(work, sql) {
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
+      // tx.sql mirrors the parent db's sql registry so helpers like
+      // writeAudit can resolve `tx.sql.audit.write` without threading the
+      // SQL string from the caller.
       const tx = {
+        sql,
         async execute(sqlStr, params = []) {
           const [rows] = await conn.execute(sqlStr, normalizeParams(params));
           if (Array.isArray(rows)) return { rows, affectedRows: 0, insertId: undefined };

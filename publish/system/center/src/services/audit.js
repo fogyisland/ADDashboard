@@ -3,10 +3,17 @@ import {
   CATEGORY_ACTIONS, SEVERITY_ACTIONS, TARGET_LABEL, classifyAction
 } from './audit-classifier.js';
 
-export async function writeAudit({ userId, action, target, payload }, logger) {
-  const db = getDb();
+// Write one audit row. Pass `tx` to enroll the audit write in a caller's open
+// transaction — the audit row will commit (or fail) atomically with the
+// surrounding data writes. Without `tx`, the write uses the global db facade
+// and is best-effort (caught + warn-logged). Used as best-effort for
+// fire-and-forget events (login, login_failed, test-mail) and as atomic for
+// data-mutating routes (config PUT, server-group membership diff, bulk
+// import, agent self-register).
+export async function writeAudit({ userId, action, target, payload }, logger, tx = null) {
+  const conn = tx ?? getDb();
   try {
-    await db.execute(db.sql.audit.write, [
+    await conn.execute(conn.sql.audit.write, [
       userId ?? null,
       action,
       target ?? null,
@@ -14,6 +21,11 @@ export async function writeAudit({ userId, action, target, payload }, logger) {
     ]);
   } catch (e) {
     if (logger) logger.warn({ err: e.message, action, target }, 'audit write failed (best-effort)');
+    // Re-throw when called inside a tx so the caller's transaction rolls back
+    // — silent audit loss is unacceptable when the surrounding data writes
+    // are about to commit. Best-effort callers (no tx) swallow so a transient
+    // audit-table hiccup doesn't take down login/heartbeat paths.
+    if (tx) throw e;
   }
 }
 

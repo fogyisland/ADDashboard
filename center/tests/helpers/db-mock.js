@@ -70,12 +70,15 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
   function build({ records } = {}) {
     const execute = makeExec(records);
     const query = makeQuery(records);
+    const sql = buildSql(dialect);
     return {
       dialect,
-      sql: buildSql(dialect),
+      sql,
       execute,
       query,
-      transaction: async (work) => work({ execute, query }),
+      // Mirror the real driver: tx carries `sql` so helpers like writeAudit
+      // can resolve `tx.sql.audit.write` from inside a tx.
+      transaction: async (work) => work({ execute, query, sql }),
       healthcheck: async () => {},
       close: async () => {},
       // Expose the recording array so tests using

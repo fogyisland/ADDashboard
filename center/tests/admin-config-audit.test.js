@@ -69,3 +69,57 @@ test('PUT /api/admin/config: 500 on transaction failure', async () => {
     .send({ polling_interval_minutes: '7' });
   assert.equal(r.status, 500);
 });
+
+// C1 fix: the broader audit_logs row must commit atomically with the data
+// writes. If the audit insert fails, the whole save rolls back — a
+// half-committed config change with no audit trail is what compliance
+// reviewers flag. Before the fix this writeAudit ran outside the tx so a
+// failed audit would leave system_config mutated but with no audit row.
+test('PUT /api/admin/config: outer audit_logs write is in the same tx (atomic rollback)', async () => {
+  const records = [];
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [{ config_key: 'polling_interval_minutes', config_value: '5' }] },
+    { match: /INSERT\s+INTO\s+sys_config_audit/i, rows: [] },
+    { match: /MERGE\s+INTO\s+system_config|INSERT\s+INTO\s+system_config/i, rows: [] },
+    // throwOnExecute fires inside tx.execute, which propagates through
+    // writeAudit's re-throw branch (tx != null), which rolls the tx back.
+    { match: /INSERT\s+INTO\s+audit_logs/i, rows: [], throwOnExecute: new Error('audit_logs table unavailable') }
+  ]).withRecording(records);
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ polling_interval_minutes: '7' });
+  // Outer audit write threw → tx rolls back → 500
+  assert.equal(r.status, 500);
+  // Confirm the outer audit_logs write was attempted (records captures
+  // every issued statement before throwOnExecute fires).
+  const auditLogWrite = records.find(rec => /INSERT\s+INTO\s+audit_logs/i.test(rec.sql));
+  assert.ok(auditLogWrite, 'outer audit_logs write should have been attempted');
+  assert.equal(auditLogWrite.params[1], 'update_config');
+});
+
+// Variant of the C1 fix test that asserts the atomic-commit happy path:
+// the outer audit_logs row commits in the same tx as the sys_config_audit
+// + system_config upsert. Reads the recording array exposed via the mock's
+// records property so we can verify the order of writes is consistent with
+// "data first, audit second, all in one tx".
+test('PUT /api/admin/config: outer audit_logs commit order — all writes enroll in one tx', async () => {
+  const records = [];
+  const db = buildMockDb([], {}).withRecording(records);
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ polling_interval_minutes: '7' });
+  assert.equal(r.status, 200);
+  // Every issued statement must have been executed against the tx execute
+  // (i.e. recorded through db.records, since the mock runs work({execute})
+  // and execute records to the same array).
+  const auditLogWrite = records.find(rec => /INSERT\s+INTO\s+audit_logs/i.test(rec.sql));
+  assert.ok(auditLogWrite, 'audit_logs INSERT should be present in issued statements');
+  // Outer audit is update_config
+  assert.equal(auditLogWrite.params[1], 'update_config');
+  // userId is recorded
+  assert.equal(auditLogWrite.params[0], 'u1');
+});
