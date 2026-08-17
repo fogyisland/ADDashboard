@@ -1,4 +1,5 @@
 import express from 'express';
+import { randomBytes } from 'node:crypto';
 import { withOneShotFacade } from './db-tester.js';
 import { getWizardFacade, closeWizardFacade } from './wizard-facade.js';
 import { applyAll, backfillMigrations } from './schema-applier.js';
@@ -111,14 +112,46 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
   r.post('/finalize', async (req, res) => {
     const { dialect, connParams, listenPort, agentToken, jwtSecret, logLevel, env, staticDir } = req.body || {};
     try {
+      // C6 fix: refuse to write appsettings.json with empty jwtSecret /
+      // agentToken. An empty jwtSecret effectively means JWTs are signed with
+      // '' — anyone could forge tokens. An empty agentToken means the agent
+      // middleware accepts any value (since `req.headers['x-agent-token']`
+      // would always equal the empty-string fallback). If the operator
+      // skipped these fields in the wizard, generate a fresh 48-byte
+      // hex secret so the install is secure by default. Operators who
+      // really want to override can paste a longer value into the field;
+      // the frontend already enforces min length 32 (login form) but the
+      // init wizard had no such guard.
+      const MIN_SECRET_LEN = 32;
+      function ensureSecret(value, label) {
+        if (typeof value === 'string' && value.length >= MIN_SECRET_LEN) return value;
+        // Generate fresh 48-byte hex (96 chars). crypto.randomBytes is
+        // available in Node ≥ 14.17; project's Node floor is 20+.
+        const generated = randomBytes(48).toString('hex');
+        logger.warn({ label, length: generated.length }, 'init finalize: secret missing/empty — generated fresh secret');
+        return generated;
+      }
       const params = canonicalize(connParams);
+      const finalJwtSecret = ensureSecret(jwtSecret, 'jwtSecret');
+      const finalAgentToken = ensureSecret(agentToken, 'agentToken');
+      // C8 fix: validate listenPort before writing appsettings.json so the
+      // service can't be locked out by a bad port. Allow operator to enter
+      // their custom value, reject obviously invalid ones (non-integer,
+      // negative, reserved priv-port range below 1024 unless explicitly
+      // opted in via ALLOW_PRIVILEGED_PORTS — which we don't expose yet).
+      const finalListenPort = Number(listenPort);
+      if (!Number.isInteger(finalListenPort) || finalListenPort < 1024 || finalListenPort > 65535) {
+        return res.status(400).json({
+          error: `listenPort must be an integer in 1024..65535; got ${JSON.stringify(listenPort)}`
+        });
+      }
       deps.writeConfig({
         path: configPath,
         dialect,
         connParams: params,
-        listenPort: listenPort || 8080,
-        agentToken: agentToken || '',
-        jwtSecret: jwtSecret || '',
+        listenPort: finalListenPort,
+        agentToken: finalAgentToken,
+        jwtSecret: finalJwtSecret,
         logLevel: logLevel || 'info',
         env: env || 'prod',
         staticDir: staticDir || './dist'

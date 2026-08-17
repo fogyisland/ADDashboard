@@ -43,6 +43,20 @@ import { writeAudit } from '../services/audit.js';
 // only here) — Task 7+ refer to it via this constant.
 const BUILTIN_AD_OS_BASELINE = 'ad-os-baseline';
 
+// Standard DNS hostname check (RFC 952 / 1123, with Windows NetBIOS leeway).
+// Labels are 1-63 chars of [a-zA-Z0-9-], not starting or ending in hyphen,
+// separated by dots. Total length <= 253. Rejects reserved names that an
+// attacker could try to claim to gain visibility or confuse operators
+// ('localhost', 'localhost.localdomain'). C5 fix — see self-register route.
+const HOSTNAME_RE = /^(?=.{1,253}$)(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*$/;
+const RESERVED_HOSTNAMES = new Set(['localhost', 'localhost.localdomain']);
+function isValidHostname(s) {
+  if (typeof s !== 'string') return false;
+  if (s.length === 0 || s.length > 253) return false;
+  if (RESERVED_HOSTNAMES.has(s.toLowerCase())) return false;
+  return HOSTNAME_RE.test(s);
+}
+
 export function memberRouter({ config, logger }) {
   const r = Router();
   const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('admin:users')];
@@ -77,6 +91,9 @@ export function memberRouter({ config, logger }) {
   r.post('/api/admin/member-servers', ...auth, async (req, res) => {
     const { hostname, siteId = null, ipAddress = null, osVersion = null, enabled = 1 } = req.body || {};
     if (!hostname) return res.status(400).json({ error: 'hostname required' });
+    if (!isValidHostname(hostname)) {
+      return res.status(400).json({ error: 'hostname must match RFC 952/1123 (letters, digits, hyphens, dots; 1-253 chars; no reserved names)' });
+    }
     try {
       const db = getDb();
       // discovered_via='admin' marks manual entries so the self-register
@@ -301,9 +318,26 @@ export function memberRouter({ config, logger }) {
   // Gated by agentToken (NOT userAuth). Idempotent: upsert with
   // discovered_via='self-register'. enabled defaults to 1 so the new host
   // is immediately eligible for package binds.
+  //
+  // C5 fix: agent_token is a shared secret — anyone with the token can
+  // currently claim ANY hostname in the body, then receive packages meant
+  // for that host. Defense in depth: validate hostname against the standard
+  // DNS naming rules (RFC 952 / 1123) before persisting. Hostname-shape
+  // validation alone doesn't fully solve the shared-secret problem (a
+  // rotated-token-still-shared scenario still allows impersonation of any
+  // well-formed hostname), but it stops the cheap attacks — header injection,
+  // claim of reserved names like 'admin'/'localhost'/'127.0.0.1', oversized
+  // values, control characters — that an opportunistic attacker would try
+  // first. Proper per-host tokens / mTLS / IP allowlist are a separate
+  // design track; this is the floor.
   r.post('/api/admin/member-servers/self-register', agentMw, async (req, res) => {
     const { hostname, agentVersion, osVersion, ipAddress } = req.body || {};
     if (!hostname) return res.status(400).json({ error: 'hostname required' });
+    if (!isValidHostname(hostname)) {
+      return res.status(400).json({
+        error: 'hostname must match RFC 952/1123 (letters, digits, hyphens, dots; 1-253 chars; no reserved names)'
+      });
+    }
     try {
       const db = getDb();
       // Param order: hostname, site_id(null), ip_address, os_version, agent_type('non-ad'),
@@ -314,6 +348,13 @@ export function memberRouter({ config, logger }) {
       await db.execute(db.sql.memberServers.upsert, [
         hostname, null, ipAddress ?? null, osVersion ?? null, 'non-ad', 1, 'self-register'
       ]);
+      await writeAudit({
+        userId: null,
+        action: 'agent_self_register',
+        target: hostname,
+        payload: { hostname, ipAddress: ipAddress ?? null, osVersion: osVersion ?? null },
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e, hostname }, 'member-servers self-register failed');

@@ -123,3 +123,106 @@ test('PUT /api/admin/config: outer audit_logs commit order — all writes enroll
   // userId is recorded
   assert.equal(auditLogWrite.params[0], 'u1');
 });
+
+// ----- C8 fix: validate listenPort before touching the DB -----
+// Bad values (out-of-range, junk strings) would persist and lock the service
+// out on next restart — NSSM AppExit=Default Restart would loop until the
+// operator manually recovers. Reject up-front with a clear 400.
+
+test('C8: PUT /api/admin/config rejects listenPort below 1024', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ listenPort: 80 });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /listenPort/);
+});
+
+test('C8: PUT /api/admin/config rejects listenPort above 65535', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ listenPort: 65536 });
+  assert.equal(r.status, 400);
+});
+
+test('C8: PUT /api/admin/config rejects non-numeric listenPort', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ listenPort: 'abc' });
+  assert.equal(r.status, 400);
+});
+
+test('C8: PUT /api/admin/config rejects fractional listenPort', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ listenPort: 8080.5 });
+  assert.equal(r.status, 400);
+});
+
+test('C8: PUT /api/admin/config accepts integer listenPort', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ listenPort: 9090 });
+  assert.equal(r.status, 200);
+});
+
+test('C8: PUT /api/admin/config accepts digit-string listenPort (UI form input shape)', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ listenPort: '9090' });
+  assert.equal(r.status, 200);
+});
+
+// ----- POST /api/admin/restart endpoint (C8 follow-up) -----
+// Explicit restart endpoint so ConfigView can offer a "Restart Now" button
+// that exits the process; NSSM AppExit Default Restart relaunches with the new
+// appsettings.json. Audit row written BEFORE exit so "who restarted the
+// service" has a deterministic answer.
+
+test('POST /api/admin/restart: 200 + audit row + schedules process.exit(0)', async () => {
+  const auditWrites = [];
+  const db = buildMockDb([
+    { match: /INSERT\s+INTO\s+audit_logs/i, capture: true, onExecute: (sql, params) => auditWrites.push(params) }
+  ]).standard();
+  _setDbForTest(db);
+
+  let exited = false;
+  const origExit = process.exit;
+  process.exit = (code) => { exited = code === 0; };
+
+  try {
+    const r = await supertest(buildApp())
+      .post('/api/admin/restart')
+      .set('Authorization', `Bearer ${adminToken()}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    assert.match(r.body.message, /restart/i);
+    // Audit row for restart_service must be written BEFORE the exit
+    assert.equal(auditWrites.length, 1);
+    assert.equal(auditWrites[0][1], 'restart_service');
+    assert.equal(auditWrites[0][2], 'center');
+    // setImmediate flushes after res.json, so wait one tick
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(exited, true, 'process.exit(0) should have been called via setImmediate');
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('POST /api/admin/restart: 401 without admin token', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const r = await supertest(buildApp())
+    .post('/api/admin/restart');
+  assert.equal(r.status, 401);
+});

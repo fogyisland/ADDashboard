@@ -162,6 +162,23 @@ export function adminRouter({ config, logger }) {
       // otherwise carry the cleartext through writeAudit's JSON.stringify.
       const { smtp_password: _omit, ...safeUpdates } = updates;
       void _omit;
+      // C8 fix: validate listenPort before touching the DB. Bad values
+      // (out-of-range, non-integer, junk strings) would persist and lock the
+      // service out on next restart — NSSM AppExit=Default Restart would loop
+      // until the operator manually recovers. Reject up-front with a clear
+      // 400 so the UI shows the error instead of silently saving a value
+      // that bricks the service.
+      //
+      // Accept both numbers and digit-only strings (UI form inputs are
+      // text); reject floats, NaN, junk like 'abc', and out-of-range.
+      if ('listenPort' in updates) {
+        const lp = Number(updates.listenPort);
+        if (!Number.isInteger(lp) || lp < 1024 || lp > 65535) {
+          return res.status(400).json({
+            error: `listenPort must be an integer in 1024..65535; got ${JSON.stringify(updates.listenPort)}`
+          });
+        }
+      }
       const db = getDb();
       let auditCount = 0;
       let listenPortBumped = false;
@@ -206,6 +223,39 @@ export function adminRouter({ config, logger }) {
     } catch (e) {
       logger.error({ err: e }, 'admin config update failed');
       res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // C8 fix: explicit restart endpoint. PUT /api/admin/config may bump the
+  // listenPort pending_version hash (or any future boot-time binding).
+  // Until now the operator had to manually bounce the NSSM service — easy
+  // to forget and the dashboard kept running with stale config. This
+  // endpoint lets ConfigView offer a "Restart Now" button that exits the
+  // process; NSSM AppExit Default Restart picks the new appsettings.json up
+  // on relaunch. We audit the action before exit so a "who restarted the
+  // service" question has a deterministic answer.
+  r.post('/api/admin/restart', auth, async (req, res) => {
+    try {
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'restart_service',
+        target: 'center',
+        payload: { requestedBy: req.user?.username ?? req.user?.sub ?? null },
+        logger
+      });
+      // Send response first, then exit. setImmediate defers process.exit
+      // until the res.json body has been flushed to the socket — otherwise
+      // NSSM AppExit Default Restart would race the kernel TCP buffer flush
+      // and the operator's UI would hang on the request.
+      res.json({ ok: true, message: 'restart initiated; NSSM will relaunch' });
+      setImmediate(() => process.exit(0));
+    } catch (e) {
+      logger.error({ err: e }, 'admin restart failed');
+      // Don't exit on audit-failure — operator still has a way forward.
+      // Fall back to a 500 so the UI shows the error.
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'internal' });
+      }
     }
   });
 

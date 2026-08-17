@@ -199,7 +199,8 @@ test('POST /api/init/finalize succeeds when closing wizard facade fails', async 
       }
     }));
     const r = await call(app, 'POST', '/api/init/finalize', {
-      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080
     });
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.ok, true);
@@ -257,13 +258,178 @@ test('POST /api/init/finalize schedules process.exit(0) after responding', async
   try {
     const app = makeApp();
     const r = await call(app, 'POST', '/api/init/finalize', {
-      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080
     });
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.ok, true);
     // Wait for setImmediate to fire
     await new Promise(resolve => setImmediate(resolve));
     assert.strictEqual(exited, true, 'process.exit(0) should have been called');
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+// ----- C6 fix: init/finalize validate listenPort and auto-generate secrets -----
+// finalize previously accepted empty/missing jwtSecret and agentToken, which
+// would write an appsettings.json with secrets that effectively disable auth
+// (JWT signed with '' or agentToken matching any empty header). C6 fix: refuse
+// empty values, auto-generate a 48-byte hex (96-char) secret when missing or
+// shorter than 32 chars. Also rejects bad listenPort so the new instance
+// can't boot-loop on a privileged/out-of-range port.
+
+test('C6: finalize rejects listenPort below 1024 (privileged port)', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 80
+    });
+    assert.strictEqual(r.status, 400);
+    assert.match(r.body.error, /listenPort/);
+    assert.strictEqual(wrote.length, 0, 'appsettings.json must NOT be written when listenPort is invalid');
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize rejects listenPort above 65535', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 65536
+    });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual(wrote.length, 0);
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize rejects listenPort that is not a number', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 'abc'
+    });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual(wrote.length, 0);
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize rejects missing listenPort', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }
+      // listenPort intentionally omitted
+    });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual(wrote.length, 0);
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize auto-generates jwtSecret when missing (96-char hex)', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080,
+      agentToken: 'x'.repeat(48)
+      // jwtSecret intentionally omitted
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(wrote.length, 1);
+    assert.match(wrote[0].jwtSecret, /^[0-9a-f]{96}$/, 'jwtSecret should be auto-generated 96-char hex');
+    assert.strictEqual(wrote[0].agentToken, 'x'.repeat(48), 'agentToken must be passed through unchanged');
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize auto-generates agentToken when missing', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080,
+      jwtSecret: 'y'.repeat(48)
+      // agentToken intentionally omitted
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(wrote.length, 1);
+    assert.match(wrote[0].agentToken, /^[0-9a-f]{96}$/);
+    assert.strictEqual(wrote[0].jwtSecret, 'y'.repeat(48));
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize auto-generates secret shorter than 32 chars (treated as missing)', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080,
+      jwtSecret: 'short',
+      agentToken: 'also-short'
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(wrote.length, 1);
+    // Both should be auto-generated since the supplied values are < 32 chars
+    assert.match(wrote[0].jwtSecret, /^[0-9a-f]{96}$/);
+    assert.match(wrote[0].agentToken, /^[0-9a-f]{96}$/);
+    assert.notStrictEqual(wrote[0].jwtSecret, wrote[0].agentToken, 'each generated secret must be unique');
+  } finally {
+    process.exit = origExit;
+  }
+});
+
+test('C6: finalize passes through supplied secrets when length >= 32', async () => {
+  const origExit = process.exit;
+  process.exit = () => {};
+  try {
+    const wrote = [];
+    const app = makeApp({ writeConfigFn: (args) => { wrote.push(args); return { ok: true, path: args.path }; } });
+    const suppliedJwt = 'jwt-secret-' + 'x'.repeat(32); // 43 chars
+    const suppliedAgent = 'agent-token-' + 'y'.repeat(32);
+    const r = await call(app, 'POST', '/api/init/finalize', {
+      dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' },
+      listenPort: 8080,
+      jwtSecret: suppliedJwt,
+      agentToken: suppliedAgent
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(wrote[0].jwtSecret, suppliedJwt);
+    assert.strictEqual(wrote[0].agentToken, suppliedAgent);
   } finally {
     process.exit = origExit;
   }

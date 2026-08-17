@@ -169,6 +169,100 @@ describe('POST /api/admin/member-servers/self-register', () => {
       .send({});
     assert.equal(r.status, 400);
   });
+
+  // C5 fix: agent_token is a shared secret — anyone with the token could
+  // previously claim ANY hostname in the body, including reserved names like
+  // 'localhost' that an attacker would use to gain visibility or confuse
+  // operators. Defense in depth: validate hostname shape + reserved list
+  // before persisting, so the cheap attacks are stopped at the boundary.
+  test('C5: 400 when hostname is "localhost" (reserved)', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers/self-register')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'localhost' });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /reserved|localhost/i);
+  });
+
+  test('C5: 400 when hostname is "localhost.localdomain" (reserved)', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers/self-register')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'localhost.localdomain' });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /reserved|localhost/i);
+  });
+
+  test('C5: 400 when hostname contains shell-injection chars', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers/self-register')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'srv;rm -rf /' });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /RFC 952|hostname/i);
+  });
+
+  test('C5: 400 when hostname has invalid underscore', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers/self-register')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'srv_bad' });
+    assert.equal(r.status, 400);
+  });
+
+  test('C5: 400 when hostname exceeds 253 chars', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const long = 'a'.repeat(254);
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers/self-register')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: long });
+    assert.equal(r.status, 400);
+  });
+
+  test('C5: 200 when hostname is well-formed', async () => {
+    const upserts = [];
+    const db = buildMockDb([
+      { match: /INSERT\s+INTO\s+ad_member_servers|MERGE\s+INTO\s+ad_member_servers/i, capture: true, onExecute: (sql, params) => upserts.push(params) }
+    ]).standard();
+    _setDbForTest(db);
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers/self-register')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'host-a.example.com' });
+    assert.equal(r.status, 200);
+    assert.equal(upserts.length, 1);
+    assert.equal(upserts[0][0], 'host-a.example.com');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C5: POST /api/admin/member-servers (manual entry) — also enforces hostname
+// validation. An admin typo'ing "local host" or pasting a control char used
+// to write a row that the agent path would later try to use.
+// ---------------------------------------------------------------------------
+describe('POST /api/admin/member-servers — C5 hostname validation', () => {
+  test('C5: 400 manual create with "localhost" hostname', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ hostname: 'localhost' });
+    assert.equal(r.status, 400);
+  });
+
+  test('C5: 400 manual create with hostname containing invalid char', async () => {
+    _setDbForTest(buildMockDb().standard());
+    const r = await supertest(buildApp())
+      .post('/api/admin/member-servers')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ hostname: 'bad host' });
+    assert.equal(r.status, 400);
+  });
 });
 
 // ---------------------------------------------------------------------------
