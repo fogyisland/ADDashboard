@@ -31,8 +31,8 @@ const UPSERT_MYSQL = `INSERT INTO ad_member_servers
 
 const UPSERT_MSSQL = `MERGE INTO ad_member_servers AS t
   USING (SELECT
-    ? AS hostname, ? AS site_id, ? AS ip_address,
-    ? AS os_version, ? AS agent_type, ? AS enabled, ? AS discovered_via
+    CAST(? AS VARCHAR(128)) AS hostname, ? AS site_id, CAST(? AS VARCHAR(64)) AS ip_address,
+    CAST(? AS VARCHAR(64)) AS os_version, CAST(? AS VARCHAR(16)) AS agent_type, ? AS enabled, CAST(? AS VARCHAR(32)) AS discovered_via
   ) AS s
   ON t.hostname = s.hostname
   WHEN MATCHED THEN UPDATE SET
@@ -46,7 +46,7 @@ const UPSERT_MSSQL = `MERGE INTO ad_member_servers AS t
     (s.hostname, s.site_id, s.ip_address, s.os_version, s.agent_type, s.enabled, s.discovered_via);`;
 
 const FIND_BY_HOSTNAME_MYSQL = `SELECT * FROM ad_member_servers WHERE hostname = ?`;
-const FIND_BY_HOSTNAME_MSSQL = `SELECT * FROM ad_member_servers WHERE hostname = ?`;
+const FIND_BY_HOSTNAME_MSSQL = `SELECT * FROM ad_member_servers WHERE hostname = CAST(? AS VARCHAR(128))`;
 
 const LIST_MYSQL = `SELECT ms.*, s.site_name
   FROM ad_member_servers ms
@@ -59,13 +59,13 @@ const LIST_MSSQL = `SELECT ms.*, s.site_name
   ORDER BY ms.hostname`;
 
 const DELETE_MYSQL = `DELETE FROM ad_member_servers WHERE hostname = ?`;
-const DELETE_MSSQL = `DELETE FROM ad_member_servers WHERE hostname = ?`;
+const DELETE_MSSQL = `DELETE FROM ad_member_servers WHERE hostname = CAST(? AS VARCHAR(128))`;
 
 const TOUCH_LAST_SEEN_MYSQL = `UPDATE ad_member_servers SET last_seen_at = NOW() WHERE hostname = ?`;
-const TOUCH_LAST_SEEN_MSSQL = `UPDATE ad_member_servers SET last_seen_at = SYSUTCDATETIME() WHERE hostname = ?`;
+const TOUCH_LAST_SEEN_MSSQL = `UPDATE ad_member_servers SET last_seen_at = SYSUTCDATETIME() WHERE hostname = CAST(? AS VARCHAR(128))`;
 
 const TOUCH_LAST_REPORT_MYSQL = `UPDATE ad_member_servers SET last_report_at = NOW() WHERE hostname = ?`;
-const TOUCH_LAST_REPORT_MSSQL = `UPDATE ad_member_servers SET last_report_at = SYSUTCDATETIME() WHERE hostname = ?`;
+const TOUCH_LAST_REPORT_MSSQL = `UPDATE ad_member_servers SET last_report_at = SYSUTCDATETIME() WHERE hostname = CAST(? AS VARCHAR(128))`;
 
 export const memberServers = {
   mysql: {

@@ -361,7 +361,7 @@ const VARIANTS = {
       upsert: `MERGE INTO system_config AS t USING (SELECT ? AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`,
       setAgentToken: `MERGE INTO system_config AS t USING (SELECT 'agent_token' AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`,
       audit: {
-        write: 'INSERT INTO sys_config_audit (config_key, old_value, new_value, changed_by, change_type) VALUES (?, ?, ?, ?, ?)',
+        write: 'INSERT INTO sys_config_audit (config_key, old_value, new_value, changed_by, change_type) VALUES (?, ?, ?, ?, CAST(? AS VARCHAR(16)))',
         list: `SELECT TOP 20 a.id, a.config_key, a.old_value, a.new_value, a.changed_by, a.change_type, a.changed_at, u.username AS changed_by_username FROM sys_config_audit a LEFT JOIN sys_users u ON a.changed_by = u.id ORDER BY a.changed_at DESC, a.id DESC`,
         getById: 'SELECT id, config_key, old_value, new_value, change_type FROM sys_config_audit WHERE id = ?'
       }
@@ -460,7 +460,7 @@ const VARIANTS = {
       // MSSQL uses MERGE for atomic upsert (no native ON DUPLICATE KEY).
       // Uses ? placeholders — db.execute remaps ? -> @pN for MSSQL.
       upsertOne: `MERGE INTO ad_agent_port_status AS t
-        USING (SELECT ? AS agent_id, ? AS port, ? AS ok, ? AS latency_ms, ? AS last_checked_at) AS s
+        USING (SELECT CAST(? AS VARCHAR(64)) AS agent_id, ? AS port, ? AS ok, ? AS latency_ms, ? AS last_checked_at) AS s
         ON t.agent_id = s.agent_id AND t.port = s.port
         WHEN MATCHED THEN UPDATE SET t.ok = s.ok, t.latency_ms = s.latency_ms, t.last_checked_at = s.last_checked_at
         WHEN NOT MATCHED THEN INSERT (agent_id, port, ok, latency_ms, last_checked_at) VALUES (s.agent_id, s.port, s.ok, s.latency_ms, s.last_checked_at);`,
@@ -587,8 +587,8 @@ const VARIANTS = {
     lockout: {
       upsertEvent: `MERGE INTO ad_lockout_events AS t
         USING (SELECT
-          ? AS occurred_at, ? AS collected_at, ? AS agent_id, ? AS dc_name, ? AS event_record_id,
-          ? AS target_user_name, ? AS subject_user_name, ? AS subject_domain, ? AS caller_computer_name
+          ? AS occurred_at, ? AS collected_at, CAST(? AS VARCHAR(64)) AS agent_id, CAST(? AS VARCHAR(128)) AS dc_name, ? AS event_record_id,
+          CAST(? AS VARCHAR(256)) AS target_user_name, CAST(? AS VARCHAR(256)) AS subject_user_name, CAST(? AS VARCHAR(256)) AS subject_domain, CAST(? AS VARCHAR(256)) AS caller_computer_name
         ) AS s
         ON t.dc_name = s.dc_name AND t.event_record_id = s.event_record_id
         WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at
@@ -602,18 +602,18 @@ const VARIANTS = {
                       subject_domain, caller_computer_name
                  FROM ad_lockout_events
                 WHERE occurred_at >= ?
-                  AND (? = '' OR target_user_name = ?)
-                  AND (? = '' OR dc_name = ?)
-                  AND (? = '' OR caller_computer_name = ?)
+                  AND (CAST(? AS VARCHAR(256)) = '' OR target_user_name = CAST(? AS VARCHAR(256)))
+                  AND (CAST(? AS VARCHAR(128)) = '' OR dc_name = CAST(? AS VARCHAR(128)))
+                  AND (CAST(? AS VARCHAR(256)) = '' OR caller_computer_name = CAST(? AS VARCHAR(256)))
                 ORDER BY occurred_at ASC`
     },
     schemaMigrations: {
       list: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations',
-      findByVersion: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations WHERE version = ?',
+      findByVersion: 'SELECT version, description, type, script, checksum, applied_at, applied_by, execution_ms, status, error_message FROM schema_migrations WHERE version = CAST(? AS VARCHAR(32))',
       upsert: `MERGE INTO schema_migrations AS t
         USING (SELECT
-          ? AS version, ? AS description, ? AS type, ? AS script, ? AS checksum,
-          ? AS applied_at, ? AS execution_ms, ? AS applied_by, ? AS status, ? AS error_message
+          CAST(? AS VARCHAR(32)) AS version, CAST(? AS VARCHAR(255)) AS description, CAST(? AS VARCHAR(16)) AS type, CAST(? AS VARCHAR(255)) AS script, ? AS checksum,
+          ? AS applied_at, ? AS execution_ms, CAST(? AS VARCHAR(64)) AS applied_by, CAST(? AS VARCHAR(16)) AS status, ? AS error_message
         ) AS s
         ON t.version = s.version
         WHEN MATCHED THEN UPDATE SET
@@ -630,7 +630,7 @@ const VARIANTS = {
           (version, description, type, script, checksum, applied_at, execution_ms, applied_by, status, error_message)
           VALUES
           (s.version, s.description, s.type, s.script, s.checksum, s.applied_at, s.execution_ms, s.applied_by, s.status, s.error_message);`,
-      deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
+      deleteFailed: "DELETE FROM schema_migrations WHERE version = CAST(? AS VARCHAR(32)) AND status = 'failed'"
     },
     // Port self-probe state (migration 012). MSSQL uses MERGE for atomic
     // upsert (no native ON DUPLICATE KEY). Uses ? placeholders — db.execute
@@ -639,7 +639,7 @@ const VARIANTS = {
       getAll: 'SELECT port_role, status, latency_ms, last_probe_at, last_up_at, consecutive_failures FROM probe_state ORDER BY port_role',
       upsertRow: (portRole, status, latencyMs, lastProbeAt, lastUpAt, consecutiveFailures) =>
         `MERGE INTO probe_state AS t
-         USING (SELECT ? AS port_role, ? AS status, ? AS latency_ms, ? AS last_probe_at, ? AS last_up_at, ? AS consecutive_failures) AS s
+         USING (SELECT CAST(? AS VARCHAR(16)) AS port_role, CAST(? AS VARCHAR(16)) AS status, ? AS latency_ms, ? AS last_probe_at, ? AS last_up_at, ? AS consecutive_failures) AS s
          ON t.port_role = s.port_role
          WHEN MATCHED THEN UPDATE SET
            status = s.status,

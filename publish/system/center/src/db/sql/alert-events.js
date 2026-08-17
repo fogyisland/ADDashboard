@@ -26,14 +26,14 @@ export const alertEvents = {
   },
   mssql: {
     insert: `INSERT INTO alert_events (rule_id, event, hostname, detail)
-             VALUES (?, ?, ?, ?)`,
+             VALUES (?, CAST(? AS VARCHAR(32)), CAST(? AS VARCHAR(128)), ?)`,
     findById: `SELECT id, rule_id, hostname, event, detail, created_at
                FROM alert_events WHERE id = ?`,
     listByRule: `SELECT id, rule_id, hostname, event, detail, created_at
                  FROM alert_events WHERE rule_id = ?
                  ORDER BY created_at DESC, id DESC`,
     listByHostname: `SELECT id, rule_id, hostname, event, detail, created_at
-                     FROM alert_events WHERE hostname = ?
+                     FROM alert_events WHERE hostname = CAST(? AS VARCHAR(128))
                      ORDER BY created_at DESC, id DESC`,
     listRecent: (limit) => `SELECT TOP ${Number(limit)} id, rule_id, hostname, event, detail, created_at
                             FROM alert_events ORDER BY created_at DESC, id DESC`,

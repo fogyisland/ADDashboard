@@ -70,7 +70,9 @@ test('mysql: portStatus.upsertOne uses ON DUPLICATE KEY UPDATE on (agent_id, por
 test('mssql: portStatus.upsertOne uses MERGE with USING (VALUES)', () => {
   const sql = buildSql('mssql').portStatus.upsertOne;
   assert.match(sql, /MERGE INTO ad_agent_port_status/i);
-  assert.match(sql, /USING \(SELECT \? AS agent_id, \? AS port/i);
+  // agent_id is VARCHAR(64) — wrapped in CAST(? AS VARCHAR(64)) AS agent_id
+  // (R2 T3: cross-collation Msg 468 safety).
+  assert.match(sql, /USING \(SELECT CAST\(\? AS VARCHAR\(64\)\) AS agent_id, \? AS port/i);
 });
 
 // --- probe (verify-marker existence checks) ---

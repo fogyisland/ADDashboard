@@ -75,22 +75,22 @@ export const serverGroups = {
   },
   mssql: {
     // ---- ad_server_groups ----
-    create: `INSERT INTO ad_server_groups (group_name, description) VALUES (?, ?)`,
-    findByName: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_name = ?`,
+    create: `INSERT INTO ad_server_groups (group_name, description) VALUES (CAST(? AS VARCHAR(128)), CAST(? AS VARCHAR(256)))`,
+    findByName: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_name = CAST(? AS VARCHAR(128))`,
     findById: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_id = ?`,
     list: `SELECT g.group_id, g.group_name, g.description,
             (SELECT COUNT(*) FROM ad_server_group_members m WHERE m.group_id = g.group_id) AS member_count
            FROM ad_server_groups g
            ORDER BY g.group_name`,
-    update: `UPDATE ad_server_groups SET group_name = ?, description = ? WHERE group_id = ?`,
+    update: `UPDATE ad_server_groups SET group_name = CAST(? AS VARCHAR(128)), description = CAST(? AS VARCHAR(256)) WHERE group_id = ?`,
     delete: `DELETE FROM ad_server_groups WHERE group_id = ?`,
 
     // ---- ad_server_group_members ----
     addMember: `MERGE INTO ad_server_group_members AS t
-      USING (SELECT ? AS group_id, ? AS hostname) AS s
+      USING (SELECT ? AS group_id, CAST(? AS VARCHAR(128)) AS hostname) AS s
       ON t.group_id = s.group_id AND t.hostname = s.hostname
       WHEN NOT MATCHED THEN INSERT (group_id, hostname) VALUES (s.group_id, s.hostname);`,
-    removeMember: `DELETE FROM ad_server_group_members WHERE group_id = ? AND hostname = ?`,
+    removeMember: `DELETE FROM ad_server_group_members WHERE group_id = ? AND hostname = CAST(? AS VARCHAR(128))`,
     listMembers: `SELECT m.group_id, m.hostname, m.created_at, s.site_name
                   FROM ad_server_group_members m
                   LEFT JOIN ad_member_servers ms ON ms.hostname = m.hostname
@@ -100,29 +100,29 @@ export const serverGroups = {
     listGroupsForHostname: `SELECT g.group_id, g.group_name
                            FROM ad_server_groups g
                            INNER JOIN ad_server_group_members m ON m.group_id = g.group_id
-                           WHERE m.hostname = ?
+                           WHERE m.hostname = CAST(? AS VARCHAR(128))
                            ORDER BY g.group_name`,
 
     // ---- ad_member_server_packages ----
     upsertPackage: `MERGE INTO ad_member_server_packages AS t
-      USING (SELECT ? AS hostname, ? AS package_name, ? AS enabled) AS s
+      USING (SELECT CAST(? AS VARCHAR(128)) AS hostname, ? AS package_name, ? AS enabled) AS s
       ON t.hostname = s.hostname AND t.package_name = s.package_name
       WHEN MATCHED THEN UPDATE SET enabled = s.enabled
       WHEN NOT MATCHED THEN INSERT (hostname, package_name, enabled) VALUES (s.hostname, s.package_name, s.enabled);`,
-    removePackage: `DELETE FROM ad_member_server_packages WHERE hostname = ? AND package_name = ?`,
+    removePackage: `DELETE FROM ad_member_server_packages WHERE hostname = CAST(? AS VARCHAR(128)) AND package_name = ?`,
     listPackagesForHost: `SELECT msp.hostname, msp.package_name, msp.enabled,
                                  msp.installed_at, msp.last_run_at,
                                  ip.version, ip.type, ip.enabled AS pkg_enabled
                           FROM ad_member_server_packages msp
                           LEFT JOIN installed_packages ip ON ip.name = msp.package_name
-                          WHERE msp.hostname = ?
+                          WHERE msp.hostname = CAST(? AS VARCHAR(128))
                           ORDER BY msp.package_name`,
     listHostsForPackage: `SELECT msp.hostname, msp.enabled, msp.installed_at, msp.last_run_at
                           FROM ad_member_server_packages msp
                           WHERE msp.package_name = ?
                           ORDER BY msp.hostname`,
     touchPackageRun: `UPDATE ad_member_server_packages SET last_run_at = SYSUTCDATETIME()
-                      WHERE hostname = ? AND package_name = ?`,
+                      WHERE hostname = CAST(? AS VARCHAR(128)) AND package_name = ?`,
     // Bulk operations for Task 7. MSSQL has no INSERT IGNORE — use a
     // LEFT JOIN ... WHERE NOT EXISTS anti-pattern so re-running the install
     // is a no-op for hosts already bound to this package (idempotent).

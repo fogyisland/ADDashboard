@@ -62,32 +62,32 @@ export const alertRules = {
   mssql: {
     // ---- alert_rules ----
     create: `INSERT INTO alert_rules (hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (CAST(? AS VARCHAR(128)), CAST(? AS VARCHAR(256)), ?, ?, ?, ?, ?)`,
     findById: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                FROM alert_rules WHERE rule_id = ?`,
     list: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
            FROM alert_rules ORDER BY hostname, name`,
     listForHost: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
-                  FROM alert_rules WHERE hostname = ? ORDER BY name`,
+                  FROM alert_rules WHERE hostname = CAST(? AS VARCHAR(128)) ORDER BY name`,
     listEnabled: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                   FROM alert_rules WHERE enabled = 1 ORDER BY hostname, name`,
     listEnabledForHost: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
-                         FROM alert_rules WHERE hostname = ? AND enabled = 1 ORDER BY name`,
+                         FROM alert_rules WHERE hostname = CAST(? AS VARCHAR(128)) AND enabled = 1 ORDER BY name`,
     listEnabledForHostWithState: `SELECT r.rule_id, r.hostname, r.name, r.[condition], r.for_minutes, r.cooldown_minutes, r.recipients, r.enabled,
        s.state, s.first_hit_at, s.last_fired_at, s.suppressed_until
        FROM alert_rules r
        LEFT JOIN alert_rule_state s ON s.rule_id = r.rule_id
-       WHERE r.hostname = ? AND r.enabled = 1`,
+       WHERE r.hostname = CAST(? AS VARCHAR(128)) AND r.enabled = 1`,
     listAllEnabled: `SELECT rule_id, hostname, name, [condition], for_minutes, cooldown_minutes, recipients, enabled, created_at, updated_at
                      FROM alert_rules WHERE enabled = 1 ORDER BY hostname, rule_id`,
-    update: `UPDATE alert_rules SET name = ?, [condition] = ?, for_minutes = ?, cooldown_minutes = ?, recipients = ?, enabled = ?
+    update: `UPDATE alert_rules SET name = CAST(? AS VARCHAR(256)), [condition] = ?, for_minutes = ?, cooldown_minutes = ?, recipients = ?, enabled = ?
              WHERE rule_id = ?`,
     delete: `DELETE FROM alert_rules WHERE rule_id = ?`,
 
     // ---- alert_rule_state ----
     upsertState: `MERGE INTO alert_rule_state AS t
                   USING (SELECT
-                    ? AS rule_id, ? AS state, ? AS first_hit_at,
+                    ? AS rule_id, CAST(? AS VARCHAR(16)) AS state, ? AS first_hit_at,
                     ? AS last_fired_at, ? AS last_recovered_at, ? AS suppressed_until
                   ) AS s
                   ON t.rule_id = s.rule_id
