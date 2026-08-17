@@ -118,6 +118,7 @@ test('PUT /api/admin/config: bumps center_listen_port_pending_version when liste
     },
     async transaction(work) {
       const txWrapper = {
+        sql: db.sql,
         async execute(sql, params = []) {
           txCalls.push({ sql, params });
           return { rows: [], affectedRows: 1, insertId: undefined };
@@ -176,6 +177,7 @@ test('PUT /api/admin/config: does NOT bump pending version when listenPort uncha
     },
     async transaction(work) {
       const txWrapper = {
+        sql: db.sql,
         async execute(sql, params = []) {
           txCalls.push({ sql, params });
           return { rows: [], affectedRows: 1, insertId: undefined };
@@ -227,6 +229,7 @@ test('PUT /api/admin/config: does NOT touch pending version when listenPort not 
     },
     async transaction(work) {
       const txWrapper = {
+        sql: db.sql,
         async execute(sql, params = []) {
           txCalls.push({ sql, params });
           return { rows: [], affectedRows: 1, insertId: undefined };

@@ -308,7 +308,7 @@ test('PUT /api/admin/config: 200 updates multiple keys', async () => {
     sql: buildSql('mysql'),
     async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
     async query() { return { rows: [] }; },
-    async transaction(work) { return work({ execute: txExecute, query: txQuery }); },
+    async transaction(work) { return work({ sql: db.sql, execute: txExecute, query: txQuery }); },
     async healthcheck() {},
     async close() {}
   };

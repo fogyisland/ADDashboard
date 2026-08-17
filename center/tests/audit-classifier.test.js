@@ -25,17 +25,24 @@ test('classifier: classifyAction returns Chinese label + category + severity tog
   assert.equal(c.severity, 'high');
 });
 
-test('classifier: CATEGORY_ACTIONS.security is exactly {login_failed, delete_user}', () => {
-  assert.deepEqual([...CATEGORY_ACTIONS.get('security')].sort(), ['delete_user', 'login_failed']);
+test('classifier: CATEGORY_ACTIONS.security is exactly {login_failed, delete_user, agent_self_register, disable_builtin_ad_os_baseline}', () => {
+  assert.deepEqual([...CATEGORY_ACTIONS.get('security')].sort(), [
+    'agent_self_register', 'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed'
+  ]);
 });
 
-test('classifier: SEVERITY_ACTIONS.high is exactly {login_failed, delete_user}', () => {
-  assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), ['delete_user', 'login_failed']);
+test('classifier: SEVERITY_ACTIONS.high includes delete_user, login_failed, restart_service, disable_builtin_ad_os_baseline', () => {
+  assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
+    'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed', 'restart_service'
+  ]);
 });
 
-test('classifier: SEVERITY_ACTIONS.medium is exactly the 6 changes actions', () => {
+test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('medium')].sort(), [
-    'apply_migration', 'bulk_assign_dc_sites', 'bulk_import_sites',
+    'agent_self_register', 'apply_migration', 'bulk_assign_dc_sites',
+    'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
+    'delete_alert_rule', 'delete_server_group', 'delete_site',
+    'replace_server_group_members',
     'reset_failed_migration', 'update_config', 'update_user'
   ]);
 });

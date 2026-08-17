@@ -216,7 +216,7 @@ export function adminRouter({ config, logger }) {
           target: 'system_config',
           payload: { ...safeUpdates, auditCount },
           logger
-        }, tx);
+        }, logger, tx);
       });
       void listenPortBumped;
       res.json({ ok: true, auditCount });
@@ -467,6 +467,17 @@ export function adminRouter({ config, logger }) {
     try {
       const db = getDb();
       const result = await db.execute(db.sql.sites.create, [siteName, regionCode ?? null, isHub ? 1 : 0, description ?? null]);
+      // C12 fix: single-row site create now writes an audit row. Previously
+      // only the bulk import (POST .../bulk) was audited — single-row
+      // creates were a silent gap that left no trail when an operator
+      // added a site by hand.
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'create_site',
+        target: siteName,
+        payload: { siteName, regionCode: regionCode ?? null, isHub: isHub ? 1 : 0, description: description ?? null, id: result.insertId },
+        logger
+      });
       res.status(201).json({ id: result.insertId });
     } catch (e) {
       if (e.code === 'DUP_ENTRY') return res.status(409).json({ error: 'siteName already exists' });
@@ -491,6 +502,14 @@ export function adminRouter({ config, logger }) {
       const db = getDb();
       const { affectedRows } = await db.execute(db.sql.sites.updatePartial(fields), params);
       if (affectedRows === 0) return res.status(404).json({ error: 'site not found' });
+      // C12 fix: site rename / region / hub-flag change is now audited.
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'update_site',
+        target: String(id),
+        payload: { siteId: id, fieldsUpdated: fields.map(f => f.split(' ')[0]) },
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'sites-catalog update failed');
@@ -506,6 +525,16 @@ export function adminRouter({ config, logger }) {
       await db.execute(db.sql.sites.unbindDcs, [id]);
       const { affectedRows } = await db.execute(db.sql.sites.delete, [id]);
       if (affectedRows === 0) return res.status(404).json({ error: 'site not found' });
+      // C12 fix: site drop is now audited. unbindDcs first detaches every DC
+      // that pointed at this site — record that side-effect in the payload
+      // so an operator looking at this row later can see the cascading impact.
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'delete_site',
+        target: String(id),
+        payload: { siteId: id, note: 'unbindDcs first detached every DC referencing this site' },
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'sites-catalog delete failed');
@@ -550,7 +579,7 @@ export function adminRouter({ config, logger }) {
             target: siteName,
             payload: { rowIndex: i, siteName, regionCode: r.regionCode ?? null, isHub: isHubVal },
             logger
-          }, tx);
+          }, logger, tx);
           imported++;
         }
         await writeAudit({
@@ -559,7 +588,7 @@ export function adminRouter({ config, logger }) {
           target: 'ad_sites',
           payload: { imported, skipped, total: rows.length },
           logger
-        }, tx);
+        }, logger, tx);
       });
       res.json({ ok: true, imported, skipped, errors });
     } catch (e) {
@@ -594,6 +623,17 @@ export function adminRouter({ config, logger }) {
       const params = siteId == null ? [dcName] : [siteId, dcName];
       const { affectedRows } = await db.execute(sqlText, params);
       if (affectedRows === 0) return res.status(404).json({ error: 'dc not found' });
+      // C12 fix: per-DC site bind / unbind now writes an audit row. The
+      // bulk route (POST .../bulk-assign) was already covered by C2, but
+      // the single-DC path used here was a silent gap that left no trail
+      // when an operator moved one DC at a time.
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'assign_dc_site',
+        target: dcName,
+        payload: { dcName, siteId: siteId ?? null, operation: siteId == null ? 'unbind' : 'bind' },
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog site assign failed');
@@ -633,7 +673,7 @@ export function adminRouter({ config, logger }) {
               target: dcName,
               payload: { rowIndex: i, dcName, reason: 'empty siteName' },
               logger
-            }, tx);
+            }, logger, tx);
             unassigned++;
             continue;
           }
@@ -656,7 +696,7 @@ export function adminRouter({ config, logger }) {
             target: dcName,
             payload: { rowIndex: i, dcName, siteName, siteId },
             logger
-          }, tx);
+          }, logger, tx);
           assigned++;
         }
         await writeAudit({
@@ -665,7 +705,7 @@ export function adminRouter({ config, logger }) {
           target: 'ad_dcs',
           payload: { assigned, unassigned, skipped, total: rows.length },
           logger
-        }, tx);
+        }, logger, tx);
       });
       res.json({ ok: true, assigned, unassigned, skipped, errors });
     } catch (e) {
@@ -759,6 +799,13 @@ export function adminRouter({ config, logger }) {
     try {
       const db = getDb();
       const result = await db.execute(db.sql.serverGroups.create, [groupName, description ?? null]);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'create_server_group',
+        target: groupName,
+        payload: { groupName, description: description ?? null, id: result.insertId },
+        logger
+      });
       res.status(201).json({ id: result.insertId });
     } catch (e) {
       if (e.code === 'DUP_ENTRY') return res.status(409).json({ error: 'groupName already exists' });
@@ -785,6 +832,13 @@ export function adminRouter({ config, logger }) {
         params
       );
       if (affectedRows === 0) return res.status(404).json({ error: 'group not found' });
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'update_server_group',
+        target: String(id),
+        payload: { groupId: id, groupName, description, fieldsUpdated: fields.map(f => f.split(' ')[0]) },
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       if (e.code === 'DUP_ENTRY') return res.status(409).json({ error: 'groupName already exists' });
@@ -802,6 +856,13 @@ export function adminRouter({ config, logger }) {
       const db = getDb();
       const { affectedRows } = await db.execute(db.sql.serverGroups.delete, [id]);
       if (affectedRows === 0) return res.status(404).json({ error: 'group not found' });
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'delete_server_group',
+        target: String(id),
+        payload: { groupId: id, note: 'member rows cascade via FK ON DELETE CASCADE' },
+        logger
+      });
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups delete failed');
@@ -855,6 +916,17 @@ export function adminRouter({ config, logger }) {
         for (const hostname of toAdd) {
           await tx.execute(db.sql.serverGroups.addMember, [id, hostname]);
         }
+        // C11 fix: enroll the membership diff audit row in the same tx as the
+        // data writes — a half-committed diff that loses its audit trail is
+        // exactly the gap compliance reviewers flag. writeAudit re-throws on
+        // tx path so a transient audit-table hiccup rolls the diff back.
+        await writeAudit({
+          userId: req.user?.sub ?? null,
+          action: 'replace_server_group_members',
+          target: String(id),
+          payload: { groupId: id, added: toAdd, removed: toRemove, total: desired.length },
+          logger
+        }, logger, tx);
       });
       res.json({ ok: true, added: toAdd.length, removed: toRemove.length });
     } catch (e) {
@@ -883,6 +955,13 @@ export function adminRouter({ config, logger }) {
         ? [packageName, 1, id, packageName]
         : [packageName, 1, id];
       const { affectedRows } = await db.execute(db.sql.serverGroups.bulkInstallPackage, params);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'bulk_install_package_to_group',
+        target: String(id),
+        payload: { groupId: id, packageName, affected: affectedRows },
+        logger
+      });
       res.json({ ok: true, affected: affectedRows });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups bulkInstall failed');
@@ -918,6 +997,17 @@ export function adminRouter({ config, logger }) {
         }
       }
       const { affectedRows } = await db.execute(db.sql.serverGroups.bulkUninstallPackage, [id, packageName]);
+      // C11: log a per-group uninstall summary row in addition to the
+      // built-in ad-os-baseline per-host disable rows written before the
+      // DELETE — gives operators a single pivot row when searching by
+      // group_id without having to fan-out across the per-host disable rows.
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'bulk_disable_package_to_group',
+        target: String(id),
+        payload: { groupId: id, packageName, removed: affectedRows, auditedHosts: affected.length, note: 'uninstall removes bindings; built-in ad-os-baseline also writes per-host disable_builtin_ad_os_baseline rows' },
+        logger
+      });
       res.json({ ok: true, removed: affectedRows, audited: affected.length });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups bulkUninstall failed');
@@ -933,6 +1023,13 @@ export function adminRouter({ config, logger }) {
     try {
       const db = getDb();
       const { affectedRows } = await db.execute(db.sql.serverGroups.bulkSetEnabled, [1, id, packageName]);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'bulk_enable_package_to_group',
+        target: String(id),
+        payload: { groupId: id, packageName, affected: affectedRows },
+        logger
+      });
       res.json({ ok: true, affected: affectedRows });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups bulkEnable failed');
@@ -947,6 +1044,13 @@ export function adminRouter({ config, logger }) {
     try {
       const db = getDb();
       const { affectedRows } = await db.execute(db.sql.serverGroups.bulkSetEnabled, [0, id, packageName]);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'bulk_disable_package_to_group',
+        target: String(id),
+        payload: { groupId: id, packageName, affected: affectedRows, note: 'disable flips enabled flag; package rows are NOT deleted' },
+        logger
+      });
       res.json({ ok: true, affected: affectedRows });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups bulkDisable failed');

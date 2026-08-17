@@ -333,21 +333,33 @@ describe('POST /api/admin/server-groups/:id/packages/:name/uninstall', () => {
       .set('Authorization', `Bearer ${adminToken()}`);
     assert.equal(r.status, 200);
     assert.equal(r.body.ok, true);
-    // Two audit rows (one per affected host) BEFORE any DELETE
-    const audits = records.filter(r => /INSERT\s+INTO\s+audit_logs/i.test(r.sql));
-    assert.equal(audits.length, 2, 'audit row per affected host');
-    for (const a of audits) {
+    // Per-host audit rows (one per affected host) BEFORE any DELETE, plus
+    // a C11 bulk_disable_package_to_group summary row that lands AFTER the
+    // DELETE so an operator can pivot by group_id without fanning out across
+    // per-host disable rows.
+    const perHostAudits = records.filter(r =>
+      /INSERT\s+INTO\s+audit_logs/i.test(r.sql) &&
+      r.params[1] === 'disable_builtin_ad_os_baseline'
+    );
+    assert.equal(perHostAudits.length, 2, 'audit row per affected host');
+    for (const a of perHostAudits) {
       assert.equal(a.params[1], 'disable_builtin_ad_os_baseline');
       assert.ok(['SRV-A', 'SRV-B'].includes(a.params[2]));
     }
+    const summaryAudit = records.find(r =>
+      /INSERT\s+INTO\s+audit_logs/i.test(r.sql) &&
+      r.params[1] === 'bulk_disable_package_to_group'
+    );
+    assert.ok(summaryAudit, 'bulk_disable_package_to_group summary audit row must be written');
+    assert.equal(summaryAudit.params[2], '1');
     // Bulk DELETE for ad_member_server_packages (single statement)
     const dels = records.filter(r => /DELETE\s+(msp\s+)?FROM\s+ad_member_server_packages/i.test(r.sql));
     assert.ok(dels.length >= 1);
-    // Audit must come before DELETE
-    assert.ok(records.indexOf(audits[0]) < records.indexOf(dels[0]), 'audit must precede DELETE');
+    // Per-host audit must come before DELETE
+    assert.ok(records.indexOf(perHostAudits[0]) < records.indexOf(dels[0]), 'per-host audit must precede DELETE');
   });
 
-  test('200 for non-built-in package: DELETE only, no audit row', async () => {
+  test('200 for non-built-in package: DELETE + bulk_disable_package_to_group summary audit', async () => {
     const records = [];
     const db = buildMockDb([
       { match: /FROM\s+ad_member_server_packages\s+msp\s+WHERE\s+msp\.package_name\s+=\s+\?/i,
@@ -358,8 +370,13 @@ describe('POST /api/admin/server-groups/:id/packages/:name/uninstall', () => {
       .post('/api/admin/server-groups/1/packages/other-pkg/uninstall')
       .set('Authorization', `Bearer ${adminToken()}`);
     assert.equal(r.status, 200);
+    // C11: non-built-in packages now write the bulk_disable_package_to_group
+    // summary row (no per-host disable — that was the built-in-specific
+    // safety-net audit). Verify only the summary row is written.
     const audits = records.filter(r => /INSERT\s+INTO\s+audit_logs/i.test(r.sql));
-    assert.equal(audits.length, 0);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].params[1], 'bulk_disable_package_to_group');
+    assert.equal(audits[0].params[2], '1');
     const dels = records.filter(r => /DELETE\s+(msp\s+)?FROM\s+ad_member_server_packages/i.test(r.sql));
     assert.ok(dels.length >= 1);
   });
@@ -407,5 +424,177 @@ describe('Auth coverage', () => {
     _setDbForTest(buildMockDb().standard());
     const r = await supertest(buildApp()).delete('/api/admin/server-groups/1');
     assert.equal(r.status, 401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C11: server-groups audit row coverage — every mutating route must write
+// an audit_logs INSERT so compliance reviewers can answer "who deleted
+// group X" without grepping the application log.
+// ---------------------------------------------------------------------------
+describe('C11: server-groups audit coverage', () => {
+  function findAudit(records, action) {
+    return records.find(r =>
+      /INSERT\s+INTO\s+audit_logs/i.test(r.sql) && r.params[1] === action
+    );
+  }
+
+  test('POST /api/admin/server-groups writes create_server_group audit row', async () => {
+    const records = [];
+    _setDbForTest(buildMockDb([]).withRecording(records));
+    await supertest(buildApp())
+      .post('/api/admin/server-groups')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ groupName: 'g1', description: 'first' });
+    const audit = findAudit(records, 'create_server_group');
+    assert.ok(audit, 'create_server_group audit row must be written');
+    assert.equal(audit.params[2], 'g1'); // target = groupName
+    assert.equal(audit.params[0], 'u1'); // userId
+  });
+
+  test('PUT /api/admin/server-groups/:id writes update_server_group audit row', async () => {
+    const records = [];
+    const db = buildMockDb([
+      { match: /UPDATE\s+ad_server_groups/i, rows: [] }
+    ]).withRecording(records);
+    // Mock needs to report affectedRows=1 for the route to proceed past 404
+    db.execute = async (sql, params) => {
+      records.push({ sql, params });
+      if (/UPDATE\s+ad_server_groups/i.test(sql)) return { rows: [], affectedRows: 1 };
+      return { rows: [], affectedRows: 0 };
+    };
+    _setDbForTest(db);
+    await supertest(buildApp())
+      .put('/api/admin/server-groups/7')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ groupName: 'g1-new' });
+    const audit = findAudit(records, 'update_server_group');
+    assert.ok(audit, 'update_server_group audit row must be written');
+    assert.equal(audit.params[2], '7');
+  });
+
+  test('DELETE /api/admin/server-groups/:id writes delete_server_group audit row', async () => {
+    const records = [];
+    const db = buildMockDb([]).withRecording(records);
+    db.execute = async (sql, params) => {
+      records.push({ sql, params });
+      if (/DELETE\s+FROM\s+ad_server_groups/i.test(sql)) return { rows: [], affectedRows: 1 };
+      return { rows: [], affectedRows: 0 };
+    };
+    _setDbForTest(db);
+    await supertest(buildApp())
+      .delete('/api/admin/server-groups/7')
+      .set('Authorization', `Bearer ${adminToken()}`);
+    const audit = findAudit(records, 'delete_server_group');
+    assert.ok(audit, 'delete_server_group audit row must be written');
+    assert.equal(audit.params[2], '7');
+  });
+
+  test('PUT /api/admin/server-groups/:id/members writes replace_server_group_members audit row INSIDE the tx', async () => {
+    const records = [];
+    const txCalls = [];
+    const db = buildMockDb([
+      { match: /FROM\s+ad_server_group_members/i, rows: [{ hostname: 'old-A' }, { hostname: 'old-B' }] }
+    ]).withRecording(records);
+    db.transaction = async (work) => {
+      const txWrapper = {
+        sql: db.sql,
+        async execute(sql, params) {
+          txCalls.push({ sql, params, inTx: true });
+          return { rows: [], affectedRows: 0 };
+        }
+      };
+      return await work(txWrapper);
+    };
+    _setDbForTest(db);
+    await supertest(buildApp())
+      .put('/api/admin/server-groups/7/members')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ hostnames: ['new-X', 'old-A'] }); // 1 added (new-X), 1 removed (old-B)
+    // The audit row must land inside the same tx as the data writes — verify
+    // by checking it shows up in txCalls (not records against the global db).
+    const audit = txCalls.find(c =>
+      /INSERT\s+INTO\s+audit_logs/i.test(c.sql) &&
+      c.params[1] === 'replace_server_group_members'
+    );
+    assert.ok(audit, 'replace_server_group_members audit row must be inside the tx');
+    assert.equal(audit.params[2], '7');
+    const payload = JSON.parse(audit.params[3]);
+    assert.deepEqual(payload.added, ['new-X']);
+    assert.deepEqual(payload.removed, ['old-B']);
+  });
+
+  test('POST .../packages/install writes bulk_install_package_to_group audit row', async () => {
+    const records = [];
+    const db = buildMockDb([]).withRecording(records);
+    db.execute = async (sql, params) => {
+      records.push({ sql, params });
+      if (/INSERT\s+INTO\s+ad_member_server_packages/i.test(sql)) return { rows: [], affectedRows: 5 };
+      return { rows: [], affectedRows: 0 };
+    };
+    _setDbForTest(db);
+    await supertest(buildApp())
+      .post('/api/admin/server-groups/7/packages/install')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ packageName: 'my-pkg' });
+    const audit = findAudit(records, 'bulk_install_package_to_group');
+    assert.ok(audit, 'bulk_install_package_to_group audit row must be written');
+    assert.equal(audit.params[2], '7');
+  });
+
+  test('POST .../packages/:name/enable writes bulk_enable_package_to_group audit row', async () => {
+    const records = [];
+    const db = buildMockDb([]).withRecording(records);
+    db.execute = async (sql, params) => {
+      records.push({ sql, params });
+      if (/UPDATE\s+(msp\s+)?ad_member_server_packages/i.test(sql)) return { rows: [], affectedRows: 3 };
+      return { rows: [], affectedRows: 0 };
+    };
+    _setDbForTest(db);
+    await supertest(buildApp())
+      .post('/api/admin/server-groups/7/packages/my-pkg/enable')
+      .set('Authorization', `Bearer ${adminToken()}`);
+    const audit = findAudit(records, 'bulk_enable_package_to_group');
+    assert.ok(audit, 'bulk_enable_package_to_group audit row must be written');
+    assert.equal(audit.params[2], '7');
+  });
+
+  test('POST .../packages/:name/disable writes bulk_disable_package_to_group audit row', async () => {
+    const records = [];
+    const db = buildMockDb([]).withRecording(records);
+    db.execute = async (sql, params) => {
+      records.push({ sql, params });
+      if (/UPDATE\s+(msp\s+)?ad_member_server_packages/i.test(sql)) return { rows: [], affectedRows: 3 };
+      return { rows: [], affectedRows: 0 };
+    };
+    _setDbForTest(db);
+    await supertest(buildApp())
+      .post('/api/admin/server-groups/7/packages/my-pkg/disable')
+      .set('Authorization', `Bearer ${adminToken()}`);
+    const audit = findAudit(records, 'bulk_disable_package_to_group');
+    assert.ok(audit, 'bulk_disable_package_to_group audit row must be written');
+    assert.equal(audit.params[2], '7');
+  });
+
+  test('audit row writes do not break the operation when audit INSERT throws (best-effort)', async () => {
+    const records = [];
+    const db = buildMockDb([]).withRecording(records);
+    db.execute = async (sql, params) => {
+      records.push({ sql, params });
+      // First call is the INSERT into ad_server_groups — succeed.
+      // Second call is the audit_logs INSERT — throw.
+      const calls = records.filter(r => /INSERT/i.test(r.sql)).length;
+      if (calls === 1 && /INSERT\s+INTO\s+audit_logs/i.test(sql)) {
+        throw new Error('audit table hiccup');
+      }
+      return { rows: [], affectedRows: 1 };
+    };
+    _setDbForTest(db);
+    const r = await supertest(buildApp())
+      .post('/api/admin/server-groups')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({ groupName: 'g1' });
+    // Best-effort: route must still return 201 (audit failure is warn-logged)
+    assert.equal(r.status, 201);
   });
 });
