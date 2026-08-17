@@ -16,6 +16,7 @@ import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
 import { createProbeLoop } from './src/services/probe.js';
 import { createAlertEvaluationLoop } from './src/services/alert-engine.js';
 import { createEmailDeliveryLoop } from './src/services/email.js';
+import { createAuditRetentionLoop } from './src/services/audit.js';
 import { initRouter } from './src/init/router.js';
 import { packageRouter } from './src/packages/router.js';
 import { orphanRouter } from './src/packages/orphan-router.js';
@@ -415,6 +416,17 @@ await ((async () => {
     });
     alertLoop.start();
     emailLoop.start();
+    // AuditRetentionLoop (Task #166 / I4). Reads audit_retention_days from
+    // system_config on each tick so operators can change retention policy
+    // without restarting. Hard-coded 1-hour cadence — coarse-grained
+    // background job, no per-tick interval knob. Wired AFTER emailLoop
+    // because purgeOldAuditLogs depends on audit_logs (migration 013+) being
+    // live; same dependency class as the alert/email loops.
+    const auditRetentionLoop = createAuditRetentionLoop({
+      getSystemConfig,
+      logger
+    });
+    auditRetentionLoop.start();
     // Bootstrap watchdog: 30 s after startup, if no probe write has landed
     // (all rows still stale or uninitialized), emit a one-shot audit warning
     // so the operator can see in the audit log that the loop is wedged. The
@@ -441,6 +453,7 @@ await ((async () => {
       try { await probeLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'probe stop failed'); }
       try { await alertLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'alert loop stop failed'); }
       try { await emailLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'email loop stop failed'); }
+      try { await auditRetentionLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'audit retention loop stop failed'); }
       await closeAll(servers, logger);
       try { await closeWizardFacade(); } catch {}
       try { await close(); } catch {}

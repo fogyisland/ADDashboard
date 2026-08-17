@@ -157,7 +157,12 @@ export async function seedSmtpDefaultsIfMissing(logger) {
     alert_default_cc: '',
     alert_eval_interval_seconds: '60',
     alert_email_max_attempts: '5',
-    alert_email_initial_backoff_seconds: '30'
+    alert_email_initial_backoff_seconds: '30',
+    // I4: audit retention policy. Default 90 days. Set to 0 to disable
+    // (purgeOldAuditLogs treats <= 0 as "retention disabled" — see
+    // services/audit.js). Read by createAuditRetentionLoop on every tick
+    // so operators can change it without restarting the center.
+    audit_retention_days: '90'
   };
   const { rows } = await db.query(db.sql.config.getAll);
   const existing = new Set(rows.map(r => r.config_key));

@@ -72,7 +72,11 @@ const VARIANTS = {
       // Placeholder count is built dynamically by the caller so any category
       // (any number of actions) round-trips without losing the bound-param
       // pattern that the mssql driver wrapper expects.
-      badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`
+      badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`,
+      // I4: retention purge. Deletes rows older than the bound date. Both
+      // dialects accept DATE_SUB/DATEADD with the same parameter shape
+      // (single bound datetime), so the SQL stays portable.
+      purge: 'DELETE FROM audit_logs WHERE created_at < ?'
     },
     sites: {
       listAll: 'SELECT site, region_code, is_hub FROM ad_sites',
@@ -381,7 +385,11 @@ const VARIANTS = {
         listParams: (whereParams, size, offset) => [...whereParams, offset, size]
       }),
       count: `SELECT COUNT(*) AS total FROM audit_logs a`,
-      badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`
+      badge: (actionList) => `SELECT COUNT(*) AS total FROM audit_logs a WHERE a.action IN (${actionList.map(() => '?').join(',')})`,
+      // I4: retention purge — caller computes the cutoff date in JS
+      // (new Date(Date.now() - days * 86400_000)) and binds as a Date param.
+      // mssql driver coerces JS Date → DATETIME2 automatically.
+      purge: 'DELETE FROM audit_logs WHERE created_at < ?'
     },
     sites: {
       listAll: 'SELECT site, region_code, is_hub FROM ad_sites',

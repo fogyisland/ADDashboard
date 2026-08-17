@@ -277,7 +277,7 @@ test('PUT /api/admin/config uses putConfig and redacts smtp_password from writeA
 
 // ----- seedSmtpDefaultsIfMissing -----
 
-test('seedSmtpDefaultsIfMissing: writes all 11 default rows when system_config is empty', async () => {
+test('seedSmtpDefaultsIfMissing: writes all 12 default rows when system_config is empty', async () => {
   const { seedSmtpDefaultsIfMissing } = await import('../src/services/config.js');
   const records = [];
   const db = buildMockDb([
@@ -285,18 +285,18 @@ test('seedSmtpDefaultsIfMissing: writes all 11 default rows when system_config i
   ]).withRecording(records);
   _setDbForTest(db);
   const r = await seedSmtpDefaultsIfMissing({ info() {} });
-  assert.equal(r.seeded, 11);
+  assert.equal(r.seeded, 12);
   // Every default key should appear in an INSERT|MERGE upsert.
   const upserts = records.filter(r =>
     /INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config/i.test(r.sql)
   );
-  assert.equal(upserts.length, 11);
+  assert.equal(upserts.length, 12);
 });
 
 test('seedSmtpDefaultsIfMissing: idempotent — skips rows that already exist', async () => {
   const { seedSmtpDefaultsIfMissing } = await import('../src/services/config.js');
   const records = [];
-  // Pre-populate 3 of the 11 defaults so only 8 upserts should fire.
+  // Pre-populate 3 of the 12 defaults so only 9 upserts should fire.
   const db = buildMockDb([
     { match: /FROM\s+system_config/i, rows: [
       { config_key: 'smtp_host', config_value: 'smtp.example.com' },
@@ -306,11 +306,11 @@ test('seedSmtpDefaultsIfMissing: idempotent — skips rows that already exist', 
   ]).withRecording(records);
   _setDbForTest(db);
   const r = await seedSmtpDefaultsIfMissing({ info() {} });
-  assert.equal(r.seeded, 8);
+  assert.equal(r.seeded, 9);
   const upserts = records.filter(r =>
     /INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config/i.test(r.sql)
   );
-  assert.equal(upserts.length, 8);
+  assert.equal(upserts.length, 9);
 });
 
 // ----- POST /api/admin/config/email/test (I-5 + M-6) -----
