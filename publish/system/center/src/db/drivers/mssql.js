@@ -56,7 +56,16 @@ export function createMssqlDriver(config) {
       max: config.pool?.max ?? 10,
       min: 0,
       idleTimeoutMillis: 30000
-    }
+    },
+    // Timeouts for SQL Server 2016+ deployments. mssql npm defaults are
+    // 15s (request), 30s (connection), 30s (cancel); long migrations and
+    // audit-report queries on large tables can exceed the 15s default.
+    // Set requestTimeout generously to avoid spurious disconnects; the
+    // script-side Stopwatch timeout in services/dashboard.js (3-5s) covers
+    // the read-side SLA.
+    requestTimeout: 300000,      // 5 min — long MERGE / migrations / large report queries
+    connectionTimeout: 30000,    // 30s — matches mssql default, explicit for clarity
+    cancelTimeout: 30000         // 30s — matches mssql default, explicit for clarity
   };
 
   const pool = new sql.ConnectionPool(poolCfg);
@@ -66,6 +75,30 @@ export function createMssqlDriver(config) {
     if (!connected) {
       await pool.connect();
       connected = true;
+      // Apply session-level SET options once per pool (pool reuse reuses the
+      // same connection config; SET persists on the session that pool.connect
+      // returns). These three SETs fix latent silent failures the driver
+      // wrapper was built around but didn't enforce:
+      //   SET XACT_ABORT ON — abort the entire transaction on any runtime
+      //     SQL error and auto-rollback. Without this, a T-SQL error in the
+      //     middle of a transaction can leave the XACT in an open-but-
+      //     uncommittable state; the try/catch rollback at line 185 races
+      //     with the uncommittable XACT. With XACT_ABORT ON, every runtime
+      //     error triggers automatic rollback per T-SQL spec, which is
+      //     exactly what the wrapper's catch handler expects.
+      //   SET NOCOUNT ON — suppress the 'n rows affected' rowset MSSQL emits
+      //     after every INSERT/UPDATE/DELETE/MERGE. Without it, those rows
+      //     appear as extra rowsets in `result.recordsets[]` and shift the
+      //     indices the driver uses to extract `affectedRows` at line 115.
+      //   SET QUOTED_IDENTIFIER ON — SQL Server's default for new
+      //     connections, but pinned explicitly here to avoid cross-driver
+      //     surprises (mssql npm doesn't guarantee session-level SETs on
+      //     pool connect).
+      await pool.request().batch(`
+        SET XACT_ABORT ON;
+        SET NOCOUNT ON;
+        SET QUOTED_IDENTIFIER ON;
+      `);
     }
   }
 
