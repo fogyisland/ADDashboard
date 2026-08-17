@@ -17,10 +17,12 @@
           <tr v-for="row in sec.rows" :key="row.key">
             <td>
               <div class="key-label">{{ row.label }}</div>
-              <code class="raw-key">{{ row.key }}</code>
+              <code v-if="!row.derived" class="raw-key">{{ row.key }}</code>
             </td>
             <td>
+              <code v-if="row.derived" class="derived-value">{{ agentAddress }}</code>
               <ConfigFieldRow
+                v-else
                 :value="current[row.key]"
                 :error="errors[row.key] || ''"
                 :type="row.type"
@@ -158,6 +160,18 @@ const SECTIONS = [
   {
     title: 'Agent 连接',
     rows: [
+      {
+        // Read-only derived row: shows the URL agents use to reach this
+        // center. Composed from the browser's hostname (what the operator
+        // used to reach this page) and the configured listenPort. The
+        // operator pastes it into the agent's appsettings.json centerUrl,
+        // substituting <server> for the actual IP/hostname when the agent
+        // runs on a different host than the browser.
+        key: '__agent_address__',
+        label: 'Agent 连接地址',
+        derived: true,
+        description: 'Agent 用此地址连入 center;本机 agent 写 localhost,跨机 agent 改<server>为本机 IP/hostname,写入 agent 端 appsettings.json 的 centerUrl。'
+      },
       { key: 'ad_agent_token', label: 'Agent 令牌', description: 'Agent 与 center 共享令牌,改完 agent 端 appsettings.json 需同步。', type: 'text' },
     ]
   },
@@ -207,6 +221,16 @@ const sectionDirtyCounts = computed(() => {
 });
 
 const saving = ref(false);
+
+// Derived read-only display for the Agent 连接地址 row. Combines the
+// browser's hostname (what the operator used to reach this page) with
+// the configured listenPort. Empty / missing port renders as '—' so we
+// don't show a half-built URL before the operator has configured the port.
+const agentAddress = computed(() => {
+  const port = current.value.listenPort;
+  if (!port) return '—';
+  return `http://${window.location.hostname}:${port}`;
+});
 const topLevelMsg = ref('');
 const showConfirm = ref(false);
 const confirmBody = ref('');
@@ -416,6 +440,16 @@ button.cancel { background: #0b1220; color: var(--text); }
 .copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }
 .key-label { font-weight: 600; color: var(--text); }
 .raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; font-style: italic; }
+.derived-value {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--accent);
+  background: #0b1220;
+  padding: 6px 10px;
+  border-radius: 3px;
+  border: 1px solid #1e293b;
+}
 .restart-badge { display: inline-block; margin-left: 8px; padding: 2px 8px; background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; border-radius: 3px; font-size: 11px; cursor: help; }
 .err { display: block; color: #ef4444; font-size: 12px; margin-top: 4px; }
 </style>

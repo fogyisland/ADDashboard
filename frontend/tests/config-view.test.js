@@ -231,7 +231,11 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   expect(rawKeys).toContain('heartbeat_interval_seconds');
   expect(rawKeys).toContain('history_enabled');
   expect(rawKeys).toContain('ad_agent_token');
-  expect(labels.length).toBe(rawKeys.length);
+  // Derived rows (currently: Agent 连接地址) render a label but no raw-key
+  // — they're not DB columns. Allow label count to exceed raw-key count by
+  // the number of derived rows rendered.
+  const derivedCount = tables.flatMap((t) => t.findAll('.derived-value')).length;
+  expect(labels.length).toBe(rawKeys.length + derivedCount);
 });
 
 // Internal bookkeeping the backend piggybacks on the GET response:
@@ -397,4 +401,71 @@ test('page header is a single muted summary line — no marketing chrome', async
   expect(summary.text().length).toBeLessThan(60);
   expect(summary.text().length).toBeGreaterThan(5);
   expect(w.find('.eyebrow').exists()).toBe(false);
+});
+
+// ----- Agent 连接地址 (derived, read-only) -----
+
+// The derived row renders `http://${window.location.hostname}:${listenPort}`.
+// jsdom's default location.hostname is "" — mock it so the assertion is
+// deterministic across CI environments.
+const MOCK_HOST = 'dashboard.corp.local';
+
+beforeEach(() => {
+  // jsdom exposes window.location as a frozen object; replace via defineProperty
+  // to swap hostname. Restore in afterEach (handled implicitly: each test gets
+  // a fresh jsdom instance via vitest's environment).
+  try {
+    Object.defineProperty(window, 'location', {
+      value: { hostname: MOCK_HOST, href: `http://${MOCK_HOST}:9080/admin/config` },
+      writable: true,
+      configurable: true
+    });
+  } catch {
+    // ignore — older jsdom may not allow redefine; fallback below
+  }
+});
+
+test('derived Agent 连接地址 row renders http://<host>:<listenPort>', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '9080' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
+  expect(addrRow, 'derived row must be rendered').toBeTruthy();
+  const val = addrRow.find('.derived-value');
+  expect(val.exists()).toBe(true);
+  expect(val.text()).toBe(`http://${MOCK_HOST}:9080`);
+  // Must be read-only: no input in the value cell.
+  expect(addrRow.find('input').exists()).toBe(false);
+  // No raw-key (it's not a DB column).
+  expect(addrRow.find('code.raw-key').exists()).toBe(false);
+});
+
+test('derived Agent 连接地址 falls back to "—" when listenPort is missing', async () => {
+  setActivePinia(createPinia());
+  // SAMPLE intentionally omits listenPort — fresh-install / pre-config state.
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
+  expect(addrRow).toBeTruthy();
+  expect(addrRow.find('.derived-value').text()).toBe('—');
+});
+
+test('derived Agent 连接地址 stays in sync as listenPort is edited', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '8080' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
+  expect(addrRow.find('.derived-value').text()).toBe(`http://${MOCK_HOST}:8080`);
+  // The listenPort field is editable in the 中心端口 section; mutating it
+  // must re-derive the agent address without a save round-trip.
+  const listenRow = rows.find((r) => r.text().includes('listenPort'));
+  await listenRow.find('input').setValue('9090');
+  await flushPromises();
+  expect(addrRow.find('.derived-value').text()).toBe(`http://${MOCK_HOST}:9090`);
 });
