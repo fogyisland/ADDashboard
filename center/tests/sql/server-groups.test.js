@@ -101,9 +101,19 @@ test('serverGroups: bulkSetEnabled updates enabled flag via joined set', () => {
   assert.match(serverGroups.mysql.bulkSetEnabled, /UPDATE\s+ad_member_server_packages/i);
   assert.match(serverGroups.mysql.bulkSetEnabled, /INNER\s+JOIN\s+ad_server_group_members/i);
   assert.match(serverGroups.mysql.bulkSetEnabled, /SET\s+msp\.enabled\s+=\s+\?/i);
-  assert.match(serverGroups.mssql.bulkSetEnabled, /UPDATE\s+msp\s+SET\s+msp\.enabled\s+=\s+\?/i);
+  assert.match(serverGroups.mssql.bulkSetEnabled, /UPDATE\s+msp\s+SET\s+enabled\s+=\s+\?/i);
   // 3 params: enabled, group_id, package_name
   assert.strictEqual((serverGroups.mysql.bulkSetEnabled.match(/\?/g) || []).length, 3);
+  assert.strictEqual((serverGroups.mssql.bulkSetEnabled.match(/\?/g) || []).length, 3);
+});
+
+test('serverGroups: bulkSetEnabled MSSQL UPDATE...FROM has no alias prefix in SET clause (regression: Msg 107)', () => {
+  // MSSQL UPDATE...FROM rejects alias-prefixed column names in SET clause
+  // (Msg 107, Level 15). The alias lives on the FROM target, not on the
+  // assigned column. Locking out the broken pattern with a doesNotMatch
+  // guard so a future "tidy-up" cannot silently reintroduce it.
+  assert.doesNotMatch(serverGroups.mssql.bulkSetEnabled, /SET\s+msp\.enabled\s*=/i);
+  assert.match(serverGroups.mssql.bulkSetEnabled, /UPDATE\s+msp\s+SET\s+enabled\s+=\s+\?/i);
   assert.strictEqual((serverGroups.mssql.bulkSetEnabled.match(/\?/g) || []).length, 3);
 });
 

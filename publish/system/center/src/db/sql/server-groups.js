@@ -140,7 +140,7 @@ export const serverGroups = {
     bulkUninstallPackage: `DELETE msp FROM ad_member_server_packages msp
       INNER JOIN ad_server_group_members m ON m.hostname = msp.hostname
       WHERE m.group_id = ? AND msp.package_name = ?`,
-    bulkSetEnabled: `UPDATE msp SET msp.enabled = ?
+    bulkSetEnabled: `UPDATE msp SET enabled = ?
       FROM ad_member_server_packages msp
       INNER JOIN ad_server_group_members m ON m.hostname = msp.hostname
       WHERE m.group_id = ? AND msp.package_name = ?`
