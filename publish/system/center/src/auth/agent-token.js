@@ -12,21 +12,28 @@
 // The bundle is cached for the process lifetime; invalidate via
 // `invalidateAgentTokenCache()` from the rotate/commit handlers so the very
 // next request sees the new state.
+//
+// The bundle SELECT comes from `db.sql.config.getAgentTokenBundle` (Task 3,
+// I3) when the caller supplies a real db facade built via buildSql(). Tests
+// that construct ad-hoc stub dbs without db.sql fall back to a literal SQL
+// string matching the registry contract so stub query() functions keep
+// working.
 import crypto from 'node:crypto';
+
+// Fallback literal used when the db facade doesn't expose db.sql (ad-hoc
+// test stubs). Must remain identical to db.sql.config.getAgentTokenBundle
+// for both dialects — the SELECT is dialect-portable.
+const FALLBACK_BUNDLE_SQL = "SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_previous_ttl_days')";
 
 let _cache = null; // { current: string, previous: string }
 
-export async function _loadAgentTokenBundle(db) {
+export async function _loadAgentTokenBundle(db, sql) {
   if (_cache) return _cache;
-  const { rows } = await db.query(
-    // SQL string injected by the caller's `db` facade; see Task 3.
-    // We accept any db facade that returns { rows: [{ config_key, config_value }] }
-    // for the bundle SELECT. The exact SQL lives in db.sql.config.getAgentTokenBundle.
-    // (We intentionally keep this string here as a fallback for tests that
-    //  construct a stub db without going through buildSql.)
-    "SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous')"
-  );
-  const map = Object.fromEntries(rows.map(r => [r.config_key, r.config_value]));
+  const effectiveSql = sql
+    || db?.sql?.config?.getAgentTokenBundle
+    || FALLBACK_BUNDLE_SQL;
+  const { rows } = await db.query(effectiveSql);
+  const map = Object.fromEntries((rows || []).map(r => [r.config_key, r.config_value]));
   _cache = {
     current: map.agent_token_current ?? '',
     previous: map.agent_token_previous ?? ''
@@ -47,6 +54,10 @@ function constantTimeEqual(a, b) {
 }
 
 export function agentToken({ db }) {
+  // Resolve the bundle SELECT once from the db facade's SQL registry. If the
+  // db facade has no sql config (e.g. a test stub), pass undefined so
+  // _loadAgentTokenBundle falls back to FALLBACK_BUNDLE_SQL.
+  const bundleSql = db?.sql?.config?.getAgentTokenBundle;
   return async (req, res, next) => {
     const supplied = req.headers['x-agent-token'];
     if (typeof supplied !== 'string' || supplied === '') {
@@ -54,7 +65,7 @@ export function agentToken({ db }) {
     }
     let bundle;
     try {
-      bundle = await _loadAgentTokenBundle(db);
+      bundle = await _loadAgentTokenBundle(db, bundleSql);
     } catch (e) {
       // Distinguish auth failure (401) from server failure (503) — an
       // operator looking at the dashboard needs to know whether the agent
