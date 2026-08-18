@@ -351,7 +351,8 @@ await ((async () => {
     // ad_member_server_packages. Backed by agentToken (NOT userAuth) — the
     // agent has no JWT, only the agent_token from appsettings.json.
     app.use(agentPackagesRouter({
-      config: finalConfig
+      config: finalConfig,
+      logger
     }));
   }
 
