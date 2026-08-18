@@ -14,12 +14,25 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
+        // I8: capture the ETag header (if any) on every response so callers
+        // can round-trip it back as If-None-Match on the next request.
+        // res.headers keys are lower-cased by Node's HTTP layer.
+        const etag = res.headers && typeof res.headers.etag === 'string'
+          ? res.headers.etag
+          : null;
+        // I8: 304 Not Modified is a success (the server is telling us our
+        // cached body is still current). Body is empty by RFC 7232 §4.1,
+        // so we report `data: null` and let the caller compare etag. Only
+        // 4xx/5xx (and 3xx other than 304) are failures.
+        if (res.statusCode === 304) {
+          return resolve({ ok: true, status: 304, data: null, etag });
+        }
         // For 2xx, treat empty body as ok with null data; for non-2xx, return as failure.
         // Avoid swallowing 2xx-with-html as a transport failure.
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          if (!data) return resolve({ ok: true, status: res.statusCode, data: null });
-          try { return resolve({ ok: true, status: res.statusCode, data: JSON.parse(data) }); }
-          catch (e) { return resolve({ ok: true, status: res.statusCode, data: null, error: `non-json body: ${e.message}` }); }
+          if (!data) return resolve({ ok: true, status: res.statusCode, data: null, etag });
+          try { return resolve({ ok: true, status: res.statusCode, data: JSON.parse(data), etag }); }
+          catch (e) { return resolve({ ok: true, status: res.statusCode, data: null, etag, error: `non-json body: ${e.message}` }); }
         }
         try { resolve({ ok: false, status: res.statusCode, data: JSON.parse(data) }); }
         catch { resolve({ ok: false, status: res.statusCode, data }); }
@@ -79,15 +92,23 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
   });
 }
 
-export function fetchConfig({ centerUrl, agentToken }) {
+export function fetchConfig({ centerUrl, agentToken, ifNoneMatch = null }) {
   // Bootstrap endpoint lives on the web port. Fetching from centerUrl
   // (which now points at the web port, e.g. http://localhost:8080) means
   // we always know where to look without a port override. The legacy
   // /api/agent/config on the report port is kept around for backward
   // compat with older agents — this code path doesn't use it anymore.
+  //
+  // I8: if the caller has a previously-seen ETag, send it back as
+  // If-None-Match. The server replies 304 (no body) when its current
+  // fingerprint matches, in which case the caller treats its cached
+  // config as still current and the etag from this response as the new
+  // "last seen" value.
+  const headers = { 'X-Agent-Token': agentToken };
+  if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
   return requestJson({
     method: 'GET',
     url: `${centerUrl}/config.json`,
-    headers: { 'X-Agent-Token': agentToken }
+    headers
   });
 }

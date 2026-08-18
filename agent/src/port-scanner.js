@@ -24,6 +24,13 @@ async function probeOnce({ host, port, agentToken, perPortTimeoutMs }) {
     headers: { 'X-Agent-Token': agentToken },
     timeoutMs: perPortTimeoutMs
   });
+  // I8: 304 Not Modified on /config.json is a valid hit — it means "this is
+  // the correct center, your cached config is current". A 304 with no body
+  // is the agent's first-fetch case once it has any etag from a prior
+  // bootstrap, but probeOnce here is called without an etag, so 304 only
+  // appears if some prior path set one — either way, treat it as a hit so
+  // port-scanner doesn't skip a port that's actually correct.
+  if (r.status === 304) return r;
   // Match: 2xx AND body parsed as object (requestJson returns data:null when
   // JSON.parse fails on non-JSON 2xx — reporter.js line 22).
   if (!r.ok) return null;
