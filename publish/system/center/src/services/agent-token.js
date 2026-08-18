@@ -10,11 +10,10 @@
 // row so the operator's "who rotated when" question has a deterministic
 // answer.
 //
-// I3 Task 2 note: readBundle uses an inline SQL string with the
-// `agent_token` substring so the test mock's `/agent_token/i` regex can
-// match. Task 3 will introduce `db.sql.config.getAgentTokenBundle` as a
-// proper SQL registry entry; once that lands, swap the literal for
-// `db.sql.config.getAgentTokenBundle`.
+// The bundle SELECT comes from `db.sql.config.getAgentTokenBundle` (Task 3,
+// I3) — the SQL registry owns dialect-specific strings so this module stays
+// dialect-agnostic. The registry SQL contains the `agent_token` substring
+// so test mocks using `/agent_token/i` regex matching still work.
 import { randomBytes } from 'node:crypto';
 import { writeAudit } from './audit.js';
 
@@ -22,10 +21,8 @@ const ROTATE_AUDIT = 'rotate_agent_token';
 const COMMIT_AUDIT = 'commit_agent_token';
 const SEED_AUDIT = 'seed_agent_token';
 
-const BUNDLE_SQL = "SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_previous_ttl_days')";
-
 function readBundle(db, query) {
-  return query(BUNDLE_SQL).then(({ rows }) => {
+  return query(db.sql.config.getAgentTokenBundle).then(({ rows }) => {
     const map = Object.fromEntries((rows || []).map(r => [r.config_key, r.config_value]));
     return {
       current: map.agent_token_current ?? '',
