@@ -15,8 +15,9 @@ export function agentRouter({ config, logger, mount = 'full' }) {
   // Passing the old `config.agentToken` string would silently 503 every
   // request — Task 1 introduced this signature and Task 5 propagates it
   // to every caller. The handler body uses `getDb()` lazily so this
-  // middleware is wired once at mount time.
-  const agentMw = agentToken({ db: getDb() });
+  // middleware is wired once at mount time. `logger` is threaded in so a
+  // previous-token match emits the spec §5 warn.
+  const agentMw = agentToken({ db: getDb(), logger });
 
   if (mount === 'heartbeat' || mount === 'full') {
     r.get('/api/agent/ports', agentMw, async (_req, res) => {

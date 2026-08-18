@@ -71,7 +71,8 @@ export function memberRouter({ config, logger, db }) {
   // request — Task 1 introduced this signature and Task 5 propagates it
   // to every caller. Use the same _db the userAuth middleware uses so a
   // test that pre-sets the db via memberRouter({ db }) keeps working.
-  const agentMw = agentToken({ db: _db });
+  // `logger` is threaded in so a previous-token match emits the spec §5 warn.
+  const agentMw = agentToken({ db: _db, logger });
 
   // ----- LIST -----
   r.get('/api/admin/member-servers', ...auth, async (_req, res) => {
