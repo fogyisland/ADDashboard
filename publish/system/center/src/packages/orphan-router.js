@@ -17,10 +17,15 @@ import { dropSchema } from './ddl-apply.js';
 import { PkgError } from './errors.js';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
+import { getDb } from '../db/index.js';
 
 export function orphanRouter({ db, config }) {
   const r = express.Router();
-  const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('admin:packages')];
+  // db is required (Task 5: userAuth reads token_version/status per request).
+  // Lazy fallback to getDb() keeps the wiring traceable from server.js while
+  // being permissive about explicit vs implicit db.
+  const _db = db ?? getDb();
+  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('admin:packages')];
 
   r.get('/api/admin/orphan-schemas', auth, async (_req, res) => {
     try {
