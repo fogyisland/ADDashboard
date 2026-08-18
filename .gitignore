@@ -17,6 +17,8 @@ Thumbs.db
 .claude/
 # Brainstorm server runtime scratch (server pid, instance id, draft content)
 .superpowers/brainstorm/
+# Native git worktrees under .worktrees/ (created by subagent-driven-development)
+.worktrees/
 
 # Agent runtime SQLite queue (regenerated on each agent start)
 agent/queue.db
