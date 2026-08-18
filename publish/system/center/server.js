@@ -223,6 +223,19 @@ await ((async () => {
     } catch (err) {
       logger.warn({ err: err.message }, 'SMTP defaults seed failed; alerts may be misconfigured');
     }
+    // I3: seed agent-token bundle from appsettings.json on first boot.
+    // After this point, runtime reads from system_config.agent_token_current;
+    // appsettings.json is bootstrap-only. Idempotent (no-op if row exists) and
+    // also auto-expires any stale agent_token_previous past TTL (spec §1.4).
+    // Wrapped in try/catch to mirror the other seed calls in this gate — a
+    // transient DB error here must not crash the bootstrap; the middleware
+    // will surface a 503 on the first agent request if the row is missing.
+    try {
+      const { seedAgentTokenIfMissing } = await import('./src/services/agent-token.js');
+      await seedAgentTokenIfMissing(db, finalConfig.agentToken, logger);
+    } catch (err) {
+      logger.warn({ err: err.message }, 'agent token seed failed; agents will fail auth until DB row is populated');
+    }
   }
 
   // Seed built-in packages (e.g. ad_os_baseline) into data/packages/<name>/<version>/
