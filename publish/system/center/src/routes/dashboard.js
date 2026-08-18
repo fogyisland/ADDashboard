@@ -48,9 +48,14 @@ function camelRow(row) {
 
 // Router ----------------------------------------------------------------
 
-export function dashboardRouter({ config, logger }) {
+export function dashboardRouter({ config, logger, db }) {
   const r = Router();
-  const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('read:dash')];
+  // db is required (Task 5: userAuth reads token_version/status per request).
+  // Lazy fallback to getDb() keeps test wirings that pre-date the new
+  // signature working — every test that calls adminRouter/dashboardRouter/
+  // memberRouter already calls _setDbForTest first.
+  const _db = db ?? getDb();
+  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('read:dash')];
 
   r.get('/api/dashboard/overview', auth, async (_req, res) => {
     try {
