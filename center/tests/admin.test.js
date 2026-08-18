@@ -268,6 +268,66 @@ test('DELETE /api/admin/users/:id: 200', async () => {
   assert.deepEqual(r.body, { ok: true });
 });
 
+// ----- REVOKE TOKENS (I1) -----
+
+test('POST /api/admin/users/:id/revoke-tokens bumps version and writes audit row', async () => {
+  const auditWrites = [];
+  // bumpTokenVersion issues a single SELECT token_version query; the route
+  // handler also issues one before the bump. Both hit the same SQL — the
+  // mock's onQuery hook tracks call count so the first call returns
+  // { token_version: 0 } (pre-bump) and the second returns
+  // { token_version: 1 } (post-bump, mirrors what the real UPDATE wrote).
+  let tokenVersionCalls = 0;
+  const db = buildMockDb([
+    {
+      match: /SELECT\s+token_version\s+FROM\s+sys_users\s+WHERE\s+id\s*=\s*\?/i,
+      onQuery: () => {
+        tokenVersionCalls++;
+        return { rows: [{ token_version: tokenVersionCalls - 1 }] };
+      }
+    },
+    // 2. bumpTokenVersion (UPDATE)
+    { match: /UPDATE\s+sys_users\s+SET\s+token_version\s*=\s*token_version\s*\+\s*1/i, rows: [{ affectedRows: 1 }] },
+    // 3. audit write
+    { match: /INSERT\s+INTO\s+audit_logs/i, capture: true, onExecute: (sql, params) => auditWrites.push({ sql, params }) }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .post('/api/admin/users/7/revoke-tokens')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.tokenVersion, 1);
+  const rev = auditWrites.find(w => w.params[1] === 'revoke_user_tokens');
+  assert.ok(rev, 'revoke_user_tokens audit row must be written');
+  const payload = JSON.parse(rev.params[3]);
+  assert.equal(payload.oldTokenVersion, 0);
+  assert.equal(payload.newTokenVersion, 1);
+});
+
+test('POST /api/admin/users/:id/revoke-tokens requires admin:users perm', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const app = buildApp();
+  const r = await supertest(app)
+    .post('/api/admin/users/7/revoke-tokens')
+    .set('Authorization', `Bearer ${operatorToken()}`);
+  assert.equal(r.status, 403);
+});
+
+test('GET /api/admin/users includes tokenVersion via CAML_MAP', async () => {
+  const db = buildMockDb([
+    { match: /FROM\s+sys_users/i, rows: [
+      { id: 1, username: 'admin', role_id: 1, role_name: 'admin', permissions: '*', status: 1, token_version: 7, last_login_at: null, created_at: '2026-01-01' }
+    ] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app).get('/api/admin/users').set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body[0].tokenVersion, 7);
+});
+
 // ----- CONFIG -----
 
 test('GET /api/admin/config: 200 returns dict from system_config', async () => {
