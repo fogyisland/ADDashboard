@@ -13,10 +13,39 @@ import { buildMockDb, buildRecordingPool } from './helpers/db-mock.js';
 //   - UPDATE ad_agent_heartbeat SET last_report_at = NOW() ...     (report only)
 // To keep tests independent of exact SQL phrasing we key mocks by
 // a coarse fragment match.
+//
+// I3 (Task 5): the agentToken middleware now resolves the bundle via
+// `db.sql.config.getAgentTokenBundle` (see auth/agent-token.js). Tests
+// that pass `agentTokenValue: 'tok'` and expect a 200 must seed the
+// agent_token_current row so the bundle lookup matches `tok`. We do this
+// via a helper script that matches the bundle SELECT and returns the
+// supplied token as current. buildApp injects that script for every test
+// that supplies a token; tests asserting the wrong-token 401 already
+// work because the supplied token in the request doesn't match.
+const AGENT_TOKEN_BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
 
-function buildApp({ agentTokenValue } = {}) {
+// Build a db with the agent-token bundle script pre-seeded. Tests that
+// want recording pass an explicit `records` array; tests that don't use
+// `withRecording` get a regular mock. Tests that need richer scripts can
+// pass `extraScripts` to merge in additional SELECT/INSERT mocks.
+function buildAgentDb({ agentTokenValue, records = [], extraScripts = [] } = {}) {
+  const scripts = [...extraScripts];
+  if (agentTokenValue) {
+    scripts.push({
+      match: AGENT_TOKEN_BUNDLE_REGEX,
+      rows: [{ config_key: 'agent_token_current', config_value: agentTokenValue }]
+    });
+  }
+  return scripts.length
+    ? buildMockDb(scripts).withRecording(records)
+    : buildRecordingPool(records);
+}
+
+function buildApp({ agentTokenValue, records, extraScripts } = {}) {
   const app = express();
   app.use(express.json());
+  const db = buildAgentDb({ agentTokenValue, records, extraScripts });
+  _setDbForTest(db);
   const config = { agentToken: agentTokenValue };
   const logger = { info(){}, error(){}, warn(){}, debug(){} };
   app.use(agentRouter({ config, logger }));
@@ -25,24 +54,24 @@ function buildApp({ agentTokenValue } = {}) {
 
 test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
     .set('X-Agent-Token', 'tok')
     .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 3 });
   assert.equal(res.status, 200);
   assert.equal(res.body.ok, true);
-  assert.equal(records.length, 1);
-  assert.match(records[0].sql, /INSERT\s+INTO\s+ad_agent_heartbeat/i);
-  assert.match(records[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
-  assert.deepEqual(records[0].params, ['agent-1', '1.0.0', null, null, 3]);
+  // I3: the agentToken middleware also issues a SELECT against
+  // system_config for the bundle. Filter for the heartbeat UPSERT only.
+  const upserts = records.filter(r => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(r.sql));
+  assert.equal(upserts.length, 1);
+  assert.match(upserts[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
+  assert.deepEqual(upserts[0].params, ['agent-1', '1.0.0', null, null, 3]);
 });
 
 test('POST /api/agent/heartbeat with wrong token -> 401 and no UPSERT issued', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
     .set('X-Agent-Token', 'WRONG')
@@ -53,8 +82,7 @@ test('POST /api/agent/heartbeat with wrong token -> 401 and no UPSERT issued', a
 
 test('POST /api/agent/heartbeat missing agentId -> 400 and no UPSERT issued', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
     .set('X-Agent-Token', 'tok')
@@ -67,17 +95,19 @@ test('POST /api/agent/report with correct token -> 200, config echoed', async ()
   // scripts provides:
   //  - history_enabled lookup (1st system_config SELECT, narrowed)
   //  - full config bundle (2nd system_config SELECT in getAgentConfig)
-  const db = buildMockDb([
-    { match: /SELECT\s+config_key,\s*config_value\s+FROM\s+system_config/i, rows: [{ config_key: 'history_enabled', config_value: 'true' }] },
-    { match: /FROM\s+system_config/i, rows: [
-      { config_key: 'polling_interval_minutes', config_value: '15' },
-      { config_key: 'latency_threshold_minutes', config_value: '180' },
-      { config_key: 'heartbeat_interval_seconds', config_value: '5' },
-      { config_key: 'agent_token', config_value: 'tok' }
-    ]}
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp({ agentTokenValue: 'tok' });
+  //  - agent_token bundle script for the auth middleware (injected by buildApp)
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    extraScripts: [
+      { match: /SELECT\s+config_key,\s*config_value\s+FROM\s+system_config/i, rows: [{ config_key: 'history_enabled', config_value: 'true' }] },
+      { match: /FROM\s+system_config/i, rows: [
+        { config_key: 'polling_interval_minutes', config_value: '15' },
+        { config_key: 'latency_threshold_minutes', config_value: '180' },
+        { config_key: 'heartbeat_interval_seconds', config_value: '5' },
+        { config_key: 'agent_token', config_value: 'tok' }
+      ]}
+    ]
+  });
   const res = await supertest(app)
     .post('/api/agent/report')
     .set('X-Agent-Token', 'tok')
@@ -91,8 +121,7 @@ test('POST /api/agent/report with correct token -> 200, config echoed', async ()
 
 test('POST /api/agent/report missing payload -> 400', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/report')
     .set('X-Agent-Token', 'tok')
@@ -102,16 +131,17 @@ test('POST /api/agent/report missing payload -> 400', async () => {
 });
 
 test('GET /api/agent/config -> 200 returns polling/latency/heartbeat/token', async () => {
-  const db = buildMockDb([
-    { match: /FROM\s+system_config/i, rows: [
-      { config_key: 'polling_interval_minutes', config_value: '5' },
-      { config_key: 'latency_threshold_minutes', config_value: '60' },
-      { config_key: 'heartbeat_interval_seconds', config_value: '3' },
-      { config_key: 'agent_token', config_value: 'tok' }
-    ]}
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    extraScripts: [
+      { match: /FROM\s+system_config/i, rows: [
+        { config_key: 'polling_interval_minutes', config_value: '5' },
+        { config_key: 'latency_threshold_minutes', config_value: '60' },
+        { config_key: 'heartbeat_interval_seconds', config_value: '3' },
+        { config_key: 'agent_token', config_value: 'tok' }
+      ]}
+    ]
+  });
   const res = await supertest(app)
     .get('/api/agent/config')
     .set('X-Agent-Token', 'tok');
@@ -123,11 +153,12 @@ test('GET /api/agent/config -> 200 returns polling/latency/heartbeat/token', asy
 });
 
 test('GET /api/agent/config with missing keys -> defaults fill in', async () => {
-  const db = buildMockDb([
-    { match: /FROM\s+system_config/i, rows: [] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    extraScripts: [
+      { match: /FROM\s+system_config/i, rows: [] }
+    ]
+  });
   const res = await supertest(app)
     .get('/api/agent/config')
     .set('X-Agent-Token', 'tok');
@@ -141,16 +172,17 @@ test('GET /api/agent/config with missing keys -> defaults fill in', async () => 
 // /api/agent/config so existing agent code keeps working when the URL
 // changes; same X-Agent-Token auth contract.
 test('GET /config.json with correct token -> 200 returns full agent config', async () => {
-  const db = buildMockDb([
-    { match: /FROM\s+system_config/i, rows: [
-      { config_key: 'polling_interval_minutes', config_value: '5' },
-      { config_key: 'heartbeat_port', config_value: '9081' },
-      { config_key: 'report_port', config_value: '9082' },
-      { config_key: 'agent_token', config_value: 'tok' }
-    ]}
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    extraScripts: [
+      { match: /FROM\s+system_config/i, rows: [
+        { config_key: 'polling_interval_minutes', config_value: '5' },
+        { config_key: 'heartbeat_port', config_value: '9081' },
+        { config_key: 'report_port', config_value: '9082' },
+        { config_key: 'agent_token', config_value: 'tok' }
+      ]}
+    ]
+  });
   const res = await supertest(app)
     .get('/config.json')
     .set('X-Agent-Token', 'tok');
@@ -162,7 +194,6 @@ test('GET /config.json with correct token -> 200 returns full agent config', asy
 });
 
 test('GET /config.json with wrong token -> 401', async () => {
-  _setDbForTest(buildRecordingPool([]));
   const app = buildApp({ agentTokenValue: 'tok' });
   const res = await supertest(app)
     .get('/config.json')
@@ -171,7 +202,6 @@ test('GET /config.json with wrong token -> 401', async () => {
 });
 
 test('GET /config.json without token -> 401', async () => {
-  _setDbForTest(buildRecordingPool([]));
   const app = buildApp({ agentTokenValue: 'tok' });
   const res = await supertest(app).get('/config.json');
   assert.equal(res.status, 401);
@@ -179,8 +209,7 @@ test('GET /config.json without token -> 401', async () => {
 
 test('POST /api/agent/report with wrong token -> 401', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/report')
     .set('X-Agent-Token', 'WRONG')
@@ -193,8 +222,7 @@ test('POST /api/agent/report with wrong token -> 401', async () => {
 
 test('POST /api/agent/discover with correct token -> 200 and UPSERT to ad_dcs', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/discover')
     .set('X-Agent-Token', 'tok')
@@ -225,8 +253,7 @@ test('POST /api/agent/discover with correct token -> 200 and UPSERT to ad_dcs', 
 
 test('POST /api/agent/discover missing dc.name -> 400', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/discover')
     .set('X-Agent-Token', 'tok')
@@ -237,8 +264,7 @@ test('POST /api/agent/discover missing dc.name -> 400', async () => {
 
 test('POST /api/agent/discover with wrong token -> 401', async () => {
   const records = [];
-  _setDbForTest(buildRecordingPool(records));
-  const app = buildApp({ agentTokenValue: 'tok' });
+  const app = buildApp({ agentTokenValue: 'tok', records });
   const res = await supertest(app)
     .post('/api/agent/discover')
     .set('X-Agent-Token', 'WRONG')

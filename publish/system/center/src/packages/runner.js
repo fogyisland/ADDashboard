@@ -31,7 +31,15 @@ export function packageRunner({ db, getLogger, config }) {
   // Per-route agent-token middleware (same pattern as agentRouter in
   // src/routes). Express does not propagate per-route auth from a sibling
   // Router, so we wire it here directly.
-  const agentMw = agentToken(config.agentToken);
+  // I3: agentToken now resolves the bundle at request time via the db
+  // facade (so a rotate+commit takes effect on the very next request).
+  // Passing the old `config.agentToken` string would silently 503 every
+  // request — Task 1 introduced this signature and Task 5 propagates it
+  // to every caller. Tests pass `db` directly via packageRunner({ db }),
+  // so use the same db the handler uses rather than getDb(). The logger is
+  // resolved here (same `getLogger ? getLogger() : null` idiom the handlers
+  // below use) so a previous-token match emits the spec §5 warn.
+  const agentMw = agentToken({ db, logger: getLogger ? getLogger() : null });
 
   // GET /api/agent/packages — agent pulls the list of enabled packages.
   // For each enabled row, the on-disk `collect.ps1` is base64-encoded so

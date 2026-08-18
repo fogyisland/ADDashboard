@@ -11,13 +11,28 @@
 // the *cause* — whether the path is handled because a route is registered
 // or because the SPA fallback / static middleware picked it up.
 
-import { test } from 'node:test';
+import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { default as supertest } from 'supertest';
 import { buildServerApps } from '../server.js';
+import { _setDbForTest } from '../src/db/index.js';
+import { buildMockDb } from './helpers/db-mock.js';
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, fatal: () => {} };
 const TEST_TOKEN = 'tok';
+
+// I3 (Task 5): agentToken({ db: getDb() }) — the agentRouter factory now
+// resolves the db facade at module init. Tests must seed a mock db so
+// getDb() doesn't throw `db not initialized` when buildServerApps wires
+// agentRouter onto heartbeatApp / reportApp. The bundle script returns
+// TEST_TOKEN as current so the `wrong token → 401` assertions below are
+// observable (any other token returns 401, including the cached bundle).
+const BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
+before(() => {
+  _setDbForTest(buildMockDb([
+    { match: BUNDLE_REGEX, rows: [{ config_key: 'agent_token_current', config_value: TEST_TOKEN }] }
+  ]).standard());
+});
 
 function makeConfig(overrides = {}) {
   return {

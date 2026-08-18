@@ -21,6 +21,20 @@ import { packageRunner } from '../../src/packages/runner.js';
 const AGENT_ID = 'agent-1';
 const TEST_TOKEN = 'test-agent-token';
 
+// I3 (Task 5): agentToken middleware now reads the bundle from the db
+// facade at request time. Inject a script that matches the bundle SELECT
+// so the middleware sees agent_token_current = TEST_TOKEN and accepts
+// the X-Agent-Token header instead of 503'ing.
+const TOKEN_BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
+const TOKEN_BUNDLE_SCRIPT = { match: TOKEN_BUNDLE_REGEX, rows: [{ config_key: 'agent_token_current', config_value: TEST_TOKEN }] };
+
+// Wrap the test's scripts with the bundle script prepended so the
+// middleware finds the token. Tests that don't need additional scripts
+// can call `withTokenBundle()`.
+function withTokenBundle(scripts = []) {
+  return buildMockDb([TOKEN_BUNDLE_SCRIPT, ...scripts]);
+}
+
 function buildApp(db, opts = {}) {
   const app = express();
   app.use(express.json());
@@ -70,7 +84,7 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('GET /packages returns enabled packages with manifest + base64 script', async () => {
-    const db = buildMockDb([
+    const db = withTokenBundle([
       {
         // installedPackages.list(enabledOnly=true) — built SQL is `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`
         match: /FROM\s+installed_packages\s+WHERE\s+enabled\s*=\s*1/i,
@@ -99,7 +113,7 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('GET /packages/:name/script returns script for enabled pkg', async () => {
-    const db = buildMockDb([
+    const db = withTokenBundle([
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
         rows: [{
@@ -122,7 +136,7 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('GET /packages/:name/script returns 404 when disabled', async () => {
-    const db = buildMockDb([
+    const db = withTokenBundle([
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
         rows: [{
@@ -146,7 +160,7 @@ describe('agent /api/agent/packages', () => {
     // metric_gauge UPSERT fall through to the default shape. We use a
     // recording pool to assert the runner actually issued those writes.
     const records = [];
-    const db = buildMockDb([
+    const db = withTokenBundle([
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
         rows: [{
@@ -207,7 +221,7 @@ describe('agent /api/agent/packages', () => {
 
   test('POST /packages/report records the run even when error is set', async () => {
     const records = [];
-    const db = buildMockDb([
+    const db = withTokenBundle([
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
         rows: [{
@@ -249,7 +263,7 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('POST /packages/report rejects non-array runs', async () => {
-    const db = buildMockDb([]).standard();
+    const db = withTokenBundle().standard();
     const app = buildApp(db);
     const r = await supertest(app)
       .post('/api/agent/packages/report')
@@ -259,7 +273,7 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('POST /packages/report skips + records error for unknown package', async () => {
-    const db = buildMockDb([
+    const db = withTokenBundle([
       // installedPackages.get returns [] for the unknown name → error path.
       {
         match: /FROM\s+installed_packages\s+WHERE\s+name\s*=\s*\?/i,
@@ -288,7 +302,7 @@ describe('agent /api/agent/packages', () => {
   });
 
   test('GET /packages without agent token -> 401', async () => {
-    const db = buildMockDb([]).standard();
+    const db = withTokenBundle().standard();
     const app = buildApp(db);
     const r = await supertest(app).get('/api/agent/packages');
     assert.equal(r.status, 401);
@@ -298,7 +312,7 @@ describe('agent /api/agent/packages', () => {
 
   describe('AUTH WIRING', () => {
     test('POST /packages/report: 401 without X-Agent-Token header', async () => {
-      const db = buildMockDb([]).standard();
+      const db = withTokenBundle().standard();
       const app = buildApp(db);
       const r = await supertest(app)
         .post('/api/agent/packages/report')
@@ -308,7 +322,7 @@ describe('agent /api/agent/packages', () => {
     });
 
     test('GET /packages/:name/script: 401 with wrong agent token', async () => {
-      const db = buildMockDb([]).standard();
+      const db = withTokenBundle().standard();
       const app = buildApp(db);
       const r = await supertest(app)
         .get(`/api/agent/packages/${fixtureName}/script`)

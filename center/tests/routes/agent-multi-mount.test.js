@@ -1,8 +1,22 @@
-import { test } from 'node:test';
+import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import http from 'node:http';
 import { agentRouter } from '../../src/routes/agent.js';
+import { _setDbForTest } from '../../src/db/index.js';
+import { buildMockDb } from '../helpers/db-mock.js';
+
+// I3 (Task 5): agentRouter now calls agentToken({ db: getDb() }) at mount
+// time, which throws `db not initialized` unless a mock db is wired first.
+// Tests below only assert route mounting (404 vs not-404), so any token
+// value is fine — we just need getDb() to return a facade.
+const TEST_TOKEN = 'test-token';
+const BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
+before(() => {
+  _setDbForTest(buildMockDb([
+    { match: BUNDLE_REGEX, rows: [{ config_key: 'agent_token_current', config_value: TEST_TOKEN }] }
+  ]).standard());
+});
 
 // Mirror call() from tests/init/router.test.js: ephemeral port + raw node:http.
 async function req(app, method, path, body, headers = {}) {

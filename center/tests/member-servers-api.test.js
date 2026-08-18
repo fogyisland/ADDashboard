@@ -25,6 +25,20 @@ import { buildMockDb, buildRecordingPool } from './helpers/db-mock.js';
 const SECRET = 'test-secret-ms';
 const AGENT_TOKEN = 'agent-token-1';
 
+// I3 (Task 5): the agentToken middleware reads the bundle from db. Inject a
+// script that matches `getAgentTokenBundle` and returns AGENT_TOKEN as
+// current so self-register tests get 200 instead of 503.
+const AGENT_TOKEN_BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
+const TOKEN_BUNDLE_SCRIPT = { match: AGENT_TOKEN_BUNDLE_REGEX, rows: [{ config_key: 'agent_token_current', config_value: AGENT_TOKEN }] };
+
+// Build a db with the agent-token bundle script pre-seeded plus the caller-
+// supplied extra scripts. Pass-through to buildMockDb for tests that already
+// call `buildMockDb([...]).standard()`; use `withTokenBundle(scripts)` to
+// prepend the bundle script.
+function withTokenBundle(scripts = []) {
+  return buildMockDb([TOKEN_BUNDLE_SCRIPT, ...scripts]).standard();
+}
+
 function adminToken() {
   return signJwt({ sub: 'u1', role: 'admin', permissions: ['*'] }, SECRET, 60);
 }
@@ -130,9 +144,9 @@ describe('GET /api/admin/member-servers', () => {
 describe('POST /api/admin/member-servers/self-register', () => {
   test('idempotent: two calls with same body each return 200', async () => {
     const upserts = [];
-    const db = buildMockDb([
+    const db = withTokenBundle([
       { match: /INSERT\s+INTO\s+ad_member_servers|MERGE\s+INTO\s+ad_member_servers/i, capture: true, onExecute: (sql, params) => upserts.push(params) }
-    ]).standard();
+    ]);
     _setDbForTest(db);
     const body = { hostname: 'SRV-A', agentVersion: '0.1.0', osVersion: 'Win2022', ipAddress: '10.0.0.1' };
     const r1 = await supertest(buildApp())
@@ -153,7 +167,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   });
 
   test('401 with wrong agent token', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
       .set('X-Agent-Token', 'WRONG')
@@ -162,7 +176,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   });
 
   test('400 when hostname missing', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
       .set('X-Agent-Token', AGENT_TOKEN)
@@ -176,7 +190,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   // operators. Defense in depth: validate hostname shape + reserved list
   // before persisting, so the cheap attacks are stopped at the boundary.
   test('C5: 400 when hostname is "localhost" (reserved)', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
       .set('X-Agent-Token', AGENT_TOKEN)
@@ -186,7 +200,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   });
 
   test('C5: 400 when hostname is "localhost.localdomain" (reserved)', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
       .set('X-Agent-Token', AGENT_TOKEN)
@@ -196,7 +210,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   });
 
   test('C5: 400 when hostname contains shell-injection chars', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
       .set('X-Agent-Token', AGENT_TOKEN)
@@ -206,7 +220,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   });
 
   test('C5: 400 when hostname has invalid underscore', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
       .set('X-Agent-Token', AGENT_TOKEN)
@@ -215,7 +229,7 @@ describe('POST /api/admin/member-servers/self-register', () => {
   });
 
   test('C5: 400 when hostname exceeds 253 chars', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const long = 'a'.repeat(254);
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')
@@ -226,9 +240,9 @@ describe('POST /api/admin/member-servers/self-register', () => {
 
   test('C5: 200 when hostname is well-formed', async () => {
     const upserts = [];
-    const db = buildMockDb([
+    const db = withTokenBundle([
       { match: /INSERT\s+INTO\s+ad_member_servers|MERGE\s+INTO\s+ad_member_servers/i, capture: true, onExecute: (sql, params) => upserts.push(params) }
-    ]).standard();
+    ]);
     _setDbForTest(db);
     const r = await supertest(buildApp())
       .post('/api/admin/member-servers/self-register')

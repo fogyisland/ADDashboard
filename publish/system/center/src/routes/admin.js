@@ -8,6 +8,8 @@ import { listPorts, createPort, updatePort, deletePort } from '../services/ports
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
 import * as email from '../services/email.js';
+import { rotateAgentToken, commitAgentToken, getAgentTokenState } from '../services/agent-token.js';
+import { invalidateAgentTokenCache } from '../auth/agent-token.js';
 
 // Snake -> camel rename for known columns in admin responses.
 const CAML_MAP = new Map([
@@ -291,6 +293,65 @@ export function adminRouter({ config, logger, db }) {
       if (!res.headersSent) {
         res.status(500).json({ error: 'internal' });
       }
+    }
+  });
+
+  // ----- Agent-token rotation (Task 5 — I3) -----
+  // Three endpoints that manage the dual-key agent token rotation lifecycle.
+  // The middleware factory (auth/agent-token.js) compares the supplied
+  // X-Agent-Token header against both `agent_token_current` and
+  // `agent_token_previous` so existing agents can keep using the old token
+  // while the operator rolls the new one out. These three endpoints drive
+  // the lifecycle: rotate issues a new token + stashes the old one as
+  // previous; commit clears previous once every agent has switched over;
+  // GET exposes mode/rotatedAt/previousExpiresAt/ttlDays for the UI
+  // (NEVER the secret — that's only returned by /rotate and only to the
+  // operator who hit the button). All three call invalidateAgentTokenCache
+  // after a write so the very next agent request sees the new state.
+  //
+  // Use `_db` (the adminRouter-level db facade) so tests that pre-set the
+  // db via `adminRouter({ db: mock })` don't need a global getDb() init —
+  // matches the same pattern userAuth uses at the top of this file.
+  r.post('/api/admin/agent-token/rotate', auth, async (req, res) => {
+    try {
+      const out = await rotateAgentToken(_db, {
+        logger,
+        userId: req.user?.sub ?? null
+      });
+      invalidateAgentTokenCache();
+      res.json({ newToken: out.newToken, rotatedAt: out.rotatedAt });
+    } catch (e) {
+      logger.error({ err: e }, 'agent token rotate failed');
+      res.status(500).json({ error: 'rotate failed' });
+    }
+  });
+
+  r.post('/api/admin/agent-token/commit', auth, async (req, res) => {
+    try {
+      await commitAgentToken(_db, {
+        logger,
+        userId: req.user?.sub ?? null
+      });
+      invalidateAgentTokenCache();
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'agent token commit failed');
+      res.status(500).json({ error: 'commit failed' });
+    }
+  });
+
+  r.get('/api/admin/agent-token', auth, async (_req, res) => {
+    try {
+      const s = await getAgentTokenState(_db);
+      res.json({
+        mode: s.previous ? 'dual' : 'single',
+        rotatedAt: s.rotatedAt || null,
+        previousExpiresAt: s.previousExpiresAt || null,
+        ttlDays: s.ttlDays
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'agent token state get failed');
+      res.status(500).json({ error: 'state get failed' });
     }
   });
 

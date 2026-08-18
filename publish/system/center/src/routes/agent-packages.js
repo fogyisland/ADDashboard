@@ -37,9 +37,16 @@ function hydrateInstalledRow(row) {
   return { ...row, manifest };
 }
 
-export function agentPackagesRouter({ config }) {
+export function agentPackagesRouter({ config, logger }) {
   const r = Router();
-  const agentMw = agentToken(config.agentToken);
+  // I3: agentToken now resolves the bundle at request time via the db
+  // facade (so a rotate+commit takes effect on the very next request).
+  // Passing the old `config.agentToken` string would silently 503 every
+  // request — Task 1 introduced this signature and Task 5 propagates it
+  // to every caller. The handler body uses `getDb()` lazily so this
+  // middleware is wired once at mount time. `logger` is optional and is
+  // threaded in so a previous-token match emits the spec §5 warn.
+  const agentMw = agentToken({ db: getDb(), logger });
 
   // GET /api/admin/agent/packages-for-host?hostname=...
   // Body: { items: Manifest[] } — the merged manifest list for the host.

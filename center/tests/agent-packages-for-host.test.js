@@ -26,6 +26,11 @@ import { buildMockDb, buildRecordingPool } from './helpers/db-mock.js';
 
 const AGENT_TOKEN = 'agent-token-1';
 
+// I3 (Task 5): the agentToken middleware reads the bundle from db. Inject a
+// script that matches `getAgentTokenBundle` and returns AGENT_TOKEN as current.
+const AGENT_TOKEN_BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
+const TOKEN_BUNDLE_SCRIPT = { match: AGENT_TOKEN_BUNDLE_REGEX, rows: [{ config_key: 'agent_token_current', config_value: AGENT_TOKEN }] };
+
 function buildApp() {
   const a = express();
   a.use(express.json());
@@ -33,6 +38,12 @@ function buildApp() {
   // internally — match the project pattern (memberRouter, packageRunner).
   a.use(agentPackagesRouter({ config: { agentToken: AGENT_TOKEN } }));
   return a;
+}
+
+// Helper for tests: build a db with the agent-token bundle script pre-seeded
+// plus the caller-supplied extra scripts.
+function withTokenBundle(extraScripts = []) {
+  return buildMockDb([TOKEN_BUNDLE_SCRIPT, ...extraScripts]).standard();
 }
 
 // ---------------------------------------------------------------------------
@@ -112,14 +123,14 @@ describe('mergePackagesForHost', () => {
 // ---------------------------------------------------------------------------
 describe('GET /api/admin/agent/packages-for-host', () => {
   test('401 without agent token', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A');
     assert.equal(r.status, 401);
   });
 
   test('401 with wrong agent token', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A')
       .set('X-Agent-Token', 'WRONG');
@@ -127,7 +138,7 @@ describe('GET /api/admin/agent/packages-for-host', () => {
   });
 
   test('400 when hostname query param missing', async () => {
-    _setDbForTest(buildMockDb().standard());
+    _setDbForTest(withTokenBundle());
     const r = await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host')
       .set('X-Agent-Token', AGENT_TOKEN);
@@ -137,13 +148,12 @@ describe('GET /api/admin/agent/packages-for-host', () => {
   test('200 returns merged items array (global-only host)', async () => {
     // installed_packages → 1 enabled row of ad type; member_server_packages
     // → empty. Expect the 1 global manifest back.
-    const db = buildMockDb([
+    _setDbForTest(withTokenBundle([
       { match: /FROM\s+installed_packages/i, rows: [
         { name: 'x', version: '1.0.0', type: 'timeseries', manifest_json: JSON.stringify({ name: 'x', agent: { type: 'ad' }, platforms: ['windows'] }), enabled: 1 }
       ] },
       { match: /FROM\s+ad_member_server_packages/i, rows: [] }
-    ]).standard();
-    _setDbForTest(db);
+    ]));
 
     const r = await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A')
@@ -156,15 +166,14 @@ describe('GET /api/admin/agent/packages-for-host', () => {
   });
 
   test('200 returns merged items array (member bind present, non-ad type)', async () => {
-    const db = buildMockDb([
+    _setDbForTest(withTokenBundle([
       { match: /FROM\s+installed_packages/i, rows: [
         { name: 'ad-os-baseline', version: '1.0.0', type: 'status', manifest_json: JSON.stringify({ name: 'ad-os-baseline', agent: { type: 'non-ad' }, platforms: ['windows'] }), enabled: 1 }
       ] },
       { match: /FROM\s+ad_member_server_packages/i, rows: [
         { hostname: 'SRV-A', package_name: 'ad-os-baseline', enabled: 1 }
       ] }
-    ]).standard();
-    _setDbForTest(db);
+    ]));
 
     const r = await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A')
@@ -177,15 +186,14 @@ describe('GET /api/admin/agent/packages-for-host', () => {
   });
 
   test('200 with disabled member row → package is excluded (per-host opt-out blocks global)', async () => {
-    const db = buildMockDb([
+    _setDbForTest(withTokenBundle([
       { match: /FROM\s+installed_packages/i, rows: [
         { name: 'ad-os-baseline', version: '1.0.0', type: 'status', manifest_json: JSON.stringify({ name: 'ad-os-baseline', agent: { type: 'non-ad' }, platforms: ['windows'] }), enabled: 1 }
       ] },
       { match: /FROM\s+ad_member_server_packages/i, rows: [
         { hostname: 'SRV-A', package_name: 'ad-os-baseline', enabled: 0 }
       ] }
-    ]).standard();
-    _setDbForTest(db);
+    ]));
 
     const r = await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A')
@@ -199,7 +207,8 @@ describe('GET /api/admin/agent/packages-for-host', () => {
 
   test('issues 2 queries: installed_packages SELECT + ad_member_server_packages SELECT, with hostname bound', async () => {
     const records = [];
-    _setDbForTest(buildRecordingPool(records));
+    const db = buildMockDb([TOKEN_BUNDLE_SCRIPT]).withRecording(records);
+    _setDbForTest(db);
     await supertest(buildApp())
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A')
       .set('X-Agent-Token', AGENT_TOKEN);

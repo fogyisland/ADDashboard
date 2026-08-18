@@ -128,7 +128,7 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
         // Generate fresh 48-byte hex (96 chars). crypto.randomBytes is
         // available in Node ≥ 14.17; project's Node floor is 20+.
         const generated = randomBytes(48).toString('hex');
-        logger.warn({ label, length: generated.length }, 'init finalize: secret missing/empty — generated fresh secret');
+        logger.warn({ label, length: generated.length }, 'init finalize: secret missing/empty — generated fresh secret (bootstrap-only; runtime reads from system_config)');
         return generated;
       }
       const params = canonicalize(connParams);

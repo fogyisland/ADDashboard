@@ -17,7 +17,12 @@ function buildApp({ agentTokenValue = 'test-token' } = {}) {
 
 test('POST /api/agent/report persists lockoutEvents via db.sql.lockout.upsertEvent', async () => {
   const records = [];
-  const db = buildMockDb().withRecording(records);
+  // I3 (Task 5): agentToken now reads the bundle from the db facade. Inject
+  // a script that matches the bundle SELECT so the middleware accepts the
+  // X-Agent-Token header instead of 503'ing.
+  const db = buildMockDb([
+    { match: /agent_token_(current|previous|rotated_at|previous_ttl_days)/i, rows: [{ config_key: 'agent_token_current', config_value: 'test-token' }] }
+  ]).withRecording(records);
   // data:[] is allowed by the existing validation; replication upsert is a
   // no-op on empty array. buildMockDb.standard() returns empty rows for any
   // unmatched query, so getConfig() returns {} and history_enabled is false.

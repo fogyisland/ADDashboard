@@ -13,6 +13,10 @@ import { buildMockDb, buildRecordingPool } from './helpers/db-mock.js';
 // via _setDbForTest() and the services read it through the same facade.
 
 const TOKEN = 'test-token';
+// I3 (Task 5): the agentToken middleware reads the bundle from db. Inject a
+// script that matches `getAgentTokenBundle` and returns `TOKEN` as current.
+const AGENT_TOKEN_BUNDLE_REGEX = /agent_token_(current|previous|rotated_at|previous_ttl_days)/i;
+const TOKEN_BUNDLE_SCRIPT = { match: AGENT_TOKEN_BUNDLE_REGEX, rows: [{ config_key: 'agent_token_current', config_value: TOKEN }] };
 
 function buildApp({ agentTokenValue = TOKEN } = {}) {
   const app = express();
@@ -28,6 +32,7 @@ test('GET /api/agent/ports returns sorted list with auth', async () => {
   // (sort_order ASC, then port ASC). The mock does not sort — it just
   // echoes — so we feed it the canonical order.
   const db = buildMockDb([
+    TOKEN_BUNDLE_SCRIPT,
     {
       match: /FROM\s+system_ports/i,
       rows: [
@@ -48,6 +53,7 @@ test('GET /api/agent/ports returns sorted list with auth', async () => {
 
 test('GET /api/agent/ports returns [] when no ports configured', async () => {
   const db = buildMockDb([
+    TOKEN_BUNDLE_SCRIPT,
     { match: /FROM\s+system_ports/i, rows: [] }
   ]).standard();
   _setDbForTest(db);
@@ -88,6 +94,7 @@ test('POST /api/agent/heartbeat without ports returns {ok:true} (back-compat)', 
   // must NOT happen for pre-feature agents.
   const records = [];
   const db = buildMockDb([
+    TOKEN_BUNDLE_SCRIPT,
     { match: /FROM\s+system_ports/i, rows: [] }
   ]).withRecording(records);
   _setDbForTest(db);
@@ -98,9 +105,10 @@ test('POST /api/agent/heartbeat without ports returns {ok:true} (back-compat)', 
     .send({ agentId: 'dc01', agentVersion: '0.1.0' });
   assert.equal(r.status, 200);
   assert.deepEqual(r.body, { ok: true });
-  // Exactly one query: the heartbeat upsert. No listPorts, no port-status upsert.
-  assert.equal(records.length, 1, 'must only issue the heartbeat upsert');
-  assert.match(records[0].sql, /INSERT\s+INTO\s+ad_agent_heartbeat/i);
+  // I3: bundle SELECT now happens before the heartbeat upsert, so records
+  // contains 2 entries (bundle + upsert). Filter for the upsert only.
+  const heartbeatUpserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(heartbeatUpserts.length, 1, 'must only issue the heartbeat upsert');
   const portStatusHits = records.filter(rec => /FROM\s+system_ports|ad_agent_port_status/i.test(rec.sql));
   assert.equal(portStatusHits.length, 0, 'must not touch ad_agent_port_status when ports absent');
 });
@@ -112,6 +120,7 @@ test('POST /api/agent/heartbeat with ports upserts each and returns counts', asy
   // walked (the function does not short-circuit). We assert counts via the
   // service contract: 1 accepted, 1 rejected → {ok:true, accepted:1, rejected:1}.
   const db = buildMockDb([
+    TOKEN_BUNDLE_SCRIPT,
     { match: /FROM\s+system_ports/i, rows: [{ port: 135, label: 'RPC', sortOrder: 0 }] }
   ]).withRecording(records);
   _setDbForTest(db);
@@ -157,6 +166,7 @@ test('POST /api/agent/heartbeat with empty ports[] still takes the ingest path (
   // An explicit empty array IS presence; route should return the new shape.
   const records = [];
   const db = buildMockDb([
+    TOKEN_BUNDLE_SCRIPT,
     { match: /FROM\s+system_ports/i, rows: [{ port: 135, label: 'RPC', sortOrder: 0 }] }
   ]).withRecording(records);
   _setDbForTest(db);
