@@ -269,26 +269,26 @@ await ((async () => {
     // exposes the bootstrap config the agent reads on startup and on
     // periodic config-refresh ticks.
     app.use(agentRouter({ config: finalConfig, logger, mount: 'web' }));
-    app.use(dashboardRouter({ config: finalConfig, logger }));
-    app.use(adminRouter({ config: finalConfig, logger }));
+    app.use(dashboardRouter({ config: finalConfig, logger, db: getDb() }));
+    app.use(adminRouter({ config: finalConfig, logger, db: getDb() }));
     // DC summary endpoint (Task 4). Mirrors the adminRouter's per-route
     // [userAuth, requirePerm('admin:users')] middleware — the router
     // factory accepts the same auth deps so the per-route chain is
     // identical to other admin read endpoints.
     app.use(dcsRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Lockout troubleshooting — multi-filter search across ad_lockout_events.
     // Same auth contract as dcsRouter: per-route [userAuth, requirePerm('admin:users')].
     app.use(lockoutRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Schema migrations admin (list/apply/dry-run/reset). Same auth contract
     // as dcsRouter and lockoutRouter: per-route [userAuth, requirePerm('admin:users')].
     app.use(schemaMigrationsRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
       requirePerm: (perm) => requirePerm(perm),
       logger,
       getRepoRoot: () => repoRoot
@@ -297,7 +297,7 @@ await ((async () => {
     // joining ad_agent_heartbeat with the latest ad_replication_status
     // snapshot. Same auth contract as the other admin read endpoints above.
     app.use(heartbeatReportRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret }),
+      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Package system routes (Task 6). Both routers apply their own
@@ -328,7 +328,8 @@ await ((async () => {
     // focused on DC traffic.
     app.use(memberRouter({
       config: finalConfig,
-      logger
+      logger,
+      db: getDb()
     }));
     // Agent-facing per-host package list (Task 8: spec §4.3 / global
     // constraint #14). Sits on the web app so non-AD agents hitting

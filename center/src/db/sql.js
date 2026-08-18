@@ -39,6 +39,7 @@ const VARIANTS = {
       recordLogin: 'UPDATE sys_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?',
       bumpTokenVersion: 'UPDATE sys_users SET token_version = token_version + 1 WHERE id = ?',
       getTokenVersion: 'SELECT token_version FROM sys_users WHERE id = ?',
+      getAuthStatus: 'SELECT token_version, status FROM sys_users WHERE id = ?',
       countAdmins: `SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'`,
       createAdmin: 'INSERT INTO sys_users (username, password_hash, role_id) VALUES (?, ?, (SELECT id FROM sys_roles WHERE role_name = \'admin\'))',
       count: 'SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = \'admin\''
@@ -357,6 +358,7 @@ const VARIANTS = {
       recordLogin: 'UPDATE sys_users SET last_login_at = SYSUTCDATETIME() WHERE id = ?',
       bumpTokenVersion: 'UPDATE sys_users SET token_version = token_version + 1 WHERE id = @id',
       getTokenVersion: 'SELECT token_version FROM sys_users WHERE id = @id',
+      getAuthStatus: 'SELECT token_version, status FROM sys_users WHERE id = @id',
       countAdmins: `SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'`,
       createAdmin: 'INSERT INTO sys_users (username, password_hash, role_id) SELECT ?, ?, id FROM sys_roles WHERE role_name = \'admin\'',
       count: 'SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = \'admin\''

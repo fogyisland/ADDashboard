@@ -33,6 +33,7 @@ import { validateManifest } from './manifest.js';
 import { getCenterVersion } from '../config.js';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
+import { getDb } from '../db/index.js';
 
 function resolveBuffer(body) {
   // body.buffer can arrive as:
@@ -69,8 +70,13 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
   // We do NOT rely on parent-router middleware inheritance because Express
   // does not propagate per-route auth from a sibling Router onto another
   // Router mounted at root.
+  //
+  // db is required (Task 5: userAuth reads token_version/status per request).
+  // Lazy fallback to getDb() keeps the wiring traceable from server.js while
+  // being permissive about explicit vs implicit db.
+  const _db = db ?? getDb();
   const auth = [
-    userAuth({ secret: config.jwtSecret }),
+    userAuth({ secret: config.jwtSecret, db: _db }),
     requirePerm('admin:packages')
   ];
 

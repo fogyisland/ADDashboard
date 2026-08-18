@@ -141,11 +141,17 @@ describe('PUT /api/admin/server-groups/:id', () => {
   test('404 on missing group (affectedRows=0)', async () => {
     // Custom mock that always returns affectedRows=0 so the 404 branch fires
     const { buildSql } = await import('../src/db/sql.js');
+    const { AUTH_SUCCESS_ROW, isAuthStatusSelect } = await import('./helpers/db-mock.js');
     const db = {
       dialect: 'mysql',
       sql: buildSql('mysql'),
       async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
-      async query() { return { rows: [] }; },
+      async query(sql) {
+        // userAuth middleware (Task 5 — I1): per-request token_version/status
+        // SELECT. Return an auth-success row so the request gets past auth.
+        if (isAuthStatusSelect(sql)) return { rows: [AUTH_SUCCESS_ROW] };
+        return { rows: [] };
+      },
       async transaction() {},
       async healthcheck() {},
       async close() {}
@@ -187,11 +193,17 @@ describe('DELETE /api/admin/server-groups/:id', () => {
 
   test('404 on missing group (affectedRows=0)', async () => {
     const { buildSql } = await import('../src/db/sql.js');
+    const { AUTH_SUCCESS_ROW, isAuthStatusSelect } = await import('./helpers/db-mock.js');
     const db = {
       dialect: 'mysql',
       sql: buildSql('mysql'),
       async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
-      async query() { return { rows: [] }; },
+      async query(sql) {
+        // userAuth middleware (Task 5 — I1): per-request token_version/status
+        // SELECT. Return an auth-success row so the request gets past auth.
+        if (isAuthStatusSelect(sql)) return { rows: [AUTH_SUCCESS_ROW] };
+        return { rows: [] };
+      },
       async transaction() {},
       async healthcheck() {},
       async close() {}

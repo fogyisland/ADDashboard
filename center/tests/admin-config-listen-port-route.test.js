@@ -102,11 +102,16 @@ test('GET /api/admin/config: restartRequired.listenPort=false when both version 
 test('PUT /api/admin/config: bumps center_listen_port_pending_version when listenPort changes', async () => {
   const txCalls = [];
   const { buildSql } = await import('../src/db/sql.js');
+  const { AUTH_SUCCESS_ROW, isAuthStatusSelect } = await import('./helpers/db-mock.js');
   const db = {
     dialect: 'mysql',
     sql: buildSql('mysql'),
     async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
     async query(sql) {
+      // userAuth middleware (Task 5 — I1): per-request token_version/status
+      // SELECT. Return an auth-success row so the request gets past the
+      // middleware and lands on the route handler.
+      if (isAuthStatusSelect(sql)) return { rows: [AUTH_SUCCESS_ROW] };
       // getConfigMap reads via config.getAll — return a `before` snapshot
       // that has the existing listenPort so the change is detected.
       if (/FROM\s+system_config/i.test(sql)) {
@@ -163,11 +168,13 @@ test('PUT /api/admin/config: bumps center_listen_port_pending_version when liste
 test('PUT /api/admin/config: does NOT bump pending version when listenPort unchanged', async () => {
   const txCalls = [];
   const { buildSql } = await import('../src/db/sql.js');
+  const { AUTH_SUCCESS_ROW, isAuthStatusSelect } = await import('./helpers/db-mock.js');
   const db = {
     dialect: 'mysql',
     sql: buildSql('mysql'),
     async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
     async query(sql) {
+      if (isAuthStatusSelect(sql)) return { rows: [AUTH_SUCCESS_ROW] };
       if (/FROM\s+system_config/i.test(sql)) {
         return { rows: [
           { config_key: 'listenPort', config_value: '8080' }
@@ -215,11 +222,13 @@ test('PUT /api/admin/config: does NOT bump pending version when listenPort uncha
 test('PUT /api/admin/config: does NOT touch pending version when listenPort not in body', async () => {
   const txCalls = [];
   const { buildSql } = await import('../src/db/sql.js');
+  const { AUTH_SUCCESS_ROW, isAuthStatusSelect } = await import('./helpers/db-mock.js');
   const db = {
     dialect: 'mysql',
     sql: buildSql('mysql'),
     async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
     async query(sql) {
+      if (isAuthStatusSelect(sql)) return { rows: [AUTH_SUCCESS_ROW] };
       if (/FROM\s+system_config/i.test(sql)) {
         return { rows: [
           { config_key: 'listenPort', config_value: '8080' }

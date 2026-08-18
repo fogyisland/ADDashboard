@@ -15,8 +15,39 @@
 
 import { buildSql } from '../../src/db/sql.js';
 
+// Auth-success row used by ad-hoc db mocks (Task 5 — I1). The userAuth
+// middleware reads `SELECT token_version, status FROM sys_users WHERE id = ?`
+// and treats `token_version=0, status=1` as "valid active user". Tests that
+// construct ad-hoc mocks (instead of buildMockDb.standard()) can use this as
+// a fallback row in their `query()` function.
+const AUTH_SUCCESS_ROW = { token_version: 0, status: 1 };
+
+// Recognises the userAuth middleware's per-request SELECT. Used by helpers
+// below AND by the default mock scripts.
+const isAuthStatusSelect = (sql) =>
+  /SELECT\s+token_version,\s*status\s+FROM\s+sys_users/i.test(sql);
+
+// Default `query` implementation: returns auth-success for the getAuthStatus
+// SELECT and an empty array for everything else. Tests can replace this with
+// their own query() function if they need finer control.
+const defaultQuery = async (sql) => {
+  if (isAuthStatusSelect(sql)) {
+    return { rows: [AUTH_SUCCESS_ROW] };
+  }
+  return { rows: [] };
+};
+
 export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
   function lookup(sql, params) {
+    // Special-case the userAuth middleware's per-request SELECT (Task 5 — I1):
+    // BEFORE falling through to user scripts, if the query is the
+    // getAuthStatus SELECT (token_version, status FROM sys_users), return a
+    // row representing a valid active user (token_version=0, status=1). The
+    // per-route handlers use a broader `FROM sys_users` regex that would
+    // also match this query, so the auth look-up must win priority.
+    if (isAuthStatusSelect(sql)) {
+      return [AUTH_SUCCESS_ROW];
+    }
     for (const s of scripts) {
       if (s.match.test(sql)) {
         const rows = typeof s.rows === 'function' ? s.rows(params) : s.rows;
@@ -57,7 +88,11 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
   }
   function makeQuery(records) {
     return async function query(sql, params = []) {
-      if (records) records.push({ sql, params: [...params] });
+      // Skip recording the userAuth middleware's per-request SELECT (Task 5
+      // — I1): tests that assert "first SQL issued" via records[0] would
+      // otherwise always see the auth check. The auth flow is verified by
+      // tests/middleware.test.js, not by these recording-based ones.
+      if (records && !isAuthStatusSelect(sql)) records.push({ sql, params: [...params] });
       // Mirror the execute-path hook so tests can capture/inspect SELECT
       // params without needing a recording array. onQuery takes precedence
       // over row lookup — handlers can return `{ rows }` directly to assert
@@ -112,3 +147,10 @@ export function buildThrowingPool(message = 'boom') {
     async close() {}
   };
 }
+
+// Export so ad-hoc db mocks in tests can plug into the same auth-default:
+// the userAuth middleware expects `query()` to return an auth-success row
+// for `SELECT token_version, status FROM sys_users WHERE id = ?`. Use this
+// as the default `query` impl when constructing manual db mocks — or merge
+// it into a hand-written query function for finer control.
+export { defaultQuery, isAuthStatusSelect, AUTH_SUCCESS_ROW };

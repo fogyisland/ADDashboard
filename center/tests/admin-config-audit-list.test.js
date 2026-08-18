@@ -15,7 +15,7 @@ function buildApp() {
 }
 
 test('GET /api/admin/config/audit: 401 without token', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const r = await supertest(buildApp()).get('/api/admin/config/audit');
   assert.equal(r.status, 401);
 });

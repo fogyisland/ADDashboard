@@ -29,14 +29,14 @@ function adminToken(extraPerms) {
 // ----- AUTH WIRING -----
 
 test('overview: 401 when no token', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app).get('/api/dashboard/overview');
   assert.equal(r.status, 401);
 });
 
 test('overview: 403 when missing read:dash perm', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const tok = signJwt(
     { sub: 'u2', role: 'viewer', permissions: ['read:something-else'] },

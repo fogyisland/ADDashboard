@@ -7,6 +7,7 @@ import { userAuth } from '../src/auth/user-auth.js';
 import { requirePerm } from '../src/auth/rbac.js';
 import { signJwt } from '../src/auth/jwt.js';
 import { _setDbForTest } from '../src/db/index.js';
+import { buildSql } from '../src/db/sql.js';
 import { buildMockDb } from './helpers/db-mock.js';
 
 const SECRET = 'test-secret';
@@ -17,7 +18,7 @@ function buildApp() {
   a.use(express.json());
   return a.use(
     heartbeatReportRouter({
-      requireAuth: userAuth({ secret: SECRET }),
+      requireAuth: userAuth({ secret: SECRET, db: { query: async () => ({ rows: [{ token_version: 0, status: 1 }] }), sql: buildSql('mysql') } }),
       requirePerm
     })
   );

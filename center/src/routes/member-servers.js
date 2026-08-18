@@ -57,9 +57,14 @@ function isValidHostname(s) {
   return HOSTNAME_RE.test(s);
 }
 
-export function memberRouter({ config, logger }) {
+export function memberRouter({ config, logger, db }) {
   const r = Router();
-  const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('admin:users')];
+  // db is required (Task 5: userAuth reads token_version/status per request).
+  // Lazy fallback to getDb() keeps test wirings that pre-date the new
+  // signature working — every test that calls memberRouter already calls
+  // _setDbForTest first.
+  const _db = db ?? getDb();
+  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('admin:users')];
   const agentMw = agentToken(config.agentToken);
 
   // ----- LIST -----

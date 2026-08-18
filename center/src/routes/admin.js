@@ -44,9 +44,13 @@ function camelRow(row) {
   return out;
 }
 
-export function adminRouter({ config, logger }) {
+export function adminRouter({ config, logger, db }) {
   const r = Router();
-  const auth = [userAuth({ secret: config.jwtSecret }), requirePerm('admin:users')];
+  // db is required (Task 5: userAuth reads token_version/status per request).
+  // We resolve `db` lazily via getDb() when the caller didn't pass one — every
+  // tests + production wire has getDb() available.
+  const _db = db ?? getDb();
+  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('admin:users')];
 
   r.get('/api/admin/roles', auth, async (_req, res) => {
     try {

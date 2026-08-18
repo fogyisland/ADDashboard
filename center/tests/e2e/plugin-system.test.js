@@ -53,14 +53,14 @@ function authHeader(perms) {
 // ---- auth wiring -------------------------------------------------------
 
 test('dashboard metrics summary: 401 when no token', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app).get('/api/dashboard/metrics/summary');
   assert.equal(r.status, 401);
 });
 
 test('dashboard metrics summary: 403 when missing read:dash perm', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/metrics/summary')
@@ -69,7 +69,7 @@ test('dashboard metrics summary: 403 when missing read:dash perm', async () => {
 });
 
 test('dashboard metrics timeseries: 400 when metricId missing', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/metrics/timeseries?agentId=a1')
@@ -78,7 +78,7 @@ test('dashboard metrics timeseries: 400 when metricId missing', async () => {
 });
 
 test('dashboard metrics timeseries: 400 when agentId missing', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .get('/api/dashboard/metrics/timeseries?metricId=pkg.m')

@@ -5,7 +5,7 @@ import { default as supertest } from 'supertest';
 import { adminRouter } from '../src/routes/admin.js';
 import { signJwt } from '../src/auth/jwt.js';
 import { _setDbForTest } from '../src/db/index.js';
-import { buildMockDb, buildRecordingPool, buildThrowingPool } from './helpers/db-mock.js';
+import { buildMockDb, buildRecordingPool, buildThrowingPool, defaultQuery } from './helpers/db-mock.js';
 
 const SECRET = 'test-secret-please-do-not-use-in-prod';
 
@@ -37,14 +37,14 @@ function operatorToken() {
 // ----- AUTH WIRING -----
 
 test('GET /api/admin/roles: 401 when no token', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app).get('/api/admin/roles');
   assert.equal(r.status, 401);
 });
 
 test('GET /api/admin/roles: 403 for operator token (missing admin:users perm)', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/roles')
@@ -161,7 +161,7 @@ test('GET /api/admin/users: rows include camelCased roleName (mssql dialect)', a
 // ----- CREATE USER -----
 
 test('POST /api/admin/users: 400 when missing fields', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .post('/api/admin/users')
@@ -191,6 +191,7 @@ test('POST /api/admin/users: 201 on success and writes audit row', async () => {
   // then INSERT INTO audit_logs. We key on SQL fragments and capture params.
   const recorded = [];
   let auditCaptured = null;
+  const { AUTH_SUCCESS_ROW, isAuthStatusSelect } = await import('./helpers/db-mock.js');
   const db = {
     dialect: 'mysql',
     sql: (await import('../src/db/sql.js')).buildSql('mysql'),
@@ -216,6 +217,9 @@ test('POST /api/admin/users: 201 on success and writes audit row', async () => {
     },
     async query(sql, params = []) {
       recorded.push({ sql, params });
+      // userAuth middleware (Task 5 — I1): per-request token_version/status
+      // SELECT. Return an auth-success row so the request gets past auth.
+      if (isAuthStatusSelect(sql)) return { rows: [AUTH_SUCCESS_ROW] };
       return { rows: [] };
     },
     async transaction() {},
@@ -307,7 +311,7 @@ test('PUT /api/admin/config: 200 updates multiple keys', async () => {
     dialect: 'mysql',
     sql: buildSql('mysql'),
     async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction(work) { return work({ sql: db.sql, execute: txExecute, query: txQuery }); },
     async healthcheck() {},
     async close() {}
@@ -405,7 +409,7 @@ test('POST /api/admin/sites-catalog: 201 on success, 409 on duplicate', async ()
       }
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -430,7 +434,7 @@ test('POST /api/admin/sites-catalog: 201 on success, 409 on duplicate', async ()
 });
 
 test('POST /api/admin/sites-catalog: 400 when siteName missing', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .post('/api/admin/sites-catalog')
@@ -449,7 +453,7 @@ test('DELETE /api/admin/sites-catalog/:id: 200 and nullifies DCs first', async (
       executed.push({ sql, params });
       return { rows: [], affectedRows: 1, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -475,7 +479,7 @@ test('PUT /api/admin/sites-catalog/:id: 400 invalid id (non-numeric), no DB exec
       executeCalls++;
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -501,7 +505,7 @@ test('DELETE /api/admin/sites-catalog/:id: 400 invalid id (negative), no DB exec
       executeCalls++;
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -526,7 +530,7 @@ test('PUT /api/admin/sites-catalog/:id: 400 invalid id (zero), no DB execute', a
       executeCalls++;
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -593,7 +597,7 @@ test('PUT /api/admin/dcs-catalog/:dc_name/site: 200 sets siteId', async () => {
       }
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -664,7 +668,7 @@ test('GET /api/admin/ports: snake_case sort_order is remapped to camelCase sortO
 });
 
 test('POST /api/admin/ports: validates port range (rejects 0 and 99999)', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   for (const bad of [0, 99999]) {
     const r = await supertest(app)
@@ -688,7 +692,7 @@ test('POST /api/admin/ports: 409 on duplicate port', async () => {
       }
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -728,7 +732,7 @@ test('PUT /api/admin/ports/:id: 400 invalid id (non-numeric), no DB execute', as
       executeCalls++;
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -745,7 +749,7 @@ test('PUT /api/admin/ports/:id: 400 invalid id (non-numeric), no DB execute', as
 });
 
 test('PUT /api/admin/ports/:id: 400 when no fields to update', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .put('/api/admin/ports/3')
@@ -763,7 +767,7 @@ test('DELETE /api/admin/ports/:id: 404 if row missing', async () => {
     async execute() {
       return { rows: [], affectedRows: 0, insertId: undefined };
     },
-    async query() { return { rows: [] }; },
+    query: defaultQuery,
     async transaction() {},
     async healthcheck() {},
     async close() {}
@@ -790,14 +794,14 @@ test('DELETE /api/admin/ports/:id: 200 on success', async () => {
 });
 
 test('GET /api/admin/ports: 401 when no token', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app).get('/api/admin/ports');
   assert.equal(r.status, 401);
 });
 
 test('GET /api/admin/ports: 403 for operator token (missing admin:users perm)', async () => {
-  _setDbForTest(buildMockDb());
+  _setDbForTest(buildMockDb().standard());
   const app = buildApp();
   const r = await supertest(app)
     .get('/api/admin/ports')
