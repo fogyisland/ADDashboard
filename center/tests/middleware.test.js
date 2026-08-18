@@ -82,8 +82,11 @@ test('userAuth sets req.user.status from the DB row on success', async () => {
 });
 
 test('agentToken returns 401 on wrong token', async () => {
+  // I3: agentToken now reads the bundle from the db facade. The mock
+  // returns agent_token_current='expected' so 'wrong' fails the comparison.
+  const bundleDb = { query: async () => ({ rows: [{ config_key: 'agent_token_current', config_value: 'expected' }] }) };
   const a = express();
-  a.use(agentToken('expected'));
+  a.use(agentToken({ db: bundleDb }));
   a.get('/p', (req, res) => res.json({}));
   const r = await supertest(a).get('/p').set('X-Agent-Token', 'wrong');
   assert.equal(r.status, 401);
