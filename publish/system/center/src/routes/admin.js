@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
-import { findByUsername, listUsers, createUser, updateUser, deleteUser } from '../services/users.js';
+import { findByUsername, listUsers, createUser, updateUser, deleteUser, bumpTokenVersion } from '../services/users.js';
 import { getConfig, setConfig, getConfigMap, restartRequired, putConfig, putConfigWithin } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
@@ -31,7 +31,8 @@ const CAML_MAP = new Map([
   ['change_type', 'changeType'],
   ['changed_at', 'changedAt'],
   ['changed_by', 'changedBy'],
-  ['changed_by_username', 'changedByUsername']
+  ['changed_by_username', 'changedByUsername'],
+  ['token_version', 'tokenVersion']
 ]);
 
 function camelRow(row) {
@@ -138,6 +139,36 @@ export function adminRouter({ config, logger, db }) {
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'admin user delete failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // I1: operator force-revoke every outstanding JWT for a user. Reads the
+  // pre-bump token_version so the audit row records both old and new; bumps
+  // +1 via bumpTokenVersion; writes a revoke_user_tokens audit row (the ONE
+  // trigger that gets its own audit action — the other 3 JWT-invalidating
+  // triggers piggyback on update_user). No tx enrollment: bumpTokenVersion
+  // commits via the global db, and the audit row is best-effort (caught +
+  // warn-logged inside writeAudit). Per `feedback_writeaudit_signature.md`
+  // the audit signature is (args, logger, tx); passing no tx is correct
+  // here because the data write commits via the global facade.
+  r.post('/api/admin/users/:id/revoke-tokens', auth, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const db = getDb();
+      const { rows: before } = await db.query(db.sql.users.getTokenVersion, [id]);
+      const prev = Number(before[0]?.token_version ?? 0);
+      const next = await bumpTokenVersion(id);
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'revoke_user_tokens',
+        target: String(id),
+        payload: { oldTokenVersion: prev, newTokenVersion: next },
+        logger
+      });
+      res.json({ ok: true, tokenVersion: next });
+    } catch (e) {
+      logger.error({ err: e }, 'admin user revoke-tokens failed');
       res.status(500).json({ error: 'internal' });
     }
   });
