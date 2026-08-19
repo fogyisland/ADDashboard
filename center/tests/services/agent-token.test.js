@@ -126,6 +126,32 @@ test('seedAgentTokenIfMissing: auto-expires previous past TTL', async () => {
   assert.equal(rot.params[1], '');
 });
 
+// #167 C2: auto-expire branch must write an audit row matching the
+// rotate/commit/seed taxonomy (parallels jwt-secret auto-expire). Without
+// this assertion the silent TTL-driven clear would leave no trace in the
+// audit log.
+test('seedAgentTokenIfMissing auto-expire writes auto_expire_agent_token audit row', async () => {
+  const records = [];
+  const oldDate = new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString();
+  const db = buildMockDb([
+    { match: /agent_token/i, rows: bundleRows({ current: 'NEW', previous: 'OLD', rotatedAt: oldDate, ttlDays: '30' }) }
+  ]).withRecording(records);
+  const r = await seedAgentTokenIfMissing(db, 'from-appsettings', noopLogger);
+  assert.equal(r.autoExpired, true);
+  // Auto-expire branch must produce exactly one audit row, with the
+  // dedicated AUTO_EXPIRE action (not the rotate/commit/seed actions).
+  const audits = records.filter(x => /audit_logs/i.test(x.sql));
+  assert.equal(audits.length, 1, 'auto-expire must write exactly one audit row');
+  const audit = audits[0];
+  assert.equal(audit.params[1], 'auto_expire_agent_token');
+  assert.equal(audit.params[2], 'system_config');
+  // Payload carries the rotatedAt + ttlDays that drove the clear — same
+  // shape as the I9 jwt_secret auto-expire audit row.
+  const payload = JSON.parse(audit.params[3]);
+  assert.equal(payload.rotatedAt, oldDate);
+  assert.equal(payload.ttlDays, 30);
+});
+
 test('seedAgentTokenIfMissing: does NOT expire within TTL', async () => {
   const records = [];
   const recent = new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString();
