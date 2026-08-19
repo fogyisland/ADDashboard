@@ -29,6 +29,12 @@ IF NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN sys_roles r ON rp.role_id 
     SELECT id, 'read:dash' FROM sys_roles WHERE role_name = 'viewer';
 
 -- Seed default system config (idempotent via IF NOT EXISTS guards)
+-- These defaults are read at runtime before any user interaction, so a
+-- fresh install has working defaults even before runtime seed functions
+-- (seedSmtpDefaultsIfMissing, seedAgentTokenIfMissing, seedJwtSecretIfMissing,
+--  seedListenPortIfMissing) fire. Runtime seeds still run idempotently on
+-- startup; the SQL seed here just makes the row present from t=0 and is
+-- the documented source of truth for baseline defaults.
 IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'ad_agent_token')
   INSERT INTO system_config (config_key, config_value, description) VALUES ('ad_agent_token', NULL, 'Shared secret for Agent API authentication');
 
@@ -43,3 +49,29 @@ IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'history_enabled')
 
 IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'heartbeat_interval_seconds')
   INSERT INTO system_config (config_key, config_value, description) VALUES ('heartbeat_interval_seconds', '5', 'Agent 心跳间隔 (秒), 越短越快感知离线, 默认 5');
+
+-- Agent-side runtime defaults read by getAgentConfig() (services/config.js).
+-- Each has a code-side || fallback but seeding them in the DB makes the
+-- values visible/auditable via ConfigView and ensures the agent gets a
+-- stable config even if getAgentConfig's fallback chain regresses.
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'discovery_interval_hours')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('discovery_interval_hours', '4', 'Agent 站点/域控拓扑发现周期 (小时)');
+
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'heartbeat_port')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('heartbeat_port', '8081', 'Agent 心跳接收端口 (DB 改后 5 min 内 agent 自动刷新)');
+
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'report_port')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('report_port', '8082', 'Agent replication snapshot 上报端口');
+
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'heartbeat_stale_seconds')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('heartbeat_stale_seconds', '15', '心跳 stale 阈值 (秒),超过即判定 agent 离线');
+
+-- UI-side: SiteReplicationMatrixView polls the dashboard at this cadence.
+-- Frontend falls back to 10s if the row is absent.
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'site_matrix_refresh_seconds')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('site_matrix_refresh_seconds', '10', '站点复制矩阵自动刷新间隔 (秒)');
+
+-- I4 retention loop reads audit_retention_days on every tick (services/audit.js).
+-- Default 90 days; set to 0 to disable retention entirely.
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'audit_retention_days')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('audit_retention_days', '90', '审计日志保留天数 (默认 90, 设 0 禁用清理)');
