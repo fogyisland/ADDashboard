@@ -236,6 +236,19 @@ await ((async () => {
     } catch (err) {
       logger.warn({ err: err.message }, 'agent token seed failed; agents will fail auth until DB row is populated');
     }
+    // I9: seed jwt-secret bundle from appsettings.json on first boot.
+    // After this point, runtime reads from system_config.jwt_secret_current;
+    // appsettings.json is bootstrap-only. Idempotent (no-op if row exists) and
+    // also auto-expires any stale jwt_secret_previous past TTL (default 30d).
+    // Same try/catch pattern as agent-token above: a transient DB error here
+    // must not crash bootstrap; userAuth will surface a clear failure on the
+    // first login attempt if the row is missing.
+    try {
+      const { seedJwtSecretIfMissing } = await import('./src/services/jwt-secret.js');
+      await seedJwtSecretIfMissing(db, finalConfig.jwtSecret, logger);
+    } catch (err) {
+      logger.warn({ err: err.message }, 'jwt secret seed failed; logins will fail until DB row is populated');
+    }
   }
 
   // Seed built-in packages (e.g. ad_os_baseline) into data/packages/<name>/<version>/
