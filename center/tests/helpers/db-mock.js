@@ -27,12 +27,29 @@ const AUTH_SUCCESS_ROW = { token_version: 0, status: 1 };
 const isAuthStatusSelect = (sql) =>
   /SELECT\s+token_version,\s*status\s+FROM\s+sys_users/i.test(sql);
 
+// Recognises the userAuth middleware's bundle-loader SELECT (I9 — Task 1).
+// Default behavior is to return a valid bundle so existing tests that go
+// through userAuth (via adminRouter/dashboardRouter/...) keep working.
+// The default secret matches the most common test SECRET value
+// (`'test-secret'`); tests that use a different SECRET must seed their
+// own jwt_secret_current row via buildMockDb's `scripts` parameter.
+const isJwtSecretBundleSelect = (sql) =>
+  /jwt_secret/i.test(sql);
+
+// Shared test default — kept in sync with the `SECRET` constant in the
+// majority of tests (admin/dashboard/etc.). Tests that use a different
+// secret must add their own script entry with /jwt_secret/ regex.
+const DEFAULT_TEST_JWT_SECRET = 'test-secret';
+
 // Default `query` implementation: returns auth-success for the getAuthStatus
-// SELECT and an empty array for everything else. Tests can replace this with
-// their own query() function if they need finer control.
+// SELECT and the default JWT bundle for the bundle-loader SELECT. Tests can
+// replace this with their own query() function if they need finer control.
 const defaultQuery = async (sql) => {
   if (isAuthStatusSelect(sql)) {
     return { rows: [AUTH_SUCCESS_ROW] };
+  }
+  if (isJwtSecretBundleSelect(sql)) {
+    return { rows: [{ config_key: 'jwt_secret_current', config_value: DEFAULT_TEST_JWT_SECRET }] };
   }
   return { rows: [] };
 };
@@ -47,6 +64,39 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
     // also match this query, so the auth look-up must win priority.
     if (isAuthStatusSelect(sql)) {
       return [AUTH_SUCCESS_ROW];
+    }
+    // I9 — Task 1: userAuth loads the jwt_secret bundle from system_config
+    // before the getAuthStatus SELECT. Default to the test secret so tests
+    // that sign JWTs with the standard 'test-secret' keep passing.
+    //
+    // I9 — Task 2: tests that target the jwt_secret bundle (rotate/seed)
+    // supply a script whose regex explicitly references "jwt_secret" (e.g.
+    // /jwt_secret/i). That script wins over this default ONLY when the
+    // script's regex contains the literal "jwt_secret" substring — we
+    // use that as a positive signal the test authored a JWT bundle. Tests
+    // that use a broader regex like /FROM\s+system_config/i (which
+    // incidentally catches the bundle SQL) still get the test-secret
+    // default and keep working.
+    const isJwtBundleQuery = isJwtSecretBundleSelect(sql);
+    let jwtScriptMatch = null;
+    if (isJwtBundleQuery) {
+      for (const s of scripts) {
+        // Heuristic: only honor a script's match if its regex pattern
+        // explicitly mentions "jwt_secret" — that's the test author's
+        // signal they intend to override the default bundle. A broad
+        // /system_config/ regex that happens to catch the bundle SQL is
+        // treated as incidental (NOT an override).
+        const re = s.match.source || '';
+        if (!/jwt_secret/i.test(re)) continue;
+        if (s.match.test(sql)) { jwtScriptMatch = s; break; }
+      }
+    }
+    if (jwtScriptMatch) {
+      const rows = typeof jwtScriptMatch.rows === 'function' ? jwtScriptMatch.rows(params) : jwtScriptMatch.rows;
+      return Array.isArray(rows) ? rows : [];
+    }
+    if (isJwtBundleQuery) {
+      return [{ config_key: 'jwt_secret_current', config_value: DEFAULT_TEST_JWT_SECRET }];
     }
     for (const s of scripts) {
       if (s.match.test(sql)) {
@@ -153,4 +203,4 @@ export function buildThrowingPool(message = 'boom') {
 // for `SELECT token_version, status FROM sys_users WHERE id = ?`. Use this
 // as the default `query` impl when constructing manual db mocks — or merge
 // it into a hand-written query function for finer control.
-export { defaultQuery, isAuthStatusSelect, AUTH_SUCCESS_ROW };
+export { defaultQuery, isAuthStatusSelect, AUTH_SUCCESS_ROW, DEFAULT_TEST_JWT_SECRET };

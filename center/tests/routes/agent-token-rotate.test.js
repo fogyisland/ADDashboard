@@ -6,7 +6,9 @@ import { adminRouter } from '../../src/routes/admin.js';
 import { signJwt } from '../../src/auth/jwt.js';
 import { buildMockDb } from '../helpers/db-mock.js';
 
-const SECRET = 'test-secret-please-do-not-use-in-prod';
+// I9 — Task 1: see tests/e2e/plugin-system.test.js. Match the buildMockDb
+// default jwt_secret_current='test-secret' so userAuth accepts our tokens.
+const SECRET = 'test-secret';
 
 function buildApp(db) {
   const a = express();

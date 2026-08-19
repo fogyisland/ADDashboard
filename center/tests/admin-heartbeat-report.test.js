@@ -18,7 +18,7 @@ function buildApp() {
   a.use(express.json());
   return a.use(
     heartbeatReportRouter({
-      requireAuth: userAuth({ secret: SECRET, db: { query: async () => ({ rows: [{ token_version: 0, status: 1 }] }), sql: buildSql('mysql') } }),
+      requireAuth: userAuth({ db: { query: async (q) => /jwt_secret/i.test(q) ? { rows: [{ config_key: 'jwt_secret_current', config_value: SECRET }] } : { rows: [{ token_version: 0, status: 1 }] }, sql: buildSql('mysql') }, logger: null }),
       requirePerm
     })
   );

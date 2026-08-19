@@ -25,15 +25,18 @@ test('classifier: classifyAction returns Chinese label + category + severity tog
   assert.equal(c.severity, 'high');
 });
 
-test('classifier: CATEGORY_ACTIONS.security is exactly {login_failed, delete_user, agent_self_register, disable_builtin_ad_os_baseline}', () => {
+test('classifier: CATEGORY_ACTIONS.security is exactly the registered security actions', () => {
   assert.deepEqual([...CATEGORY_ACTIONS.get('security')].sort(), [
-    'agent_self_register', 'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed'
+    'agent_self_register', 'auto_expire_jwt_secret', 'commit_jwt_secret',
+    'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed',
+    'rotate_jwt_secret'
   ]);
 });
 
-test('classifier: SEVERITY_ACTIONS.high includes delete_user, login_failed, restart_service, disable_builtin_ad_os_baseline', () => {
+test('classifier: SEVERITY_ACTIONS.high includes the JWT secret rotation actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
-    'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed', 'restart_service'
+    'auto_expire_jwt_secret', 'delete_user', 'disable_builtin_ad_os_baseline',
+    'login_failed', 'restart_service', 'rotate_jwt_secret'
   ]);
 });
 
@@ -41,10 +44,36 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
   assert.deepEqual([...SEVERITY_ACTIONS.get('medium')].sort(), [
     'agent_self_register', 'apply_migration', 'bulk_assign_dc_sites',
     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
-    'delete_alert_rule', 'delete_server_group', 'delete_site',
+    'commit_jwt_secret', 'delete_alert_rule', 'delete_server_group', 'delete_site',
     'replace_server_group_members',
     'reset_failed_migration', 'update_config', 'update_user'
   ]);
+});
+
+// I9 T7-fix (important): the 4 new jwt_secret actions must NOT fall through
+// to the defaults. Each maps to a non-default category that matches the
+// existing taxonomy.
+test('classifier: I9 jwt_secret actions resolve to non-default categories', () => {
+  const cases = [
+    { action: 'rotate_jwt_secret',      category: 'security', severity: 'high',   label: '轮换 JWT 签名密钥' },
+    { action: 'auto_expire_jwt_secret', category: 'security', severity: 'high',   label: 'JWT 密钥自动过期' },
+    { action: 'commit_jwt_secret',      category: 'security', severity: 'medium', label: '提交 JWT 签名密钥' },
+    { action: 'seed_jwt_secret',        category: 'system',   severity: 'info',   label: '从 appsettings 初始化 JWT 密钥' }
+  ];
+  for (const c of cases) {
+    const r = classifyAction(c.action);
+    assert.equal(r.category, c.category, `${c.action} should map to category ${c.category}`);
+    assert.equal(r.severity, c.severity, `${c.action} should map to severity ${c.severity}`);
+    assert.equal(r.label,    c.label,    `${c.action} should map to label "${c.label}"`);
+  }
+});
+
+test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 4 I9 jwt_secret entries', () => {
+  for (const a of ['rotate_jwt_secret', 'auto_expire_jwt_secret', 'commit_jwt_secret', 'seed_jwt_secret']) {
+    assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
+    assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
+    assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
+  }
 });
 
 test('classifier: unknown action returns the raw action as label + ops/low fallback', () => {

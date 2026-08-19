@@ -236,6 +236,19 @@ await ((async () => {
     } catch (err) {
       logger.warn({ err: err.message }, 'agent token seed failed; agents will fail auth until DB row is populated');
     }
+    // I9: seed jwt-secret bundle from appsettings.json on first boot.
+    // After this point, runtime reads from system_config.jwt_secret_current;
+    // appsettings.json is bootstrap-only. Idempotent (no-op if row exists) and
+    // also auto-expires any stale jwt_secret_previous past TTL (default 30d).
+    // Same try/catch pattern as agent-token above: a transient DB error here
+    // must not crash bootstrap; userAuth will surface a clear failure on the
+    // first login attempt if the row is missing.
+    try {
+      const { seedJwtSecretIfMissing } = await import('./src/services/jwt-secret.js');
+      await seedJwtSecretIfMissing(db, finalConfig.jwtSecret, logger);
+    } catch (err) {
+      logger.warn({ err: err.message }, 'jwt secret seed failed; logins will fail until DB row is populated');
+    }
   }
 
   // Seed built-in packages (e.g. ad_os_baseline) into data/packages/<name>/<version>/
@@ -274,7 +287,7 @@ await ((async () => {
   if (needsInit) {
     logger.info('init mode: serving /api/init/* and /init');
   } else {
-    app.use(authRouter({ config: finalConfig, logger }));
+    app.use(authRouter({ config: finalConfig, logger, db: getDb() }));
     // Bootstrap endpoint for agents (web mount — /config.json only). Lets an
     // agent learn heartbeat/report ports + intervals from the web port
     // without needing to know any other port number up front. The dedicated
@@ -289,19 +302,19 @@ await ((async () => {
     // factory accepts the same auth deps so the per-route chain is
     // identical to other admin read endpoints.
     app.use(dcsRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Lockout troubleshooting — multi-filter search across ad_lockout_events.
     // Same auth contract as dcsRouter: per-route [userAuth, requirePerm('admin:users')].
     app.use(lockoutRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Schema migrations admin (list/apply/dry-run/reset). Same auth contract
     // as dcsRouter and lockoutRouter: per-route [userAuth, requirePerm('admin:users')].
     app.use(schemaMigrationsRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm),
       logger,
       getRepoRoot: () => repoRoot
@@ -310,7 +323,7 @@ await ((async () => {
     // joining ad_agent_heartbeat with the latest ad_replication_status
     // snapshot. Same auth contract as the other admin read endpoints above.
     app.use(heartbeatReportRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Package system routes (Task 6). Both routers apply their own
@@ -327,7 +340,8 @@ await ((async () => {
     }));
     app.use(orphanRouter({
       db: pkgDb,
-      config: finalConfig
+      config: finalConfig,
+      logger
     }));
     app.use(packageRunner({
       db: pkgDb,

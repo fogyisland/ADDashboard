@@ -21,7 +21,12 @@ import { _setDbForTest } from '../../src/db/index.js';
 import { buildMockDb } from '../helpers/db-mock.js';
 import { metricstore } from '../../src/packages/metricstore.js';
 
-const SECRET = 'test-secret-please-do-not-use-in-prod';
+// I9 — Task 1: userAuth now reads the jwt_secret bundle from system_config.
+// buildMockDb's default mock returns jwt_secret_current='test-secret', so
+// tests that go through userAuth (e.g. via dashboardRouter) must sign with
+// the same value or seed a custom jwt_secret row. Use 'test-secret' here
+// to match the default.
+const SECRET = 'test-secret';
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
 
 function buildApp() {

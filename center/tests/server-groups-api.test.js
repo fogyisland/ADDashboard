@@ -24,7 +24,7 @@ import { signJwt } from '../src/auth/jwt.js';
 import { _setDbForTest } from '../src/db/index.js';
 import { buildMockDb, buildRecordingPool } from './helpers/db-mock.js';
 
-const SECRET = 'test-secret-sg';
+const SECRET = 'test-secret';
 
 function adminToken() {
   return signJwt({ sub: 'u1', role: 'admin', permissions: ['*'] }, SECRET, 60);

@@ -10,6 +10,8 @@ import { sha256Hex } from '../config.js';
 import * as email from '../services/email.js';
 import { rotateAgentToken, commitAgentToken, getAgentTokenState } from '../services/agent-token.js';
 import { invalidateAgentTokenCache } from '../auth/agent-token.js';
+import { rotateJwtSecret, commitJwtSecret, getJwtSecretState } from '../services/jwt-secret.js';
+import { invalidateJwtSecretCache } from '../auth/user-auth.js';
 
 // Snake -> camel rename for known columns in admin responses.
 const CAML_MAP = new Map([
@@ -53,7 +55,7 @@ export function adminRouter({ config, logger, db }) {
   // We resolve `db` lazily via getDb() when the caller didn't pass one — every
   // tests + production wire has getDb() available.
   const _db = db ?? getDb();
-  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('admin:users')];
+  const auth = [userAuth({ db: _db, logger }), requirePerm('admin:users')];
 
   r.get('/api/admin/roles', auth, async (_req, res) => {
     try {
@@ -351,6 +353,65 @@ export function adminRouter({ config, logger, db }) {
       });
     } catch (e) {
       logger.error({ err: e }, 'agent token state get failed');
+      res.status(500).json({ error: 'state get failed' });
+    }
+  });
+
+  // ----- JWT secret rotation (I9 — Task 5) -----
+  // Three endpoints that manage the dual-key JWT secret rotation lifecycle.
+  // The middleware factory (auth/user-auth.js) compares the bearer token
+  // against both `jwt_secret_current` and `jwt_secret_previous` so existing
+  // user sessions stay valid while the operator rolls the new secret out.
+  // These three endpoints drive the lifecycle: rotate generates a new
+  // secret + stashes the old one as previous; commit clears previous once
+  // every user has refreshed their session (i.e. re-logged-in); GET exposes
+  // mode/rotatedAt/previousExpiresAt/ttlDays for the UI (NEVER the secret
+  // — that's only returned by /rotate and only to the operator who hit the
+  // button). All three call invalidateJwtSecretCache after a write so the
+  // very next request sees the new state.
+  //
+  // Use `_db` (the adminRouter-level db facade) so tests that pre-set the
+  // db via `adminRouter({ db: mock })` don't need a global getDb() init —
+  // matches the same pattern userAuth uses at the top of this file.
+  r.post('/api/admin/jwt-secret/rotate', auth, async (req, res) => {
+    try {
+      const out = await rotateJwtSecret(_db, {
+        logger,
+        userId: req.user?.sub ?? null
+      });
+      invalidateJwtSecretCache();
+      res.json({ newSecret: out.newSecret, rotatedAt: out.rotatedAt });
+    } catch (e) {
+      logger.error({ err: e }, 'jwt secret rotate failed');
+      res.status(500).json({ error: 'rotate failed' });
+    }
+  });
+
+  r.post('/api/admin/jwt-secret/commit', auth, async (req, res) => {
+    try {
+      await commitJwtSecret(_db, {
+        logger,
+        userId: req.user?.sub ?? null
+      });
+      invalidateJwtSecretCache();
+      res.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: e }, 'jwt secret commit failed');
+      res.status(500).json({ error: 'commit failed' });
+    }
+  });
+
+  r.get('/api/admin/jwt-secret', auth, async (_req, res) => {
+    try {
+      const s = await getJwtSecretState(_db);
+      res.json({
+        mode: s.previous ? 'dual' : 'single',
+        rotatedAt: s.rotatedAt || null,
+        previousExpiresAt: s.previousExpiresAt || null,
+        ttlDays: s.ttlDays
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'jwt secret state get failed');
       res.status(500).json({ error: 'state get failed' });
     }
   });

@@ -11,7 +11,12 @@ import { buildSql } from '../src/db/sql.js';
 // Keyed by username -> row. Routes execute the SELECT for findByUsername,
 // then UPDATE sys_users on success / INSERT audit_logs on failure.
 // We match by SQL fragment and use the first ? placeholder as the lookup.
-function buildMockDb(byUsername) {
+//
+// `jwtSecretCurrent` is the value returned by the
+// `system_config.jwt_secret_current` row — what the route uses to sign
+// freshly-issued login tokens after I9 (so the test mirrors the post-I9
+// rotation contract: never trust `config.jwtSecret` from appsettings).
+function buildMockDb(byUsername, jwtSecretCurrent = 'test-secret') {
   return {
     dialect: 'mysql',
     sql: buildSql('mysql'),
@@ -34,6 +39,11 @@ function buildMockDb(byUsername) {
         const row = byUsername[username];
         return { rows: row ? [row] : [] };
       }
+      // I9: getJwtSecretBundle SELECT — return a row with the current
+      // secret. Plucked by `getCurrentJwtSecret` via `config_key` filter.
+      if (/FROM\s+system_config\b/i.test(sql)) {
+        return { rows: [{ config_key: 'jwt_secret_current', config_value: jwtSecretCurrent }] };
+      }
       return { rows: [] };
     },
     async transaction() {},
@@ -45,10 +55,11 @@ function buildMockDb(byUsername) {
 test('POST /api/auth/login returns 401 for bad password', async () => {
   const app = express();
   app.use(express.json());
-  _setDbForTest(buildMockDb({
+  const db = buildMockDb({
     'alice': { id: 1, username: 'alice', password_hash: '$2b$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv', status: 1, role: 'admin', permissions: ['*'], token_version: 0 }
-  }));
-  app.use(authRouter({ config: { jwtSecret: 's', agentToken: 'tok' }, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
+  });
+  _setDbForTest(db);
+  app.use(authRouter({ config: { jwtSecret: 's', agentToken: 'tok' }, db, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
   const res = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'wrong' });
   assert.equal(res.status, 401);
 });
@@ -61,10 +72,11 @@ test('POST /api/auth/login returns 200 with token + role for valid creds', async
   // as `role_name` (sql.js:25), NOT `role`. Earlier this test passed only
   // because the mock used the wrong field name — masking a real bug where
   // routes/auth.js referenced `user.role` (undefined) instead of `user.role_name`.
-  _setDbForTest(buildMockDb({
+  const db = buildMockDb({
     'alice': { id: 1, username: 'alice', password_hash: passwordHash, status: 1, role_name: 'admin', permissions: ['*'], token_version: 0 }
-  }));
-  app.use(authRouter({ config: { jwtSecret: 'test-secret', agentToken: 'tok' }, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
+  });
+  _setDbForTest(db);
+  app.use(authRouter({ config: { jwtSecret: 'test-secret', agentToken: 'tok' }, db, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
   const res = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
   assert.equal(res.status, 200);
   assert.ok(res.body.token, 'response should contain a JWT token');
@@ -84,13 +96,45 @@ test('POST /api/auth/login embeds user.tokenVersion in the issued JWT', async ()
   const app = express();
   app.use(express.json());
   const passwordHash = bcrypt.hashSync('correct-horse-battery-staple', 12);
-  _setDbForTest(buildMockDb({
+  const db = buildMockDb({
     'alice': { id: 42, username: 'alice', password_hash: passwordHash, status: 1, role_name: 'admin', permissions: ['*'], token_version: 4 }
-  }));
-  app.use(authRouter({ config: { jwtSecret: 'test-secret', agentToken: 'tok' }, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
+  });
+  _setDbForTest(db);
+  app.use(authRouter({ config: { jwtSecret: 'test-secret', agentToken: 'tok' }, db, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
   const res = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
   assert.equal(res.status, 200);
-  const v = verifyJwt(res.body.token, 'test-secret');
+  const v = verifyJwt(res.body.token, { current: 'test-secret', previous: '' });
   assert.equal(v.tokenVersion, 4, 'JWT tokenVersion claim must come from the DB row, not the signJwt default of 0');
   assert.equal(typeof v.tokenVersion, 'number');
+});
+
+// I9 T7-fix (critical): after a rotation the DB's jwt_secret_current is the
+// new secret; appsettings.json's config.jwtSecret is stale. The login route
+// MUST sign with the DB value, otherwise the freshly-issued token is signed
+// by a key the server no longer accepts and the next request 401s.
+test('POST /api/auth/login signs JWT with the DB-loaded current secret after a rotation', async () => {
+  const app = express();
+  app.use(express.json());
+  const passwordHash = bcrypt.hashSync('correct-horse-battery-staple', 12);
+  const rotatedSecret = 'new-secret-after-rotation-xyz';
+  const db = buildMockDb({
+    'alice': { id: 7, username: 'alice', password_hash: passwordHash, status: 1, role_name: 'admin', permissions: ['*'], token_version: 0 }
+  }, rotatedSecret);
+  _setDbForTest(db);
+  app.use(authRouter({
+    // appsettings.json still carries the OLD (stale) secret. The route must
+    // ignore it and use whatever the DB returns for jwt_secret_current.
+    config: { jwtSecret: 'stale-appsettings-secret', agentToken: 'tok' },
+    db,
+    logger: { info(){}, error(){}, warn(){}, debug(){} }
+  }));
+  const res = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
+  assert.equal(res.status, 200);
+  // Verify with the rotated (DB-loaded) secret — must succeed.
+  const okVerify = verifyJwt(res.body.token, { current: rotatedSecret, previous: '' });
+  assert.ok(okVerify, 'JWT must verify with the DB-loaded current secret');
+  // And verify with the stale appsettings secret must fail — proves we no
+  // longer sign with it.
+  const staleVerify = verifyJwt(res.body.token, { current: 'stale-appsettings-secret', previous: '' });
+  assert.equal(staleVerify, null, 'JWT must NOT verify with the stale appsettings.json secret');
 });
