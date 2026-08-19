@@ -38,4 +38,10 @@ INSERT IGNORE INTO system_config (config_key, config_value, description) VALUES
   ('site_matrix_refresh_seconds','10', '站点复制矩阵自动刷新间隔 (秒)'),
   -- I4 retention loop reads audit_retention_days on every tick (services/audit.js).
   -- Default 90 days; set to 0 to disable retention entirely.
-  ('audit_retention_days',     '90',   '审计日志保留天数 (默认 90, 设 0 禁用清理)');
+  ('audit_retention_days',     '90',   '审计日志保留天数 (默认 90, 设 0 禁用清理)'),
+  -- Client + agent access domain. Empty = fall back to server IP. ConfigView
+  -- uses this for both the operator-facing "Agent 连接地址" display and
+  -- client-app access URLs. See services/network.js getPrimaryIPv4() for
+  -- the IP fallback path; admin.js GET /api/admin/config returns serverIp
+  -- alongside the config so the frontend can render the resolved URL.
+  ('access_domain',            '',     '客户端与 Agent 访问域名;留空则用服务器 IP');

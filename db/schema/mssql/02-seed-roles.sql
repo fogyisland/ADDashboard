@@ -75,3 +75,11 @@ IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'site_matrix_refre
 -- Default 90 days; set to 0 to disable retention entirely.
 IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'audit_retention_days')
   INSERT INTO system_config (config_key, config_value, description) VALUES ('audit_retention_days', '90', '审计日志保留天数 (默认 90, 设 0 禁用清理)');
+
+-- Client + agent access domain. Empty = fall back to server IP. ConfigView
+-- uses this for both the operator-facing "Agent 连接地址" display and
+-- client-app access URLs. See services/network.js getPrimaryIPv4() for
+-- the IP fallback path; admin.js GET /api/admin/config returns serverIp
+-- alongside the config so the frontend can render the resolved URL.
+IF NOT EXISTS (SELECT 1 FROM system_config WHERE config_key = 'access_domain')
+  INSERT INTO system_config (config_key, config_value, description) VALUES ('access_domain', '', '客户端与 Agent 访问域名;留空则用服务器 IP');

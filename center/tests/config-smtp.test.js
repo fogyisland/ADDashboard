@@ -17,7 +17,8 @@
 //   - PUT /api/admin/config uses putConfig and redacts smtp_password from
 //     the writeAudit payload (C-1 + I-3).
 //   - seedSmtpDefaultsIfMissing writes the documented defaults to rows that
-//     are absent, and is idempotent on rows that already exist.
+//     are absent, and is idempotent on rows that already exist. Includes
+//     `access_domain` (default '' — see utils/network.js for the IP path).
 //   - POST /api/admin/config/email/test calls email.send() with a fake
 //     transport (via _deps.createTransport) and the real password reaches
 //     nodemailer (I-5).
@@ -366,7 +367,7 @@ test('PUT /api/admin/config with legacy ad_agent_token same-value re-save is all
 
 // ----- seedSmtpDefaultsIfMissing -----
 
-test('seedSmtpDefaultsIfMissing: writes all 12 default rows when system_config is empty', async () => {
+test('seedSmtpDefaultsIfMissing: writes all 13 default rows when system_config is empty', async () => {
   const { seedSmtpDefaultsIfMissing } = await import('../src/services/config.js');
   const records = [];
   const db = buildMockDb([
@@ -374,18 +375,23 @@ test('seedSmtpDefaultsIfMissing: writes all 12 default rows when system_config i
   ]).withRecording(records);
   _setDbForTest(db);
   const r = await seedSmtpDefaultsIfMissing({ info() {} });
-  assert.equal(r.seeded, 12);
+  assert.equal(r.seeded, 13);
   // Every default key should appear in an INSERT|MERGE upsert.
   const upserts = records.filter(r =>
     /INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config/i.test(r.sql)
   );
-  assert.equal(upserts.length, 12);
+  assert.equal(upserts.length, 13);
+  // access_domain must be in the seeded set (config-view editable, empty
+  // default so the operator sees the IP fallback until they set one).
+  const accessDomain = upserts.find(r => r.params[0] === 'access_domain');
+  assert.ok(accessDomain, 'access_domain must be seeded');
+  assert.equal(accessDomain.params[1], '');
 });
 
 test('seedSmtpDefaultsIfMissing: idempotent — skips rows that already exist', async () => {
   const { seedSmtpDefaultsIfMissing } = await import('../src/services/config.js');
   const records = [];
-  // Pre-populate 3 of the 12 defaults so only 9 upserts should fire.
+  // Pre-populate 3 of the 13 defaults so only 10 upserts should fire.
   const db = buildMockDb([
     { match: /FROM\s+system_config/i, rows: [
       { config_key: 'smtp_host', config_value: 'smtp.example.com' },
@@ -395,11 +401,11 @@ test('seedSmtpDefaultsIfMissing: idempotent — skips rows that already exist', 
   ]).withRecording(records);
   _setDbForTest(db);
   const r = await seedSmtpDefaultsIfMissing({ info() {} });
-  assert.equal(r.seeded, 9);
+  assert.equal(r.seeded, 10);
   const upserts = records.filter(r =>
     /INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config/i.test(r.sql)
   );
-  assert.equal(upserts.length, 9);
+  assert.equal(upserts.length, 10);
 });
 
 // ----- POST /api/admin/config/email/test (I-5 + M-6) -----

@@ -120,6 +120,7 @@ import ConfirmDialog from './ConfirmDialog.vue';
 import { adminApi } from '../../api/admin.js';
 import { useConfigValidation } from '../../composables/useConfigValidation.js';
 import { useDirtyState } from '../../composables/useDirtyState.js';
+import { notifyError } from '../../lib/notify.js';
 
 // Email config (smtp_*, alert_*) lives on its own page; this page is the
 // non-email core. The full set is filtered out of the audit so the two
@@ -139,7 +140,12 @@ const EMAIL_KEYS = new Set([
 // time so the table iteration only sees the real config keys.
 const INTERNAL_KEYS = new Set([
   'center_listen_port_started_version',
-  'restartRequired'
+  'center_listen_port_pending_version',
+  'restartRequired',
+  // serverIp is returned alongside the config by GET /api/admin/config
+  // (utils/network.js getPrimaryIPv4()) for the derived "Agent 连接地址"
+  // row's fallback host. It's backend state, not an operator-editable key.
+  'serverIp'
 ]);
 
 // Sections group config keys by the operational concern they belong to.
@@ -169,16 +175,22 @@ const SECTIONS = [
     rows: [
       {
         // Read-only derived row: shows the URL agents use to reach this
-        // center. Composed from the browser's hostname (what the operator
-        // used to reach this page) and the configured listenPort. The
-        // operator pastes it into the agent's appsettings.json centerUrl,
-        // substituting <server> for the actual IP/hostname when the agent
-        // runs on a different host than the browser.
+        // center. Composed from `access_domain` (if set) else the server's
+        // primary IPv4 (returned by GET /api/admin/config as `serverIp`)
+        // plus the configured listenPort. The operator pastes it into the
+        // agent's appsettings.json centerUrl, substituting <server> for the
+        // actual IP/hostname when the agent runs on a different host.
         key: '__agent_address__',
         label: 'Agent 连接地址',
         derived: true,
         description: 'Agent 用此地址连入 center;本机 agent 写 localhost,跨机 agent 改<server>为本机 IP/hostname,写入 agent 端 appsettings.json 的 centerUrl。'
       },
+      // access_domain is the friendly hostname operator sets (e.g.
+      // dashboard.corp.com). When non-empty, both the "Agent 连接地址"
+      // derived row above AND any client-app access URL resolves to
+      // `<access_domain>:<listenPort>`. Empty = fall back to server IP
+      // (from serverIp in the GET /api/admin/config response).
+      { key: 'access_domain', label: '访问域名', description: '客户端与 Agent 访问域名;留空则用服务器 IP。修改后保存即生效,无需重启 center。', type: 'text' },
       // #167 I1: legacy ConfigView field — now a disabled notice-row. After
       // I3 dual-key agent-token rotation, this `ad_agent_token` row is a
       // dead-UI surface: PUT writes go to the legacy `ad_agent_token` key
@@ -214,6 +226,7 @@ const labels = {
   listenPort: '中心 Web 端口',
   heartbeat_port: '心跳端口',
   report_port: '报告端口',
+  access_domain: '访问域名',
 };
 
 // #167 I1: ad_agent_token was removed from RISKY_FIELDS — the field is
@@ -241,13 +254,19 @@ const sectionDirtyCounts = computed(() => {
 const saving = ref(false);
 
 // Derived read-only display for the Agent 连接地址 row. Combines the
-// browser's hostname (what the operator used to reach this page) with
-// the configured listenPort. Empty / missing port renders as '—' so we
-// don't show a half-built URL before the operator has configured the port.
+// configured `access_domain` (or the server's primary IPv4 as fallback)
+// with the configured listenPort. Empty / missing port renders as '—' so
+// we don't show a half-built URL before the operator has configured the
+// port. Both the operator-facing client URL AND the agent centerUrl use
+// this same resolution: domain if set, IP if empty.
+const serverIp = ref('');
 const agentAddress = computed(() => {
   const port = current.value.listenPort;
   if (!port) return '—';
-  return `http://${window.location.hostname}:${port}`;
+  const domain = (current.value.access_domain || '').trim();
+  const host = domain || serverIp.value;
+  if (!host) return '—';
+  return `http://${host}:${port}`;
 });
 const topLevelMsg = ref('');
 const showConfirm = ref(false);
@@ -276,36 +295,47 @@ function rollbackTitle(row) {
 // these helpers had no caller after the I1 fix.
 
 async function load() {
-  const r = await adminApi.getConfig();
-  const all = r.data || {};
-  // `current` is what the table iterates and what edits/saves operate on.
-  // Email keys live on /admin/email-config (T17). Internal bookkeeping
-  // (`center_listen_port_started_version` hash + `restartRequired` object)
-  // is backend state, not operator config — without this filter they'd
-  // render as raw-key rows with no Chinese label.
-  const subset = {};
-  for (const [k, v] of Object.entries(all)) {
-    if (EMAIL_KEYS.has(k)) continue;
-    if (INTERNAL_KEYS.has(k)) continue;
-    subset[k] = v;
+  try {
+    const r = await adminApi.getConfig();
+    const all = r.data || {};
+    // serverIp is the fallback host for the "Agent 连接地址" derived row
+    // when `access_domain` is empty. Returned by GET /api/admin/config
+    // alongside the config (server-side via utils/network.js
+    // getPrimaryIPv4()); kept as a separate ref so it doesn't pollute
+    // the dirty-tracking `current` (operators don't edit it).
+    serverIp.value = all.serverIp || '';
+    // `current` is what the table iterates and what edits/saves operate on.
+    // Email keys live on /admin/email-config (T17). Internal bookkeeping
+    // (`center_listen_port_started_version` hash + `restartRequired` object)
+    // is backend state, not operator config — without this filter they'd
+    // render as raw-key rows with no Chinese label.
+    const subset = {};
+    for (const [k, v] of Object.entries(all)) {
+      if (EMAIL_KEYS.has(k)) continue;
+      if (INTERNAL_KEYS.has(k)) continue;
+      subset[k] = v;
+    }
+    current.value = { ...subset };
+    markClean(current.value);
+    validate(current.value);
+    // `initial` keeps `restartRequired` for the "⚠ 待重启" badge on the
+    // listenPort row (template reads initial.restartRequired?.listenPort).
+    // Storing the full backend response is fine — only `current` is shown
+    // and PUT; `initial` is the dirty-state snapshot baseline.
+    initial.value = { ...all };
+    await loadAudit();
+  } catch (e) {
+    notifyError(`加载配置失败: ${e?.message || '未知错误'}`);
   }
-  current.value = { ...subset };
-  markClean(current.value);
-  validate(current.value);
-  // `initial` keeps `restartRequired` for the "⚠ 待重启" badge on the
-  // listenPort row (template reads initial.restartRequired?.listenPort).
-  // Storing the full backend response is fine — only `current` is shown
-  // and PUT; `initial` is the dirty-state snapshot baseline.
-  initial.value = { ...all };
-  await loadAudit();
 }
 
 async function loadAudit() {
   try {
     const r = await adminApi.getConfigAudit();
     audit.value = r.data || [];
-  } catch {
+  } catch (e) {
     audit.value = [];
+    notifyError(`加载变更历史失败: ${e?.message || '未知错误'}`);
   }
 }
 
@@ -326,7 +356,8 @@ async function doRollback() {
   try {
     await adminApi.rollbackConfig(row.id);
     await Promise.all([load(), loadAudit()]);
-  } catch {
+  } catch (e) {
+    notifyError(`回滚失败: ${e?.message || '未知错误'}`);
     topLevelMsg.value = '回滚失败';
   }
 }

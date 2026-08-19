@@ -350,6 +350,27 @@ test('GET /api/admin/config: 200 returns dict from system_config', async () => {
   assert.equal(r.body.agent_token, 'tok-123');
 });
 
+test('GET /api/admin/config: response carries serverIp for access_domain fallback', async () => {
+  // The frontend's "Agent 连接地址" derived row needs serverIp as the
+  // fallback host when `access_domain` is empty. serverIp is computed
+  // server-side via os.networkInterfaces() (utils/network.js). Pin the
+  // contract: response has a `serverIp` field that's a non-empty string
+  // and looks like a dotted-quad.
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.ok(typeof r.body.serverIp === 'string' && r.body.serverIp.length > 0,
+    'serverIp must be a non-empty string');
+  assert.match(r.body.serverIp, /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+    'serverIp must look like an IPv4 dotted-quad');
+});
+
 test('PUT /api/admin/config: 200 updates multiple keys', async () => {
   let updateCount = 0;
   const { buildSql } = await import('../src/db/sql.js');

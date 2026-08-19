@@ -58,6 +58,8 @@ $comparisons = @(
   # Non-AD server management — Task 12 (SMTP config seed + mask-on-read + test-mail route)
   @{ left = 'center/src/services/config.js';                 right = 'publish/system/center/src/services/config.js' }
   @{ left = 'center/src/routes/admin.js';                    right = 'publish/system/center/src/routes/admin.js' }
+  # Access domain (Agent 连接地址): serverIp fallback in GET /api/admin/config
+  @{ left = 'center/src/utils/network.js';                   right = 'publish/system/center/src/utils/network.js' }
   # #167 follow-up (C1+C2+I1): audit-classifier + agent-token rotation + I1 reject
   @{ left = 'center/src/services/audit-classifier.js';       right = 'publish/system/center/src/services/audit-classifier.js' }
   @{ left = 'center/src/services/agent-token.js';            right = 'publish/system/center/src/services/agent-token.js' }

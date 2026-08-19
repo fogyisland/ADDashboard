@@ -12,6 +12,7 @@ import { rotateAgentToken, commitAgentToken, getAgentTokenState } from '../servi
 import { invalidateAgentTokenCache } from '../auth/agent-token.js';
 import { rotateJwtSecret, commitJwtSecret, getJwtSecretState } from '../services/jwt-secret.js';
 import { invalidateJwtSecretCache } from '../auth/user-auth.js';
+import { getPrimaryIPv4 } from '../utils/network.js';
 
 // Snake -> camel rename for known columns in admin responses.
 const CAML_MAP = new Map([
@@ -186,7 +187,13 @@ export function adminRouter({ config, logger, db }) {
       // IIFE in server.js (started) — see restartRequired() in
       // services/config.js for the exact contract.
       const rr = await restartRequired();
-      res.json({ ...cfg, restartRequired: rr });
+      // serverIp is the fallback host for the "Agent 连接地址" derived row
+      // when `access_domain` is empty — ConfigView picks
+      // `<access_domain or serverIp>:<listenPort>`. Computed from
+      // os.networkInterfaces() (utils/network.js); cheap enough to compute
+      // per-request but stable for the process lifetime. Cheap enough that
+      // we don't bother memoizing.
+      res.json({ ...cfg, restartRequired: rr, serverIp: getPrimaryIPv4() });
     } catch (e) {
       logger.error({ err: e }, 'admin config get failed');
       res.status(500).json({ error: 'internal' });

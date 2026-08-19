@@ -191,7 +191,14 @@ export async function seedSmtpDefaultsIfMissing(logger) {
     // (purgeOldAuditLogs treats <= 0 as "retention disabled" — see
     // services/audit.js). Read by createAuditRetentionLoop on every tick
     // so operators can change it without restarting the center.
-    audit_retention_days: '90'
+    audit_retention_days: '90',
+    // Client + agent access domain. Empty means "use server IP" — the
+    // GET /api/admin/config response carries serverIp (from utils/network.js
+    // getPrimaryIPv4()) so ConfigView can render the resolved URL. Operators
+    // set this when they want a friendly hostname (e.g. dashboard.corp.com)
+    // instead of the server's raw IP. Affects both client app access AND
+    // the agent centerUrl row in ConfigView.
+    access_domain: ''
   };
   const { rows } = await db.query(db.sql.config.getAll);
   const existing = new Set(rows.map(r => r.config_key));

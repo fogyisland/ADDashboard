@@ -147,12 +147,14 @@ test('renders Chinese label primary + raw snake_case key as small secondary code
   expect(labels).toContain('心跳间隔');
   expect(labels).toContain('历史快照');
   expect(labels).toContain('Agent 令牌');
+  expect(labels).toContain('访问域名');
   // Every raw key still in snake_case, paired with its label
   expect(rawKeys).toContain('polling_interval_minutes');
   expect(rawKeys).toContain('latency_threshold_minutes');
   expect(rawKeys).toContain('heartbeat_interval_seconds');
   expect(rawKeys).toContain('history_enabled');
   expect(rawKeys).toContain('ad_agent_token');
+  expect(rawKeys).toContain('access_domain');
   // Derived rows (currently: Agent 连接地址) render a label but no raw-key
   // — they're not DB columns. Allow label count to exceed raw-key count by
   // the number of derived rows rendered.
@@ -327,9 +329,15 @@ test('page header is a single muted summary line — no marketing chrome', async
 
 // ----- Agent 连接地址 (derived, read-only) -----
 
-// The derived row renders `http://${window.location.hostname}:${listenPort}`.
-// jsdom's default location.hostname is "" — mock it so the assertion is
-// deterministic across CI environments.
+// The derived row resolves to:
+//   `http://<access_domain or serverIp>:<listenPort>`
+// where `serverIp` comes from the GET /api/admin/config response
+// (server-side via utils/network.js getPrimaryIPv4()). When access_domain
+// is empty AND serverIp is unknown, falls back to '—'.
+//
+// jsdom's default location.hostname is "" — mock it so the assertions are
+// deterministic across CI environments (some legacy paths still consult
+// window.location; the MOCK_HOST is here for compatibility).
 const MOCK_HOST = 'dashboard.corp.local';
 
 beforeEach(() => {
@@ -347,9 +355,9 @@ beforeEach(() => {
   }
 });
 
-test('derived Agent 连接地址 row renders http://<host>:<listenPort>', async () => {
+test('derived Agent 连接地址 row renders http://<serverIp>:<listenPort> (no access_domain)', async () => {
   setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '9080' } });
+  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '9080', serverIp: '192.168.1.50' } });
   const w = mount(ConfigView);
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
@@ -357,17 +365,53 @@ test('derived Agent 连接地址 row renders http://<host>:<listenPort>', async 
   expect(addrRow, 'derived row must be rendered').toBeTruthy();
   const val = addrRow.find('.derived-value');
   expect(val.exists()).toBe(true);
-  expect(val.text()).toBe(`http://${MOCK_HOST}:9080`);
+  expect(val.text()).toBe('http://192.168.1.50:9080');
   // Must be read-only: no input in the value cell.
   expect(addrRow.find('input').exists()).toBe(false);
   // No raw-key (it's not a DB column).
   expect(addrRow.find('code.raw-key').exists()).toBe(false);
 });
 
+test('derived Agent 连接地址 uses access_domain when set (overrides serverIp)', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({
+    data: { ...SAMPLE, listenPort: '9080', access_domain: 'dashboard.corp.com', serverIp: '192.168.1.50' }
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
+  expect(addrRow.find('.derived-value').text()).toBe('http://dashboard.corp.com:9080');
+});
+
+test('derived Agent 连接地址 falls back to serverIp when access_domain is empty', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({
+    data: { ...SAMPLE, listenPort: '8080', access_domain: '', serverIp: '10.0.0.42' }
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
+  expect(addrRow.find('.derived-value').text()).toBe('http://10.0.0.42:8080');
+});
+
+test('derived Agent 连接地址 treats whitespace-only access_domain as empty', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({
+    data: { ...SAMPLE, listenPort: '8080', access_domain: '   ', serverIp: '10.0.0.42' }
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const rows = w.findAll('table.t tbody tr');
+  const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
+  expect(addrRow.find('.derived-value').text()).toBe('http://10.0.0.42:8080');
+});
+
 test('derived Agent 连接地址 falls back to "—" when listenPort is missing', async () => {
   setActivePinia(createPinia());
   // SAMPLE intentionally omits listenPort — fresh-install / pre-config state.
-  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, serverIp: '192.168.1.50' } });
   const w = mount(ConfigView);
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
@@ -378,16 +422,16 @@ test('derived Agent 连接地址 falls back to "—" when listenPort is missing'
 
 test('derived Agent 连接地址 stays in sync as listenPort is edited', async () => {
   setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '8080' } });
+  adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '8080', serverIp: '10.0.0.42' } });
   const w = mount(ConfigView);
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
-  expect(addrRow.find('.derived-value').text()).toBe(`http://${MOCK_HOST}:8080`);
+  expect(addrRow.find('.derived-value').text()).toBe('http://10.0.0.42:8080');
   // The listenPort field is editable in the 中心端口 section; mutating it
   // must re-derive the agent address without a save round-trip.
   const listenRow = rows.find((r) => r.text().includes('listenPort'));
   await listenRow.find('input').setValue('9090');
   await flushPromises();
-  expect(addrRow.find('.derived-value').text()).toBe(`http://${MOCK_HOST}:9090`);
+  expect(addrRow.find('.derived-value').text()).toBe('http://10.0.0.42:9090');
 });
