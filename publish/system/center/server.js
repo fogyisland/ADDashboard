@@ -287,7 +287,7 @@ await ((async () => {
   if (needsInit) {
     logger.info('init mode: serving /api/init/* and /init');
   } else {
-    app.use(authRouter({ config: finalConfig, logger }));
+    app.use(authRouter({ config: finalConfig, logger, db: getDb() }));
     // Bootstrap endpoint for agents (web mount — /config.json only). Lets an
     // agent learn heartbeat/report ports + intervals from the web port
     // without needing to know any other port number up front. The dedicated
