@@ -14,12 +14,6 @@
 // SECURITY: the new secret is returned ONCE (in `rotateJwtSecret`'s return
 // value) for the operator to copy. It is never logged — audit payload
 // records lengths only.
-//
-// I9 Task 2 note: readBundle uses an inline SQL string with the
-// `jwt_secret` substring so the test mock's `/jwt_secret/i` regex can
-// match. Task 3 will introduce `db.sql.config.getJwtSecretBundle` as a
-// proper SQL registry entry; once that lands, swap the literal for
-// `db.sql.config.getJwtSecretBundle`.
 import { randomBytes } from 'node:crypto';
 import { writeAudit } from './audit.js';
 
@@ -28,10 +22,8 @@ const COMMIT_AUDIT = 'commit_jwt_secret';
 const SEED_AUDIT = 'seed_jwt_secret';
 const AUTO_EXPIRE_AUDIT = 'auto_expire_jwt_secret';
 
-const BUNDLE_SQL = "SELECT config_key, config_value FROM system_config WHERE config_key IN ('jwt_secret_current', 'jwt_secret_previous', 'jwt_secret_rotated_at', 'jwt_secret_previous_ttl_days')";
-
 function readBundle(db, query) {
-  return query(BUNDLE_SQL).then(({ rows }) => {
+  return query(db.sql.config.getJwtSecretBundle).then(({ rows }) => {
     const map = Object.fromEntries((rows || []).map(r => [r.config_key, r.config_value]));
     return {
       current: map.jwt_secret_current ?? '',
