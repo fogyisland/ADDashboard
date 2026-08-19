@@ -289,19 +289,19 @@ await ((async () => {
     // factory accepts the same auth deps so the per-route chain is
     // identical to other admin read endpoints.
     app.use(dcsRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Lockout troubleshooting — multi-filter search across ad_lockout_events.
     // Same auth contract as dcsRouter: per-route [userAuth, requirePerm('admin:users')].
     app.use(lockoutRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Schema migrations admin (list/apply/dry-run/reset). Same auth contract
     // as dcsRouter and lockoutRouter: per-route [userAuth, requirePerm('admin:users')].
     app.use(schemaMigrationsRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm),
       logger,
       getRepoRoot: () => repoRoot
@@ -310,7 +310,7 @@ await ((async () => {
     // joining ad_agent_heartbeat with the latest ad_replication_status
     // snapshot. Same auth contract as the other admin read endpoints above.
     app.use(heartbeatReportRouter({
-      requireAuth: userAuth({ secret: finalConfig.jwtSecret, db: getDb() }),
+      requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
     // Package system routes (Task 6). Both routers apply their own
@@ -327,7 +327,8 @@ await ((async () => {
     }));
     app.use(orphanRouter({
       db: pkgDb,
-      config: finalConfig
+      config: finalConfig,
+      logger
     }));
     app.use(packageRunner({
       db: pkgDb,

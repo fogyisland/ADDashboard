@@ -64,7 +64,7 @@ export function memberRouter({ config, logger, db }) {
   // signature working — every test that calls memberRouter already calls
   // _setDbForTest first.
   const _db = db ?? getDb();
-  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('admin:users')];
+  const auth = [userAuth({ db: _db, logger }), requirePerm('admin:users')];
   // I3: agentToken now resolves the bundle at request time via the db
   // facade (so a rotate+commit takes effect on the very next request).
   // Passing the old `config.agentToken` string would silently 503 every

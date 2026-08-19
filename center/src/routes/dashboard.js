@@ -55,7 +55,7 @@ export function dashboardRouter({ config, logger, db }) {
   // signature working — every test that calls adminRouter/dashboardRouter/
   // memberRouter already calls _setDbForTest first.
   const _db = db ?? getDb();
-  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('read:dash')];
+  const auth = [userAuth({ db: _db, logger }), requirePerm('read:dash')];
 
   r.get('/api/dashboard/overview', auth, async (_req, res) => {
     try {

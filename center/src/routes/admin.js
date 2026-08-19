@@ -53,7 +53,7 @@ export function adminRouter({ config, logger, db }) {
   // We resolve `db` lazily via getDb() when the caller didn't pass one — every
   // tests + production wire has getDb() available.
   const _db = db ?? getDb();
-  const auth = [userAuth({ secret: config.jwtSecret, db: _db }), requirePerm('admin:users')];
+  const auth = [userAuth({ db: _db, logger }), requirePerm('admin:users')];
 
   r.get('/api/admin/roles', auth, async (_req, res) => {
     try {
