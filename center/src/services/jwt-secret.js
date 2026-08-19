@@ -144,6 +144,28 @@ export async function seedJwtSecretIfMissing(db, fromAppsettings, logger) {
   return result;
 }
 
+// I9 T7-fix (critical): after a secret rotation, `routes/auth.js` issues a
+// fresh login JWT signed with `config.jwtSecret` (loaded from
+// `appsettings.json` at boot). That secret is the stale one — runtime source
+// of truth is now `system_config.jwt_secret_current`. Without this helper,
+// every freshly-issued login token is signed by a key the server no longer
+// accepts and the very next request 401s.
+//
+// Reads only the single current secret row via the registry string
+// (`db.sql.config.getJwtSecretBundle`) so the SELECT is dialect-portable
+// and reuses the same shape verified by the existing `getJwtSecretState`
+// helper above. Falls back to the literal only for ad-hoc test stubs that
+// construct a stub db without going through `buildSql()` — matches the
+// pattern in `auth/agent-token.js`.
+const FALLBACK_GET_CURRENT_SQL = "SELECT config_value FROM system_config WHERE config_key = 'jwt_secret_current'";
+
+export async function getCurrentJwtSecret(db) {
+  const sql = db?.sql?.config?.getJwtSecretBundle || FALLBACK_GET_CURRENT_SQL;
+  const { rows } = await db.query(sql);
+  const row = (rows || []).find(r => r.config_key === 'jwt_secret_current');
+  return row?.config_value ?? '';
+}
+
 // Re-export the bundle keys so other modules can introspect (e.g. audit
 // filters). Exported for symmetry with the four-row schema documented in
 // the spec.
