@@ -230,6 +230,49 @@ test('putConfig records caller userId on every audit row (I-2)', async () => {
   assert.equal(hostAudit.params[3], 42, 'changed_by must be caller-supplied userId');
 });
 
+// #167 I1 Option B: PUT /api/admin/config must reject `ad_agent_token`
+// writes. The legacy key is a dead-UI surface after I3 dual-key rotation
+// (runtime auth reads `agent_token_current`). Operators must rotate via
+// /api/admin/agent-token/rotate.
+test('putConfig rejects legacy ad_agent_token writes (I3 dual-key rotation)', async () => {
+  const { putConfig } = await import('../src/services/config.js');
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'ad_agent_token', config_value: 'legacy' }
+    ] }
+  ]).standard();
+  _setDbForTest(db);
+  await assert.rejects(
+    putConfig({ ad_agent_token: 'whatever' }),
+    /ad_agent_token.*agent-token\/rotate/
+  );
+});
+
+test('putConfig allows non-token config keys alongside a rejected token key', async () => {
+  // The rejection is key-scoped — a mixed patch (legacy token + a real
+  // host change) must still surface the rejection rather than silently
+  // apply the host change. The whole patch fails atomically.
+  const { putConfig } = await import('../src/services/config.js');
+  const records = [];
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'ad_agent_token', config_value: 'legacy' },
+      { config_key: 'smtp_host', config_value: 'old.example.com' }
+    ] },
+    { match: /(INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config)/i, capture: true, onExecute: (sql, params) => records.push({ sql, params }) }
+  ]).withRecording(records);
+  _setDbForTest(db);
+  await assert.rejects(
+    putConfig({ ad_agent_token: 'whatever', smtp_host: 'new.example.com' }),
+    /ad_agent_token/
+  );
+  // No row should have been written (transaction rolls back on rejection).
+  const hostUpdate = records.find(r =>
+    /(INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config)/i.test(r.sql) && r.params[0] === 'smtp_host'
+  );
+  assert.equal(hostUpdate, undefined, 'rejected patch must not partially apply');
+});
+
 // ----- PUT /api/admin/config (C-1) -----
 
 test('PUT /api/admin/config uses putConfig and redacts smtp_password from writeAudit payload', async () => {

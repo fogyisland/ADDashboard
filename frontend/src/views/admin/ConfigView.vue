@@ -21,6 +21,15 @@
             </td>
             <td>
               <code v-if="row.derived" class="derived-value">{{ agentAddress }}</code>
+              <!-- #167 I1: read-only notice rows render a deprecated-marker
+                   instead of an editable input. The backend putConfigInTx
+                   rejects `ad_agent_token` writes with 400, so the input
+                   would never persist anyway. Pointer text tells the
+                   operator where the rotation flow now lives. -->
+              <div v-else-if="row.type === 'readonly-notice'" class="readonly-notice">
+                <code class="readonly-value">{{ current[row.key] || '—' }}</code>
+                <span class="deprecated-marker">已迁移</span>
+              </div>
               <ConfigFieldRow
                 v-else
                 :value="current[row.key]"
@@ -38,9 +47,7 @@
               <span class="desc-text">{{ row.description }}</span>
               <template v-if="row.key === 'ad_agent_token'">
                 <div class="action-row">
-                  <button class="token-action" @click="onGenerateToken">生成</button>
-                  <button class="token-action" @click="onCopyToken">复制</button>
-                  <span v-if="copyMsg" class="copy-msg">{{ copyMsg }}</span>
+                  <code class="rotate-endpoint">POST /api/admin/agent-token/rotate</code>
                 </div>
               </template>
             </td>
@@ -172,7 +179,15 @@ const SECTIONS = [
         derived: true,
         description: 'Agent 用此地址连入 center;本机 agent 写 localhost,跨机 agent 改<server>为本机 IP/hostname,写入 agent 端 appsettings.json 的 centerUrl。'
       },
-      { key: 'ad_agent_token', label: 'Agent 令牌', description: 'Agent 与 center 共享令牌,改完 agent 端 appsettings.json 需同步。', type: 'text' },
+      // #167 I1: legacy ConfigView field — now a disabled notice-row. After
+      // I3 dual-key agent-token rotation, this `ad_agent_token` row is a
+      // dead-UI surface: PUT writes go to the legacy `ad_agent_token` key
+      // which is no longer the runtime auth source of truth
+      // (auth/agent-token.js reads `agent_token_current`). The backend
+      // putConfigInTx now rejects writes to this key with 400; the UI
+      // surfaces that rejection as a notice pointing the operator at
+      // the rotation endpoint.
+      { key: 'ad_agent_token', label: 'Agent 令牌', description: '已迁移至 /api/admin/agent-token/rotate(I3 dual-key 双令牌轮换)。此字段仅展示历史值,不再可编辑。', type: 'readonly-notice' },
     ]
   },
   {
@@ -201,7 +216,10 @@ const labels = {
   report_port: '报告端口',
 };
 
-const RISKY_FIELDS = ['ad_agent_token'];
+// #167 I1: ad_agent_token was removed from RISKY_FIELDS — the field is
+// now a read-only notice-row (backend putConfigInTx rejects writes with
+// 400). The risky-confirm dialog is no longer reachable for this key.
+const RISKY_FIELDS = [];
 
 const initial = ref({});
 const { current, snapshot, dirty, markClean, reset } = useDirtyState({});
@@ -236,7 +254,6 @@ const showConfirm = ref(false);
 const confirmBody = ref('');
 const audit = ref([]);
 const rollbackTarget = ref(null);
-const copyMsg = ref('');
 
 const systemAudit = computed(() => audit.value.filter((r) => !EMAIL_KEYS.has(r.configKey)).slice(0, 20));
 
@@ -252,27 +269,11 @@ function rollbackTitle(row) {
   return isUnrollbackable(row) ? '密码变更不可回滚' : '';
 }
 
-function generateAgentToken() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function onGenerateToken() {
-  onInput('ad_agent_token', generateAgentToken());
-}
-
-async function onCopyToken() {
-  const token = current.value.ad_agent_token || '';
-  if (!token) return;
-  try {
-    await navigator.clipboard.writeText(token);
-    copyMsg.value = '已复制';
-  } catch {
-    copyMsg.value = '复制失败';
-  }
-  setTimeout(() => { copyMsg.value = ''; }, 2000);
-}
+// #167 I1: generateAgentToken / onGenerateToken / onCopyToken / copyMsg
+// were removed because the ad_agent_token ConfigView row is now a
+// read-only notice-row (operators rotate via POST /api/admin/agent-token/rotate).
+// Token generation still happens server-side at /api/admin/agent-token/rotate —
+// these helpers had no caller after the I1 fix.
 
 async function load() {
   const r = await adminApi.getConfig();
@@ -438,6 +439,43 @@ button.cancel { background: #0b1220; color: var(--text); }
 .token-action:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
 .token-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }
+
+/* #167 I1: read-only notice row used by deprecated ConfigView fields.
+   `readonly-value` shows the historical DB value with reduced opacity;
+   `deprecated-marker` flags the row as moved to another endpoint; the
+   `rotate-endpoint` in the description column points the operator at
+   the new rotation route. */
+.readonly-notice { display: flex; align-items: center; gap: 8px; }
+.readonly-value {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--muted);
+  background: #0b1220;
+  padding: 6px 10px;
+  border-radius: 3px;
+  border: 1px solid #1e293b;
+  opacity: 0.7;
+}
+.deprecated-marker {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #1e293b;
+  color: var(--muted);
+  border: 1px solid #334155;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.rotate-endpoint {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: #0b1220;
+  padding: 3px 8px;
+  border: 1px solid #1e293b;
+  border-radius: 3px;
+}
 .key-label { font-weight: 600; color: var(--text); }
 .raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; font-style: italic; }
 .derived-value {

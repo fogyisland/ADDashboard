@@ -64,48 +64,31 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   expect(w.find('button.save').attributes('disabled')).toBeDefined(); // back to clean
 });
 
-test('edit risky field (ad_agent_token) shows confirm dialog; cancel aborts save', async () => {
+// #167 I1: ad_agent_token ConfigView row is now a read-only notice-row.
+// The legacy tests for "edit risky field" were replaced with assertions
+// matching the new shape — no input, no 生成/复制 buttons, but a visible
+// "已迁移" marker + the rotation endpoint pointer. The backend
+// putConfigInTx rejects `ad_agent_token` writes with 400; the UI must
+// not surface an editable input.
+test('ad_agent_token row is a read-only notice (no input, deprecated marker)', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
-  const w = mount(ConfigView);
-  await flushPromises();
-  // Find the ad_agent_token input by walking the rows — row order follows
-  // getConfig's key order, so index-based lookup is brittle.
-  const rows = w.findAll('table.t tbody tr');
-  const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
-  const tokenInput = tokenRow.find('input');
-  await tokenInput.setValue('new-token-1234567890');
-  await w.find('button.save').trigger('click');
-  await flushPromises();
-  expect(w.findComponent({ name: 'ConfirmDialog' }).exists() || w.find('.dialog').exists()).toBe(true);
-  // Cancel via the dialog component's @cancel handler — find the
-  // ConfirmDialog instance and emit cancel on it directly.
-  const dialog = w.findComponent({ name: 'ConfirmDialog' });
-  if (dialog.exists()) {
-    dialog.vm.$emit('cancel');
-  } else {
-    await w.find('.dialog button.cancel').trigger('click');
-  }
-  await flushPromises();
-  expect(adminApi.updateConfig).not.toHaveBeenCalled();
-});
-
-test('edit risky field shows confirm dialog; confirm proceeds with save', async () => {
-  setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
   const w = mount(ConfigView);
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
-  const tokenInput = tokenRow.find('input');
-  await tokenInput.setValue('new-token-1234567890');
-  await w.find('button.save').trigger('click');
-  await flushPromises();
-  await w.find('button.confirm').trigger('click');
-  await flushPromises();
-  expect(adminApi.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ ad_agent_token: 'new-token-1234567890' }));
+  expect(tokenRow, 'ad_agent_token row must still render (label + raw key)').toBeTruthy();
+  // No editable input on the row.
+  expect(tokenRow.find('input').exists()).toBe(false);
+  // No 生成 / 复制 buttons (rotation moved to /api/admin/agent-token/rotate).
+  expect(tokenRow.text()).not.toContain('生成');
+  expect(tokenRow.text()).not.toContain('复制');
+  // Read-only notice shape.
+  expect(tokenRow.find('.readonly-notice').exists()).toBe(true);
+  expect(tokenRow.find('.readonly-value').exists()).toBe(true);
+  expect(tokenRow.find('.deprecated-marker').exists()).toBe(true);
+  // Rotation endpoint pointer visible to operators.
+  expect(tokenRow.text()).toContain('/api/admin/agent-token/rotate');
 });
 
 test('cancel button restores the snapshot', async () => {
@@ -143,69 +126,8 @@ test('save failure with fieldErrors highlights the offending row', async () => {
   expect(adminApi.updateConfig).toHaveBeenCalled();
 });
 
-test('Agent Token: 生成 button fills input with a 32-char hex token and marks dirty', async () => {
-  setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
-  await flushPromises();
-  expect(w.find('button.save').attributes('disabled')).toBeDefined();
-  const genBtn = w.findAll('button').find(b => b.text() === '生成');
-  expect(genBtn).toBeTruthy();
-  await genBtn.trigger('click');
-  await flushPromises();
-  const tokenInput = w.findAll('input').find(i => i.element.name === '' || i.element.type === 'text')
-    ?.element?.value;
-  // find the input that now holds a 32-hex-char token
-  const inputs = w.findAll('input');
-  const newToken = inputs.map(i => i.element.value).find(v => /^[0-9a-f]{32}$/.test(v));
-  expect(newToken).toBeTruthy();
-  expect(w.find('button.save').attributes('disabled')).toBeUndefined();
-});
-
-test('Agent Token: 生成 button produces different tokens on each call', async () => {
-  setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
-  await flushPromises();
-  const genBtn = w.findAll('button').find(b => b.text() === '生成');
-  await genBtn.trigger('click');
-  await flushPromises();
-  const first = w.findAll('input').map(i => i.element.value).find(v => /^[0-9a-f]{32}$/.test(v));
-  await genBtn.trigger('click');
-  await flushPromises();
-  const second = w.findAll('input').map(i => i.element.value).find(v => /^[0-9a-f]{32}$/.test(v));
-  expect(first).toBeTruthy();
-  expect(second).toBeTruthy();
-  expect(first).not.toBe(second);
-});
-
-test('Agent Token: 生成 button only appears on the token row (not other fields)', async () => {
-  setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
-  await flushPromises();
-  const genBtns = w.findAll('button').filter(b => b.text() === '生成');
-  expect(genBtns.length).toBe(1);
-});
-
-test('Agent Token: 复制 button copies current token to clipboard', async () => {
-  setActivePinia(createPinia());
-  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const writeText = vi.fn(() => Promise.resolve());
-  const origClipboard = navigator.clipboard;
-  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-  try {
-    const w = mount(ConfigView);
-    await flushPromises();
-    const copyBtn = w.findAll('button').find(b => b.text() === '复制');
-    expect(copyBtn).toBeTruthy();
-    await copyBtn.trigger('click');
-    await flushPromises();
-    expect(writeText).toHaveBeenCalledWith('old-token-1234567890');
-  } finally {
-    Object.defineProperty(navigator, 'clipboard', { value: origClipboard, configurable: true });
-  }
-});
+// #167 I1: 生成 / 复制 buttons removed — the ad_agent_token row is now
+// a read-only notice-row. Rotation moved to POST /api/admin/agent-token/rotate.
 
 test('renders Chinese label primary + raw snake_case key as small secondary code', async () => {
   setActivePinia(createPinia());
