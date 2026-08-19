@@ -75,8 +75,14 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
   // Lazy fallback to getDb() keeps the wiring traceable from server.js while
   // being permissive about explicit vs implicit db.
   const _db = db ?? getDb();
+  // userAuth takes a `logger` directly (not a getter). packageRouter's API
+  // exposes `getLogger` (a thunk) so callers can swap the logger at runtime
+  // (used by tests). Resolve it once at factory time and pass the value
+  // through to userAuth. Resolves I9 — Task 1: the previous version
+  // referenced `logger` here, which was undefined inside this scope and
+  // caused `ReferenceError: logger is not defined` on every request.
   const auth = [
-    userAuth({ secret: config.jwtSecret, db: _db }),
+    userAuth({ db: _db, logger: getLogger?.() ?? null }),
     requirePerm('admin:packages')
   ];
 
