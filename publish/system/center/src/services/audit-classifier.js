@@ -34,7 +34,15 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['delete_alert_rule',              'changes'],
   ['probe_state_changed',            'changes'],
   ['apply_migration',                'changes'],
-  ['reset_failed_migration',         'changes']
+  ['reset_failed_migration',         'changes'],
+  // I9: dual-key JWT secret rotation events — security-bearing because
+  // they change the server's signing key (rotate/commit touch active auth;
+  // seed bootstraps the key on first install; auto_expire silently closes
+  // an overlap window).
+  ['rotate_jwt_secret',              'security'],
+  ['auto_expire_jwt_secret',         'security'],
+  ['commit_jwt_secret',              'security'],
+  ['seed_jwt_secret',                'system']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -69,7 +77,16 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['delete_alert_rule',              'medium'],
   ['probe_state_changed',            'low'],
   ['apply_migration',                'medium'],
-  ['reset_failed_migration',         'medium']
+  ['reset_failed_migration',         'medium'],
+  // I9: JWT secret rotation — operator-driven rotation/commit are high
+  // because they immediately change the signing key (every newly-issued
+  // token uses the new key); auto-expire is high because it silently
+  // closes the overlap window (stragglers start getting 401); seed is
+  // info — first-boot bootstrap, no auth-bearing behavior.
+  ['rotate_jwt_secret',              'high'],
+  ['auto_expire_jwt_secret',         'high'],
+  ['commit_jwt_secret',              'medium'],
+  ['seed_jwt_secret',                'info']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -104,7 +121,12 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['delete_alert_rule',              '删除告警规则'],
   ['probe_state_changed',            '探针状态变化'],
   ['apply_migration',                '应用迁移'],
-  ['reset_failed_migration',         '重置失败迁移']
+  ['reset_failed_migration',         '重置失败迁移'],
+  // I9: JWT secret rotation labels (Chinese to match surrounding taxonomy).
+  ['rotate_jwt_secret',              '轮换 JWT 签名密钥'],
+  ['auto_expire_jwt_secret',         'JWT 密钥自动过期'],
+  ['commit_jwt_secret',              '提交 JWT 签名密钥'],
+  ['seed_jwt_secret',                '从 appsettings 初始化 JWT 密钥']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([
