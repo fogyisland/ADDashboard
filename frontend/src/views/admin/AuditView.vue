@@ -78,6 +78,7 @@
 import { ref, computed, watch, h } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
+import { notifyError } from '../../lib/notify.js';
 
 const tabs = [
   { key: 'security', icon: '🔒', label: '安全' },
@@ -107,38 +108,53 @@ watch([active, page], load);
 
 async function load() {
   const { from, to } = timeRangeToFromTo(filters.value.timePreset);
-  const { data } = await adminApi.getAudit({
-    category: active.value,
-    page: page.value,
-    size,
-    userId: filters.value.userId || undefined,
-    severities: filters.value.severity,
-    from, to
-  });
-  rows.value = data.rows;
-  total.value = data.total;
-  await refreshBadges();
+  try {
+    const { data } = await adminApi.getAudit({
+      category: active.value,
+      page: page.value,
+      size,
+      userId: filters.value.userId || undefined,
+      severities: filters.value.severity,
+      from, to
+    });
+    rows.value = data.rows;
+    total.value = data.total;
+    await refreshBadges();
+  } catch (e) {
+    rows.value = [];
+    total.value = 0;
+    notifyError(`加载审计日志失败: ${e?.message || '未知错误'}`);
+  }
 }
 
 async function refreshBadges() {
-  const results = await Promise.all(tabs.map(t => adminApi.getAuditBadge(t.key)));
-  for (const r of results) badges.value[r.category] = r.count;
+  try {
+    const results = await Promise.all(tabs.map(t => adminApi.getAuditBadge(t.key)));
+    for (const r of results) badges.value[r.category] = r.count;
+  } catch (e) {
+    // Badges are decorative; don't interrupt the operator's main flow.
+    console.warn('audit badge refresh failed:', e?.message);
+  }
 }
 
 async function onExport(format) {
   const { from, to } = timeRangeToFromTo(filters.value.timePreset);
-  const blob = await adminApi.exportAudit(format, {
-    category: active.value,
-    userId: filters.value.userId || undefined,
-    severities: filters.value.severity,
-    from, to
-  });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `audit-${active.value}-${Date.now()}.${format}`;
-  a.click();
-  URL.revokeObjectURL(url);
+  try {
+    const blob = await adminApi.exportAudit(format, {
+      category: active.value,
+      userId: filters.value.userId || undefined,
+      severities: filters.value.severity,
+      from, to
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `audit-${active.value}-${Date.now()}.${format}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    notifyError(`导出 ${format.toUpperCase()} 失败: ${e?.message || '未知错误'}`);
+  }
 }
 
 function timeRangeToFromTo(preset) {
