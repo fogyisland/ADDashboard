@@ -120,6 +120,7 @@ import ConfirmDialog from './ConfirmDialog.vue';
 import { adminApi } from '../../api/admin.js';
 import { useConfigValidation } from '../../composables/useConfigValidation.js';
 import { useDirtyState } from '../../composables/useDirtyState.js';
+import { notifyError } from '../../lib/notify.js';
 
 // Email config (smtp_*, alert_*) lives on its own page; this page is the
 // non-email core. The full set is filtered out of the audit so the two
@@ -276,36 +277,41 @@ function rollbackTitle(row) {
 // these helpers had no caller after the I1 fix.
 
 async function load() {
-  const r = await adminApi.getConfig();
-  const all = r.data || {};
-  // `current` is what the table iterates and what edits/saves operate on.
-  // Email keys live on /admin/email-config (T17). Internal bookkeeping
-  // (`center_listen_port_started_version` hash + `restartRequired` object)
-  // is backend state, not operator config — without this filter they'd
-  // render as raw-key rows with no Chinese label.
-  const subset = {};
-  for (const [k, v] of Object.entries(all)) {
-    if (EMAIL_KEYS.has(k)) continue;
-    if (INTERNAL_KEYS.has(k)) continue;
-    subset[k] = v;
+  try {
+    const r = await adminApi.getConfig();
+    const all = r.data || {};
+    // `current` is what the table iterates and what edits/saves operate on.
+    // Email keys live on /admin/email-config (T17). Internal bookkeeping
+    // (`center_listen_port_started_version` hash + `restartRequired` object)
+    // is backend state, not operator config — without this filter they'd
+    // render as raw-key rows with no Chinese label.
+    const subset = {};
+    for (const [k, v] of Object.entries(all)) {
+      if (EMAIL_KEYS.has(k)) continue;
+      if (INTERNAL_KEYS.has(k)) continue;
+      subset[k] = v;
+    }
+    current.value = { ...subset };
+    markClean(current.value);
+    validate(current.value);
+    // `initial` keeps `restartRequired` for the "⚠ 待重启" badge on the
+    // listenPort row (template reads initial.restartRequired?.listenPort).
+    // Storing the full backend response is fine — only `current` is shown
+    // and PUT; `initial` is the dirty-state snapshot baseline.
+    initial.value = { ...all };
+    await loadAudit();
+  } catch (e) {
+    notifyError(`加载配置失败: ${e?.message || '未知错误'}`);
   }
-  current.value = { ...subset };
-  markClean(current.value);
-  validate(current.value);
-  // `initial` keeps `restartRequired` for the "⚠ 待重启" badge on the
-  // listenPort row (template reads initial.restartRequired?.listenPort).
-  // Storing the full backend response is fine — only `current` is shown
-  // and PUT; `initial` is the dirty-state snapshot baseline.
-  initial.value = { ...all };
-  await loadAudit();
 }
 
 async function loadAudit() {
   try {
     const r = await adminApi.getConfigAudit();
     audit.value = r.data || [];
-  } catch {
+  } catch (e) {
     audit.value = [];
+    notifyError(`加载变更历史失败: ${e?.message || '未知错误'}`);
   }
 }
 
@@ -326,7 +332,8 @@ async function doRollback() {
   try {
     await adminApi.rollbackConfig(row.id);
     await Promise.all([load(), loadAudit()]);
-  } catch {
+  } catch (e) {
+    notifyError(`回滚失败: ${e?.message || '未知错误'}`);
     topLevelMsg.value = '回滚失败';
   }
 }
