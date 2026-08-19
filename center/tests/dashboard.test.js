@@ -7,7 +7,7 @@ import { signJwt } from '../src/auth/jwt.js';
 import { _setDbForTest } from '../src/db/index.js';
 import { buildMockDb, buildThrowingPool } from './helpers/db-mock.js';
 
-const SECRET = 'test-secret-please-do-not-use-in-prod';
+const SECRET = 'test-secret';
 
 function buildApp() {
   const a = express();

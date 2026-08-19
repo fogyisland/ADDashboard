@@ -22,7 +22,7 @@ import { signJwt } from '../src/auth/jwt.js';
 import { _setDbForTest } from '../src/db/index.js';
 import { buildMockDb, buildRecordingPool } from './helpers/db-mock.js';
 
-const SECRET = 'test-secret-ms';
+const SECRET = 'test-secret';
 const AGENT_TOKEN = 'agent-token-1';
 
 // I3 (Task 5): the agentToken middleware reads the bundle from db. Inject a

@@ -90,7 +90,7 @@ test('POST /api/auth/login embeds user.tokenVersion in the issued JWT', async ()
   app.use(authRouter({ config: { jwtSecret: 'test-secret', agentToken: 'tok' }, logger: { info(){}, error(){}, warn(){}, debug(){} } }));
   const res = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
   assert.equal(res.status, 200);
-  const v = verifyJwt(res.body.token, 'test-secret');
+  const v = verifyJwt(res.body.token, { current: 'test-secret', previous: '' });
   assert.equal(v.tokenVersion, 4, 'JWT tokenVersion claim must come from the DB row, not the signJwt default of 0');
   assert.equal(typeof v.tokenVersion, 'number');
 });

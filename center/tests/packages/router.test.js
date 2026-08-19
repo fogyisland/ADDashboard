@@ -27,7 +27,9 @@ import { buildMockDb } from '../helpers/db-mock.js';
 import { packageRouter } from '../../src/packages/router.js';
 import { signJwt } from '../../src/auth/jwt.js';
 
-const SECRET = 'test-secret-please-do-not-use-in-prod';
+// I9 — Task 1: see tests/e2e/plugin-system.test.js. Match the buildMockDb
+// default jwt_secret_current='test-secret' so userAuth accepts our tokens.
+const SECRET = 'test-secret';
 const noopLogger = () => ({ info() {}, warn() {}, error() {}, debug() {} });
 
 // Stable registry URL — the RegistryClient constructor permits http only

@@ -13,7 +13,7 @@ import { signJwt } from '../src/auth/jwt.js';
 import { _setDbForTest } from '../src/db/index.js';
 import { buildMockDb } from './helpers/db-mock.js';
 
-const SECRET = 'test-secret-topo';
+const SECRET = 'test-secret';
 function adminToken() {
   return signJwt({ sub: 'u1', role: 'admin', permissions: ['*'] }, SECRET, 60);
 }

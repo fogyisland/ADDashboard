@@ -32,7 +32,9 @@ import { installer } from '../../src/packages/installer.js';
 import { installedPackages } from '../../src/db/sql/installed-packages.js';
 import { parseTestUrl } from '../integration/_url.js';
 
-const SECRET = 'test-secret-please-do-not-use-in-prod';
+// I9 — Task 1: see tests/e2e/plugin-system.test.js. Match the buildMockDb
+// default jwt_secret_current='test-secret' so userAuth accepts our tokens.
+const SECRET = 'test-secret';
 const noopLogger = () => ({ info() {}, warn() {}, error() {}, debug() {} });
 
 function adminToken() {
