@@ -67,10 +67,35 @@ export function buildMockDb(scripts = [], { dialect = 'mysql' } = {}) {
     }
     // I9 — Task 1: userAuth loads the jwt_secret bundle from system_config
     // before the getAuthStatus SELECT. Default to the test secret so tests
-    // that sign JWTs with the standard 'test-secret' keep passing. Tests
-    // that use a different SECRET must seed their own jwt_secret_current
-    // row via the `scripts` parameter (with a /jwt_secret/ regex script).
-    if (isJwtSecretBundleSelect(sql)) {
+    // that sign JWTs with the standard 'test-secret' keep passing.
+    //
+    // I9 — Task 2: tests that target the jwt_secret bundle (rotate/seed)
+    // supply a script whose regex explicitly references "jwt_secret" (e.g.
+    // /jwt_secret/i). That script wins over this default ONLY when the
+    // script's regex contains the literal "jwt_secret" substring — we
+    // use that as a positive signal the test authored a JWT bundle. Tests
+    // that use a broader regex like /FROM\s+system_config/i (which
+    // incidentally catches the bundle SQL) still get the test-secret
+    // default and keep working.
+    const isJwtBundleQuery = isJwtSecretBundleSelect(sql);
+    let jwtScriptMatch = null;
+    if (isJwtBundleQuery) {
+      for (const s of scripts) {
+        // Heuristic: only honor a script's match if its regex pattern
+        // explicitly mentions "jwt_secret" — that's the test author's
+        // signal they intend to override the default bundle. A broad
+        // /system_config/ regex that happens to catch the bundle SQL is
+        // treated as incidental (NOT an override).
+        const re = s.match.source || '';
+        if (!/jwt_secret/i.test(re)) continue;
+        if (s.match.test(sql)) { jwtScriptMatch = s; break; }
+      }
+    }
+    if (jwtScriptMatch) {
+      const rows = typeof jwtScriptMatch.rows === 'function' ? jwtScriptMatch.rows(params) : jwtScriptMatch.rows;
+      return Array.isArray(rows) ? rows : [];
+    }
+    if (isJwtBundleQuery) {
       return [{ config_key: 'jwt_secret_current', config_value: DEFAULT_TEST_JWT_SECRET }];
     }
     for (const s of scripts) {
