@@ -358,9 +358,14 @@ const VARIANTS = {
       update: 'UPDATE sys_users SET password_hash = COALESCE(?, password_hash), role_id = COALESCE(?, role_id), status = COALESCE(?, status) WHERE id = ?',
       delete: 'DELETE FROM sys_users WHERE id = ?',
       recordLogin: 'UPDATE sys_users SET last_login_at = SYSUTCDATETIME() WHERE id = ?',
-      bumpTokenVersion: 'UPDATE sys_users SET token_version = token_version + 1 WHERE id = @id',
-      getTokenVersion: 'SELECT token_version FROM sys_users WHERE id = @id',
-      getAuthStatus: 'SELECT token_version, status FROM sys_users WHERE id = @id',
+      // I1 token_version: must use `?` so the driver wrapper rewrites to @p1
+      // and binds via request.input('p1', ...). The MSSQL driver (see
+      // drivers/mssql.js:16-28) only rewrites `?` → `@pN` and binds inputs
+      // named `pN`; literal `@id` is never declared and raises "Must declare
+      // the scalar variable @id" on real MSSQL. Mirrors the MySQL section.
+      bumpTokenVersion: 'UPDATE sys_users SET token_version = token_version + 1 WHERE id = ?',
+      getTokenVersion: 'SELECT token_version FROM sys_users WHERE id = ?',
+      getAuthStatus: 'SELECT token_version, status FROM sys_users WHERE id = ?',
       countAdmins: `SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = 'admin'`,
       createAdmin: 'INSERT INTO sys_users (username, password_hash, role_id) SELECT ?, ?, id FROM sys_roles WHERE role_name = \'admin\'',
       count: 'SELECT COUNT(*) AS n FROM sys_users u JOIN sys_roles r ON u.role_id = r.id WHERE r.role_name = \'admin\''

@@ -140,7 +140,17 @@ test('jwt_secret rotate + commit round-trip on system_config (mysql)', { skip: !
     );
     assert.equal(audits.length, 1, 'rotate must write exactly one audit row');
     assert.equal(audits[0].target, 'system_config');
-    assert.match(audits[0].payload, /"rotatedAt"/, 'audit payload records rotatedAt');
+    // audit_logs.payload is native JSON column (mysql migration 010), so
+    // mysql2 auto-parses it on read — `payload` is a JS object, not a string.
+    // Assert the structured shape: {previousLength, newLength, rotatedAt}.
+    assert.ok(audits[0].payload && typeof audits[0].payload === 'object',
+      'audit payload is parsed JSON object');
+    assert.equal(typeof audits[0].payload.rotatedAt, 'string',
+      'audit payload records rotatedAt as string');
+    assert.match(audits[0].payload.rotatedAt, /^\d{4}-\d{2}-\d{2}T/, 'audit payload rotatedAt is ISO 8601');
+    assert.equal(audits[0].payload.previousLength, '__test_i9_old__'.length,
+      'previousLength matches pre-rotate current (15 chars)');
+    assert.equal(audits[0].payload.newLength, 64, 'newLength is 32-byte hex (64 chars)');
 
     // --- 4. commitJwtSecret: clears previous + rotated_at, leaves current ---
     const committed = await commitJwtSecret(db, { logger: noopLogger, userId: null });

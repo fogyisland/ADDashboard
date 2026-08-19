@@ -13,7 +13,7 @@ IF EXISTS (
 )
 BEGIN
   ALTER TABLE audit_logs ALTER COLUMN payload NVARCHAR(MAX) NULL;
-END
+END;
 
 IF NOT EXISTS (
   SELECT 1 FROM sys.check_constraints WHERE name = 'ck_audit_logs_payload_json'
@@ -24,4 +24,4 @@ BEGIN
       AND (ISJSON(payload) = 0);
   ALTER TABLE audit_logs
     ADD CONSTRAINT ck_audit_logs_payload_json CHECK (payload IS NULL OR ISJSON(payload) = 1);
-END
+END;

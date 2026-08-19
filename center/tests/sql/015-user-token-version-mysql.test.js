@@ -40,47 +40,47 @@ test('migration 015 (mysql): sys_users.token_version column exists with DEFAULT 
     }
 
     // 1a. Verify the column exists with DEFAULT 0 NOT NULL.
-    const [cols] = await db.execute(
+    const colsResult = await db.execute(
       `SELECT COLUMN_NAME, COLUMN_DEFAULT, IS_NULLABLE
          FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_users' AND COLUMN_NAME = 'token_version'`,
       []
     );
-    assert.equal(cols.rows.length, 1, 'token_version column must exist after applying migration 015');
-    assert.equal(cols.rows[0].COLUMN_DEFAULT, '0', 'token_version COLUMN_DEFAULT must be 0');
-    assert.equal(cols.rows[0].IS_NULLABLE, 'NO', 'token_version must be NOT NULL');
+    assert.equal(colsResult.rows.length, 1, 'token_version column must exist after applying migration 015');
+    assert.equal(colsResult.rows[0].COLUMN_DEFAULT, '0', 'token_version COLUMN_DEFAULT must be 0');
+    assert.equal(colsResult.rows[0].IS_NULLABLE, 'NO', 'token_version must be NOT NULL');
 
     // 2. INSERT without the column — DEFAULT 0 must land.
     await db.execute(
       "INSERT INTO sys_users (username, password_hash, role_id) VALUES (?, 'x', 1)",
       [TEST_USER]
     );
-    const [rows] = await db.execute(
+    const rowsResult = await db.execute(
       "SELECT token_version FROM sys_users WHERE username = ?",
       [TEST_USER]
     );
-    assert.equal(Number(rows.rows[0].token_version), 0, 'DEFAULT 0 must apply on INSERT');
+    assert.equal(Number(rowsResult.rows[0].token_version), 0, 'DEFAULT 0 must apply on INSERT');
 
     // 3. ANSI UPDATE bumps to 1.
     await db.execute(
       "UPDATE sys_users SET token_version = token_version + 1 WHERE username = ?",
       [TEST_USER]
     );
-    const [rows2] = await db.execute(
+    const rows2Result = await db.execute(
       "SELECT token_version FROM sys_users WHERE username = ?",
       [TEST_USER]
     );
-    assert.equal(Number(rows2.rows[0].token_version), 1, 'ANSI UPDATE must bump to 1');
+    assert.equal(Number(rows2Result.rows[0].token_version), 1, 'ANSI UPDATE must bump to 1');
 
     // 4. Re-apply — must be idempotent (procedure uses information_schema guard).
     for (const stmt of splitSqlStatements(fileSql)) {
       await db.execute(stmt, []);
     }
-    const [rows3] = await db.execute(
+    const rows3Result = await db.execute(
       "SELECT token_version FROM sys_users WHERE username = ?",
       [TEST_USER]
     );
-    assert.equal(Number(rows3.rows[0].token_version), 1, 're-apply must not reset token_version');
+    assert.equal(Number(rows3Result.rows[0].token_version), 1, 're-apply must not reset token_version');
   } finally {
     // Best-effort cleanup.
     try {
