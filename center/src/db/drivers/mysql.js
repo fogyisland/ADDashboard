@@ -5,19 +5,20 @@
 //   healthcheck()        -> void (throws on failure)
 //   close()
 //
-// On mysql path, ISO Date strings are auto-converted to naive DATETIME
-// via toMysqlDatetime() because the schema uses naive DATETIME columns.
+// Strings pass through unchanged — the driver does not know whether the
+// target column is TEXT (e.g. system_config.config_value, which stores
+// ISO timestamps verbatim for I1/I3/I9 dual-key rotations) or DATETIME
+// (which would reject ISO format). Callers that need MySQL naive format
+// for a DATETIME column MUST pre-format explicitly via toMysqlDatetime()
+// (see services/replication.js, routes/agent.js, services/discovery.js,
+// routes/lockout.js for the convention). Date instances are still converted
+// for backward compatibility with code that passes `new Date()` directly.
 
 import mysql from 'mysql2/promise';
 import { toMysqlDatetime } from '../../utils/datetime.js';
 
 function normalizeParam(p) {
   if (p instanceof Date) return toMysqlDatetime(p);
-  if (typeof p === 'string') {
-    // Heuristic: ISO 8601 strings (T...Z) get normalized.
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(p)) return toMysqlDatetime(p);
-    return p;
-  }
   return p;
 }
 
