@@ -17,7 +17,8 @@ const RULES = {
     return null;
   },
   history_enabled: (v) => (v === '0' || v === '1') ? null : '只能填 0 或 1',
-  ad_agent_token: (v) => (v && String(v).length >= 16) ? null : 'Token 至少 16 字符'
+  // #167 I1: ad_agent_token validation rule removed — the field is now
+  // a read-only notice-row; backend rejects writes with 400.
 };
 
 export function useConfigValidation(initialErrors = {}) {

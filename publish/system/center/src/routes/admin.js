@@ -260,6 +260,14 @@ export function adminRouter({ config, logger, db }) {
       void listenPortBumped;
       res.json({ ok: true, auditCount });
     } catch (e) {
+      // #167 follow-up fix-now: services/config.js throws { httpStatus: 400 }
+      // when the legacy `ad_agent_token` key is written with a value different
+      // from the current row (I1 Option B — operators must use
+      // /api/admin/agent-token/rotate instead). Mirror the pattern from the
+      // 5 other admin catch blocks in this file (lines 550, 562, 603, 893, 907)
+      // so the actionable 400 surfaces to curl callers / future legacy UI
+      // re-saves instead of being silently downgraded to a generic 500.
+      if (e.httpStatus === 400) return res.status(400).json({ error: e.message });
       logger.error({ err: e }, 'admin config update failed');
       res.status(500).json({ error: 'internal' });
     }

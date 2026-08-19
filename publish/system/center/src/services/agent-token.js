@@ -20,6 +20,12 @@ import { writeAudit } from './audit.js';
 const ROTATE_AUDIT = 'rotate_agent_token';
 const COMMIT_AUDIT = 'commit_agent_token';
 const SEED_AUDIT = 'seed_agent_token';
+// #167 C2: parallel to jwt-secret.AUTO_EXPIRE_AUDIT — the auto-expire
+// branch silently clears the previous-token overlap window when TTL is
+// reached, so it must produce an audit row matching the rotate/commit/
+// seed taxonomy. Without this row, an operator reading the audit log
+// after a TTL-driven auto-clear would see no trace of the event.
+const AUTO_EXPIRE_AUDIT = 'auto_expire_agent_token';
 
 function readBundle(db, query) {
   return query(db.sql.config.getAgentTokenBundle).then(({ rows }) => {
@@ -128,6 +134,17 @@ export async function seedAgentTokenIfMissing(db, fromAppsettings, logger) {
         const upsert = db.sql.config.upsert;
         await tx.execute(upsert, ['agent_token_previous', '']);
         await tx.execute(upsert, ['agent_token_rotated_at', '']);
+        // #167 C2: writeAudit inside the tx so the audit row commits
+        // atomically with the data writes (mirrors jwt-secret auto-expire
+        // shape). Best-effort callers would silently lose the audit row —
+        // unacceptable for a TTL-driven silent security event.
+        await writeAudit({
+          userId: null,
+          action: AUTO_EXPIRE_AUDIT,
+          target: 'system_config',
+          payload: { rotatedAt: before.rotatedAt, ttlDays: before.ttlDays },
+          logger
+        }, logger, tx);
         logger?.warn?.({ rotatedAt: before.rotatedAt, ttlDays: before.ttlDays }, 'previous agent token expired by TTL; auto-cleared');
         result = { seeded: false, current: before.current, autoExpired: true };
         return;

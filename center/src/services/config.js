@@ -124,6 +124,35 @@ async function putConfigInTx(tx, patch, userId) {
   const before = {};
   const { rows } = await tx.query(db.sql.config.getAll);
   for (const row of rows) before[row.config_key] = row.config_value;
+  // #167 I1 Option B: reject legacy ad_agent_token writes. After I3
+  // (dual-key agent-token rotation), the runtime source of truth is
+  // `agent_token_current`, NOT the legacy `ad_agent_token` row that
+  // ConfigView used to edit. Allowing PUT /api/admin/config to write
+  // `ad_agent_token` was a dead-UI surface — operators saw their edit
+  // succeed but the runtime auth never saw the new value. Operators
+  // must now rotate via /api/admin/agent-token/rotate instead.
+  //
+  // The check fires only when the submitted value DIFFERS from the
+  // current row — same-value writes (the UI sends back the entire
+  // `current` object, including legacy rows it now displays as
+  // read-only) are a no-op and don't need to trip the rejection. A
+  // value-different write to a blocked key is what indicates an
+  // operator actually tried to change it.
+  const AGENT_TOKEN_BLOCKED_KEYS = ['ad_agent_token'];
+  for (const k of AGENT_TOKEN_BLOCKED_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(updates, k)) continue;
+    const oldVal = before[k];
+    const newVal = updates[k];
+    if (String(oldVal ?? null) === String(newVal ?? null)) continue;
+    throw Object.assign(
+      new Error(
+        `config key '${k}' is managed by /api/admin/agent-token/rotate ` +
+        `(I3 dual-key rotation); legacy ConfigView UI is deprecated. ` +
+        `Use curl -X POST <center>/api/admin/agent-token/rotate.`
+      ),
+      { httpStatus: 400, blockedKey: k }
+    );
+  }
   for (const [k, v] of Object.entries(updates)) {
     await tx.execute(
       db.sql.config.upsert,

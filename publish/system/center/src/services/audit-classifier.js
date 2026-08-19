@@ -42,7 +42,17 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['rotate_jwt_secret',              'security'],
   ['auto_expire_jwt_secret',         'security'],
   ['commit_jwt_secret',              'security'],
-  ['seed_jwt_secret',                'system']
+  ['seed_jwt_secret',                'system'],
+  // #167 C1: dual-key agent-token rotation events — security-bearing because
+  // they change the server's agent-auth token (rotate/commit touch active
+  // auth; seed bootstraps the token on first install; auto_expire silently
+  // closes an overlap window). revoke_user_tokens (I1) is the admin action
+  // that invalidates a user's JWT token_version — also security-bearing.
+  ['rotate_agent_token',              'security'],
+  ['auto_expire_agent_token',         'security'],
+  ['commit_agent_token',              'security'],
+  ['seed_agent_token',                'system'],
+  ['revoke_user_tokens',              'security']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -86,7 +96,18 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['rotate_jwt_secret',              'high'],
   ['auto_expire_jwt_secret',         'high'],
   ['commit_jwt_secret',              'medium'],
-  ['seed_jwt_secret',                'info']
+  ['seed_jwt_secret',                'info'],
+  // #167 C1: agent-token rotation severity mirrors JWT secret lifecycle.
+  // rotate = high (changes server's auth credential immediately);
+  // commit = medium (ends a benign overlap window); seed = info
+  // (first-boot bootstrap); auto_expire = high (silently closes overlap);
+  // revoke_user_tokens = high (immediately invalidates every JWT issued
+  // to that user).
+  ['rotate_agent_token',              'high'],
+  ['auto_expire_agent_token',         'high'],
+  ['commit_agent_token',              'medium'],
+  ['seed_agent_token',                'info'],
+  ['revoke_user_tokens',              'high']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -126,7 +147,13 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['rotate_jwt_secret',              '轮换 JWT 签名密钥'],
   ['auto_expire_jwt_secret',         'JWT 密钥自动过期'],
   ['commit_jwt_secret',              '提交 JWT 签名密钥'],
-  ['seed_jwt_secret',                '从 appsettings 初始化 JWT 密钥']
+  ['seed_jwt_secret',                '从 appsettings 初始化 JWT 密钥'],
+  // #167 C1: agent-token rotation labels (parallel to I9).
+  ['rotate_agent_token',              '轮换 Agent 令牌'],
+  ['auto_expire_agent_token',         'Agent 令牌自动过期'],
+  ['commit_agent_token',              '提交 Agent 令牌'],
+  ['seed_agent_token',                '从 appsettings 初始化 Agent 令牌'],
+  ['revoke_user_tokens',              '撤销用户全部令牌']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([

@@ -58,6 +58,9 @@ $comparisons = @(
   # Non-AD server management — Task 12 (SMTP config seed + mask-on-read + test-mail route)
   @{ left = 'center/src/services/config.js';                 right = 'publish/system/center/src/services/config.js' }
   @{ left = 'center/src/routes/admin.js';                    right = 'publish/system/center/src/routes/admin.js' }
+  # #167 follow-up (C1+C2+I1): audit-classifier + agent-token rotation + I1 reject
+  @{ left = 'center/src/services/audit-classifier.js';       right = 'publish/system/center/src/services/audit-classifier.js' }
+  @{ left = 'center/src/services/agent-token.js';            right = 'publish/system/center/src/services/agent-token.js' }
   # Migrations — Task 2
   @{ left = 'db/migrations/013-orphan-schemas.sql';          right = 'publish/system/db/migrations/013-orphan-schemas.sql' }
   @{ left = 'db/migrations/mssql/013-orphan-schemas.sql';    right = 'publish/system/db/migrations/mssql/013-orphan-schemas.sql' }
@@ -85,6 +88,9 @@ $comparisons = @(
   @{ left = 'agent/src/agent-filters.js';                    right = 'publish/system/agent/src/agent-filters.js' }
   # Non-AD server management — Task 16 fix round 2 (extracted scheduler module)
   @{ left = 'agent/src/non-ad-scheduler.js';                 right = 'publish/system/agent/src/non-ad-scheduler.js' }
+  # #167 follow-up (I1): useConfigValidation rule removed (ad_agent_token
+  # is now a read-only notice-row, no validation needed).
+  @{ left = 'frontend/src/composables/useConfigValidation.js'; right = 'publish/system/frontend/src/composables/useConfigValidation.js' }
 )
 
 $fail = $false

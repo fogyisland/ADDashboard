@@ -61,11 +61,8 @@ test('history_enabled must be 0 or 1', () => {
   expect(errors.value.history_enabled).toBeUndefined();
 });
 
-test('ad_agent_token too short', () => {
-  const { errors, validate } = useConfigValidation();
-  validate({ polling_interval_minutes: '5', latency_threshold_minutes: '60', heartbeat_interval_seconds: '5', history_enabled: '1', ad_agent_token: 'short' });
-  expect(errors.value.ad_agent_token).toMatch(/16/);
-});
+// #167 I1: ad_agent_token length-validation rule removed — the field is
+// now a read-only notice-row (no validation applies).
 
 test('hasErrors reflects errors count', () => {
   const { errors, hasErrors, validate, clear } = useConfigValidation();

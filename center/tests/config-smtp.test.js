@@ -230,6 +230,49 @@ test('putConfig records caller userId on every audit row (I-2)', async () => {
   assert.equal(hostAudit.params[3], 42, 'changed_by must be caller-supplied userId');
 });
 
+// #167 I1 Option B: PUT /api/admin/config must reject `ad_agent_token`
+// writes. The legacy key is a dead-UI surface after I3 dual-key rotation
+// (runtime auth reads `agent_token_current`). Operators must rotate via
+// /api/admin/agent-token/rotate.
+test('putConfig rejects legacy ad_agent_token writes (I3 dual-key rotation)', async () => {
+  const { putConfig } = await import('../src/services/config.js');
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'ad_agent_token', config_value: 'legacy' }
+    ] }
+  ]).standard();
+  _setDbForTest(db);
+  await assert.rejects(
+    putConfig({ ad_agent_token: 'whatever' }),
+    /ad_agent_token.*agent-token\/rotate/
+  );
+});
+
+test('putConfig allows non-token config keys alongside a rejected token key', async () => {
+  // The rejection is key-scoped — a mixed patch (legacy token + a real
+  // host change) must still surface the rejection rather than silently
+  // apply the host change. The whole patch fails atomically.
+  const { putConfig } = await import('../src/services/config.js');
+  const records = [];
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'ad_agent_token', config_value: 'legacy' },
+      { config_key: 'smtp_host', config_value: 'old.example.com' }
+    ] },
+    { match: /(INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config)/i, capture: true, onExecute: (sql, params) => records.push({ sql, params }) }
+  ]).withRecording(records);
+  _setDbForTest(db);
+  await assert.rejects(
+    putConfig({ ad_agent_token: 'whatever', smtp_host: 'new.example.com' }),
+    /ad_agent_token/
+  );
+  // No row should have been written (transaction rolls back on rejection).
+  const hostUpdate = records.find(r =>
+    /(INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config)/i.test(r.sql) && r.params[0] === 'smtp_host'
+  );
+  assert.equal(hostUpdate, undefined, 'rejected patch must not partially apply');
+});
+
 // ----- PUT /api/admin/config (C-1) -----
 
 test('PUT /api/admin/config uses putConfig and redacts smtp_password from writeAudit payload', async () => {
@@ -273,6 +316,52 @@ test('PUT /api/admin/config uses putConfig and redacts smtp_password from writeA
   assert.ok(updateRow, 'update_config audit row must be written');
   const payload = JSON.parse(updateRow.params[3]);
   assert.equal(payload.smtp_password, undefined, 'smtp_password must not appear in audit payload');
+});
+
+test('PUT /api/admin/config returns 400 (not 500) for legacy ad_agent_token value-different writes (#167 I1 follow-up)', async () => {
+  // The service-layer rejection at services/config.js:147 throws an error
+  // decorated with `{ httpStatus: 400, blockedKey: k }`. The route's catch
+  // block (admin.js:262-273) MUST check `e.httpStatus` first so curl callers
+  // see the actionable 400 ("use /api/admin/agent-token/rotate") instead of a
+  // generic 500 "internal" that hides the actionable guidance. This test
+  // catches the wire-level gap that the service-layer test (line 237) misses.
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'ad_agent_token', config_value: 'legacy-current-value' }
+    ] }
+  ]).standard();
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ ad_agent_token: 'new-value-different-from-current' });
+  assert.equal(r.status, 400, 'route must propagate httpStatus: 400 from the rejection');
+  assert.match(r.body.error, /agent-token\/rotate/, 'error message must point operators to the rotation endpoint');
+  assert.match(r.body.error, /ad_agent_token/, 'error message must name the rejected key');
+});
+
+test('PUT /api/admin/config with legacy ad_agent_token same-value re-save is allowed (not 400)', async () => {
+  // The service-layer value-different gate is intentional: the legacy UI
+  // sends the entire `current` object back on every save (including the
+  // read-only legacy row). Same-value writes must not trip the rejection —
+  // otherwise the legitimate "save the rest of the form" flow would break.
+  const sysConfigAudits = [];
+  const db = buildMockDb([
+    { match: /FROM\s+system_config/i, rows: [
+      { config_key: 'ad_agent_token', config_value: 'unchanged-value' },
+      { config_key: 'smtp_host', config_value: 'old.example.com' }
+    ] },
+    { match: /(INSERT\s+INTO\s+system_config|MERGE\s+INTO\s+system_config)/i, rows: [] },
+    { match: /INSERT\s+INTO\s+sys_config_audit/i, capture: true, onExecute: (sql, params) => sysConfigAudits.push({ sql, params }) },
+    { match: /INSERT\s+INTO\s+audit_logs/i, rows: [] }
+  ]).standard();
+  _setDbForTest(db);
+  const r = await supertest(buildApp())
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ ad_agent_token: 'unchanged-value', smtp_host: 'new.example.com' });
+  assert.equal(r.status, 200, 'same-value re-save must succeed; value-different gate only fires on a real change');
+  assert.equal(r.body.ok, true);
 });
 
 // ----- seedSmtpDefaultsIfMissing -----

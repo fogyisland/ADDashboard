@@ -10,10 +10,13 @@ test('classifier: ACTION_CATEGORY maps every emitted action to one of three cate
     'login', 'login_failed',
     'create_user', 'update_user', 'delete_user',
     'update_config', 'bulk_import_sites', 'bulk_assign_dc_sites',
-    'apply_migration', 'reset_failed_migration'
+    'apply_migration', 'reset_failed_migration',
+    // #167 C1: agent-token rotation + revoke_user_tokens actions.
+    'rotate_agent_token', 'commit_agent_token', 'seed_agent_token',
+    'auto_expire_agent_token', 'revoke_user_tokens'
   ];
   for (const a of EMITTED) {
-    assert.ok(['security', 'changes', 'ops'].includes(ACTION_CATEGORY.get(a)),
+    assert.ok(['security', 'changes', 'ops', 'system'].includes(ACTION_CATEGORY.get(a)),
       `action ${a} missing from ACTION_CATEGORY`);
   }
 });
@@ -27,16 +30,18 @@ test('classifier: classifyAction returns Chinese label + category + severity tog
 
 test('classifier: CATEGORY_ACTIONS.security is exactly the registered security actions', () => {
   assert.deepEqual([...CATEGORY_ACTIONS.get('security')].sort(), [
-    'agent_self_register', 'auto_expire_jwt_secret', 'commit_jwt_secret',
+    'agent_self_register', 'auto_expire_agent_token', 'auto_expire_jwt_secret',
+    'commit_agent_token', 'commit_jwt_secret',
     'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed',
-    'rotate_jwt_secret'
+    'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
   ]);
 });
 
-test('classifier: SEVERITY_ACTIONS.high includes the JWT secret rotation actions', () => {
+test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token rotation actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
-    'auto_expire_jwt_secret', 'delete_user', 'disable_builtin_ad_os_baseline',
-    'login_failed', 'restart_service', 'rotate_jwt_secret'
+    'auto_expire_agent_token', 'auto_expire_jwt_secret', 'delete_user',
+    'disable_builtin_ad_os_baseline', 'login_failed', 'restart_service',
+    'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
   ]);
 });
 
@@ -44,8 +49,8 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
   assert.deepEqual([...SEVERITY_ACTIONS.get('medium')].sort(), [
     'agent_self_register', 'apply_migration', 'bulk_assign_dc_sites',
     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
-    'commit_jwt_secret', 'delete_alert_rule', 'delete_server_group', 'delete_site',
-    'replace_server_group_members',
+    'commit_agent_token', 'commit_jwt_secret', 'delete_alert_rule',
+    'delete_server_group', 'delete_site', 'replace_server_group_members',
     'reset_failed_migration', 'update_config', 'update_user'
   ]);
 });
@@ -70,6 +75,41 @@ test('classifier: I9 jwt_secret actions resolve to non-default categories', () =
 
 test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 4 I9 jwt_secret entries', () => {
   for (const a of ['rotate_jwt_secret', 'auto_expire_jwt_secret', 'commit_jwt_secret', 'seed_jwt_secret']) {
+    assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
+    assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
+    assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
+  }
+});
+
+// #167 C1: parallel to the I9 test above. The 4 agent_token + 1
+// revoke_user_tokens actions must NOT fall through to the defaults.
+// Each maps to a non-default category that matches the existing
+// taxonomy (security/security/security/system for the rotation set;
+// security for the user-token revoke).
+test('classifier: I3 agent_token actions resolve to non-default categories', () => {
+  const cases = [
+    { action: 'rotate_agent_token',      category: 'security', severity: 'high',   label: '轮换 Agent 令牌' },
+    { action: 'auto_expire_agent_token', category: 'security', severity: 'high',   label: 'Agent 令牌自动过期' },
+    { action: 'commit_agent_token',      category: 'security', severity: 'medium', label: '提交 Agent 令牌' },
+    { action: 'seed_agent_token',        category: 'system',   severity: 'info',   label: '从 appsettings 初始化 Agent 令牌' }
+  ];
+  for (const c of cases) {
+    const r = classifyAction(c.action);
+    assert.equal(r.category, c.category, `${c.action} should map to category ${c.category}`);
+    assert.equal(r.severity, c.severity, `${c.action} should map to severity ${c.severity}`);
+    assert.equal(r.label,    c.label,    `${c.action} should map to label "${c.label}"`);
+  }
+});
+
+test('classifier: I1 revoke_user_tokens is high severity security', () => {
+  const v = classifyAction('revoke_user_tokens');
+  assert.equal(v.category, 'security');
+  assert.equal(v.severity, 'high');
+  assert.equal(v.label, '撤销用户全部令牌');
+});
+
+test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 5 #167 entries', () => {
+  for (const a of ['rotate_agent_token', 'auto_expire_agent_token', 'commit_agent_token', 'seed_agent_token', 'revoke_user_tokens']) {
     assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
     assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
     assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
