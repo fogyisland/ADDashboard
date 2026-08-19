@@ -15,17 +15,23 @@
 // is still on the old key) and an `error` if the DB lookup itself throws.
 import { verifyJwt } from './jwt.js';
 
+// Fallback literal used when the db facade doesn't expose db.sql (ad-hoc
+// test stubs). Must remain identical to db.sql.config.getJwtSecretBundle
+// for both dialects — the SELECT is dialect-portable. I9 T7-fix (important):
+// the previous version hardcoded a 2-key literal here. Production code
+// always supplies the db facade via buildSql() (see server.js), so the
+// 4-key registry string is now used end-to-end. This fallback only fires
+// for ad-hoc test stubs that construct a minimal db without db.sql.
+const FALLBACK_BUNDLE_SQL = "SELECT config_key, config_value FROM system_config WHERE config_key IN ('jwt_secret_current', 'jwt_secret_previous', 'jwt_secret_rotated_at', 'jwt_secret_previous_ttl_days')";
+
 let _cache = null; // { current: string, previous: string }
 
-export async function _loadJwtSecretBundle(db) {
+export async function _loadJwtSecretBundle(db, sql) {
   if (_cache) return _cache;
-  // The SQL string here is a fallback for tests that construct a stub db
-  // without going through buildSql(). Production code paths always use
-  // db.sql.config.getJwtSecretBundle (Task 3) — same shape, just keyed
-  // off the SQL registry instead of a hardcoded literal.
-  const { rows } = await db.query(
-    "SELECT config_key, config_value FROM system_config WHERE config_key IN ('jwt_secret_current', 'jwt_secret_previous')"
-  );
+  const effectiveSql = sql
+    || db?.sql?.config?.getJwtSecretBundle
+    || FALLBACK_BUNDLE_SQL;
+  const { rows } = await db.query(effectiveSql);
   const map = Object.fromEntries((rows || []).map(r => [r.config_key, r.config_value]));
   _cache = {
     current: map.jwt_secret_current ?? '',
@@ -39,13 +45,18 @@ export function invalidateJwtSecretCache() {
 }
 
 export function userAuth({ db, logger }) {
+  // Resolve the bundle SELECT once from the db facade's SQL registry. If
+  // the db facade has no sql config (e.g. a test stub), pass undefined so
+  // _loadJwtSecretBundle falls back to FALLBACK_BUNDLE_SQL — matches the
+  // proven pattern in agent-token.js (I3).
+  const bundleSql = db?.sql?.config?.getJwtSecretBundle;
   return async (req, res, next) => {
     const h = req.headers.authorization || '';
     const m = h.match(/^Bearer\s+(.+)$/);
     if (!m) return res.status(401).json({ error: 'missing token' });
     let bundle;
     try {
-      bundle = await _loadJwtSecretBundle(db);
+      bundle = await _loadJwtSecretBundle(db, bundleSql);
     } catch (e) {
       logger?.error?.({ err: e }, 'userAuth: jwt_secret bundle lookup failed');
       return res.status(500).json({ error: 'internal' });
