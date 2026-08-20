@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { splitSqlStatements } from '../init/schema-applier.js';
+import { verifyMarkers, parseVerifyMarker } from '../init/verify-marker.js';
 
 export class AlreadyAppliedError extends Error {
   constructor(version) { super(`migration ${version} already applied`); this.status = 409; }
@@ -174,5 +175,82 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     return { ok: true, deleted: affectedRows };
   }
 
-  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration };
+  async function markApplied(version, { appliedBy }) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const filePath = resolveFile(repoRoot, db.dialect, version);
+    if (!filePath) throw new MigrationFileMissingError(version);
+    const content = readFileSync(filePath, 'utf8');
+    const meta = parseFileMeta(filePath);
+    const fileName = filePath.split(/[/\\]/).pop();
+    const checksum = sha256(content);
+    const appliedAtIso = new Date().toISOString();
+    await db.execute(db.sql.schemaMigrations.upsert, [
+      version, meta.description, 'sql', fileName, checksum,
+      appliedAtIso, 0, appliedBy || 'system', 'applied', null
+    ]);
+    return { ok: true, version, status: 'applied', executionMs: 0 };
+  }
+
+  async function baseline(version, { appliedBy }) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const dir = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/migrations/mssql')
+      : join(repoRoot, 'db/migrations');
+    if (!existsSync(dir)) throw new MigrationFileMissingError(version);
+    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    const versions = [];
+    const skipped = [];
+    const appliedAtIso = new Date().toISOString();
+    for (const f of files) {
+      const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+      if (!m) continue;
+      if (m[1] > version) continue;
+      const filePath = join(dir, f);
+      const content = readFileSync(filePath, 'utf8');
+      const markers = parseVerifyMarker(content);
+      if (markers.length > 0) {
+        const { ok, missing } = await verifyMarkers(db, markers);
+        if (!ok) {
+          skipped.push({ version: m[1], missing });
+          continue;
+        }
+      }
+      const checksum = sha256(content);
+      await db.execute(db.sql.schemaMigrations.upsert, [
+        m[1], m[2], 'sql', f, checksum,
+        appliedAtIso, 0, appliedBy || 'system', 'applied', null
+      ]);
+      versions.push(m[1]);
+    }
+    return { ok: true, versions, skipped };
+  }
+
+  async function applyUpTo(version, { appliedBy }) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const dir = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/migrations/mssql')
+      : join(repoRoot, 'db/migrations');
+    if (!existsSync(dir)) throw new MigrationFileMissingError(version);
+    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    const applied = [];
+    const failed = [];
+    for (const f of files) {
+      const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+      if (!m) continue;
+      if (m[1] > version) break;
+      try {
+        const r = await applyMigration(m[1], { appliedBy });
+        applied.push({ version: r.version, status: r.status, executionMs: r.executionMs });
+        if (r.status === 'failed') failed.push({ version: r.version, errorMessage: r.errorMessage });
+      } catch (e) {
+        failed.push({ version: m[1], errorMessage: e.message });
+      }
+    }
+    return { ok: failed.length === 0, applied, failed };
+  }
+
+  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration, markApplied, baseline, applyUpTo };
 }

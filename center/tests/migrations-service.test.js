@@ -265,3 +265,89 @@ describe('migrationsService.dryRunMigration', () => {
     repo.cleanup();
   });
 });
+
+describe('migrationsService.markApplied', () => {
+  test('writes applied row without executing SQL', async () => {
+    const repo = buildFakeRepo({
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.markApplied('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.equal(r.version, '014');
+    assert.equal(r.status, 'applied');
+    assert.equal(r.executionMs, 0);
+    // Exactly one UPSERT call (no transaction, no other execute)
+    const upsertCalls = calls.execute.filter(c => c.sql === 'UPSERT_PLACEHOLDER');
+    assert.equal(upsertCalls.length, 1);
+    const params = upsertCalls[0].params;
+    assert.equal(params[0], '014');                  // version
+    assert.equal(params[params.length - 2], 'applied'); // status
+    assert.equal(params[params.length - 3], 'admin');   // applied_by
+    repo.cleanup();
+  });
+
+  test('throws MigrationFileMissingError when file not found', async () => {
+    const repo = buildFakeRepo({}); // empty
+    const { db } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    await assert.rejects(
+      svc.markApplied('999', { appliedBy: 'admin' }),
+      (e) => e instanceof MigrationFileMissingError && e.status === 404
+    );
+    repo.cleanup();
+  });
+});
+
+describe('migrationsService.baseline', () => {
+  test('marks all versions ≤ N as applied when markers pass', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);',
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.baseline('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.ok(Array.isArray(r.versions));
+    assert.ok(r.versions.length >= 1);
+    // 008 should be in versions (≤ 014, no markers, so passes)
+    assert.ok(r.versions.includes('008'));
+    repo.cleanup();
+  });
+
+  test('skips files with failing verify markers', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': '-- verify: table nonexistent_table\nCREATE TABLE ad_lockout_events (id INT);'
+    });
+    const { db } = buildMockDb({ initialRows: [] });
+    // verifyMarkers reads db.sql.probe; add minimal stub
+    db.sql.probe = { table: 'PROBE_TABLE_SQL', column: 'PROBE_COLUMN_SQL' };
+    // verifyMarkers will query db.query with a probe SQL — return empty rows to simulate missing table
+    db.query = async () => ({ rows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.baseline('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.equal(r.versions.length, 0); // skipped
+    assert.equal(r.skipped.length, 1);
+    assert.equal(r.skipped[0].version, '008');
+    repo.cleanup();
+  });
+});
+
+describe('migrationsService.applyUpTo', () => {
+  test('applies all pending versions up to N in order', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);',
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.applyUpTo('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.ok(Array.isArray(r.applied));
+    assert.ok(r.applied.length >= 1);
+    repo.cleanup();
+  });
+});
