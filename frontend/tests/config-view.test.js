@@ -2,6 +2,7 @@ import { test, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import ConfigView from '../src/views/admin/ConfigView.vue';
+import AgentTokenRotateModal from '../src/components/AgentTokenRotateModal.vue';
 import { adminApi } from '../src/api/admin.js';
 
 vi.mock('../src/api/admin.js', () => ({
@@ -9,7 +10,12 @@ vi.mock('../src/api/admin.js', () => ({
     getConfig: vi.fn(),
     updateConfig: vi.fn(),
     getConfigAudit: vi.fn().mockResolvedValue({ data: [] }),
-    rollbackConfig: vi.fn()
+    rollbackConfig: vi.fn(),
+    getAgentTokenState: vi.fn().mockResolvedValue({
+      data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
+    }),
+    rotateAgentToken: vi.fn(),
+    commitAgentToken: vi.fn()
   }
 }));
 
@@ -19,6 +25,12 @@ beforeEach(() => {
   adminApi.getConfigAudit.mockReset();
   adminApi.getConfigAudit.mockResolvedValue({ data: [] });
   adminApi.rollbackConfig.mockReset();
+  adminApi.getAgentTokenState.mockReset();
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
+  });
+  adminApi.rotateAgentToken.mockReset();
+  adminApi.commitAgentToken.mockReset();
 });
 
 const SAMPLE = {
@@ -64,31 +76,121 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   expect(w.find('button.save').attributes('disabled')).toBeDefined(); // back to clean
 });
 
-// #167 I1: ad_agent_token ConfigView row is now a read-only notice-row.
-// The legacy tests for "edit risky field" were replaced with assertions
-// matching the new shape — no input, no 生成/复制 buttons, but a visible
-// "已迁移" marker + the rotation endpoint pointer. The backend
-// putConfigInTx rejects `ad_agent_token` writes with 400; the UI must
-// not surface an editable input.
-test('ad_agent_token row is a read-only notice (no input, deprecated marker)', async () => {
+// I3 dual-key agent token rotation: ad_agent_token row is now interactive.
+// Mask + status badge + rotate button are visible by default; commit button
+// appears only when mode === 'dual'. The backend putConfigInTx rejects
+// `ad_agent_token` writes with 400 (it lives in agent_token_current/previous
+// now); the UI must not surface an editable input here.
+test('ad_agent_token row renders mask + mode badge + 轮换 button (no input)', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
+  });
   const w = mount(ConfigView);
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
-  expect(tokenRow, 'ad_agent_token row must still render (label + raw key)').toBeTruthy();
-  // No editable input on the row.
+  expect(tokenRow).toBeTruthy();
+  // Mask + status badge + button, no editable input.
+  expect(tokenRow.find('.token-mask').exists()).toBe(true);
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.rotate-btn').exists()).toBe(true);
   expect(tokenRow.find('input').exists()).toBe(false);
-  // No 生成 / 复制 buttons (rotation moved to /api/admin/agent-token/rotate).
-  expect(tokenRow.text()).not.toContain('生成');
-  expect(tokenRow.text()).not.toContain('复制');
-  // Read-only notice shape.
-  expect(tokenRow.find('.readonly-notice').exists()).toBe(true);
-  expect(tokenRow.find('.readonly-value').exists()).toBe(true);
-  expect(tokenRow.find('.deprecated-marker').exists()).toBe(true);
-  // Rotation endpoint pointer visible to operators.
-  expect(tokenRow.text()).toContain('/api/admin/agent-token/rotate');
+  // No deprecated markers — the rotation flow is now reachable in-UI.
+  expect(tokenRow.find('.deprecated-marker').exists()).toBe(false);
+  expect(tokenRow.text()).not.toContain('已迁移');
+});
+
+test('agent-token row: 轮换 button calls rotateAgentToken and sets state for modal', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockResolvedValue({ data: { newToken: 'a3f9bc12deadbeefcafe', rotatedAt: '2026-08-20T00:00:00Z' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  expect(adminApi.rotateAgentToken).toHaveBeenCalled();
+  // Task 1 produces the refs (showTokenModal, rotatedNewToken) that Task 3
+  // will mount the modal with. Assert via the VM exposed by the wrapper.
+  const vm = w.vm;
+  expect(vm.showTokenModal).toBe(true);
+  expect(vm.rotatedNewToken).toBe('a3f9bc12deadbeefcafe');
+});
+
+test('agent-token row: rotate success flips mode to dual and shows commit button', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockResolvedValue({ data: { newToken: 'xx', rotatedAt: '2026-08-20T00:00:00Z' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  // Badge re-renders to dual; commit button appears.
+  expect(tokenRow.find('.token-mode-dual').exists()).toBe(true);
+  expect(tokenRow.find('button.commit-btn').exists()).toBe(true);
+});
+
+test('agent-token row: commit button calls commitAgentToken and flips mode back to single', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'dual', previousExpiresAt: '2026-09-19T00:00:00Z', ttlDays: 30 }
+  });
+  adminApi.commitAgentToken.mockResolvedValue({ data: { ok: true } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  expect(tokenRow.find('.token-mode-dual').exists()).toBe(true);
+  await tokenRow.find('button.commit-btn').trigger('click');
+  await flushPromises();
+  expect(adminApi.commitAgentToken).toHaveBeenCalled();
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.commit-btn').exists()).toBe(false);
+});
+
+test('agent-token row: rotate failure surfaces notifyError and leaves mode unchanged', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockRejectedValue({ response: { data: { error: 'rotate failed' } } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  // Modal should NOT open on failure.
+  expect(w.findComponent({ name: 'AgentTokenRotateModal' }).exists()).toBe(false);
+  // Mode badge stays single.
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+});
+
+test('agent-token row: initial mode=dual from server renders dual badge + commit button on first paint', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'dual', previousExpiresAt: '2026-09-19T00:00:00Z', ttlDays: 30 }
+  });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  expect(tokenRow.find('.token-mode-dual').exists()).toBe(true);
+  expect(tokenRow.text()).toContain('双令牌');
+  expect(tokenRow.text()).toContain('2026');
+  expect(tokenRow.find('button.commit-btn').exists()).toBe(true);
+});
+
+test('agent-token row: token-state fetch failure degrades to single-mode badge (does not break page)', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockRejectedValue(new Error('network'));
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  // Page still rendered, row shows single-mode safe default.
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.rotate-btn').exists()).toBe(true);
 });
 
 test('cancel button restores the snapshot', async () => {
@@ -434,4 +536,49 @@ test('derived Agent 连接地址 stays in sync as listenPort is edited', async (
   await listenRow.find('input').setValue('9090');
   await flushPromises();
   expect(addrRow.find('.derived-value').text()).toBe('http://10.0.0.42:9090');
+});
+
+// ----- Task 3 — Modal wired into ConfigView -----
+
+test('agent-token row: modal opened on rotate renders newToken and closes on emit', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockResolvedValue({ data: { newToken: 'newtoken-xyz', rotatedAt: '2026-08-20T00:00:00Z' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  const modal = w.findComponent(AgentTokenRotateModal);
+  expect(modal.exists()).toBe(true);
+  expect(modal.props('newToken')).toBe('newtoken-xyz');
+  // Emit close — modal should disappear.
+  await modal.vm.$emit('close');
+  await flushPromises();
+  expect(w.findComponent(AgentTokenRotateModal).exists()).toBe(false);
+});
+
+test('agent-token row: modal committed event reloads token state from server', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState
+    .mockResolvedValueOnce({ data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 } })
+    .mockResolvedValueOnce({ data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 } });
+  adminApi.rotateAgentToken.mockResolvedValue({ data: { newToken: 'xx', rotatedAt: '2026-08-20T00:00:00Z' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  // After rotate, we already set local state optimistically in
+  // onRotateClick (no fetch there). Modal committed → reload → server
+  // returns single (simulating commit already applied).
+  const modal = w.findComponent(AgentTokenRotateModal);
+  await modal.vm.$emit('committed');
+  await flushPromises();
+  // Two getAgentTokenState calls total: initial load + post-commit reload.
+  expect(adminApi.getAgentTokenState).toHaveBeenCalledTimes(2);
+  // Modal closed itself when committed was emitted (modal handler does
+  // emit('close') too); re-render shows single-mode badge.
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
 });

@@ -82,6 +82,10 @@ $comparisons = @(
   # Non-AD server management — Task 15 (EmailConfigCard + ConfigView integration)
   # EmailConfigCard.vue was deleted in T17 (split to EmailConfigView); see email_split.md.
   @{ left = 'frontend/src/views/admin/ConfigView.vue';       right = 'publish/system/frontend/src/views/admin/ConfigView.vue' }
+  # #167 follow-up (I1 + I3): dual-key agent-token rotation UI surface —
+  # ConfigView row + rotate modal (modal mounts new token once, copy, then
+  # commit closes the previous key).
+  @{ left = 'frontend/src/components/AgentTokenRotateModal.vue'; right = 'publish/system/frontend/src/components/AgentTokenRotateModal.vue' }
   # Non-AD server management — Task 16 (agentType switch in agent.js + install-agent.ps1 -AgentType param)
   @{ left = 'agent/agent.js';                                right = 'publish/system/agent/agent.js' }
   @{ left = 'agent/src/config.js';                           right = 'publish/system/agent/src/config.js' }
