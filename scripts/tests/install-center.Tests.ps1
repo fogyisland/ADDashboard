@@ -45,7 +45,7 @@ Describe 'install-center -InPlace switch' {
 Describe 'install-center frontend build dependencies (fresh publish bundle)' {
   # Bug fixed 2026-08-16: in-place branch ran `npm run build` from frontend/ but
   # fresh publish bundle has no frontend/node_modules → `vite build` failed with
-  # "'vite' 不是内部或外部命令". Non-in-place branch had the same gap (relied on
+  # "'vite' is not recognized as an internal or external command". Non-in-place branch had the same gap (relied on
   # root node_modules existing; fresh publish bundle doesn't have one). Guard:
   # both branches must check node_modules and install before running the build.
   BeforeAll {
@@ -233,7 +233,7 @@ Describe 'install-center service recovery' {
 
 Describe 'install-center Start-ServiceSafe diagnostics (Start-Service Win32 surfacing)' {
   # Regression guard for the 6th silent failure (2026-08-16). User reported:
-  #   Start-Service : 无法启动服务"AD Replication Dashboard Center (ADDashboardCenter)".
+  #   Start-Service : Cannot start service "AD Replication Dashboard Center (ADDashboardCenter)".
   # at Service.psm1:41. The exception was propagated raw with no Win32 code
   # surfaced, no stderr log hint, and no diagnostic dump of NSSM AppDirectory/
   # Application. Operators couldn't tell whether the failure was a missing dir,
@@ -334,7 +334,7 @@ Describe 'install-center Start-ServiceSafe diagnostics (Start-Service Win32 surf
     # round of diagnostics added `nssm get $Name AppDirectory` to capture the
     # current AppDirectory, but nssm.exe writes the value + CR/LF to stdout.
     # PowerShell `&` captures that as a string ending in `\r\n`. Test-Path then
-    # throws "路径中具有非法字符" (ItemExistsArgumentError) on the un-trimmed
+    # throws "illegal character in path" (ItemExistsArgumentError) on the un-trimmed
     # path, propagating the exception raw and aborting the install. Without
     # this trim, every install where Start-Service is attempted crashes in
     # the diagnostics code that was supposed to surface the actual error.
@@ -470,7 +470,7 @@ Describe 'install-center HTTP readiness probe (Wait-ForHttpOk)' {
   # Cold cache (modules loading, DB pool init, route mount) takes 2-15s
   # before Express binds the listening socket. A single Invoke-WebRequest
   # immediately after Start-ServiceSafe races the boot and prints
-  # "init status: unreachable: 无法连接到远程服务器" even though the
+  # "init status: unreachable: unable to connect to remote server" even though the
   # service is fine. Wait-ForHttpOk polls up to 30s and is the only way
   # to make the install's success message trustworthy.
   BeforeAll {

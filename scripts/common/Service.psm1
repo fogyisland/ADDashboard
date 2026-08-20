@@ -56,7 +56,7 @@ function Start-ServiceSafe {
     $nssm = Get-NssmPath
     # nssm get writes the value + CR/LF to stdout. Select-Object -First 1 takes
     # the first line; .Trim() strips the trailing whitespace. Without this,
-    # Test-Path below throws "路径中具有非法字符" (ItemExistsArgumentError)
+    # Test-Path below throws "illegal character in path" (ItemExistsArgumentError)
     # because `$appDir` ends with `\r\n` — the second silent failure in this
     # install chain caused by the FIRST round of diagnostics.
     $appDir       = (& $nssm get $Name AppDirectory   2>$null | Select-Object -First 1).Trim()
