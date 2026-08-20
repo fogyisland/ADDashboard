@@ -3,8 +3,21 @@
     <h2>数据库迁移管理</h2>
     <p class="hint">当前数据库方言: <strong>{{ dialect }}</strong></p>
 
+    <div v-if="rows.length > 0" class="version-header">
+      <span class="version-label">当前版本: <strong>{{ latestAppliedVersion || '—' }}</strong></span>
+      <span class="version-arrow">→</span>
+      <span class="version-label">最新版本: <strong>{{ latestFileVersion }}</strong></span>
+      <span v-if="pendingCount > 0" class="pending-pill">⚠ 有 {{ pendingCount }} 条待升级</span>
+      <span v-else class="up-to-date-pill">✓ 已是最新</span>
+    </div>
+
     <div class="actions-bar">
+      <button class="upgrade-btn" :disabled="upToDate || upgrading" @click="doUpgrade">
+        {{ upgrading ? '升级中…' : (upToDate ? '已是最新' : '升级到最新') }}
+      </button>
       <button v-if="pendingCount > 0" class="apply-all" @click="applyAllPending">全部应用 ({{ pendingCount }})</button>
+      <button :disabled="upgrading" @click="openBaselineModal">记录当前版本</button>
+      <button :disabled="upgrading" @click="openApplyUpToModal">应用到版本</button>
       <button @click="refresh">刷新</button>
     </div>
 
@@ -47,10 +60,16 @@
                 <button class="apply-btn" :disabled="applying.has(row.version)" @click="applyOne(row)">
                   {{ applying.has(row.version) ? '应用中…' : '应用' }}
                 </button>
+                <button class="mark-btn" :disabled="applying.has(row.version)" @click="doMarkApplied(row)">
+                  {{ applying.has(row.version) ? '标记中…' : '标记已应用' }}
+                </button>
               </template>
               <template v-if="row.status === 'failed'">
                 <button class="reset-btn" :disabled="applying.has(row.version)" @click="resetOne(row)">
                   {{ applying.has(row.version) ? '重置中…' : '重置' }}
+                </button>
+                <button class="mark-btn" :disabled="applying.has(row.version)" @click="doMarkApplied(row)">
+                  {{ applying.has(row.version) ? '标记中…' : '标记已应用' }}
                 </button>
               </template>
             </td>
@@ -90,13 +109,39 @@
         <button @click="modalDryRun = null">关闭</button>
       </div>
     </div>
+
+    <!-- Baseline modal (记录当前系统版本) -->
+    <div v-if="modalBaselineOpen" class="modal-bg" @click.self="closeBaselineModal">
+      <div class="modal">
+        <h3>记录当前系统版本</h3>
+        <p class="hint">把指定版本及之前的所有 migration 标记为已应用(不执行 SQL)。适用于手动执行过 migrations 或恢复备份后对齐。需 verify marker 命中。</p>
+        <input v-model="baselineInput" placeholder="版本号 (例: 014)" :disabled="upgrading" />
+        <div class="modal-actions">
+          <button @click="closeBaselineModal" :disabled="upgrading">取消</button>
+          <button @click="confirmBaseline" :disabled="!baselineInput || upgrading">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Apply-up-to modal -->
+    <div v-if="modalApplyUpToOpen" class="modal-bg" @click.self="closeApplyUpToModal">
+      <div class="modal">
+        <h3>应用到版本</h3>
+        <p class="hint">依次应用所有 pending migration,直到指定版本(含)。</p>
+        <input v-model="applyUpToInput" placeholder="版本号 (例: 014)" :disabled="upgrading" />
+        <div class="modal-actions">
+          <button @click="closeApplyUpToModal" :disabled="upgrading">取消</button>
+          <button @click="confirmApplyUpTo" :disabled="!applyUpToInput || upgrading">确认</button>
+        </div>
+      </div>
+    </div>
   </AdminLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
-import { listMigrations, applyMigration, dryRunMigration, resetMigration } from '../../api/migrations.js';
+import { listMigrations, applyMigration, dryRunMigration, resetMigration, markApplied, baseline, applyUpTo, upgrade } from '../../api/migrations.js';
 import { notifyError, notifySuccess } from '../../lib/notify.js';
 
 const rows = ref([]);
@@ -104,6 +149,10 @@ const loading = ref(false);
 const error = ref(null);
 const modalContent = ref(null);
 const modalDryRun = ref(null);
+const modalBaselineOpen = ref(false);
+const modalApplyUpToOpen = ref(false);
+const baselineInput = ref('');
+const applyUpToInput = ref('');
 // Versions with an in-flight apply/reset. A Set (not a per-row boolean)
 // so 全部应用 can track several rows without mutating the row objects,
 // which get replaced wholesale on every refresh().
@@ -112,9 +161,28 @@ const applying = ref(new Set());
 // because a successful refresh means the row's real status came from the server.
 const rowError = ref({});
 const globalError = ref(null);
+// True while the primary CTA (升级到最新) or a modal-confirmed action is in flight.
+// Distinct from `applying` (per-row) so the page-level CTA stays responsive to
+// pending rows even while no single-row apply is running.
+const upgrading = ref(false);
 
 const dialect = computed(() => rows.value[0]?.dialect || 'unknown');
 const pendingCount = computed(() => rows.value.filter(r => r.status === 'pending').length);
+
+// Header: highest version known on disk (rows are sorted ascending by server).
+const latestFileVersion = computed(() => rows.value[rows.value.length - 1]?.version || '—');
+// Header: highest version whose status is 'applied'. '—' when none applied yet.
+const latestAppliedVersion = computed(() => {
+  const applied = rows.value.filter(r => r.status === 'applied');
+  if (applied.length === 0) return null;
+  return applied[applied.length - 1].version;
+});
+// Header: "已是最新" pill shows when no pending rows AND nothing newer on disk.
+const upToDate = computed(() => {
+  if (pendingCount.value > 0) return false;
+  if (rows.value.length === 0) return false;
+  return latestFileVersion.value === latestAppliedVersion.value;
+});
 
 async function refresh() {
   loading.value = true;
@@ -243,6 +311,113 @@ async function applyAllPending() {
   }
 }
 
+// Per-row 标记已应用 — only meaningful for pending/failed rows that the operator
+// has already executed manually (or restored from a backup). Does NOT execute
+// any SQL — server requires a verify marker (checksum match) to accept.
+async function doMarkApplied(row) {
+  if (!confirm(`标记 migration ${row.version} 为已应用?\n\n不执行 SQL — 适用于你已经手动执行了此 migration 的场景。`)) return;
+  applying.value = new Set(applying.value).add(row.version);
+  delete rowError.value[row.version];
+  globalError.value = null;
+  try {
+    await markApplied(row.version);
+    notifySuccess(`Migration ${row.version} 已标记为已应用`);
+    await refresh();
+  } catch (e) {
+    const msg = errMsg(e);
+    rowError.value = { ...rowError.value, [row.version]: msg };
+    notifyError(`标记失败: ${msg}`);
+  } finally {
+    const next = new Set(applying.value);
+    next.delete(row.version);
+    applying.value = next;
+  }
+}
+
+// Page-level primary CTA. Calls the bulk /upgrade endpoint, which applies
+// every pending migration in order AND re-runs the seed file if its
+// checksum changed. The server returns a `message` for both success and
+// partial failure — surface it directly.
+async function doUpgrade() {
+  if (upToDate.value) return; // disabled, but guard for keyboard activation
+  if (!confirm('执行架构升级 + 重跑 seed?\n\n将依次应用所有 pending migration,如有 seed 更新也会一并应用。')) return;
+  upgrading.value = true;
+  globalError.value = null;
+  try {
+    const r = await upgrade();
+    notifySuccess(r?.data?.message || '升级完成');
+    await refresh();
+  } catch (e) {
+    const msg = errMsg(e);
+    globalError.value = `升级失败: ${msg}`;
+    notifyError(`升级失败: ${msg}`);
+  } finally {
+    upgrading.value = false;
+  }
+}
+
+// Modal: 记录当前系统版本 (server: /baseline). Marks every migration up to
+// and including the input version as applied — without executing any SQL.
+// Use case: operator restored a DB backup that already has the schema.
+// Skipped versions (no verify marker) are surfaced as a separate notify.
+function openBaselineModal() {
+  baselineInput.value = '';
+  modalBaselineOpen.value = true;
+}
+function closeBaselineModal() {
+  modalBaselineOpen.value = false;
+  baselineInput.value = '';
+}
+async function confirmBaseline() {
+  if (!baselineInput.value) return;
+  upgrading.value = true;
+  try {
+    const r = await baseline(baselineInput.value);
+    notifySuccess(`基线 ${baselineInput.value} 已标记: ${r.data.versions.length} 个版本`);
+    if (r.data.skipped && r.data.skipped.length > 0) {
+      notifyError(`${r.data.skipped.length} 个版本因 verify marker 缺失跳过`);
+    }
+    closeBaselineModal();
+    await refresh();
+  } catch (e) {
+    notifyError(`基线标记失败: ${errMsg(e)}`);
+  } finally {
+    upgrading.value = false;
+  }
+}
+
+// Modal: 应用到版本 (server: /apply-up-to). Applies every pending migration
+// up to and including the input version. Failures are reported but do not
+// stop the loop (server-side behaviour).
+function openApplyUpToModal() {
+  applyUpToInput.value = '';
+  modalApplyUpToOpen.value = true;
+}
+function closeApplyUpToModal() {
+  modalApplyUpToOpen.value = false;
+  applyUpToInput.value = '';
+}
+async function confirmApplyUpTo() {
+  if (!applyUpToInput.value) return;
+  upgrading.value = true;
+  try {
+    const r = await applyUpTo(applyUpToInput.value);
+    const failed = r.data.failed?.length || 0;
+    const applied = r.data.applied?.length || 0;
+    if (failed > 0) {
+      notifyError(`应用完成: ${applied} 成功, ${failed} 失败`);
+    } else {
+      notifySuccess(`应用完成: ${applied} 条`);
+    }
+    closeApplyUpToModal();
+    await refresh();
+  } catch (e) {
+    notifyError(`应用失败: ${errMsg(e)}`);
+  } finally {
+    upgrading.value = false;
+  }
+}
+
 function formatTime(s) {
   if (!s) return '—';
   const d = new Date(s);
@@ -254,8 +429,16 @@ onMounted(refresh);
 
 <style scoped>
 .hint { color: var(--muted); font-size: 13px; }
+.version-header { display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin: 12px 0; background: var(--panel); border: 1px solid #1e293b; border-radius: 4px; }
+.version-label { font-size: 14px; color: var(--text); }
+.version-label strong { font-size: 16px; color: var(--accent); margin: 0 4px; }
+.version-arrow { color: var(--muted); font-size: 16px; }
+.pending-pill { background: #422006; color: #fbbf24; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.up-to-date-pill { background: #022c22; color: #10b981; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
 .actions-bar { display: flex; gap: 8px; margin: 12px 0; }
 .apply-all { background: var(--accent); color: #0b1220; padding: 6px 14px; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
+.upgrade-btn { background: #10b981; color: #fff; padding: 6px 14px; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
+.upgrade-btn:disabled { background: #1e293b; color: var(--muted); cursor: not-allowed; }
 .migrations-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .migrations-table th, .migrations-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; }
 .migrations-table tr.row-failed { background: #422006; }
@@ -268,6 +451,11 @@ onMounted(refresh);
 .actions button { padding: 4px 10px; background: #0b1220; color: var(--text); border: 1px solid #1e293b; border-radius: 3px; cursor: pointer; font-size: 11px; }
 .actions button:hover { border-color: var(--accent); }
 .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.mark-btn { background: #f59e0b; color: #0b1220; font-weight: 600; }
+.mark-btn:hover:not(:disabled) { border-color: #f59e0b; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.modal-actions button { padding: 6px 14px; }
+.modal input[type="text"], .modal input:not([type]) { width: 100%; padding: 8px; background: #0b1220; color: var(--text); border: 1px solid #1e293b; border-radius: 3px; margin-top: 8px; font-family: monospace; }
 .error-cell { color: #fca5a5; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-error-bar td { background: #450a0a; color: #fecaca; font-size: 12px; padding: 6px 10px; }
 .global-error { margin-top: 12px; padding: 10px 12px; background: #7f1d1d; border-radius: 4px; color: #fecaca; white-space: pre-wrap; font-size: 12px; }

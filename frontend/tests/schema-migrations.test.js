@@ -45,6 +45,10 @@ beforeEach(() => {
   vi.mocked(api.applyMigration).mockReset();
   vi.mocked(api.dryRunMigration).mockReset();
   vi.mocked(api.resetMigration).mockReset();
+  vi.mocked(api.markApplied).mockReset();
+  vi.mocked(api.baseline).mockReset();
+  vi.mocked(api.applyUpTo).mockReset();
+  vi.mocked(api.upgrade).mockReset();
   vi.mocked(notify.notifyError).mockReset();
   vi.mocked(notify.notifySuccess).mockReset();
 });
@@ -172,4 +176,32 @@ test('applyAllPending collects failures and reports a summary', async () => {
   // continues past the first failure
   expect(api.applyMigration).toHaveBeenCalledTimes(2);
   expect(notify.notifyError).toHaveBeenCalledWith(expect.stringContaining('boom-010'));
+});
+
+test('pending row shows [标记已应用] button', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  const pendingRow = w.findAll('tr').find(r => r.text().includes('010'));
+  expect(pendingRow.text()).toContain('标记已应用');
+});
+
+test('top bar shows [升级到最新] button', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  expect(w.text()).toContain('升级到最新');
+});
+
+test('click [升级到最新] → calls upgrade API', async () => {
+  vi.mocked(api.listMigrations)
+    .mockResolvedValueOnce({ data: sampleRows })
+    .mockResolvedValueOnce({ data: sampleRows });
+  vi.mocked(api.upgrade).mockResolvedValue({ data: { ok: true, migrations: { applied: [], failed: [] }, seed: { ran: false, reason: 'unchanged' }, message: 'ok' } });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  await w.findAll('button').find(b => b.text().includes('升级到最新')).trigger('click');
+  await flushPromises();
+  expect(api.upgrade).toHaveBeenCalled();
 });
