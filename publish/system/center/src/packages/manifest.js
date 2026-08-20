@@ -7,8 +7,10 @@
 // admin UI generates the form.
 
 import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 
 const ajv = new Ajv({ allErrors: true, strict: false });
+addFormats(ajv);
 
 const manifestSchema = {
   type: 'object',

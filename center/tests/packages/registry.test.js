@@ -156,3 +156,67 @@ describe('RegistryClient', () => {
     rmSync(badCacheDir, { recursive: true, force: true });
   });
 });
+
+import { validateRegistryIndex } from '../../src/packages/registry.js';
+
+describe('validateRegistryIndex (ajv-formats enforcement)', () => {
+  // Regression: pre-ajv-formats AJV silently skipped `format: 'date-time'`
+  // validation, so a malformed releasedAt from a package registry would pass
+  // validation and later collide with a MySQL DATETIME column on INSERT.
+  // Installing ajv-formats registers the date-time format validator.
+  it('rejects releasedAt that is not ISO 8601', () => {
+    const bad = {
+      version: 1,
+      updatedAt: '2026-07-29T00:00:00Z',
+      packages: [{
+        name: 'pkg',
+        latestVersion: '1.0.0',
+        type: 'gauge',
+        versions: [{
+          version: '1.0.0',
+          package: 'pkg-1.0.0.zip',
+          releasedAt: 'yesterday-at-3pm',  // not ISO 8601
+        }],
+      }],
+    };
+    const r = validateRegistryIndex(bad);
+    assert.equal(r.valid, false);
+    assert.ok(
+      r.errors.some(e => e.instancePath && e.instancePath.includes('releasedAt')),
+      `expected an error referencing releasedAt, got: ${JSON.stringify(r.errors)}`
+    );
+  });
+
+  it('rejects top-level updatedAt that is not ISO 8601', () => {
+    const bad = {
+      version: 1,
+      updatedAt: 'not-a-date',
+      packages: [],
+    };
+    const r = validateRegistryIndex(bad);
+    assert.equal(r.valid, false);
+    assert.ok(
+      r.errors.some(e => e.instancePath && e.instancePath.includes('updatedAt')),
+      `expected an error referencing updatedAt, got: ${JSON.stringify(r.errors)}`
+    );
+  });
+
+  it('accepts well-formed ISO 8601 dates', () => {
+    const good = {
+      version: 1,
+      updatedAt: '2026-07-29T00:00:00Z',
+      packages: [{
+        name: 'pkg',
+        latestVersion: '1.0.0',
+        type: 'gauge',
+        versions: [{
+          version: '1.0.0',
+          package: 'pkg-1.0.0.zip',
+          releasedAt: '2026-07-29T12:34:56Z',
+        }],
+      }],
+    };
+    const r = validateRegistryIndex(good);
+    assert.equal(r.valid, true, `expected valid, got errors: ${JSON.stringify(r.errors)}`);
+  });
+});

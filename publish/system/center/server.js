@@ -100,11 +100,24 @@ const logger = createLogger({ component: 'center', level: 'info' });
 // synchronous (pino destination {dest:2,sync:true}) so the lines below
 // land on stderr before process.exit fires.
 process.on('uncaughtException', (err, origin) => {
+  // "db not initialized" fires repeatedly while the service runs in init-mode
+  // (agents send heartbeats / fetchConfig before the operator completes the
+  // /api/init wizard). Crashing on it makes the service unreachable from
+  // /api/init, which means the wizard can't be completed, which means the
+  // DB never initializes — NSSM restart loop. Log and stay alive.
+  if (err && err.message && err.message.startsWith('db not initialized')) {
+    logger.warn({ err: err.message, origin }, 'init-mode uncaughtException (kept alive)');
+    return;
+  }
   logger.fatal({ err: err && err.message, stack: err && err.stack, origin }, 'uncaughtException');
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
+  if (err.message && err.message.startsWith('db not initialized')) {
+    logger.warn({ err: err.message }, 'init-mode unhandledRejection (kept alive)');
+    return;
+  }
   logger.fatal({ err: err.message, stack: err.stack }, 'unhandledRejection');
   process.exit(1);
 });

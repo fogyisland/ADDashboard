@@ -24,10 +24,12 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'no
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 import { PkgError } from './errors.js';
 import indexSchema from './registry-index.schema.json' with { type: 'json' };
 
 const ajv = new Ajv({ allErrors: true, strict: false });
+addFormats(ajv);
 const validateIndex = ajv.compile(indexSchema);
 
 // Exported for tests (Task 9) — callers should use RegistryClient.fetchIndex().
