@@ -7,6 +7,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseVerifyMarker, verifyMarkers } from './verify-marker.js';
+import { toMysqlDatetime } from '../utils/datetime.js';
 
 export function splitSqlStatements(sql) {
   const out = [];
@@ -200,7 +201,9 @@ export async function backfillMigrations(dialect, db, opts = {}) {
   const dir = resolveMigrationsDir(repoRoot, dialect);
   if (!existsSync(dir)) return { count: 0, skipped: [] };
   const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
-  const appliedAt = new Date().toISOString();
+  // MySQL DATETIME rejects ISO 8601 strings; the schema_migrations.applied_at
+  // column is DATETIME on MySQL. Pre-format per the convention in db/drivers/mysql.js.
+  const appliedAt = dialect === 'mysql' ? toMysqlDatetime(new Date()) : new Date().toISOString();
   const logger = opts.logger ?? console;
   let count = 0;
   const skipped = [];

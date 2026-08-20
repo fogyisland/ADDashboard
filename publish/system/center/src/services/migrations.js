@@ -3,6 +3,15 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { splitSqlStatements } from '../init/schema-applier.js';
 import { verifyMarkers, parseVerifyMarker } from '../init/verify-marker.js';
+import { toMysqlDatetime } from '../utils/datetime.js';
+
+// MySQL DATETIME columns reject ISO 8601 strings (`2026-08-20T09:40:18.985Z`);
+// the schema_migrations.applied_at column is DATETIME on MySQL, so callers
+// MUST pre-format per the convention documented in db/drivers/mysql.js line 9-15.
+// MSSQL datetime2 accepts ISO natively, so dialect-aware:
+function appliedAtForDialect(dialect) {
+  return dialect === 'mysql' ? toMysqlDatetime(new Date()) : new Date().toISOString();
+}
 
 export class AlreadyAppliedError extends Error {
   constructor(version) { super(`migration ${version} already applied`); this.status = 409; }
@@ -142,7 +151,7 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     const executionMs = Date.now() - t0;
 
     // Upsert OUTSIDE transaction
-    const appliedAtIso = new Date().toISOString();
+    const appliedAtIso = appliedAtForDialect(db.dialect);
     await db.execute(db.sql.schemaMigrations.upsert, [
       version,
       meta.description,
@@ -184,7 +193,7 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     const meta = parseFileMeta(filePath);
     const fileName = filePath.split(/[/\\]/).pop();
     const checksum = sha256(content);
-    const appliedAtIso = new Date().toISOString();
+    const appliedAtIso = appliedAtForDialect(db.dialect);
     await db.execute(db.sql.schemaMigrations.upsert, [
       version, meta.description, 'sql', fileName, checksum,
       appliedAtIso, 0, appliedBy || 'system', 'applied', null
@@ -202,7 +211,7 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
     const versions = [];
     const skipped = [];
-    const appliedAtIso = new Date().toISOString();
+    const appliedAtIso = appliedAtForDialect(db.dialect);
     for (const f of files) {
       const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
       if (!m) continue;
