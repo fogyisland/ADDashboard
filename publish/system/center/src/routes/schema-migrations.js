@@ -84,5 +84,89 @@ export function schemaMigrationsRouter({ requireAuth, requirePerm, logger, getRe
     }
   });
 
+  r.post('/api/admin/migrations/:version/mark-applied', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const appliedBy = (req.body && req.body.appliedBy) || req.user?.username || req.user?.sub || 'unknown';
+      const result = await service.markApplied(req.params.version, { appliedBy });
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'mark_applied',
+        target: 'schema_migrations',
+        payload: { version: result.version, status: result.status }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'mark applied failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  r.post('/api/admin/migrations/baseline', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const { version } = req.body || {};
+      if (!version) {
+        return res.status(400).json({ error: 'version required' });
+      }
+      const appliedBy = req.body.appliedBy || req.user?.username || req.user?.sub || 'unknown';
+      const result = await service.baseline(version, { appliedBy });
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'baseline',
+        target: 'schema_migrations',
+        payload: { version, count: result.versions.length, skipped: result.skipped.length }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'baseline failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  r.post('/api/admin/migrations/apply-up-to', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const { version } = req.body || {};
+      if (!version) {
+        return res.status(400).json({ error: 'version required' });
+      }
+      const appliedBy = req.body.appliedBy || req.user?.username || req.user?.sub || 'unknown';
+      const result = await service.applyUpTo(version, { appliedBy });
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'apply_up_to',
+        target: 'schema_migrations',
+        payload: { version, applied: result.applied.length, failed: result.failed.length }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'apply-up-to failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
+  r.post('/api/admin/migrations/upgrade', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const appliedBy = (req.body && req.body.appliedBy) || req.user?.username || req.user?.sub || 'unknown';
+      const result = await service.upgrade({ appliedBy });
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'upgrade_db',
+        target: 'schema_migrations',
+        payload: { applied: result.migrations.applied.length, failed: result.migrations.failed.length, seed: result.seed.reason }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'upgrade failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
   return r;
 }

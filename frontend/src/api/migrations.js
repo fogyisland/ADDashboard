@@ -15,3 +15,19 @@ export function dryRunMigration(version) {
 export function resetMigration(version) {
   return api.post(`/api/admin/migrations/${encodeURIComponent(version)}/reset`, {});
 }
+
+export function markApplied(version) {
+  return api.post(`/api/admin/migrations/${encodeURIComponent(version)}/mark-applied`, {});
+}
+
+export function baseline(version) {
+  return api.post('/api/admin/migrations/baseline', { version });
+}
+
+export function applyUpTo(version) {
+  return api.post('/api/admin/migrations/apply-up-to', { version });
+}
+
+export function upgrade() {
+  return api.post('/api/admin/migrations/upgrade', {});
+}

@@ -35,6 +35,13 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['probe_state_changed',            'changes'],
   ['apply_migration',                'changes'],
   ['reset_failed_migration',         'changes'],
+  // 2026-08-20 schema-migrations-upgrade SDD: T1 mark-applied / baseline /
+  // apply-up-to + T2 upgrade_db. All are operator-driven schema writes —
+  // catalog as 'changes' so they surface in the changes filter (not ops).
+  ['mark_applied',                   'changes'],
+  ['baseline',                       'changes'],
+  ['apply_up_to',                    'changes'],
+  ['upgrade_db',                     'changes'],
   // I9: dual-key JWT secret rotation events — security-bearing because
   // they change the server's signing key (rotate/commit touch active auth;
   // seed bootstraps the key on first install; auto_expire silently closes
@@ -88,6 +95,16 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['probe_state_changed',            'low'],
   ['apply_migration',                'medium'],
   ['reset_failed_migration',         'medium'],
+  // 2026-08-20 schema-migrations-upgrade SDD: medium severity — these
+  // change the schema state (mark_applied writes an applied row; baseline
+  // bulk-marks; apply_up_to runs multiple migrations; upgrade_db runs
+  // migrations + seeds). Higher than login (low) but lower than
+  // restart_service (high) because they're database-only, not service-
+  // affecting.
+  ['mark_applied',                   'medium'],
+  ['baseline',                       'medium'],
+  ['apply_up_to',                    'medium'],
+  ['upgrade_db',                     'medium'],
   // I9: JWT secret rotation — operator-driven rotation/commit are high
   // because they immediately change the signing key (every newly-issued
   // token uses the new key); auto-expire is high because it silently
@@ -143,6 +160,13 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['probe_state_changed',            '探针状态变化'],
   ['apply_migration',                '应用迁移'],
   ['reset_failed_migration',         '重置失败迁移'],
+  // 2026-08-20 schema-migrations-upgrade SDD: Chinese labels for the new
+  // schema-migration actions. Phrasing matches the existing taxonomy
+  // (verb + object, "标记 / 基线 / 批量应用 / 升级").
+  ['mark_applied',                   '标记已应用'],
+  ['baseline',                       '基线标记'],
+  ['apply_up_to',                    '批量应用到版本'],
+  ['upgrade_db',                     '升级到最新'],
   // I9: JWT secret rotation labels (Chinese to match surrounding taxonomy).
   ['rotate_jwt_secret',              '轮换 JWT 签名密钥'],
   ['auto_expire_jwt_secret',         'JWT 密钥自动过期'],

@@ -11,6 +11,9 @@ test('classifier: ACTION_CATEGORY maps every emitted action to one of three cate
     'create_user', 'update_user', 'delete_user',
     'update_config', 'bulk_import_sites', 'bulk_assign_dc_sites',
     'apply_migration', 'reset_failed_migration',
+    // 2026-08-20 schema-migrations-upgrade SDD T1+T2: mark_applied /
+    // baseline / apply_up_to / upgrade_db — all 'changes' / 'medium'.
+    'mark_applied', 'baseline', 'apply_up_to', 'upgrade_db',
     // #167 C1: agent-token rotation + revoke_user_tokens actions.
     'rotate_agent_token', 'commit_agent_token', 'seed_agent_token',
     'auto_expire_agent_token', 'revoke_user_tokens'
@@ -47,11 +50,13 @@ test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token ro
 
 test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('medium')].sort(), [
-    'agent_self_register', 'apply_migration', 'bulk_assign_dc_sites',
+    'agent_self_register', 'apply_migration', 'apply_up_to',
+    'baseline', 'bulk_assign_dc_sites',
     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
     'commit_agent_token', 'commit_jwt_secret', 'delete_alert_rule',
-    'delete_server_group', 'delete_site', 'replace_server_group_members',
-    'reset_failed_migration', 'update_config', 'update_user'
+    'delete_server_group', 'delete_site', 'mark_applied',
+    'replace_server_group_members', 'reset_failed_migration',
+    'update_config', 'update_user', 'upgrade_db'
   ]);
 });
 
@@ -135,4 +140,32 @@ test('classifier: maps are frozen (Object.isFrozen)', () => {
   assert.ok(Object.isFrozen(ACTION_SEVERITY));
   assert.ok(Object.isFrozen(ACTION_LABEL));
   assert.ok(Object.isFrozen(TARGET_LABEL));
+});
+
+// 2026-08-20 schema-migrations-upgrade SDD T1+T2 (fix round 1): the 4 new
+// schema-migration actions must NOT fall through to the 'ops'/'low' fallback.
+// Each maps to non-default category/severity/label. The same sibling-SDD
+// audit pattern that caught missing entries for the jwt_secret +
+// agent_token sets — register new action names whenever they're added.
+test('classifier: schema-migrations-upgrade actions resolve to non-default categories', () => {
+  const cases = [
+    { action: 'mark_applied',  category: 'changes', severity: 'medium', label: '标记已应用' },
+    { action: 'baseline',      category: 'changes', severity: 'medium', label: '基线标记' },
+    { action: 'apply_up_to',   category: 'changes', severity: 'medium', label: '批量应用到版本' },
+    { action: 'upgrade_db',    category: 'changes', severity: 'medium', label: '升级到最新' }
+  ];
+  for (const c of cases) {
+    const r = classifyAction(c.action);
+    assert.equal(r.category, c.category, `${c.action} should map to category ${c.category}`);
+    assert.equal(r.severity, c.severity, `${c.action} should map to severity ${c.severity}`);
+    assert.equal(r.label,    c.label,    `${c.action} should map to label "${c.label}"`);
+  }
+});
+
+test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 4 schema-migrations-upgrade entries', () => {
+  for (const a of ['mark_applied', 'baseline', 'apply_up_to', 'upgrade_db']) {
+    assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
+    assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
+    assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
+  }
 });

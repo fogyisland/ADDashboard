@@ -265,3 +265,217 @@ describe('migrationsService.dryRunMigration', () => {
     repo.cleanup();
   });
 });
+
+describe('migrationsService.markApplied', () => {
+  test('writes applied row without executing SQL', async () => {
+    const repo = buildFakeRepo({
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.markApplied('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.equal(r.version, '014');
+    assert.equal(r.status, 'applied');
+    assert.equal(r.executionMs, 0);
+    // Exactly one UPSERT call (no transaction, no other execute)
+    const upsertCalls = calls.execute.filter(c => c.sql === 'UPSERT_PLACEHOLDER');
+    assert.equal(upsertCalls.length, 1);
+    const params = upsertCalls[0].params;
+    assert.equal(params[0], '014');                  // version
+    assert.equal(params[params.length - 2], 'applied'); // status
+    assert.equal(params[params.length - 3], 'admin');   // applied_by
+    repo.cleanup();
+  });
+
+  test('throws MigrationFileMissingError when file not found', async () => {
+    const repo = buildFakeRepo({}); // empty
+    const { db } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    await assert.rejects(
+      svc.markApplied('999', { appliedBy: 'admin' }),
+      (e) => e instanceof MigrationFileMissingError && e.status === 404
+    );
+    repo.cleanup();
+  });
+});
+
+describe('migrationsService.baseline', () => {
+  test('marks all versions ≤ N as applied when markers pass', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);',
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.baseline('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.ok(Array.isArray(r.versions));
+    assert.ok(r.versions.length >= 1);
+    // 008 should be in versions (≤ 014, no markers, so passes)
+    assert.ok(r.versions.includes('008'));
+    repo.cleanup();
+  });
+
+  test('skips files with failing verify markers', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': '-- verify: table nonexistent_table\nCREATE TABLE ad_lockout_events (id INT);'
+    });
+    const { db } = buildMockDb({ initialRows: [] });
+    // verifyMarkers reads db.sql.probe; add minimal stub
+    db.sql.probe = { table: 'PROBE_TABLE_SQL', column: 'PROBE_COLUMN_SQL' };
+    // verifyMarkers will query db.query with a probe SQL — return empty rows to simulate missing table
+    db.query = async () => ({ rows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.baseline('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.equal(r.versions.length, 0); // skipped
+    assert.equal(r.skipped.length, 1);
+    assert.equal(r.skipped[0].version, '008');
+    repo.cleanup();
+  });
+});
+
+describe('migrationsService.applyUpTo', () => {
+  test('applies all pending versions up to N in order', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);',
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.applyUpTo('014', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    assert.ok(Array.isArray(r.applied));
+    // Tightened: assert exactly 2 applied (008 + 014) and that they're in
+    // ascending order — matches "sequentially applies ... ordered ascending"
+    // guarantee from the brief.
+    assert.equal(r.applied.length, 2);
+    assert.equal(r.applied[0].version, '008');
+    assert.equal(r.applied[1].version, '014');
+    repo.cleanup();
+  });
+});
+
+describe('migrationsService.upgrade', () => {
+  // Helper to add a seed file to the fake repo, matching the path the service
+  // expects (db/schema/02-seed-roles.sql for mysql, db/schema/mssql/ for mssql).
+  function seedFile(repo, dialect, content) {
+    const dir = dialect === 'mssql'
+      ? join(repo.repoRoot, 'db/schema/mssql')
+      : join(repo.repoRoot, 'db/schema');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '02-seed-roles.sql'), content);
+  }
+
+  test('skips seed when stored checksum matches file (reason=unchanged)', async () => {
+    const seedContent = 'INSERT INTO sys_roles (role_name) VALUES (\'admin\');';
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);'
+    });
+    seedFile(repo, 'mysql', seedContent);
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    // Seed checksum already stored = same as file -> skip
+    db.sql.systemConfig = { getByKey: 'GET_CFG', upsertByKey: 'UPSERT_CFG' };
+    db.query = async (sql) => {
+      calls.query.push({ sql });
+      if (sql === 'GET_CFG') return { rows: [{ config_key: 'db.schema_seed.checksum', config_value: sha(seedContent) }] };
+      return { rows: [] };
+    };
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.upgrade({ appliedBy: 'admin' });
+    assert.equal(r.seed.ran, false);
+    assert.equal(r.seed.reason, 'unchanged');
+    // Upsert should NOT have been called for seed checksum
+    const upsertCfgCalls = calls.execute.filter(c => c.sql === 'UPSERT_CFG');
+    assert.equal(upsertCfgCalls.length, 0);
+    repo.cleanup();
+  });
+
+  test('re-applies seed when stored checksum differs (reason=changed) + records new checksum', async () => {
+    const seedContent = 'INSERT INTO sys_roles (role_name) VALUES (\'admin\');';
+    const repo = buildFakeRepo({});
+    seedFile(repo, 'mysql', seedContent);
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    db.sql.systemConfig = { getByKey: 'GET_CFG', upsertByKey: 'UPSERT_CFG' };
+    db.query = async (sql) => {
+      if (sql === 'GET_CFG') return { rows: [{ config_key: 'db.schema_seed.checksum', config_value: 'stale-checksum' }] };
+      return { rows: [] };
+    };
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.upgrade({ appliedBy: 'admin' });
+    assert.equal(r.seed.ran, true);
+    assert.equal(r.seed.reason, 'changed');
+    // Upsert was called with the new (correct) checksum
+    const upsertCfgCalls = calls.execute.filter(c => c.sql === 'UPSERT_CFG');
+    assert.equal(upsertCfgCalls.length, 1);
+    assert.equal(upsertCfgCalls[0].params[0], 'db.schema_seed.checksum');
+    assert.equal(upsertCfgCalls[0].params[1], sha(seedContent));
+    repo.cleanup();
+  });
+
+  test('first-run applies seed and records checksum (reason=first-run)', async () => {
+    const seedContent = 'INSERT INTO sys_roles (role_name) VALUES (\'admin\');';
+    const repo = buildFakeRepo({});
+    seedFile(repo, 'mysql', seedContent);
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    db.sql.systemConfig = { getByKey: 'GET_CFG', upsertByKey: 'UPSERT_CFG' };
+    db.query = async (sql) => {
+      // No stored checksum → first run
+      if (sql === 'GET_CFG') return { rows: [] };
+      return { rows: [] };
+    };
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.upgrade({ appliedBy: 'admin' });
+    assert.equal(r.seed.ran, true);
+    assert.equal(r.seed.reason, 'first-run');
+    const upsertCfgCalls = calls.execute.filter(c => c.sql === 'UPSERT_CFG');
+    assert.equal(upsertCfgCalls.length, 1);
+    assert.equal(upsertCfgCalls[0].params[1], sha(seedContent));
+    repo.cleanup();
+  });
+
+  test('applies pending migrations and reports them in result.migrations.applied', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);',
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    db.sql.systemConfig = { getByKey: 'GET_CFG', upsertByKey: 'UPSERT_CFG' };
+    // Seed check returns existing checksum (skip)
+    db.query = async (sql) => {
+      if (sql === 'GET_CFG') return { rows: [{ config_key: 'db.schema_seed.checksum', config_value: 'any' }] };
+      return { rows: [] };
+    };
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.upgrade({ appliedBy: 'admin' });
+    assert.ok(Array.isArray(r.migrations.applied));
+    assert.equal(r.migrations.applied.length, 2);
+    assert.equal(r.migrations.applied[0].version, '008');
+    assert.equal(r.migrations.applied[1].version, '014');
+    assert.equal(r.migrations.failed.length, 0);
+    repo.cleanup();
+  });
+
+  test('reports migration failures without aborting the run', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);',
+      '014-member-servers.sql': 'CREATE TABLE ad_member_servers (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    db.sql.systemConfig = { getByKey: 'GET_CFG', upsertByKey: 'UPSERT_CFG' };
+    db.query = async (sql) => {
+      if (sql === 'GET_CFG') return { rows: [{ config_key: 'db.schema_seed.checksum', config_value: 'any' }] };
+      return { rows: [] };
+    };
+    // Make transaction throw so migration is recorded as failed (applyMigration
+    // catches and records, doesn't rethrow)
+    db.transaction = async () => { throw new Error('mock migration failure'); };
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.upgrade({ appliedBy: 'admin' });
+    assert.equal(r.migrations.failed.length, 2);
+    assert.equal(r.ok, false);
+    assert.match(r.message, /失败/);
+    repo.cleanup();
+  });
+});

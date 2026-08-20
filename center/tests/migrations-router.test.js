@@ -106,4 +106,85 @@ describe('schemaMigrationsRouter', () => {
     assert.ok(auditCalled);
     assert.equal(auditCalled.action, 'reset_failed_migration');
   });
+
+  test('POST /:version/mark-applied 200 + writeAudit', async () => {
+    let auditCalled = null;
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          markApplied: async () => ({ ok: true, version: '008', status: 'applied', executionMs: 0 })
+        }),
+        writeAudit: async (args) => { auditCalled = args; }
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/008/mark-applied')
+      .set('Authorization', 'Bearer valid')
+      .send({});
+    assert.equal(res.status, 200);
+    assert.equal(auditCalled.action, 'mark_applied');
+  });
+
+  test('POST /baseline 200 + audit', async () => {
+    let auditCalled = null;
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          baseline: async () => ({ ok: true, versions: ['013', '014'], skipped: [] })
+        }),
+        writeAudit: async (args) => { auditCalled = args; }
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/baseline')
+      .set('Authorization', 'Bearer valid')
+      .send({ version: '014' });
+    assert.equal(res.status, 200);
+    assert.equal(auditCalled.action, 'baseline');
+    assert.equal(auditCalled.payload.version, '014');
+  });
+
+  test('POST /apply-up-to 200 + audit', async () => {
+    let auditCalled = null;
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          applyUpTo: async () => ({ ok: true, applied: [{ version: '008', status: 'applied', executionMs: 5 }], failed: [] })
+        }),
+        writeAudit: async (args) => { auditCalled = args; }
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/apply-up-to')
+      .set('Authorization', 'Bearer valid')
+      .send({ version: '014' });
+    assert.equal(res.status, 200);
+    assert.equal(auditCalled.action, 'apply_up_to');
+  });
+
+  test('POST /upgrade 200 + audit action=upgrade_db', async () => {
+    let auditCalled = null;
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          upgrade: async () => ({ ok: true, migrations: { applied: [{ version: '014', executionMs: 5 }], failed: [] }, seed: { ran: false, reason: 'unchanged' }, message: 'ok' })
+        }),
+        writeAudit: async (args) => { auditCalled = args; }
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/upgrade')
+      .set('Authorization', 'Bearer valid')
+      .send({});
+    assert.equal(res.status, 200);
+    assert.equal(auditCalled.action, 'upgrade_db');
+    assert.equal(auditCalled.target, 'schema_migrations');
+    assert.equal(auditCalled.payload.applied, 1);
+    assert.equal(auditCalled.payload.failed, 0);
+    assert.equal(auditCalled.payload.seed, 'unchanged');
+  });
 });

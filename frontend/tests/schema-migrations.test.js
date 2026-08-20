@@ -3,9 +3,17 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 import { createRouter, createMemoryHistory } from 'vue-router';
 import * as api from '../src/api/migrations.js';
+import * as notify from '../src/lib/notify.js';
 import SchemaMigrationsView from '../src/views/admin/SchemaMigrationsView.vue';
 
 vi.mock('../src/api/migrations.js');
+vi.mock('../src/lib/notify.js', () => ({
+  notifyError: vi.fn(),
+  notifySuccess: vi.fn(),
+  notifyInfo: vi.fn(),
+  notify: vi.fn(),
+  subscribe: vi.fn(() => () => {})
+}));
 
 function makeRouter() {
   const r = createRouter({
@@ -37,6 +45,12 @@ beforeEach(() => {
   vi.mocked(api.applyMigration).mockReset();
   vi.mocked(api.dryRunMigration).mockReset();
   vi.mocked(api.resetMigration).mockReset();
+  vi.mocked(api.markApplied).mockReset();
+  vi.mocked(api.baseline).mockReset();
+  vi.mocked(api.applyUpTo).mockReset();
+  vi.mocked(api.upgrade).mockReset();
+  vi.mocked(notify.notifyError).mockReset();
+  vi.mocked(notify.notifySuccess).mockReset();
 });
 
 test('renders table with applied + pending rows', async () => {
@@ -80,4 +94,114 @@ test('click [应用] → calls applyMigration + refreshes list', async () => {
   await flushPromises();
   expect(api.applyMigration).toHaveBeenCalledWith('010', expect.any(Object));
   expect(api.listMigrations).toHaveBeenCalledTimes(2);
+});
+
+test('failed apply shows errorMessage inline + notifies error', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  vi.mocked(api.applyMigration).mockResolvedValue({
+    data: { ok: false, version: '010', status: 'failed', executionMs: 5, errorMessage: 'Duplicate column name' }
+  });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  const pendingRow = w.findAll('tr').find(r => r.text().includes('010'));
+  await pendingRow.findAll('button').find(b => b.text() === '应用').trigger('click');
+  await flushPromises();
+  expect(w.text()).toContain('Duplicate column name');
+  expect(notify.notifyError).toHaveBeenCalledWith(expect.stringContaining('Duplicate column name'));
+});
+
+test('apply throwing an exception surfaces the message + notifies error', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  vi.mocked(api.applyMigration).mockRejectedValue(new Error('Network Error'));
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  const pendingRow = w.findAll('tr').find(r => r.text().includes('010'));
+  await pendingRow.findAll('button').find(b => b.text() === '应用').trigger('click');
+  await flushPromises();
+  expect(w.text()).toContain('Network Error');
+  expect(notify.notifyError).toHaveBeenCalledWith(expect.stringContaining('Network Error'));
+  // failed apply must not silently clear the row — no refresh on exception
+  expect(api.listMigrations).toHaveBeenCalledTimes(1);
+});
+
+test('apply button is disabled and flips to 应用中… while in flight', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  let release;
+  vi.mocked(api.applyMigration).mockReturnValue(new Promise(res => { release = res; }));
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  const btn = w.findAll('tr').find(r => r.text().includes('010'))
+    .findAll('button').find(b => b.text() === '应用');
+  await btn.trigger('click');
+  await flushPromises();
+  const busyBtn = w.findAll('tr').find(r => r.text().includes('010'))
+    .findAll('button').find(b => b.text() === '应用中…');
+  expect(busyBtn).toBeTruthy();
+  expect(busyBtn.attributes('disabled')).toBeDefined();
+  release({ data: { ok: true, version: '010', status: 'applied', executionMs: 10 } });
+  await flushPromises();
+  expect(w.findAll('button').some(b => b.text() === '应用中…')).toBe(false);
+});
+
+test('errorMessage column renders truncated text with full value in title', async () => {
+  const long = 'X'.repeat(80);
+  vi.mocked(api.listMigrations).mockResolvedValue({
+    data: [{ ...sampleRows[1], status: 'failed', errorMessage: long }]
+  });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  const cell = w.find('.error-cell');
+  expect(cell.exists()).toBe(true);
+  expect(cell.attributes('title')).toBe(long);
+  expect(cell.text()).toBe('X'.repeat(60) + '…');
+});
+
+test('applyAllPending collects failures and reports a summary', async () => {
+  const twoPending = [
+    { ...sampleRows[1], version: '010' },
+    { ...sampleRows[1], version: '011' }
+  ];
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: twoPending });
+  vi.mocked(api.applyMigration)
+    .mockResolvedValueOnce({ data: { ok: false, version: '010', errorMessage: 'boom-010' } })
+    .mockResolvedValueOnce({ data: { ok: true, version: '011' } });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  await w.find('.apply-all').trigger('click');
+  await flushPromises();
+  // continues past the first failure
+  expect(api.applyMigration).toHaveBeenCalledTimes(2);
+  expect(notify.notifyError).toHaveBeenCalledWith(expect.stringContaining('boom-010'));
+});
+
+test('pending row shows [标记已应用] button', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  const pendingRow = w.findAll('tr').find(r => r.text().includes('010'));
+  expect(pendingRow.text()).toContain('标记已应用');
+});
+
+test('top bar shows [升级到最新] button', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  expect(w.text()).toContain('升级到最新');
+});
+
+test('click [升级到最新] → calls upgrade API', async () => {
+  vi.mocked(api.listMigrations)
+    .mockResolvedValueOnce({ data: sampleRows })
+    .mockResolvedValueOnce({ data: sampleRows });
+  vi.mocked(api.upgrade).mockResolvedValue({ data: { ok: true, migrations: { applied: [], failed: [] }, seed: { ran: false, reason: 'unchanged' }, message: 'ok' } });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  await w.findAll('button').find(b => b.text().includes('升级到最新')).trigger('click');
+  await flushPromises();
+  expect(api.upgrade).toHaveBeenCalled();
 });

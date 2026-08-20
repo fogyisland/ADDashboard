@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { splitSqlStatements } from '../init/schema-applier.js';
+import { verifyMarkers, parseVerifyMarker } from '../init/verify-marker.js';
 
 export class AlreadyAppliedError extends Error {
   constructor(version) { super(`migration ${version} already applied`); this.status = 409; }
@@ -174,5 +175,160 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     return { ok: true, deleted: affectedRows };
   }
 
-  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration };
+  async function markApplied(version, { appliedBy }) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const filePath = resolveFile(repoRoot, db.dialect, version);
+    if (!filePath) throw new MigrationFileMissingError(version);
+    const content = readFileSync(filePath, 'utf8');
+    const meta = parseFileMeta(filePath);
+    const fileName = filePath.split(/[/\\]/).pop();
+    const checksum = sha256(content);
+    const appliedAtIso = new Date().toISOString();
+    await db.execute(db.sql.schemaMigrations.upsert, [
+      version, meta.description, 'sql', fileName, checksum,
+      appliedAtIso, 0, appliedBy || 'system', 'applied', null
+    ]);
+    return { ok: true, version, status: 'applied', executionMs: 0 };
+  }
+
+  async function baseline(version, { appliedBy }) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const dir = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/migrations/mssql')
+      : join(repoRoot, 'db/migrations');
+    if (!existsSync(dir)) throw new MigrationFileMissingError(version);
+    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    const versions = [];
+    const skipped = [];
+    const appliedAtIso = new Date().toISOString();
+    for (const f of files) {
+      const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+      if (!m) continue;
+      if (m[1] > version) continue;
+      const filePath = join(dir, f);
+      const content = readFileSync(filePath, 'utf8');
+      const markers = parseVerifyMarker(content);
+      if (markers.length > 0) {
+        const { ok, missing } = await verifyMarkers(db, markers);
+        if (!ok) {
+          skipped.push({ version: m[1], missing });
+          continue;
+        }
+      }
+      const checksum = sha256(content);
+      await db.execute(db.sql.schemaMigrations.upsert, [
+        m[1], m[2], 'sql', f, checksum,
+        appliedAtIso, 0, appliedBy || 'system', 'applied', null
+      ]);
+      versions.push(m[1]);
+    }
+    return { ok: true, versions, skipped };
+  }
+
+  async function applyUpTo(version, { appliedBy }) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const dir = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/migrations/mssql')
+      : join(repoRoot, 'db/migrations');
+    if (!existsSync(dir)) throw new MigrationFileMissingError(version);
+    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    const applied = [];
+    const failed = [];
+    for (const f of files) {
+      const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+      if (!m) continue;
+      if (m[1] > version) break;
+      try {
+        const r = await applyMigration(m[1], { appliedBy });
+        applied.push({ version: r.version, status: r.status, executionMs: r.executionMs });
+        if (r.status === 'failed') failed.push({ version: r.version, errorMessage: r.errorMessage });
+      } catch (e) {
+        failed.push({ version: m[1], errorMessage: e.message });
+      }
+    }
+    return { ok: failed.length === 0, applied, failed };
+  }
+
+  async function upgrade({ appliedBy }) {
+    const repoRoot = getRepoRoot();
+    const seedPath = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/schema/mssql/02-seed-roles.sql')
+      : join(repoRoot, 'db/schema/02-seed-roles.sql');
+    let seedChecksum = null;
+    let seedContent = null;
+    if (existsSync(seedPath)) {
+      seedContent = readFileSync(seedPath, 'utf8');
+      seedChecksum = sha256(seedContent);
+    }
+
+    // Apply all pending migrations sequentially
+    const migrationsDir = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/migrations/mssql')
+      : join(repoRoot, 'db/migrations');
+    const allFiles = existsSync(migrationsDir)
+      ? readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort()
+      : [];
+    const applied = [];
+    const failed = [];
+    for (const f of allFiles) {
+      const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+      if (!m) continue;
+      try {
+        const r = await applyMigration(m[1], { appliedBy });
+        if (r.status === 'failed') {
+          failed.push({ version: r.version, errorMessage: r.errorMessage });
+        } else if (r.status === 'applied') {
+          applied.push({ version: r.version, executionMs: r.executionMs });
+        }
+      } catch (e) {
+        failed.push({ version: m[1], errorMessage: e.message });
+      }
+    }
+
+    // Check seed — first-run applies, changed re-applies, unchanged skips.
+    // Failure does NOT roll back migrations; caller decides retry.
+    const seedResult = { ran: false, reason: 'no-seed-file' };
+    if (seedChecksum) {
+      const { rows: cfgRows } = await db.query(db.sql.systemConfig.getByKey, ['db.schema_seed.checksum']);
+      const stored = cfgRows[0]?.config_value;
+      if (!stored) {
+        // First run
+        try {
+          const stmts = splitSqlStatements(seedContent);
+          for (const s of stmts) await db.execute(s, []);
+          await db.execute(db.sql.systemConfig.upsertByKey, ['db.schema_seed.checksum', seedChecksum]);
+          seedResult.ran = true;
+          seedResult.reason = 'first-run';
+        } catch (e) {
+          seedResult.reason = 'failed';
+          seedResult.errorMessage = e.message;
+        }
+      } else if (stored !== seedChecksum) {
+        // Changed — re-apply
+        try {
+          const stmts = splitSqlStatements(seedContent);
+          for (const s of stmts) await db.execute(s, []);
+          await db.execute(db.sql.systemConfig.upsertByKey, ['db.schema_seed.checksum', seedChecksum]);
+          seedResult.ran = true;
+          seedResult.reason = 'changed';
+        } catch (e) {
+          seedResult.reason = 'failed';
+          seedResult.errorMessage = e.message;
+        }
+      } else {
+        seedResult.reason = 'unchanged';
+      }
+    }
+
+    const ok = failed.length === 0 && seedResult.reason !== 'failed';
+    const message = ok
+      ? `升级完成: ${applied.length} migration 应用, seed ${seedResult.reason}`
+      : `升级部分失败: ${failed.length} migration 失败${seedResult.reason === 'failed' ? ', seed 失败' : ''}`;
+    return { ok, migrations: { applied, failed }, seed: seedResult, message };
+  }
+
+  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration, markApplied, baseline, applyUpTo, upgrade };
 }
