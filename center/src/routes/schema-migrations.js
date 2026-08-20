@@ -149,5 +149,24 @@ export function schemaMigrationsRouter({ requireAuth, requirePerm, logger, getRe
     }
   });
 
+  r.post('/api/admin/migrations/upgrade', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const appliedBy = (req.body && req.body.appliedBy) || req.user?.username || req.user?.sub || 'unknown';
+      const result = await service.upgrade({ appliedBy });
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'upgrade_db',
+        target: 'schema_migrations',
+        payload: { applied: result.migrations.applied.length, failed: result.migrations.failed.length, seed: result.seed.reason }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'upgrade failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
   return r;
 }

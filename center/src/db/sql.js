@@ -333,7 +333,14 @@ const VARIANTS = {
     alertRules: alertRules.mysql,
     alertEvents: alertEvents.mysql,
     alertOutbox: alertOutbox.mysql,
-    alertMetrics: alertMetrics.mysql
+    alertMetrics: alertMetrics.mysql,
+    // system_config key/value lookup used by the upgrade endpoint to track
+    // the seed-file checksum (decides first-run vs re-apply vs skip).
+    systemConfig: {
+      getByKey: 'SELECT config_key, config_value FROM system_config WHERE config_key = ?',
+      upsertByKey: `INSERT INTO system_config (config_key, config_value) VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)`
+    }
   },
   mssql: {
     health: {
@@ -687,7 +694,17 @@ const VARIANTS = {
     alertRules: alertRules.mssql,
     alertEvents: alertEvents.mssql,
     alertOutbox: alertOutbox.mssql,
-    alertMetrics: alertMetrics.mssql
+    alertMetrics: alertMetrics.mssql,
+    // system_config key/value lookup — MSSQL uses MERGE for upsert (matches
+    // other MSSQL patterns here). CAST(? AS VARCHAR(64)) aligns the param
+    // type with the PK column.
+    systemConfig: {
+      getByKey: 'SELECT config_key, config_value FROM system_config WHERE config_key = CAST(? AS VARCHAR(64))',
+      upsertByKey: `MERGE INTO system_config AS t USING (SELECT CAST(? AS VARCHAR(64)) AS config_key, ? AS config_value) AS s
+        ON t.config_key = s.config_key
+        WHEN MATCHED THEN UPDATE SET config_value = s.config_value
+        WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`
+    }
   }
 };
 

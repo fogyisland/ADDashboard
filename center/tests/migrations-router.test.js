@@ -164,4 +164,27 @@ describe('schemaMigrationsRouter', () => {
     assert.equal(res.status, 200);
     assert.equal(auditCalled.action, 'apply_up_to');
   });
+
+  test('POST /upgrade 200 + audit action=upgrade_db', async () => {
+    let auditCalled = null;
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          upgrade: async () => ({ ok: true, migrations: { applied: [{ version: '014', executionMs: 5 }], failed: [] }, seed: { ran: false, reason: 'unchanged' }, message: 'ok' })
+        }),
+        writeAudit: async (args) => { auditCalled = args; }
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/upgrade')
+      .set('Authorization', 'Bearer valid')
+      .send({});
+    assert.equal(res.status, 200);
+    assert.equal(auditCalled.action, 'upgrade_db');
+    assert.equal(auditCalled.target, 'schema_migrations');
+    assert.equal(auditCalled.payload.applied, 1);
+    assert.equal(auditCalled.payload.failed, 0);
+    assert.equal(auditCalled.payload.seed, 'unchanged');
+  });
 });

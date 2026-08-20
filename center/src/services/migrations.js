@@ -252,5 +252,83 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     return { ok: failed.length === 0, applied, failed };
   }
 
-  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration, markApplied, baseline, applyUpTo };
+  async function upgrade({ appliedBy }) {
+    const repoRoot = getRepoRoot();
+    const seedPath = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/schema/mssql/02-seed-roles.sql')
+      : join(repoRoot, 'db/schema/02-seed-roles.sql');
+    let seedChecksum = null;
+    let seedContent = null;
+    if (existsSync(seedPath)) {
+      seedContent = readFileSync(seedPath, 'utf8');
+      seedChecksum = sha256(seedContent);
+    }
+
+    // Apply all pending migrations sequentially
+    const migrationsDir = db.dialect === 'mssql'
+      ? join(repoRoot, 'db/migrations/mssql')
+      : join(repoRoot, 'db/migrations');
+    const allFiles = existsSync(migrationsDir)
+      ? readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort()
+      : [];
+    const applied = [];
+    const failed = [];
+    for (const f of allFiles) {
+      const m = f.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
+      if (!m) continue;
+      try {
+        const r = await applyMigration(m[1], { appliedBy });
+        if (r.status === 'failed') {
+          failed.push({ version: r.version, errorMessage: r.errorMessage });
+        } else if (r.status === 'applied') {
+          applied.push({ version: r.version, executionMs: r.executionMs });
+        }
+      } catch (e) {
+        failed.push({ version: m[1], errorMessage: e.message });
+      }
+    }
+
+    // Check seed — first-run applies, changed re-applies, unchanged skips.
+    // Failure does NOT roll back migrations; caller decides retry.
+    const seedResult = { ran: false, reason: 'no-seed-file' };
+    if (seedChecksum) {
+      const { rows: cfgRows } = await db.query(db.sql.systemConfig.getByKey, ['db.schema_seed.checksum']);
+      const stored = cfgRows[0]?.config_value;
+      if (!stored) {
+        // First run
+        try {
+          const stmts = splitSqlStatements(seedContent);
+          for (const s of stmts) await db.execute(s, []);
+          await db.execute(db.sql.systemConfig.upsertByKey, ['db.schema_seed.checksum', seedChecksum]);
+          seedResult.ran = true;
+          seedResult.reason = 'first-run';
+        } catch (e) {
+          seedResult.reason = 'failed';
+          seedResult.errorMessage = e.message;
+        }
+      } else if (stored !== seedChecksum) {
+        // Changed — re-apply
+        try {
+          const stmts = splitSqlStatements(seedContent);
+          for (const s of stmts) await db.execute(s, []);
+          await db.execute(db.sql.systemConfig.upsertByKey, ['db.schema_seed.checksum', seedChecksum]);
+          seedResult.ran = true;
+          seedResult.reason = 'changed';
+        } catch (e) {
+          seedResult.reason = 'failed';
+          seedResult.errorMessage = e.message;
+        }
+      } else {
+        seedResult.reason = 'unchanged';
+      }
+    }
+
+    const ok = failed.length === 0 && seedResult.reason !== 'failed';
+    const message = ok
+      ? `升级完成: ${applied.length} migration 应用, seed ${seedResult.reason}`
+      : `升级部分失败: ${failed.length} migration 失败${seedResult.reason === 'failed' ? ', seed 失败' : ''}`;
+    return { ok, migrations: { applied, failed }, seed: seedResult, message };
+  }
+
+  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration, markApplied, baseline, applyUpTo, upgrade };
 }
