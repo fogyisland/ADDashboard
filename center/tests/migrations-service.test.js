@@ -347,7 +347,12 @@ describe('migrationsService.applyUpTo', () => {
     const r = await svc.applyUpTo('014', { appliedBy: 'admin' });
     assert.equal(r.ok, true);
     assert.ok(Array.isArray(r.applied));
-    assert.ok(r.applied.length >= 1);
+    // Tightened: assert exactly 2 applied (008 + 014) and that they're in
+    // ascending order — matches "sequentially applies ... ordered ascending"
+    // guarantee from the brief.
+    assert.equal(r.applied.length, 2);
+    assert.equal(r.applied[0].version, '008');
+    assert.equal(r.applied[1].version, '014');
     repo.cleanup();
   });
 });
