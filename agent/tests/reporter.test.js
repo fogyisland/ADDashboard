@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { postReport, postHeartbeat, fetchConfig } from '../src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, toCamelEntry } from '../src/reporter.js';
 
 async function withServer(handler, fn) {
   return new Promise((resolve) => {
@@ -108,5 +108,141 @@ test('fetchConfig hits /config.json with X-Agent-Token and parses response', asy
     assert.equal(r.data.heartbeatPort, 8081);
     assert.equal(r.data.reportPort, 8082);
     assert.equal(r.data.pollingIntervalMinutes, 5);
+  });
+});
+
+// --- Task 3 fix round 1 regression tests -------------------------------
+//
+// toCamelEntry used to forward only 9 of the 16 ad_replication_status
+// INSERT-shape fields. partnerPortStatus (Task 1's new column) and the 4
+// counters were silently dropped on the wire, so they always landed NULL
+// in the DB no matter what collect-replication.ps1 emitted. These tests
+// pin the full 16-field contract at the agent->centre boundary.
+
+// The canonical 16 camelCase keys the centre's rowParams() reads.
+// Keep in sync with center/src/services/replication.js.
+const INSERT_SHAPE_KEYS = [
+  'collectedAt', 'agentId', 'sourceDc', 'destDc', 'sourceSite', 'destSite',
+  'namingContext', 'lastSuccessTime', 'lastAttemptTime', 'statusCode',
+  'errorMessage', 'usersCount', 'groupsCount', 'gposCount', 'lockedCount',
+  'partnerPortStatus'
+];
+
+test('toCamelEntry forwards all 16 INSERT-shape fields from a PascalCase entry', () => {
+  // partnerPortStatus arrives pre-stringified from the PS1 (ConvertTo-Json
+  // -Compress), so assert it survives as an untouched JSON *string*.
+  const portJson = '{"checked_at":"2026-08-20T01:02:03.000Z","ports":{"135":{"reachable":true,"latency_ms":3,"error":null}}}';
+  const out = toCamelEntry({
+    CollectedAt: '2026-08-20T01:02:03.000Z',
+    AgentId: 'DC1',
+    SourceDc: 'DC1',
+    DestDc: 'DC2',
+    SourceSite: 'S1',
+    DestSite: 'S2',
+    NamingContext: '__partner_ports__:DC2',
+    LastSuccessTime: '2026-08-20T01:02:03.000Z',
+    LastAttemptTime: '2026-08-20T01:02:03.000Z',
+    StatusCode: 0,
+    ErrorMessage: null,
+    UsersCount: 11,
+    GroupsCount: 22,
+    GposCount: 33,
+    LockedCount: 44,
+    PartnerPortStatus: portJson
+  });
+
+  assert.deepEqual(
+    Object.keys(out).sort(),
+    [...INSERT_SHAPE_KEYS].sort(),
+    'toCamelEntry must emit exactly the 16 INSERT-shape keys'
+  );
+
+  assert.equal(out.collectedAt, '2026-08-20T01:02:03.000Z');
+  assert.equal(out.agentId, 'DC1');
+  assert.equal(out.sourceDc, 'DC1');
+  assert.equal(out.destDc, 'DC2');
+  assert.equal(out.sourceSite, 'S1');
+  assert.equal(out.destSite, 'S2');
+  assert.equal(out.namingContext, '__partner_ports__:DC2');
+  assert.equal(out.lastSuccessTime, '2026-08-20T01:02:03.000Z');
+  assert.equal(out.lastAttemptTime, '2026-08-20T01:02:03.000Z');
+  assert.equal(out.statusCode, 0);
+  assert.equal(out.errorMessage, null);
+  assert.equal(out.usersCount, 11);
+  assert.equal(out.groupsCount, 22);
+  assert.equal(out.gposCount, 33);
+  assert.equal(out.lockedCount, 44);
+  assert.equal(out.partnerPortStatus, portJson, 'partnerPortStatus stays a verbatim JSON string');
+});
+
+test('toCamelEntry accepts camelCase input and defaults missing fields to null', () => {
+  const out = toCamelEntry({ sourceDc: 'DC1', destDc: 'DC2', partnerPortStatus: '{"ports":{}}' });
+  assert.equal(out.sourceDc, 'DC1');
+  assert.equal(out.destDc, 'DC2');
+  assert.equal(out.partnerPortStatus, '{"ports":{}}');
+  // Everything not supplied must be an explicit null, never undefined —
+  // undefined would drop the key entirely during JSON.stringify on the wire.
+  for (const k of INSERT_SHAPE_KEYS) {
+    assert.notEqual(out[k], undefined, `${k} must not be undefined`);
+  }
+  assert.equal(out.usersCount, null);
+  assert.equal(out.gposCount, null);
+});
+
+test('postReport puts the 4 counters on the wire (previously dropped)', async () => {
+  let received = null;
+  await withServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => { received = JSON.parse(body); res.end('{}'); });
+  }, async (url) => {
+    await postReport({
+      centerUrl: url, agentToken: 't',
+      snapshot: {
+        AgentId: 'DC1',
+        CollectedAt: '2026-08-20T00:00:00.000Z',
+        Entries: [{
+          SourceDc: 'DC1', DestDc: 'DC1', NamingContext: '__dc_summary__',
+          StatusCode: 0,
+          UsersCount: 1200, GroupsCount: 340, GposCount: 56, LockedCount: 7
+        }]
+      }
+    });
+    const row = received.data[0];
+    assert.equal(row.usersCount, 1200, 'usersCount reaches the centre');
+    assert.equal(row.groupsCount, 340, 'groupsCount reaches the centre');
+    assert.equal(row.gposCount, 56, 'gposCount reaches the centre');
+    assert.equal(row.lockedCount, 7, 'lockedCount reaches the centre');
+  });
+});
+
+test('postReport puts partnerPortStatus JSON on the wire (Task 3 primary deliverable)', async () => {
+  const portJson = '{"checked_at":"2026-08-20T00:00:00.000Z","ports":{"135":{"reachable":true,"latency_ms":2,"error":null},"445":{"reachable":false,"latency_ms":null,"error":"timeout"}}}';
+  let received = null;
+  await withServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => { received = JSON.parse(body); res.end('{}'); });
+  }, async (url) => {
+    await postReport({
+      centerUrl: url, agentToken: 't',
+      snapshot: {
+        AgentId: 'DC1',
+        CollectedAt: '2026-08-20T00:00:00.000Z',
+        Entries: [{
+          SourceDc: 'DC1', DestDc: 'DC2',
+          NamingContext: '__partner_ports__:DC2',
+          StatusCode: 1, ErrorMessage: null,
+          PartnerPortStatus: portJson
+        }]
+      }
+    });
+    const row = received.data[0];
+    assert.equal(row.partnerPortStatus, portJson, 'partnerPortStatus survives JSON round-trip to the centre');
+    // Sanity: it is still parseable and carries the per-port map.
+    const parsed = JSON.parse(row.partnerPortStatus);
+    assert.equal(parsed.ports['445'].reachable, false);
+    assert.equal(parsed.ports['135'].latency_ms, 2);
+    assert.equal(row.namingContext, '__partner_ports__:DC2');
   });
 });
