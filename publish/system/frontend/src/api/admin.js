@@ -88,5 +88,14 @@ export const adminApi = {
   listMemberServerAlerts: (hostname) =>
     api.get(`/api/admin/member-servers/${encodeURIComponent(hostname)}/alerts`),
   getMemberServerBaseline: (hostname) =>
-    api.get(`/api/admin/member-servers/${encodeURIComponent(hostname)}/baseline`)
+    api.get(`/api/admin/member-servers/${encodeURIComponent(hostname)}/baseline`),
+
+  // ---- Agent token rotation (I3 — dual-key) ----
+  // The ConfigView "Agent 令牌" row drives these via AgentTokenRotateModal.
+  // GET NEVER returns the secret (server-side by design — see center/src/routes/admin.js:360
+  // and audit-classifier protection). Rotate returns newToken ONCE in the
+  // response body so the operator can copy it for agent appsettings.json updates.
+  getAgentTokenState: () => api.get('/api/admin/agent-token'),
+  rotateAgentToken: () => api.post('/api/admin/agent-token/rotate'),
+  commitAgentToken: () => api.post('/api/admin/agent-token/commit')
 };
