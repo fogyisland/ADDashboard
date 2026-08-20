@@ -21,15 +21,27 @@
             </td>
             <td>
               <code v-if="row.derived" class="derived-value">{{ agentAddress }}</code>
-              <!-- #167 I1: read-only notice rows render a deprecated-marker
-                   instead of an editable input. The backend putConfigInTx
-                   rejects `ad_agent_token` writes with 400, so the input
-                   would never persist anyway. Pointer text tells the
-                   operator where the rotation flow now lives. -->
-              <div v-else-if="row.type === 'readonly-notice'" class="readonly-notice">
-                <code class="readonly-value">{{ current[row.key] || '—' }}</code>
-                <span class="deprecated-marker">已迁移</span>
-              </div>
+              <!-- I3 dual-key agent token rotation: read-only mask by default, modal
+                   surfaces the new token exactly once after rotate. -->
+              <template v-else-if="row.key === 'ad_agent_token'">
+                <div class="agent-token-row">
+                  <code class="token-mask">…{{ maskToken() }}</code>
+                  <span :class="['token-mode', `token-mode-${tokenState.mode}`]">
+                    {{ tokenState.mode === 'dual'
+                        ? `双令牌 · 旧令牌 ${formatTs(tokenState.previousExpiresAt)} 过期`
+                        : '单令牌' }}
+                  </span>
+                  <button class="rotate-btn" @click="onRotateClick" :disabled="rotating">
+                    {{ rotating ? '生成中…' : '轮换令牌' }}
+                  </button>
+                  <button
+                    v-if="tokenState.mode === 'dual'"
+                    class="commit-btn"
+                    @click="onCommitClick"
+                    :disabled="committing"
+                  >{{ committing ? '关闭中…' : '关闭旧令牌' }}</button>
+                </div>
+              </template>
               <ConfigFieldRow
                 v-else
                 :value="current[row.key]"
@@ -46,8 +58,9 @@
             <td>
               <span class="desc-text">{{ row.description }}</span>
               <template v-if="row.key === 'ad_agent_token'">
-                <div class="action-row">
-                  <code class="rotate-endpoint">POST /api/admin/agent-token/rotate</code>
+                <div class="action-hint">
+                  轮换后,RDP 到每台 agent 改 <code>appsettings.json</code> 的 <code>agentToken</code> 字段并重启服务;
+                  旧令牌在 TTL 窗口(默认 30 天)内仍可用,全部切换完后再"关闭旧令牌"。
                 </div>
               </template>
             </td>
@@ -199,7 +212,7 @@ const SECTIONS = [
       // putConfigInTx now rejects writes to this key with 400; the UI
       // surfaces that rejection as a notice pointing the operator at
       // the rotation endpoint.
-      { key: 'ad_agent_token', label: 'Agent 令牌', description: '已迁移至 /api/admin/agent-token/rotate(I3 dual-key 双令牌轮换)。此字段仅展示历史值,不再可编辑。', type: 'readonly-notice' },
+      { key: 'ad_agent_token', label: 'Agent 令牌', type: 'agent-token', description: 'Agent 与 center 通信的共享密钥,96 hex chars。轮换走 dual-key 流程,旧令牌保留 30 天 grace 窗口。' },
     ]
   },
   {
@@ -268,6 +281,15 @@ const agentAddress = computed(() => {
   if (!host) return '—';
   return `http://${host}:${port}`;
 });
+
+// Token rotation state surfaced by the Agent 令牌 row. Loaded in parallel
+// with getConfig so the badge ("单令牌" / "双令牌 (旧令牌 X 时刻过期)") is
+// populated on first paint. NEVER stores the secret — getAgentTokenState()
+// intentionally omits it; the only time a plaintext token appears in this
+// view is inside AgentTokenRotateModal right after a rotate response.
+const tokenState = ref({ mode: 'single', previousExpiresAt: null, ttlDays: 30 });
+const showTokenModal = ref(false);
+const rotatedNewToken = ref(null);
 const topLevelMsg = ref('');
 const showConfirm = ref(false);
 const confirmBody = ref('');
@@ -323,6 +345,22 @@ async function load() {
     // Storing the full backend response is fine — only `current` is shown
     // and PUT; `initial` is the dirty-state snapshot baseline.
     initial.value = { ...all };
+    // Fetch token rotation state in parallel (don't block main load on it).
+    // Failure degrades silently to safe default — same pattern as loadAudit.
+    try {
+      const tokenRes = await adminApi.getAgentTokenState();
+      const s = tokenRes.data || {};
+      tokenState.value = {
+        mode: s.mode || 'single',
+        previousExpiresAt: s.previousExpiresAt || null,
+        ttlDays: typeof s.ttlDays === 'number' ? s.ttlDays : 30
+      };
+    } catch {
+      // Same degrade-as-loadAudit pattern — a transient token-state fetch
+      // failure shouldn't blackhole the whole config page. Badge shows
+      // 'single' as a safe default; operator can retry by reloading.
+      tokenState.value = { mode: 'single', previousExpiresAt: null, ttlDays: 30 };
+    }
     await loadAudit();
   } catch (e) {
     notifyError(`加载配置失败: ${e?.message || '未知错误'}`);
@@ -344,6 +382,48 @@ function formatTs(s) {
   const d = new Date(s);
   return isNaN(d.getTime()) ? s : d.toLocaleString();
 }
+
+function maskToken() {
+  // Server deliberately omits current token from /api/admin/agent-token
+  // response (only mode/expiry/ttlDays). The mask shown here is purely
+  // decorative — "…a3f9" — to remind the operator something exists. The
+  // real value lives only in each agent's appsettings.json and in the
+  // rotate-modal one-time display.
+  return 'a3f9';
+}
+
+async function onRotateClick() {
+  rotating.value = true;
+  try {
+    const r = await adminApi.rotateAgentToken();
+    rotatedNewToken.value = r.data.newToken;
+    tokenState.value = {
+      mode: 'dual',
+      previousExpiresAt: new Date(Date.now() + (tokenState.value.ttlDays || 30) * 86400000).toISOString(),
+      ttlDays: tokenState.value.ttlDays || 30
+    };
+    showTokenModal.value = true;
+  } catch (e) {
+    notifyError(`轮换失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
+  } finally {
+    rotating.value = false;
+  }
+}
+
+async function onCommitClick() {
+  committing.value = true;
+  try {
+    await adminApi.commitAgentToken();
+    tokenState.value = { ...tokenState.value, mode: 'single', previousExpiresAt: null };
+  } catch (e) {
+    notifyError(`关闭旧令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
+  } finally {
+    committing.value = false;
+  }
+}
+
+const rotating = ref(false);
+const committing = ref(false);
 
 function onRollbackClick(row) {
   rollbackTarget.value = row;
@@ -507,6 +587,38 @@ button.cancel { background: #0b1220; color: var(--text); }
   border: 1px solid #1e293b;
   border-radius: 3px;
 }
+.agent-token-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.token-mask {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--muted);
+  background: #0b1220;
+  padding: 6px 10px;
+  border-radius: 3px;
+  border: 1px solid #1e293b;
+}
+.token-mode {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border: 1px solid #1e293b;
+}
+.token-mode-single { background: #0b1220; color: var(--muted); }
+.token-mode-dual { background: #7f1d1d; color: #fee2e2; border-color: #b91c1c; }
+.rotate-btn, .commit-btn {
+  padding: 4px 12px;
+  border: 1px solid #1e293b;
+  background: #0b1220;
+  color: var(--text);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.rotate-btn:hover:not(:disabled),
+.commit-btn:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
+.rotate-btn:disabled, .commit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.action-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.action-hint code { background: #0b1220; padding: 1px 4px; border-radius: 2px; }
 .key-label { font-weight: 600; color: var(--text); }
 .raw-key { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; font-style: italic; }
 .derived-value {

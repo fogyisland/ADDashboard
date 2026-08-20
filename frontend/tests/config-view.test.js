@@ -4,12 +4,26 @@ import { setActivePinia, createPinia } from 'pinia';
 import ConfigView from '../src/views/admin/ConfigView.vue';
 import { adminApi } from '../src/api/admin.js';
 
+// Stub AgentTokenRotateModal — real component lives in Task 2. Tests that
+// need to assert "modal opened after rotate" use w.findComponent({ name: 'AgentTokenRotateModal' });
+// this stub gives the lookup a target without coupling to Task 2's impl.
+const AgentTokenRotateModalStub = {
+  name: 'AgentTokenRotateModal',
+  props: { newToken: { type: String, default: '' } },
+  template: '<div class="agent-token-modal-stub" v-if="newToken" />'
+};
+
 vi.mock('../src/api/admin.js', () => ({
   adminApi: {
     getConfig: vi.fn(),
     updateConfig: vi.fn(),
     getConfigAudit: vi.fn().mockResolvedValue({ data: [] }),
-    rollbackConfig: vi.fn()
+    rollbackConfig: vi.fn(),
+    getAgentTokenState: vi.fn().mockResolvedValue({
+      data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
+    }),
+    rotateAgentToken: vi.fn(),
+    commitAgentToken: vi.fn()
   }
 }));
 
@@ -19,6 +33,12 @@ beforeEach(() => {
   adminApi.getConfigAudit.mockReset();
   adminApi.getConfigAudit.mockResolvedValue({ data: [] });
   adminApi.rollbackConfig.mockReset();
+  adminApi.getAgentTokenState.mockReset();
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
+  });
+  adminApi.rotateAgentToken.mockReset();
+  adminApi.commitAgentToken.mockReset();
 });
 
 const SAMPLE = {
@@ -32,7 +52,7 @@ const SAMPLE = {
 test('loads config and renders rows on mount', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   expect(w.findAll('input').length).toBeGreaterThanOrEqual(5);
 });
@@ -40,7 +60,7 @@ test('loads config and renders rows on mount', async () => {
 test('save button disabled when no edits (not dirty)', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   expect(w.find('button.save').attributes('disabled')).toBeDefined();
 });
@@ -49,7 +69,7 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // Find the polling_interval_minutes input by walking the rows — row order
   // follows getConfig's key order, so index-based lookup is brittle.
@@ -64,37 +84,127 @@ test('edit a non-risky field enables save; click save calls api; on success snap
   expect(w.find('button.save').attributes('disabled')).toBeDefined(); // back to clean
 });
 
-// #167 I1: ad_agent_token ConfigView row is now a read-only notice-row.
-// The legacy tests for "edit risky field" were replaced with assertions
-// matching the new shape — no input, no 生成/复制 buttons, but a visible
-// "已迁移" marker + the rotation endpoint pointer. The backend
-// putConfigInTx rejects `ad_agent_token` writes with 400; the UI must
-// not surface an editable input.
-test('ad_agent_token row is a read-only notice (no input, deprecated marker)', async () => {
+// I3 dual-key agent token rotation: ad_agent_token row is now interactive.
+// Mask + status badge + rotate button are visible by default; commit button
+// appears only when mode === 'dual'. The backend putConfigInTx rejects
+// `ad_agent_token` writes with 400 (it lives in agent_token_current/previous
+// now); the UI must not surface an editable input here.
+test('ad_agent_token row renders mask + mode badge + 轮换 button (no input)', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
+  });
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
-  expect(tokenRow, 'ad_agent_token row must still render (label + raw key)').toBeTruthy();
-  // No editable input on the row.
+  expect(tokenRow).toBeTruthy();
+  // Mask + status badge + button, no editable input.
+  expect(tokenRow.find('.token-mask').exists()).toBe(true);
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.rotate-btn').exists()).toBe(true);
   expect(tokenRow.find('input').exists()).toBe(false);
-  // No 生成 / 复制 buttons (rotation moved to /api/admin/agent-token/rotate).
-  expect(tokenRow.text()).not.toContain('生成');
-  expect(tokenRow.text()).not.toContain('复制');
-  // Read-only notice shape.
-  expect(tokenRow.find('.readonly-notice').exists()).toBe(true);
-  expect(tokenRow.find('.readonly-value').exists()).toBe(true);
-  expect(tokenRow.find('.deprecated-marker').exists()).toBe(true);
-  // Rotation endpoint pointer visible to operators.
-  expect(tokenRow.text()).toContain('/api/admin/agent-token/rotate');
+  // No deprecated markers — the rotation flow is now reachable in-UI.
+  expect(tokenRow.find('.deprecated-marker').exists()).toBe(false);
+  expect(tokenRow.text()).not.toContain('已迁移');
+});
+
+test('agent-token row: 轮换 button calls rotateAgentToken and sets state for modal', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockResolvedValue({ data: { newToken: 'a3f9bc12deadbeefcafe', rotatedAt: '2026-08-20T00:00:00Z' } });
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  expect(adminApi.rotateAgentToken).toHaveBeenCalled();
+  // Task 1 produces the refs (showTokenModal, rotatedNewToken) that Task 3
+  // will mount the modal with. Assert via the VM exposed by the wrapper.
+  const vm = w.vm;
+  expect(vm.showTokenModal).toBe(true);
+  expect(vm.rotatedNewToken).toBe('a3f9bc12deadbeefcafe');
+});
+
+test('agent-token row: rotate success flips mode to dual and shows commit button', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockResolvedValue({ data: { newToken: 'xx', rotatedAt: '2026-08-20T00:00:00Z' } });
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  // Badge re-renders to dual; commit button appears.
+  expect(tokenRow.find('.token-mode-dual').exists()).toBe(true);
+  expect(tokenRow.find('button.commit-btn').exists()).toBe(true);
+});
+
+test('agent-token row: commit button calls commitAgentToken and flips mode back to single', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'dual', previousExpiresAt: '2026-09-19T00:00:00Z', ttlDays: 30 }
+  });
+  adminApi.commitAgentToken.mockResolvedValue({ data: { ok: true } });
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  expect(tokenRow.find('.token-mode-dual').exists()).toBe(true);
+  await tokenRow.find('button.commit-btn').trigger('click');
+  await flushPromises();
+  expect(adminApi.commitAgentToken).toHaveBeenCalled();
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.commit-btn').exists()).toBe(false);
+});
+
+test('agent-token row: rotate failure surfaces notifyError and leaves mode unchanged', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.rotateAgentToken.mockRejectedValue({ response: { data: { error: 'rotate failed' } } });
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.rotate-btn').trigger('click');
+  await flushPromises();
+  // Modal should NOT open on failure.
+  expect(w.findComponent({ name: 'AgentTokenRotateModal' }).exists()).toBe(false);
+  // Mode badge stays single.
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+});
+
+test('agent-token row: initial mode=dual from server renders dual badge + commit button on first paint', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockResolvedValue({
+    data: { mode: 'dual', previousExpiresAt: '2026-09-19T00:00:00Z', ttlDays: 30 }
+  });
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  expect(tokenRow.find('.token-mode-dual').exists()).toBe(true);
+  expect(tokenRow.text()).toContain('双令牌');
+  expect(tokenRow.text()).toContain('2026');
+  expect(tokenRow.find('button.commit-btn').exists()).toBe(true);
+});
+
+test('agent-token row: token-state fetch failure degrades to single-mode badge (does not break page)', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.getAgentTokenState.mockRejectedValue(new Error('network'));
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  // Page still rendered, row shows single-mode safe default.
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.rotate-btn').exists()).toBe(true);
 });
 
 test('cancel button restores the snapshot', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // Find polling_interval_minutes input by walking rows.
   const rows = w.findAll('table.t tbody tr');
@@ -111,7 +221,7 @@ test('save failure with fieldErrors highlights the offending row', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   adminApi.updateConfig.mockRejectedValue({ response: { status: 400, data: { fieldErrors: { polling_interval_minutes: 'must be 1-1440' } } } });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const inputs = w.findAll('input');
   await inputs[0].setValue('99999');
@@ -132,7 +242,7 @@ test('save failure with fieldErrors highlights the offending row', async () => {
 test('renders Chinese label primary + raw snake_case key as small secondary code', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // Sections split the rows across multiple <table class="t"> blocks (one
   // per operational concern). Walk all of them to assemble the full
@@ -177,7 +287,7 @@ test('ConfigView does not render internal bookkeeping keys as rows', async () =>
       restartRequired: { listenPort: false }
     }
   });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // Sections split rows across multiple <table class="t"> blocks —
   // check all of them, not just the first.
@@ -208,7 +318,7 @@ test('ConfigView does not render email keys — they belong on /admin/email-conf
       alert_email_initial_backoff_seconds: 30
     }
   });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rawKeys = w.findAll('table.t .raw-key').map((el) => el.text());
   for (const k of [
@@ -229,7 +339,7 @@ test('audit section: configKey column renders Chinese label as primary + raw key
       { id: 2, configKey: 'ad_agent_token', oldValue: 'old-token-1234567890', newValue: 'new-token-1234567890', changedByUsername: 'admin', changedAt: '2026-08-06T08:05:00Z', changeType: 'UPDATE' }
     ]
   });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // Audit rows use the same .key-label / .raw-key pair shape as the main table.
   const labels = w.findAll('.audit-row .key-label').map(el => el.text());
@@ -250,7 +360,7 @@ test('audit section: configKey column renders Chinese label as primary + raw key
 test('renders the four section titles in order', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const titles = w.findAll('.config-section .section-head h3').map((el) => el.text());
   expect(titles).toEqual(['采集节奏', '告警阈值', 'Agent 连接', '中心端口']);
@@ -259,7 +369,7 @@ test('renders the four section titles in order', async () => {
 test('section-dirty indicator is hidden before any edit', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   expect(w.findAll('.section-dirty').length).toBe(0);
 });
@@ -267,7 +377,7 @@ test('section-dirty indicator is hidden before any edit', async () => {
 test('section-dirty indicator appears next to the affected section only', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // 采集节奏: edit polling_interval_minutes (采集周期)
   const rows = w.findAll('table.t tbody tr');
@@ -285,7 +395,7 @@ test('section-dirty indicator appears next to the affected section only', async 
 test('section-dirty indicator accumulates within a section', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   // Edit two rows in 采集节奏 (polling + heartbeat)
   const rows = w.findAll('table.t tbody tr');
@@ -301,7 +411,7 @@ test('section-dirty indicators vanish after a successful save', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   adminApi.updateConfig.mockResolvedValue({ data: { ok: true } });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   await rows.find((r) => r.text().includes('polling_interval_minutes')).find('input').setValue('7');
@@ -315,7 +425,7 @@ test('section-dirty indicators vanish after a successful save', async () => {
 test('page header is a single muted summary line — no marketing chrome', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const head = w.find('.page-head');
   expect(head.exists()).toBe(true);
@@ -358,7 +468,7 @@ beforeEach(() => {
 test('derived Agent 连接地址 row renders http://<serverIp>:<listenPort> (no access_domain)', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '9080', serverIp: '192.168.1.50' } });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
@@ -377,7 +487,7 @@ test('derived Agent 连接地址 uses access_domain when set (overrides serverIp
   adminApi.getConfig.mockResolvedValue({
     data: { ...SAMPLE, listenPort: '9080', access_domain: 'dashboard.corp.com', serverIp: '192.168.1.50' }
   });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
@@ -389,7 +499,7 @@ test('derived Agent 连接地址 falls back to serverIp when access_domain is em
   adminApi.getConfig.mockResolvedValue({
     data: { ...SAMPLE, listenPort: '8080', access_domain: '', serverIp: '10.0.0.42' }
   });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
@@ -401,7 +511,7 @@ test('derived Agent 连接地址 treats whitespace-only access_domain as empty',
   adminApi.getConfig.mockResolvedValue({
     data: { ...SAMPLE, listenPort: '8080', access_domain: '   ', serverIp: '10.0.0.42' }
   });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
@@ -412,7 +522,7 @@ test('derived Agent 连接地址 falls back to "—" when listenPort is missing'
   setActivePinia(createPinia());
   // SAMPLE intentionally omits listenPort — fresh-install / pre-config state.
   adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, serverIp: '192.168.1.50' } });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
@@ -423,7 +533,7 @@ test('derived Agent 连接地址 falls back to "—" when listenPort is missing'
 test('derived Agent 连接地址 stays in sync as listenPort is edited', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: { ...SAMPLE, listenPort: '8080', serverIp: '10.0.0.42' } });
-  const w = mount(ConfigView);
+  const w = mount(ConfigView, { global: { components: { AgentTokenRotateModal: AgentTokenRotateModalStub } } });
   await flushPromises();
   const rows = w.findAll('table.t tbody tr');
   const addrRow = rows.find((r) => r.text().includes('Agent 连接地址'));
