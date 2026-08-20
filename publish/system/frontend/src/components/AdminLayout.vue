@@ -58,12 +58,14 @@ const groups = [
     { label: '心跳与报告', path: '/admin/heartbeat-report' },
     { label: '包管理',     path: '/admin/packages' }
   ]},
+  { title: '数据库运维', items: [
+    { label: '版本升级',     path: '/admin/migrations' },
+    { label: '未签名 Schema 残留', path: '/admin/orphan-schemas' }
+  ]},
   { title: '系统设置', items: [
     { label: '系统配置', path: '/admin/config' },
     { label: '邮件配置', path: '/admin/email-config' },
-    { label: '审计日志', path: '/admin/audit' },
-    { label: '迁移管理', path: '/admin/migrations' },
-    { label: '未签名 Schema 残留', path: '/admin/orphan-schemas' }
+    { label: '审计日志', path: '/admin/audit' }
   ]}
 ];
 </script>
