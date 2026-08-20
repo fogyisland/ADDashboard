@@ -131,6 +131,143 @@ function Get-LockoutEvents {
   return ,$events
 }
 
+# Default 5 ports to probe against every replication partner. The same set
+# appears in ad_local_port_check/collect.ps1 (Task 2). String keys
+# ("135" / "445" / ...) are used in the emitted JSON so the centre can
+# index by port without parsing dotted notation.
+$script:DefaultPartnerPortSet = @(135, 445, 50001, 50002, 50003)
+
+function Get-PartnerPortSnapshot {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ComputerName,
+
+    [Parameter(Mandatory = $true)]
+    [AllowNull()]
+    $Partners,
+
+    [Parameter()]
+    [int]$PerProbeTimeoutMs = 1500,
+
+    [Parameter()]
+    [int]$MaxPartners = 25,
+
+    [Parameter()]
+    [AllowNull()]
+    [string]$Site = $null,
+
+    [Parameter()]
+    [int[]]$Ports = $script:DefaultPartnerPortSet
+  )
+
+  $rows = @()
+  if ($null -eq $Partners) {
+    return ,$rows
+  }
+
+  # self-loop guard — Get-ADReplicationPartnerMetadata -Target $ComputerName
+  # already excludes self, but defend-in-depth (brief: "if Partner equals
+  # ComputerName, skip").
+  $capped = @($Partners | Select-Object -First $MaxPartners)
+  $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+
+  # Sequential probing. Worst-case latency per partner where every port
+  # times out: Ports.Count * PerProbeTimeoutMs = 5 * 1500 = 7500 ms.
+  # 25 partners worst-case = 187 s (collector's default timeoutMs = 60 s).
+  # Start-Job startup overhead (>300 ms per job) outweighs the savings in
+  # the typical reachable case (probe completes <100 ms), so we stay
+  # sequential and document this trade-off in the report — caller can pass
+  # a bumped timeoutMs into runCollector if their topology has many
+  # unreachable partners.
+  foreach ($p in $capped) {
+    $partnerHost = $null
+    try { $partnerHost = [string]$p.Partner } catch { $partnerHost = $null }
+    if ([string]::IsNullOrEmpty($partnerHost)) { continue }
+    if ($partnerHost -eq $ComputerName) { continue }
+
+    # Probe this partner's 5 ports sequentially. Each probe is wrapped in
+    # try/catch/finally with Close() in finally so one failure cannot
+    # strand a socket or abort the rest of the partner's probes.
+    $portResults = @()
+    foreach ($port in $Ports) {
+      $client = New-Object System.Net.Sockets.TcpClient
+      $reachable = $false
+      $latencyMs = $null
+      $errorMsg = $null
+      try {
+        $connectTask = $client.ConnectAsync($partnerHost, [int]$port)
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        $completed = $connectTask.Wait($PerProbeTimeoutMs)
+        $stopwatch.Stop()
+        if ($completed -and $client.Connected) {
+          $reachable = $true
+          $latencyMs = [int]$stopwatch.ElapsedMilliseconds
+        } else {
+          $errorMsg = 'timeout'
+        }
+      } catch {
+        $errorMsg = $_.Exception.Message
+      } finally {
+        try { $client.Close() } catch {}
+      }
+      $portResults += [PSCustomObject]@{
+        port      = [int]$port
+        reachable = $reachable
+        latencyMs = $latencyMs
+        error     = $errorMsg
+      }
+    }
+
+    # Build the per-partner row matching the 16-column INSERT shape
+    # (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site,
+    # naming_context, last_success_time, last_attempt_time, status_code,
+    # error_message, users_count, groups_count, gpos_count, locked_count,
+    # partner_port_status) — see center/src/db/sql.js
+    # replication.upsertStatus. status_code: 0 = every port reachable,
+    # otherwise the count of unreachable ports (caller maps to severity
+    # tiers server-side).
+    $unreachableCount = 0
+    $portMap = [ordered]@{}
+    foreach ($r in $portResults) {
+      $portMap[[string]$r.port] = @{
+        reachable = $r.reachable
+        latencyMs = $r.latencyMs
+        error     = $r.error
+      }
+      if (-not $r.reachable) { $unreachableCount += 1 }
+    }
+    $statusCode = if ($unreachableCount -eq 0) { 0 } else { $unreachableCount }
+    $payload = [ordered]@{
+      checked_at = $nowIso
+      ports      = $portMap
+    } | ConvertTo-Json -Compress -Depth 4
+
+    $rows += [PSCustomObject]@{
+      CollectedAt       = $nowIso
+      AgentId           = $ComputerName
+      SourceDc          = $ComputerName
+      DestDc            = $partnerHost
+      SourceSite        = $Site
+      DestSite          = $null
+      NamingContext     = "__partner_ports__:$partnerHost"
+      LastSuccessTime   = $nowIso
+      LastAttemptTime   = $nowIso
+      StatusCode        = $statusCode
+      ErrorMessage      = $null
+      UsersCount        = $null
+      GroupsCount       = $null
+      GposCount         = $null
+      LockedCount       = $null
+      PartnerPortStatus = $payload
+    }
+  }
+
+  # Comma operator forces the array to survive even when $rows is empty,
+  # mirroring Get-LockoutEvents's documented contract.
+  return ,$rows
+}
+
 function Get-ReplicationSnapshot {
   [CmdletBinding()]
   param(
@@ -212,6 +349,22 @@ function Get-ReplicationSnapshot {
         ErrorMessage    = $errMsg
       }
       $entries += $entry
+    }
+  }
+
+  # Per-partner port probes — one row per replication partner, each with
+  # the same 16-column INSERT shape (R1 partner_port_status carries the
+  # per-port reachable/latency JSON; R2 naming context
+  # '__partner_ports__:<host>' keeps each partner's row UNIQUE). Function
+  # is fault-isolated: a probe failure on one partner cannot abort the
+  # others, and an empty partner list produces no rows (no error).
+  if ($null -ne $partners -and @($partners).Count -gt 0) {
+    $portEntries = Get-PartnerPortSnapshot `
+      -ComputerName $ComputerName `
+      -Partners $partners `
+      -Site $snapshot.Site
+    if ($null -ne $portEntries -and @($portEntries).Count -gt 0) {
+      foreach ($pe in @($portEntries)) { $entries += $pe }
     }
   }
 

@@ -99,3 +99,133 @@ test('each lockout event carries EventRecordId, OccurredAt, and the 4 user/compu
   assert.match(src, /SubjectDomain\s*=/);
   assert.match(src, /CallerComputerName\s*=/);
 });
+
+// ---------- Task 3: per-partner TCP port probes ----------
+
+test('collect-replication.ps1 declares a Get-PartnerPortSnapshot function', () => {
+  const src = readFileSync(psPath, 'utf8');
+  assert.match(src, /function\s+Get-PartnerPortSnapshot\b/,
+    'expected Get-PartnerPortSnapshot function definition');
+});
+
+test('Get-PartnerPortSnapshot accepts ComputerName + Partners and defaults PerProbeTimeoutMs=1500 / MaxPartners=25', () => {
+  const src = readFileSync(psPath, 'utf8');
+  // Required parameter keys must exist (case-insensitive — PowerShell is).
+  assert.match(src, /\[Parameter\(Mandatory\s*=\s*\$true\)\]\s*\[\s*string\s*\]\s*\$ComputerName/);
+  // Partners is mandatory but untyped (so $null can be passed); we accept
+  // either a typed or just-decorator approach in the regex.
+  assert.match(src, /\[Parameter\(Mandatory\s*=\s*\$true\)\][\s\S]{0,80}\$Partners/);
+  assert.match(src, /\$PerProbeTimeoutMs\s*=\s*1500/);
+  assert.match(src, /\$MaxPartners\s*=\s*25/);
+});
+
+test('Get-PartnerPortSnapshot default port set is [135, 445, 50001, 50002, 50003]', () => {
+  const src = readFileSync(psPath, 'utf8');
+  assert.match(src, /\$script:DefaultPartnerPortSet\s*=\s*@\(\s*135\s*,\s*445\s*,\s*50001\s*,\s*50002\s*,\s*50003\s*\)/,
+    'expected the 5-port set exactly');
+  // The function's $Ports param must default to that script-scope value.
+  assert.match(src, /\[int\[\]\]\s*\$Ports\s*=\s*\$script:DefaultPartnerPortSet/);
+});
+
+test('Get-PartnerPortSnapshot wraps each TcpClient probe in try/catch/finally and Close() in finally', () => {
+  const src = readFileSync(psPath, 'utf8');
+  // Isolate the function body so we don't grep against other blocks.
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  // ConnectAsync + Wait(PerProbeTimeoutMs) + the stopwatch.
+  assert.match(body, /ConnectAsync\(\s*\$partnerHost\s*,\s*\[int\]\$port\s*\)/);
+  assert.match(body, /\$connectTask\.Wait\(\s*\$PerProbeTimeoutMs\s*\)/);
+  assert.match(body, /\[System\.Diagnostics\.Stopwatch\]::StartNew\(\)/);
+  // try/catch/finally trio.
+  assert.match(body, /\btry\s*\{/);
+  assert.match(body, /\}\s*catch\s*\{/);
+  assert.match(body, /\}\s*finally\s*\{/);
+  // finally must Close the socket.
+  assert.match(body, /finally\s*\{[\s\S]*?\$client\.Close\(\)[\s\S]*?\}/);
+});
+
+test('Get-PartnerPortSnapshot skips self-loop (partnerHost == ComputerName)', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  assert.match(body, /if\s*\(\s*\$partnerHost\s*-eq\s*\$ComputerName\s*\)\s*\{\s*continue\s*\}/,
+    'expected self-loop guard');
+});
+
+test('Get-PartnerPortSnapshot caps the partner list at MaxPartners via Select-Object -First', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  assert.match(body, /\$Partners\s*\|\s*Select-Object\s+-First\s+\$MaxPartners/,
+    'expected Partners | Select-Object -First $MaxPartners cap');
+});
+
+test('Get-PartnerPortSnapshot emits a per-partner row with the 16-column INSERT shape', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  // All 16 keys required by the row shape (see R1 in the SDD ledger).
+  const required = [
+    'CollectedAt',
+    'AgentId',
+    'SourceDc',
+    'DestDc',
+    'SourceSite',
+    'DestSite',
+    'NamingContext',
+    'LastSuccessTime',
+    'LastAttemptTime',
+    'StatusCode',
+    'ErrorMessage',
+    'UsersCount',
+    'GroupsCount',
+    'GposCount',
+    'LockedCount',
+    'PartnerPortStatus'
+  ];
+  for (const k of required) {
+    assert.match(body, new RegExp(`${k}\\s*=`),
+      `expected ${k} field in the per-partner row hash`);
+  }
+});
+
+test('Get-PartnerPortSnapshot naming context embeds the partner host (R2)', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  assert.match(body, /NamingContext\s*=\s*"__partner_ports__:\$partnerHost"/,
+    'expected R2 naming context "__partner_ports__:<partner>"');
+});
+
+test('Get-PartnerPortSnapshot partner_port_status JSON includes checked_at + per-port reachable/latency/error', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  // The payload should embed `checked_at` + `ports` map keyed by port number.
+  assert.match(body, /checked_at\s*=\s*\$nowIso/);
+  assert.match(body, /ports\s*=\s*\$portMap/);
+  // Port map values are hashtables with reachable / latencyMs / error.
+  assert.match(body, /portMap\[\[string\]\$r\.port\]\s*=\s*@\{[\s\S]*?reachable\s*=\s*\$r\.reachable/);
+  assert.match(body, /latencyMs\s*=\s*\$r\.latencyMs/);
+  assert.match(body, /error\s*=\s*\$r\.error/);
+});
+
+test('Get-ReplicationSnapshot invokes Get-PartnerPortSnapshot with the partner list', () => {
+  const src = readFileSync(psPath, 'utf8');
+  // The call must be inside Get-ReplicationSnapshot and forward $partners
+  // (the local list from Get-ADReplicationPartnerMetadata).
+  assert.match(src, /Get-PartnerPortSnapshot\s+`?\s*\n?\s*-ComputerName\s+\$ComputerName/);
+  // Must pass the partner list through to Get-PartnerPortSnapshot.
+  const snippetMatches = src.match(/Get-PartnerPortSnapshot[\s\S]{0,400}?\}/);
+  assert.ok(snippetMatches, 'expected to find Get-PartnerPortSnapshot invocation');
+  const snippet = snippetMatches[0];
+  assert.match(snippet, /-Partners\s+\$partners/);
+  // Forward $snapshot.Site so per-partner rows carry the local site's site name.
+  assert.match(snippet, /-Site\s+\$snapshot\.Site/);
+});
