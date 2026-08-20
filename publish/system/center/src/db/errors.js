@@ -29,9 +29,19 @@ export class DbError extends Error {
 
   static wrap(e) {
     if (e instanceof DbError) return e;
-    return new DbError(e, {
+    const wrapped = new DbError(e, {
       sqlState: e.sqlState || e.number?.toString(),
       sqlMessage: e.sqlMessage
     });
+    // Preserve HTTP passthrough markers so route catches (admin.js line 277
+    // et al) can still distinguish 4xx business errors from generic 500s
+    // when the throw originated inside a tx. Without this propagation, a
+    // business throw like putConfigInTx's `throw { httpStatus: 400, ... }`
+    // for legacy ad_agent_token writes would be silently downgraded to a
+    // generic 500 — the property hides on `wrapped.originalError.httpStatus`
+    // and the catch's `e.httpStatus === 400` check never sees it.
+    if (e && typeof e.httpStatus === 'number') wrapped.httpStatus = e.httpStatus;
+    if (e && e.blockedKey !== undefined) wrapped.blockedKey = e.blockedKey;
+    return wrapped;
   }
 }

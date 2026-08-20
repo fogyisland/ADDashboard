@@ -1,13 +1,20 @@
-# verify-mirror.ps1 — compare source files to their publish/ mirrors.
+# verify-mirror.ps1 — auto-scan source ↔ publish/ mirror parity.
 #
 # Convention: every non-test source file under center/, agent/, frontend/, and
-# db/migrations/ is mirrored byte-identical into publish/ (see project memory
-# feedback_full_chain_cleanup.md). Test files are NOT mirrored — that's the
-# runtime-only bundle convention (publish/ is what users run on
-# C:\addashboard, not what we develop in).
+# db/migrations/ is mirrored byte-identical into publish/system/<same-path>
+# (see project memory feedback_full_chain_cleanup.md). Test files are NOT
+# mirrored — that's the runtime-only bundle convention (publish/ is what users
+# run on C:\addashboard, not what we develop in).
 #
-# This script walks a fixed list of source↔mirror pairs and emits PASS/FAIL
-# per pair. Exit code 0 means all pairs match; 1 means drift.
+# This script auto-discovers source files under four roots and verifies each
+# one has a byte-identical mirror. It also flags orphan mirror files (in
+# publish/system/... but with no source counterpart — usually stale).
+#
+# Why auto-scan instead of a hand-maintained list: the previous hand-written
+# list (49 pairs as of 2026-08-20) drifted behind reality — new source files
+# were added in earlier SDDs (frontend/src/lib/notify.js, ErrorBanner.vue)
+# without being mirrored, and the list wasn't updated. Auto-scan closes the
+# gap permanently: any new source file is mirrored or the verify fails.
 #
 # Usage:
 #   pwsh -File scripts\verify-mirror.ps1
@@ -18,131 +25,104 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+# Resolve-Path returns a PathInfo object, NOT a string. Use .Path so .Length
+# returns the byte count (otherwise .Substring(0) returns the whole path and
+# relPath becomes "D:/ToolDevelop/..." instead of "center/src/...", producing
+# invalid mirror paths like "publish/system/D:/ToolDevelop/...").
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
-# Each pair: source (relative to repo root) ↔ publish/ mirror (relative to repo root).
-# Order: backend modules first, then SQL/migration, then frontend.
-$comparisons = @(
-  # Backend — package system v2 (Tasks 1, 3, 4, 5, 6, 7, 8, 10)
-  @{ left = 'center/src/packages/ddl-sandbox.js';            right = 'publish/system/center/src/packages/ddl-sandbox.js' }
-  @{ left = 'center/src/packages/ddl-apply.js';              right = 'publish/system/center/src/packages/ddl-apply.js' }
-  @{ left = 'center/src/packages/orphan-router.js';          right = 'publish/system/center/src/packages/orphan-router.js' }
-  @{ left = 'center/src/db/sql/orphan-schemas.js';           right = 'publish/system/center/src/db/sql/orphan-schemas.js' }
-  @{ left = 'center/src/db/sql.js';                          right = 'publish/system/center/src/db/sql.js' }
-  @{ left = 'center/src/packages/manifest.js';               right = 'publish/system/center/src/packages/manifest.js' }
-  @{ left = 'center/src/packages/installer.js';              right = 'publish/system/center/src/packages/installer.js' }
-  @{ left = 'center/src/packages/metricstore.js';            right = 'publish/system/center/src/packages/metricstore.js' }
-  @{ left = 'center/src/packages/router.js';                 right = 'publish/system/center/src/packages/router.js' }
-  @{ left = 'center/src/packages/errors.js';                 right = 'publish/system/center/src/packages/errors.js' }
-  @{ left = 'center/src/packages/registry-index.schema.json'; right = 'publish/system/center/src/packages/registry-index.schema.json' }
-  @{ left = 'center/src/packages/registry.js';               right = 'publish/system/center/src/packages/registry.js' }
-  @{ left = 'center/server.js';                              right = 'publish/system/center/server.js' }
-  # Non-AD server management — Tasks 11 (alert loop + email loop + alert SQL)
-  @{ left = 'center/src/services/alert-engine.js';           right = 'publish/system/center/src/services/alert-engine.js' }
-  @{ left = 'center/src/services/email.js';                  right = 'publish/system/center/src/services/email.js' }
-  @{ left = 'center/src/db/sql/alert-events.js';             right = 'publish/system/center/src/db/sql/alert-events.js' }
-  @{ left = 'center/src/db/sql/alert-outbox.js';             right = 'publish/system/center/src/db/sql/alert-outbox.js' }
-  @{ left = 'center/src/db/sql/alert-metrics.js';            right = 'publish/system/center/src/db/sql/alert-metrics.js' }
-  # Non-AD server management — Tasks 11 fix round 1 (F1: add listEnabledForHostWithState SQL block)
-  @{ left = 'center/src/db/sql/alert-rules.js';              right = 'publish/system/center/src/db/sql/alert-rules.js' }
-  # Non-AD server management — Task 2 (member-servers + server-groups SQL blocks)
-  @{ left = 'center/src/db/sql/member-servers.js';           right = 'publish/system/center/src/db/sql/member-servers.js' }
-  @{ left = 'center/src/db/sql/server-groups.js';            right = 'publish/system/center/src/db/sql/server-groups.js' }
-  # Non-AD server management — Task 4 (built-in package seeder)
-  @{ left = 'center/src/services/builtin-packages.js';       right = 'publish/system/center/src/services/builtin-packages.js' }
-  # Non-AD server management — Task 6 (member-servers route)
-  @{ left = 'center/src/routes/member-servers.js';           right = 'publish/system/center/src/routes/member-servers.js' }
-  # Non-AD server management — Task 8 (per-host package merge service + agent-facing route)
-  @{ left = 'center/src/services/agent-packages-for-host.js'; right = 'publish/system/center/src/services/agent-packages-for-host.js' }
-  @{ left = 'center/src/routes/agent-packages.js';           right = 'publish/system/center/src/routes/agent-packages.js' }
-  # Non-AD server management — Task 12 (SMTP config seed + mask-on-read + test-mail route)
-  @{ left = 'center/src/services/config.js';                 right = 'publish/system/center/src/services/config.js' }
-  @{ left = 'center/src/routes/admin.js';                    right = 'publish/system/center/src/routes/admin.js' }
-  # Access domain (Agent 连接地址): serverIp fallback in GET /api/admin/config
-  @{ left = 'center/src/utils/network.js';                   right = 'publish/system/center/src/utils/network.js' }
-  # #167 follow-up (C1+C2+I1): audit-classifier + agent-token rotation + I1 reject
-  @{ left = 'center/src/services/audit-classifier.js';       right = 'publish/system/center/src/services/audit-classifier.js' }
-  @{ left = 'center/src/services/agent-token.js';            right = 'publish/system/center/src/services/agent-token.js' }
-  # Migrations — Task 2
-  @{ left = 'db/migrations/013-orphan-schemas.sql';          right = 'publish/system/db/migrations/013-orphan-schemas.sql' }
-  @{ left = 'db/migrations/mssql/013-orphan-schemas.sql';    right = 'publish/system/db/migrations/mssql/013-orphan-schemas.sql' }
-  # Migrations — Non-AD Task 1 (member servers, packages, alerts)
-  @{ left = 'db/migrations/014-member-servers.sql';          right = 'publish/system/db/migrations/014-member-servers.sql' }
-  @{ left = 'db/migrations/mssql/014-member-servers.sql';    right = 'publish/system/db/migrations/mssql/014-member-servers.sql' }
-  # Frontend — Tasks 11, 12
-  @{ left = 'frontend/src/components/PackageDdlPreviewModal.vue';   right = 'publish/system/frontend/src/components/PackageDdlPreviewModal.vue' }
-  @{ left = 'frontend/src/components/UninstallSchemaConfirmModal.vue'; right = 'publish/system/frontend/src/components/UninstallSchemaConfirmModal.vue' }
-  @{ left = 'frontend/src/views/admin/OrphanSchemasView.vue'; right = 'publish/system/frontend/src/views/admin/OrphanSchemasView.vue' }
-  @{ left = 'frontend/src/views/admin/PackageEditView.vue';  right = 'publish/system/frontend/src/views/admin/PackageEditView.vue' }
-  @{ left = 'frontend/src/api/admin.js';                     right = 'publish/system/frontend/src/api/admin.js' }
-  @{ left = 'frontend/src/router.js';                        right = 'publish/system/frontend/src/router.js' }
-  # Note: Task 12 modified AdminLayout.vue (not AppLayout.vue as the global
-  # plan file claims). Confirmed via `git show --stat 37d1ef7`.
-  @{ left = 'frontend/src/components/AdminLayout.vue';       right = 'publish/system/frontend/src/components/AdminLayout.vue' }
-  # Non-AD server management — Task 15 (EmailConfigCard + ConfigView integration)
-  # EmailConfigCard.vue was deleted in T17 (split to EmailConfigView); see email_split.md.
-  @{ left = 'frontend/src/views/admin/ConfigView.vue';       right = 'publish/system/frontend/src/views/admin/ConfigView.vue' }
-  # #167 follow-up (I1 + I3): dual-key agent-token rotation UI surface —
-  # ConfigView row + rotate modal (modal mounts new token once, copy, then
-  # commit closes the previous key).
-  @{ left = 'frontend/src/components/AgentTokenRotateModal.vue'; right = 'publish/system/frontend/src/components/AgentTokenRotateModal.vue' }
-  # Non-AD server management — Task 16 (agentType switch in agent.js + install-agent.ps1 -AgentType param)
-  @{ left = 'agent/agent.js';                                right = 'publish/system/agent/agent.js' }
-  @{ left = 'agent/src/config.js';                           right = 'publish/system/agent/src/config.js' }
-  @{ left = 'agent/src/os-info.js';                          right = 'publish/system/agent/src/os-info.js' }
-  # Non-AD server management — Task 16 fix round 1 (exported shouldRunPackageForNonAd filter)
-  @{ left = 'agent/src/agent-filters.js';                    right = 'publish/system/agent/src/agent-filters.js' }
-  # Non-AD server management — Task 16 fix round 2 (extracted scheduler module)
-  @{ left = 'agent/src/non-ad-scheduler.js';                 right = 'publish/system/agent/src/non-ad-scheduler.js' }
-  # #167 follow-up (I1): useConfigValidation rule removed (ad_agent_token
-  # is now a read-only notice-row, no validation needed).
-  @{ left = 'frontend/src/composables/useConfigValidation.js'; right = 'publish/system/frontend/src/composables/useConfigValidation.js' }
+# Source roots that get mirrored under publish/system/<same-relative-path>.
+# Tests live under <pkg>/tests/ at the repo root, never inside src/, so a
+# plain recursive scan of these roots naturally excludes test files.
+$roots = @(
+  'center/src',
+  'frontend/src',
+  'agent',
+  'db/migrations'
 )
 
-$fail = $false
+# Source file extensions. Excludes README.md / package.json / *.json config /
+# etc — only code we actually ship to users.
+$extensions = @('*.js', '*.vue', '*.sql')
+
 $pass = 0
-$missing = 0
 $drift = 0
+$missing = 0
+$orphan = 0
+$fail = $false
 
 function Pair-Line($n, $ok, $detail) {
-  $line = "{0,-86} {1}" -f $n, $(if ($ok) { 'PASS' } else { "FAIL $detail" })
-  Write-Host $line
-  if (-not $ok) { $script:fail = $true }
+  $status = if ($ok) { 'PASS' } else { "FAIL $detail" }
+  $line = "{0,-86} {1}" -f $n, $status
+  if ($ok) {
+    Write-Host $line
+  } else {
+    Write-Host $line -ForegroundColor Red
+    $script:fail = $true
+  }
 }
 
-foreach ($c in $comparisons) {
-  $leftAbs = Join-Path $projectRoot $c.left
-  $rightAbs = Join-Path $projectRoot $c.right
+# Build a set of all source files for orphan-detection later.
+$sourceRelSet = @{}
 
-  if (-not (Test-Path -LiteralPath $leftAbs)) {
-    Pair-Line $c.left $false 'source missing'
-    $missing++
-    continue
+foreach ($root in $roots) {
+  $srcAbs = Join-Path $projectRoot $root
+  if (-not (Test-Path -LiteralPath $srcAbs)) { continue }
+
+  $files = Get-ChildItem -Path $srcAbs -Recurse -File -Include $extensions -ErrorAction SilentlyContinue
+  foreach ($f in $files) {
+    # Normalize to forward-slash relative path from project root.
+    $relPath = $f.FullName.Substring($projectRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    # Test files live under <pkg>/tests/ at the repo root and are NOT mirrored
+    # to publish/system/ (publish is the runtime-only bundle users run, not what
+    # we develop in). Skip them so they don't show up as "missing mirror".
+    if ($relPath -match '/tests/') { continue }
+    $sourceRelSet[$relPath] = $true
+
+    $mirrorRel = "publish/system/$relPath"
+    $mirrorAbs = Join-Path $projectRoot $mirrorRel
+
+    if (-not (Test-Path -LiteralPath $mirrorAbs)) {
+      Pair-Line $relPath $false 'mirror missing'
+      $missing++
+      continue
+    }
+
+    $leftHash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash
+    $rightHash = (Get-FileHash -Algorithm SHA256 -Path $mirrorAbs).Hash
+
+    if ($leftHash -eq $rightHash) {
+      Pair-Line $relPath $true ''
+      $pass++
+    } else {
+      Pair-Line $relPath $false "hash mismatch ($leftHash vs $rightHash)"
+      $drift++
+    }
   }
-  if (-not (Test-Path -LiteralPath $rightAbs)) {
-    Pair-Line $c.left $false 'mirror missing'
-    $missing++
-    continue
-  }
+}
 
-  # Compute SHA-256 of both files and compare. Byte-identical check ignores
-  # CRLF/LF drift (we don't normalize line endings — if source has CRLF and
-  # mirror has LF that's a real drift the implementer should fix at copy
-  # time, not a false-positive).
-  $leftHash = (Get-FileHash -Algorithm SHA256 -Path $leftAbs).Hash
-  $rightHash = (Get-FileHash -Algorithm SHA256 -Path $rightAbs).Hash
+# Orphan check: any file under publish/system/<root>/ that has no source
+# counterpart under <root>/. These usually indicate a deleted-but-not-cleaned
+# source file (caller forgot to delete the mirror), or a stale hand-copied
+# artifact. Flag them but DON'T auto-delete — that's a manual decision.
+foreach ($root in $roots) {
+  $mirrorRootAbs = Join-Path $projectRoot (Join-Path 'publish/system' $root)
+  if (-not (Test-Path -LiteralPath $mirrorRootAbs)) { continue }
 
-  if ($leftHash -eq $rightHash) {
-    Pair-Line $c.left $true ''
-    $pass++
-  } else {
-    Pair-Line $c.left $false "hash mismatch ($leftHash vs $rightHash)"
-    $drift++
+  $files = Get-ChildItem -Path $mirrorRootAbs -Recurse -File -Include $extensions -ErrorAction SilentlyContinue
+  foreach ($f in $files) {
+    $relPath = $f.FullName.Substring($projectRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    # Strip the "publish/system/" prefix to get the equivalent source-relative path.
+    $srcRelativeFromMirror = $relPath -replace '^publish/system/', ''
+    if (-not $sourceRelSet.ContainsKey($srcRelativeFromMirror)) {
+      Pair-Line $relPath $false 'orphan (no source counterpart)'
+      $orphan++
+    }
   }
 }
 
 Write-Host ''
-Write-Host ("summary: {0} pass, {1} drift, {2} missing" -f $pass, $drift, $missing)
+Write-Host ("summary: {0} pass, {1} drift, {2} missing, {3} orphan" -f $pass, $drift, $missing, $orphan)
 if ($fail) {
   Write-Host 'MIRROR VERIFY FAILED' -ForegroundColor Red
   exit 1
