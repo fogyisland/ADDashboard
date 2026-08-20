@@ -229,3 +229,47 @@ test('Get-ReplicationSnapshot invokes Get-PartnerPortSnapshot with the partner l
   // Forward $snapshot.Site so per-partner rows carry the local site's site name.
   assert.match(snippet, /-Site\s+\$snapshot\.Site/);
 });
+
+// ---------- Task 3 fix round 2: CollectedAt forwarded to partner-port row ----------
+
+test('Get-PartnerPortSnapshot declares an optional -CollectedAt parameter (mirror the -Site pattern)', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  // Must declare a [string] [AllowNull()] $CollectedAt = $null parameter, matching
+  // the [AllowNull()] [string] $Site pattern above it.
+  assert.match(body, /\[Parameter\(\)\][\s\S]{0,60}\[AllowNull\(\)\][\s\S]{0,40}\[string\]\s*\$CollectedAt\s*=\s*\$null/,
+    'expected -CollectedAt parameter declared with [Parameter()] [AllowNull()] [string] $CollectedAt = $null');
+});
+
+test('partner-port LastSuccessTime/LastAttemptTime default to $nowIso when -CollectedAt is omitted (back-compat)', () => {
+  const src = readFileSync(psPath, 'utf8');
+  const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
+  assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
+  const body = fnMatch[0];
+  // When the caller doesn't pass -CollectedAt (e.g. a test or older invoker),
+  // the row must still get a timestamp — falling back to $nowIso is the
+  // back-compat contract (otherwise existing tests / one-off callers break).
+  // We check that the LAST two assignments in the row use the
+  // `$(if ($CollectedAt) { $CollectedAt } else { $nowIso })` form, which
+  // collapses to $nowIso whenever $CollectedAt is $null/empty.
+  assert.match(body, /LastSuccessTime\s*=\s*\$\(if\s*\(\s*\$CollectedAt\s*\)\s*\{\s*\$CollectedAt\s*\}\s*else\s*\{\s*\$nowIso\s*\}\s*\)/,
+    'expected LastSuccessTime to fall back to $nowIso when $CollectedAt is not provided');
+  assert.match(body, /LastAttemptTime\s*=\s*\$\(if\s*\(\s*\$CollectedAt\s*\)\s*\{\s*\$CollectedAt\s*\}\s*else\s*\{\s*\$nowIso\s*\}\s*\)/,
+    'expected LastAttemptTime to fall back to $nowIso when $CollectedAt is not provided');
+});
+
+test('Get-ReplicationSnapshot passes -CollectedAt $snapshot.CollectedAt to Get-PartnerPortSnapshot', () => {
+  const src = readFileSync(psPath, 'utf8');
+  // The fix-round-2 ruling: brief specified $snapshot.CollectedAt for the
+  // partner-port row's last_success_time / last_attempt_time. The call site
+  // must forward $snapshot.CollectedAt to Get-PartnerPortSnapshot so the row
+  // gets the snapshot's timestamp instead of a fresh $nowIso captured inside
+  // the function (which would drift by microseconds and break brief-adherence).
+  const snippetMatches = src.match(/Get-PartnerPortSnapshot[\s\S]{0,400}?\}/);
+  assert.ok(snippetMatches, 'expected to find Get-PartnerPortSnapshot invocation');
+  const snippet = snippetMatches[0];
+  assert.match(snippet, /-CollectedAt\s+\$snapshot\.CollectedAt/,
+    'expected call site to forward -CollectedAt $snapshot.CollectedAt');
+});

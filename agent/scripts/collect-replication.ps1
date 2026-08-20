@@ -158,6 +158,10 @@ function Get-PartnerPortSnapshot {
     [string]$Site = $null,
 
     [Parameter()]
+    [AllowNull()]
+    [string]$CollectedAt = $null,
+
+    [Parameter()]
     [int[]]$Ports = $script:DefaultPartnerPortSet
   )
 
@@ -251,8 +255,8 @@ function Get-PartnerPortSnapshot {
       SourceSite        = $Site
       DestSite          = $null
       NamingContext     = "__partner_ports__:$partnerHost"
-      LastSuccessTime   = $nowIso
-      LastAttemptTime   = $nowIso
+      LastSuccessTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
+      LastAttemptTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
       StatusCode        = $statusCode
       ErrorMessage      = $null
       UsersCount        = $null
@@ -362,7 +366,8 @@ function Get-ReplicationSnapshot {
     $portEntries = Get-PartnerPortSnapshot `
       -ComputerName $ComputerName `
       -Partners $partners `
-      -Site $snapshot.Site
+      -Site $snapshot.Site `
+      -CollectedAt $snapshot.CollectedAt
     if ($null -ne $portEntries -and @($portEntries).Count -gt 0) {
       foreach ($pe in @($portEntries)) { $entries += $pe }
     }
