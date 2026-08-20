@@ -779,17 +779,19 @@ git commit -m "fix(migrations-ui): surface apply errors inline + per-row loading
 
 ---
 
-## Task 4: Frontend — new buttons (mark-applied, baseline, apply-up-to, upgrade)
+## Task 4: Frontend — new buttons + current/latest version header (主路径: 记录 → 升级)
+
+**User flow (per 2026-08-20 user clarification):** primary path is **"记录当前系统版本 → 一键升级到最新 → 到达最终版本"**. UI must surface current/latest version status and make 升级到最新 the primary CTA.
 
 **Files:**
 - Modify: `frontend/src/api/migrations.js` — add 4 wrappers: `markApplied(version)`, `baseline(version)`, `applyUpTo(version)`, `upgrade()`.
-- Modify: `frontend/src/views/admin/SchemaMigrationsView.vue` — add 4 buttons + 2 modals.
+- Modify: `frontend/src/views/admin/SchemaMigrationsView.vue` — add **current/latest version header**, **4 buttons (升级到最新 as primary CTA)**, **2 modals**.
 - Modify: `frontend/tests/api-migrations.test.js` — extend with 4 new API tests.
-- Modify: `frontend/tests/schema-migrations.test.js` — extend with UI tests for the 4 buttons.
+- Modify: `frontend/tests/schema-migrations.test.js` — extend with UI tests for the 4 buttons + current/latest header.
 - Mirror: `publish/system/frontend/src/api/migrations.js` + `publish/system/frontend/src/views/admin/SchemaMigrationsView.vue`.
 
 **Interfaces:**
-- New API wrappers:
+- New API wrappers (same as before):
   ```js
   export function markApplied(version) {
     return api.post(`/api/admin/migrations/${encodeURIComponent(version)}/mark-applied`, {});
@@ -804,11 +806,23 @@ git commit -m "fix(migrations-ui): surface apply errors inline + per-row loading
     return api.post('/api/admin/migrations/upgrade', {});
   }
   ```
-- UI buttons:
-  - **Per-row "标记已应用"** — between Apply and Reset, only visible when `row.status === 'pending' || row.status === 'failed'`. Calls `markApplied(row.version)`, then refresh.
-  - **Top-bar "标记基线"** — opens modal with input (version) + confirm. Calls `baseline(version)`, then refresh.
-  - **Top-bar "应用到版本"** — opens modal with input (version) + confirm. Calls `applyUpTo(version)`, then refresh.
-  - **Top-bar "升级到最新"** — single button, confirm dialog "应用所有 pending migration + 重跑 seed?", calls `upgrade()`, then refresh. Disabled when no pending migrations AND seed unchanged (compute from listMigrations result + system_config).
+- UI additions:
+  - **Current/Latest version header** (NEW, above actions-bar): shows `当前版本: 014  →  最新版本: 015  [差 1 个]`. Computed from rows:
+    - `latestFileVersion` = `rows[rows.length - 1]?.version` (rows are sorted ascending)
+    - `latestAppliedVersion` = highest `version` among `rows.filter(r => r.status === 'applied')` — display as `'—'` when none
+    - `pendingCount` already exists
+    - Style: prominent box with version numbers in bold; when `latestFileVersion === latestAppliedVersion`, show green "✓ 已是最新"; otherwise show amber "⚠ 有 N 条待升级".
+  - **Top-bar `升级到最新` (PRIMARY CTA)** — green large button, leftmost position. When `latestFileVersion === latestAppliedVersion`, button is disabled and label changes to `已是最新`. Confirm dialog text: `执行架构升级 + 重跑 seed?\n\n将依次应用所有 pending migration,如有 seed 更新也会一并应用。`. Calls `upgrade()`, then refresh.
+  - **Top-bar `记录当前版本` (secondary)** — opens modal labeled "记录当前系统版本". Hint: `把指定版本及之前的所有 migration 标记为已应用(不执行 SQL)。适用于手动执行过 migrations 或恢复备份后对齐。需 verify marker 命中。`. Calls `baseline(version)`, then refresh.
+  - **Top-bar `应用到版本` (secondary)** — opens modal labeled "应用到版本". Hint: `依次应用所有 pending migration,直到指定版本(含)。`. Calls `applyUpTo(version)`, then refresh.
+  - **Per-row `标记已应用`** — only visible when `row.status === 'pending' || row.status === 'failed'`. Calls `markApplied(row.version)`, then refresh.
+
+**Patterns to reuse from Task 3** (already in the view):
+- `errMsg(e)` helper — use for all `notifyError(msg)` calls instead of inline `e?.response?.data?.error || e?.message || String(e)`.
+- `truncate(s)` helper — use for any user-facing version-string formatting if needed.
+- `applying` Set + **immutable replacement** pattern: `applying.value = new Set(applying.value).add(row.version)` / `applying.value = next`. Direct `.value.add()` does NOT trigger Vue 3 reactivity.
+- `delete rowError.value[row.version]` at start of each action to clear stale errors.
+- All action handlers wrap in `try { ... } catch (e) { notifyError(errMsg(e)) } finally { applying.value = next; }`.
 
 - [ ] **Step 1: Write failing tests for 4 new API wrappers**
 
