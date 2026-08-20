@@ -13,7 +13,21 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $archive = [System.IO.Compression.ZipFile]::Open($tmpZip, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
-    $files = Get-ChildItem -Path $publish -Recurse -File
+    # Exclude gitignored dev/build outputs (matches .gitignore patterns).
+    # These sit on disk after running `dotnet publish` (WPF designer) or
+    # `installer/build-msi.ps1` (MSI staging with embedded node + node_modules)
+    # but are NEVER shipped to users — they would bloat publish.zip from
+    # ~1.3 MB to 125+ MB. Pattern matches .gitignore conventions:
+    #   publish/designer/      (WPF self-contained)
+    #   publish/installer/staging/  (MSI build dir with embedded node)
+    $excludeDirs = @(
+        (Join-Path $publish 'designer'),
+        (Join-Path $publish (Join-Path 'installer' 'staging'))
+    )
+    $files = Get-ChildItem -Path $publish -Recurse -File | Where-Object {
+        $abs = $_.FullName
+        -not ($excludeDirs | Where-Object { $abs.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
+    }
     foreach ($f in $files) {
         $rel = $f.FullName.Substring($publish.Length).TrimStart('\', '/').Replace('\', '/')
         [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, $rel, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
