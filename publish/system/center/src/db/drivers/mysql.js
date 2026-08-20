@@ -80,7 +80,19 @@ export function createMysqlDriver(config) {
       const tx = {
         sql,
         async execute(sqlStr, params = []) {
-          const [rows] = await conn.execute(sqlStr, normalizeParams(params));
+          // Same text-vs-binary heuristic as pool.execute (line 45-66): when
+          // there are no bound params, fall back to COM_QUERY so server-side
+          // commands that the prepared-statement protocol rejects — e.g. CREATE
+          // PROCEDURE/FUNCTION/TRIGGER bodies that themselves issue
+          // PREPARE/EXECUTE/DEALLOCATE PREPARE — go through. Without this,
+          // migration 015's `CREATE PROCEDURE ... BEGIN ... END` block
+          // aborts with `This command is not supported in the prepared
+          // statement protocol yet` even though the top-level execute() would
+          // have used query() and succeeded.
+          const useQuery = params.length === 0;
+          const [rows] = useQuery
+            ? await conn.query(sqlStr)
+            : await conn.execute(sqlStr, normalizeParams(params));
           if (Array.isArray(rows)) return { rows, affectedRows: 0, insertId: undefined };
           return { rows: [], affectedRows: rows.affectedRows ?? 0, insertId: rows.insertId ?? undefined };
         },

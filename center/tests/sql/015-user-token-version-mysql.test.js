@@ -91,3 +91,46 @@ test('migration 015 (mysql): sys_users.token_version column exists with DEFAULT 
     await db.close();
   }
 });
+
+// Regression: the production code path is db.transaction() -> tx.execute(stmt, []),
+// NOT the bare db.execute(stmt, []) used in the test above. The transaction path
+// used to force conn.execute() (MySQL binary protocol) regardless of params,
+// which rejects CREATE PROCEDURE bodies that themselves issue PREPARE/EXECUTE/
+// DEALLOCATE PREPARE (server-side prepared statements). The fix routes no-param
+// statements through conn.query() (COM_QUERY text protocol) so the procedure
+// body goes through. This test pins that the transaction path works for 015.
+//
+// Without TEST_MYSQL_URL the test is skipped (same gate as the integration
+// test above).
+test('migration 015 (mysql): applies via transaction() path (CREATE PROCEDURE body)', { skip: !MYSQL }, async () => {
+  const { user, password, host, port } = parseTestUrl('TEST_MYSQL_URL', { defaultPort: 3306 });
+  const db = createMysqlDriver({ host, port, user, password, database: 'addashboard' });
+  const fileSql = fs.readFileSync(MIGRATION_FILE, 'utf8');
+
+  try {
+    const stmts = splitSqlStatements(fileSql);
+    // The split must produce at least the procedure body statement (BEGIN ... END).
+    assert.ok(
+      stmts.some(s => /CREATE\s+PROCEDURE/i.test(s) && /BEGIN\b/.test(s)),
+      'splitSqlStatements must surface the CREATE PROCEDURE body as one statement'
+    );
+    // Run each statement through tx.execute() — the production path used by
+    // services/migrations.js applyMigration(). Pre-fix this aborts with
+    // "This command is not supported in the prepared statement protocol yet"
+    // on the CREATE PROCEDURE statement.
+    await db.transaction(async (tx) => {
+      for (const stmt of stmts) {
+        await tx.execute(stmt, []);
+      }
+    });
+    // Spot-check the column exists — same shape as the main test above.
+    const colsResult = await db.execute(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_users' AND COLUMN_NAME = 'token_version'`,
+      []
+    );
+    assert.equal(colsResult.rows.length, 1, 'token_version column must exist after tx-path apply');
+  } finally {
+    await db.close();
+  }
+});
