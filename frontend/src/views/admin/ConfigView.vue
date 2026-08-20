@@ -122,6 +122,16 @@
       @confirm="doRollback"
       @cancel="rollbackTarget = null"
     />
+
+    <AgentTokenRotateModal
+      v-if="showTokenModal"
+      :visible="showTokenModal"
+      :new-token="rotatedNewToken"
+      :previous-expires-at="tokenState.previousExpiresAt"
+      :ttl-days="tokenState.ttlDays"
+      @close="onModalClose"
+      @committed="onModalCommitted"
+    />
   </AdminLayout>
 </template>
 
@@ -130,6 +140,7 @@ import { ref, computed, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import ConfigFieldRow from './ConfigFieldRow.vue';
 import ConfirmDialog from './ConfirmDialog.vue';
+import AgentTokenRotateModal from '../../components/AgentTokenRotateModal.vue';
 import { adminApi } from '../../api/admin.js';
 import { useConfigValidation } from '../../composables/useConfigValidation.js';
 import { useDirtyState } from '../../composables/useDirtyState.js';
@@ -347,20 +358,7 @@ async function load() {
     initial.value = { ...all };
     // Fetch token rotation state in parallel (don't block main load on it).
     // Failure degrades silently to safe default — same pattern as loadAudit.
-    try {
-      const tokenRes = await adminApi.getAgentTokenState();
-      const s = tokenRes.data || {};
-      tokenState.value = {
-        mode: s.mode || 'single',
-        previousExpiresAt: s.previousExpiresAt || null,
-        ttlDays: typeof s.ttlDays === 'number' ? s.ttlDays : 30
-      };
-    } catch {
-      // Same degrade-as-loadAudit pattern — a transient token-state fetch
-      // failure shouldn't blackhole the whole config page. Badge shows
-      // 'single' as a safe default; operator can retry by reloading.
-      tokenState.value = { mode: 'single', previousExpiresAt: null, ttlDays: 30 };
-    }
+    await reloadTokenState();
     await loadAudit();
   } catch (e) {
     notifyError(`加载配置失败: ${e?.message || '未知错误'}`);
@@ -419,6 +417,32 @@ async function onCommitClick() {
     notifyError(`关闭旧令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
   } finally {
     committing.value = false;
+  }
+}
+
+function onModalClose() {
+  showTokenModal.value = false;
+  rotatedNewToken.value = null;
+}
+
+async function onModalCommitted() {
+  // Modal already emits 'close' alongside 'committed', but we re-fetch
+  // here so the row badge updates to single and the commit button
+  // disappears without waiting for the next page load.
+  await reloadTokenState();
+}
+
+async function reloadTokenState() {
+  try {
+    const r = await adminApi.getAgentTokenState();
+    const s = r.data || {};
+    tokenState.value = {
+      mode: s.mode || 'single',
+      previousExpiresAt: s.previousExpiresAt || null,
+      ttlDays: typeof s.ttlDays === 'number' ? s.ttlDays : 30
+    };
+  } catch {
+    tokenState.value = { mode: 'single', previousExpiresAt: null, ttlDays: 30 };
   }
 }
 
