@@ -198,3 +198,37 @@ test('buildServerApps: heartbeat report apps are reachable on their own supertes
   assert.strictEqual(wrongRp.status, 401,
     `reportApp POST /api/agent/report with wrong token should be 401; got ${wrongRp.status}`);
 });
+
+// Regression: in init mode (db=null), buildServerApps used to throw at the
+// agentRouter factory call (which eagerly resolves `db: getDb()` for the
+// agentToken middleware). The throw bubbled up to the IIFE .catch, which
+// logged "fatal" and called process.exit(1) — combined with NSSM restart
+// this produced the "ran for <1500ms, restart delayed" loop, and the
+// /api/init wizard became unreachable. Fix: skip the agentRouter mount in
+// init mode (heartbeatApp / reportApp aren't listened in that branch anyway).
+test('buildServerApps: init mode (db=null) → does not throw, agentRouter skipped', () => {
+  // The mock db from `before` makes getDb() safe even if we miss a path —
+  // the factory skips agentRouter when needsInit=true, so getDb() is never
+  // invoked from buildServerApps in this test.
+  assert.doesNotThrow(() => {
+    const result = buildServerApps({
+      config: makeConfig(),
+      db: null,
+      logger: silentLogger,
+      needsInit: true,
+      systemConfig: {}
+    });
+    assert.ok(result.webApp, 'webApp missing');
+    assert.ok(result.heartbeatApp, 'heartbeatApp should still exist (with healthz only)');
+    assert.ok(result.reportApp, 'reportApp should still exist (with healthz only)');
+    // The agent routes must NOT be mounted on heartbeatApp/reportApp in
+    // init mode — otherwise agentRouter would have been invoked and could
+    // throw against a real uninitialized db.
+    const hbRoutes = collectRoutes(result.heartbeatApp);
+    assert.ok(!hbRoutes.some(r => r.includes('/api/agent')),
+      `heartbeatApp should have no /api/agent/* routes in init mode; got ${JSON.stringify(hbRoutes)}`);
+    const rpRoutes = collectRoutes(result.reportApp);
+    assert.ok(!rpRoutes.some(r => r.includes('/api/agent')),
+      `reportApp should have no /api/agent/* routes in init mode; got ${JSON.stringify(rpRoutes)}`);
+  }, 'buildServerApps in init mode must not throw even when db is null');
+});

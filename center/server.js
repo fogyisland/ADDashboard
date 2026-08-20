@@ -66,7 +66,14 @@ export function buildServerApps({ config, db, logger, needsInit, systemConfig = 
   // unauthenticated GET, so order doesn't matter — mount before
   // agentRouter so it's first-match.
   heartbeatApp.use(healthzRouter());
-  heartbeatApp.use(agentRouter({ config, logger, mount: 'heartbeat' }));
+  // agentRouter factory calls getDb() eagerly to construct the agentToken
+  // middleware. In init mode db is null → throw → bubbles up to the IIFE
+  // .catch → process.exit → NSSM restart loop. heartbeatApp isn't listened
+  // in init mode anyway (see the `if (needsInit)` branch in the IIFE), so
+  // just skip the agentRouter mount there.
+  if (!needsInit) {
+    heartbeatApp.use(agentRouter({ config, logger, mount: 'heartbeat' }));
+  }
 
   // reportApp — replication snapshots can be 10MB+ (12+ rows × long error
   // strings). Only the report subset of agentRouter is mounted.
@@ -74,7 +81,9 @@ export function buildServerApps({ config, db, logger, needsInit, systemConfig = 
   reportApp.disable('x-powered-by');
   reportApp.use(express.json({ limit: '10mb' }));
   reportApp.use(healthzRouter());
-  reportApp.use(agentRouter({ config, logger, mount: 'report' }));
+  if (!needsInit) {
+    reportApp.use(agentRouter({ config, logger, mount: 'report' }));
+  }
 
   return {
     webApp,
