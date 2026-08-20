@@ -407,6 +407,66 @@ test('PUT /api/admin/config: 200 updates multiple keys', async () => {
   assert.equal(updateCount, 2);
 });
 
+// Regression for the "保存失败:internal" bug:
+// putConfigInTx throws { httpStatus: 400, blockedKey: 'ad_agent_token' }
+// from inside a tx when a legacy ad_agent_token write changes the value.
+// db/index.js's transaction wrapper wraps the throw in DbError, stashing
+// the httpStatus on the wrapper's `originalError`. Before the DbError.wrap
+// fix, that left `wrapped.httpStatus === undefined` and admin.js's catch
+// fell through to a generic 500 — same UI symptom as the user-reported bug.
+//
+// This test exercises the wrap path explicitly (import DbError, call wrap
+// before re-throwing) so a regression that drops httpStatus propagation
+// surfaces as a 500 instead of the expected 400.
+test('PUT /api/admin/config: 400 surfaces actionable message for blocked legacy key (through DbError.wrap)', async () => {
+  const { buildSql } = await import('../src/db/sql.js');
+  const { DbError } = await import('../src/db/errors.js');
+  const txExecute = async (sql, params = []) => {
+    // First call inside putConfigInTx is the SELECT pre-image read. When
+    // the legacy ad_agent_token key is in the patch and differs from the
+    // current row, the service throws BEFORE running any upsert — so we
+    // only need to return a pre-image that has a different value for the
+    // blocked key.
+    if (/FROM\s+system_config/i.test(sql)) {
+      return { rows: [{ config_key: 'ad_agent_token', config_value: 'old-token' }] };
+    }
+    return { rows: [], affectedRows: 0, insertId: undefined };
+  };
+  const txQuery = async (sql) => {
+    if (/FROM\s+system_config/i.test(sql)) {
+      return { rows: [{ config_key: 'ad_agent_token', config_value: 'old-token' }] };
+    }
+    return { rows: [] };
+  };
+  // Mirror the production wrap-on-tx-throw path: any throw inside the
+  // worker's tx goes through DbError.wrap, exactly like db/index.js:33.
+  const db = {
+    dialect: 'mysql',
+    sql: buildSql('mysql'),
+    async execute() { return { rows: [], affectedRows: 0, insertId: undefined }; },
+    query: defaultQuery,
+    async transaction(work) {
+      try {
+        return await work({ sql: db.sql, execute: txExecute, query: txQuery });
+      } catch (e) {
+        throw DbError.wrap(e);
+      }
+    },
+    async healthcheck() {},
+    async close() {}
+  };
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .put('/api/admin/config')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ ad_agent_token: 'new-tok-9999' });
+  assert.equal(r.status, 400,
+    'blocked legacy key must surface 400, not silently downgrade to 500');
+  assert.match(r.body.error, /ad_agent_token/);
+  assert.match(r.body.error, /\/api\/admin\/agent-token\/rotate/);
+});
+
 // ----- AUDIT -----
 
 test('GET /api/admin/audit?size=5: 200 returns at most 5 rows in .rows array', async () => {
