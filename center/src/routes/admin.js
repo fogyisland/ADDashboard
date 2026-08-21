@@ -1322,15 +1322,21 @@ export function adminRouter({ config, logger, db }) {
   // service falls back to <cwd>/data/packages.
   r.get('/api/admin/schemas/inventory', auth, async (req, res) => {
     try {
-      const { getSchemaInventory } = await import('../services/schema-inventory.js');
+      const { getCodeSchemaInventory } = await import('../services/schema-inventory.js');
       const db = getDb();
-      // ?all=1 — bypass the center-schema filter so an operator can see
-      // what else lives on the same MySQL/MSSQL instance (useful when
-      // diagnosing a developer DB that's accumulated unrelated schemas).
-      const includeAll = req.query.all === '1' || req.query.all === 'true';
-      const inv = await getSchemaInventory(db, {
+      // db facade doesn't carry the configured database name — read it from
+      // the dialect-specific config block so pkg_<name>.metrics references
+      // route to their own schema instead of getting bucketed with the main
+      // app tables.
+      const dbConfig = config?.db || {};
+      const dbName = (dbConfig.mysql && dbConfig.mysql.database)
+        || (dbConfig.mssql && dbConfig.mssql.database)
+        || '';
+      const inv = await getCodeSchemaInventory(db, {
         dataDir: config?.schemaInventoryDataDir,
-        includeAll
+        srcRoot: config?.schemaInventorySrcRoot,
+        repoRoot: config?.schemaInventoryRepoRoot,
+        dbName
       });
       res.json(inv);
     } catch (e) {

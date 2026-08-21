@@ -1,3 +1,9 @@
+// SchemaInventoryView tests — drive the code-driven inventory flow.
+// The view fetches `{ schemas: [{ name, tables: [{schema, name, source,
+// codeRefs, expected, actual, diff, status}] }] }` and renders one row
+// per referenced table, with a default-expanded detail row showing the
+// expected vs actual column shape.
+
 import { mount, flushPromises } from '@vue/test-utils';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
@@ -38,38 +44,52 @@ describe('SchemaInventoryView', () => {
   it('shows loading state then renders schemas on success', async () => {
     adminApi.getSchemaInventory.mockResolvedValue({
       data: { schemas: [
-        { name: 'pkg_ad_local_port_check', source: 'package:ad-local-port-check/1.0.0',
-          expected: [{ name: 'metrics', columns: [] }], actual: [{ name: 'metrics', columns: [] }],
-          diff: { missingTables: [], extraTables: [], missingColumns: [], extraColumns: [], typeMismatches: [], status: 'in_sync' },
-          status: 'in_sync' },
-        { name: 'users', source: 'system', expected: null,
-          actual: [{ name: 'users', columns: [{ name: 'id', type: 'int', nullable: false }] }],
-          diff: null, status: 'system' }
+        { name: 'pkg_ad_local_port_check', tables: [
+          { schema: 'pkg_ad_local_port_check', name: 'metrics', source: 'package',
+            codeRefs: ['a.js:1'],
+            expected: [{ name: 'agent_id', type: 'varchar(64)', nullable: false }],
+            actual:   [{ name: 'agent_id', type: 'varchar(64)', nullable: false, defaultValue: null }],
+            diff: { missingColumns: [], extraColumns: [], typeMismatches: [] },
+            status: 'in_sync' }
+        ]},
+        { name: 'addashboard', tables: [
+          { schema: 'addashboard', name: 'ad_users', source: 'code',
+            codeRefs: ['users.js:42', 'routes.js:7'],
+            expected: [{ name: 'id', type: 'BIGINT', nullable: true }],
+            actual:   [{ name: 'id', type: 'bigint', nullable: false, defaultValue: null }],
+            diff: { missingColumns: [], extraColumns: [], typeMismatches: [] },
+            status: 'in_sync' }
+        ]}
       ]}
     });
     const wrapper = mountView();
     await flushPromises();
     expect(wrapper.text()).toContain('pkg_ad_local_port_check');
-    expect(wrapper.text()).toContain('users');
+    expect(wrapper.text()).toContain('addashboard');
+    expect(wrapper.text()).toContain('metrics');
+    expect(wrapper.text()).toContain('ad_users');
     expect(wrapper.text()).toContain('在同步');
-    expect(wrapper.text()).toContain('系统');
-    // Stats line at the top summarises the breakdown.
-    expect(wrapper.text()).toContain('共 2 个 schema');
-    expect(wrapper.text()).toContain('在同步 1');
-    expect(wrapper.text()).toContain('漂移 0');
-    expect(wrapper.text()).toContain('系统 1');
+    // Stats line summarises the breakdown across all tables.
+    expect(wrapper.text()).toContain('共 2 张');
   });
 
-  it('shows drift badges and diff counts when schema has drift', async () => {
+  it('shows drift badge and missing-column count when table has drift', async () => {
     adminApi.getSchemaInventory.mockResolvedValue({
       data: { schemas: [
-        { name: 'pkg_ad_broken', source: 'package:ad-broken/1.0.0',
-          expected: [{ name: 'metrics', columns: [{ name: 'agent_id', type: 'varchar(64)' }, { name: 'ts', type: 'datetime' }] }],
-          actual: [{ name: 'metrics', columns: [{ name: 'agent_id', type: 'varchar(64)' }] }],
-          diff: { missingTables: [], extraTables: [],
-                  missingColumns: [{ table: 'metrics', name: 'ts', expectedType: 'datetime' }],
-                  extraColumns: [], typeMismatches: [], status: 'drift' },
-          status: 'drift' }
+        { name: 'pkg_ad_broken', tables: [
+          { schema: 'pkg_ad_broken', name: 'metrics', source: 'package',
+            codeRefs: ['a.js:1'],
+            expected: [
+              { name: 'agent_id', type: 'varchar(64)', nullable: false },
+              { name: 'ts',       type: 'datetime',    nullable: false }
+            ],
+            actual:   [
+              { name: 'agent_id', type: 'varchar(64)', nullable: false, defaultValue: null }
+            ],
+            diff: { missingColumns: [{ name: 'ts', expectedType: 'datetime' }],
+                    extraColumns: [], typeMismatches: [] },
+            status: 'drift' }
+        ]}
       ]}
     });
     const wrapper = mountView();
@@ -81,46 +101,54 @@ describe('SchemaInventoryView', () => {
   it('toggles collapse / re-expand via expand button (default expanded)', async () => {
     adminApi.getSchemaInventory.mockResolvedValue({
       data: { schemas: [
-        { name: 'pkg_ad_test', source: 'package:ad-test/1.0.0',
-          expected: [{ name: 'metrics', columns: [{ name: 'agent_id', type: 'varchar(64)' }] }],
-          actual: [{ name: 'metrics', columns: [{ name: 'agent_id', type: 'varchar(64)' }] }],
-          diff: { missingTables: [], extraTables: [], missingColumns: [], extraColumns: [], typeMismatches: [], status: 'in_sync' },
-          status: 'in_sync' }
+        { name: 'pkg_ad_test', tables: [
+          { schema: 'pkg_ad_test', name: 'metrics', source: 'package',
+            codeRefs: ['a.js:1'],
+            expected: [{ name: 'agent_id', type: 'varchar(64)', nullable: false }],
+            actual:   [{ name: 'agent_id', type: 'varchar(64)', nullable: false, defaultValue: null }],
+            diff: { missingColumns: [], extraColumns: [], typeMismatches: [] },
+            status: 'in_sync' }
+        ]}
       ]}
     });
     const wrapper = mountView();
     await flushPromises();
-    // Default: expanded so DB structure is visible without a click.
-    expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(true);
-    await wrapper.find('[data-test="expand-pkg_ad_test"]').trigger('click');
+    // Default: every row already expanded so the operator sees column shape up front.
+    expect(wrapper.find('[data-test="cols-table"]').exists()).toBe(true);
+    await wrapper.find('[data-test="expand-pkg_ad_test.metrics"]').trigger('click');
     await flushPromises();
-    expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="cols-table"]').exists()).toBe(false);
     // Click again to re-expand.
-    await wrapper.find('[data-test="expand-pkg_ad_test"]').trigger('click');
+    await wrapper.find('[data-test="expand-pkg_ad_test.metrics"]').trigger('click');
     await flushPromises();
-    expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="cols-table"]').exists()).toBe(true);
   });
 
-  it('renders system schema actual tables only, no expected', async () => {
+  it('renders system-schema tables when the code references them', async () => {
     adminApi.getSchemaInventory.mockResolvedValue({
       data: { schemas: [
-        { name: 'users', source: 'system', expected: null,
-          actual: [{ name: 'users', columns: [{ name: 'id', type: 'int', nullable: false }] }],
-          diff: null, status: 'system' }
+        { name: 'addashboard', tables: [
+          { schema: 'addashboard', name: 'ad_users', source: 'code',
+            codeRefs: ['users.js:42'],
+            expected: null,
+            actual: [{ name: 'id', type: 'bigint', nullable: false, defaultValue: null }],
+            diff: null,
+            status: 'in_sync' }
+        ]}
       ]}
     });
     const wrapper = mountView();
     await flushPromises();
-    // Default: detail row already expanded, no click needed.
-    expect(wrapper.text()).toContain('实际表');
+    expect(wrapper.text()).toContain('ad_users');
     expect(wrapper.text()).toContain('id');
+    expect(wrapper.text()).toContain('bigint');
   });
 
-  it('shows empty state when DB has no schemas', async () => {
+  it('shows empty state when code references no tables', async () => {
     adminApi.getSchemaInventory.mockResolvedValue({ data: { schemas: [] } });
     const wrapper = mountView();
     await flushPromises();
-    expect(wrapper.text()).toContain('数据库中暂无 schemas');
+    expect(wrapper.text()).toContain('代码中没有引用任何 SQL 表');
   });
 
   it('calls notifyError on API failure', async () => {

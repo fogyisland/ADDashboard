@@ -1,50 +1,63 @@
-// Schema inventory service (T285 admin/SchemaInventoryView). Walks every
-// schema in the active DB, lists tables + columns, and for pkg_* schemas
-// compares the actual layout against the package manifest's metricSchema
-// to surface drift.
+// Schema inventory service (T285 admin/SchemaInventoryView).
 //
-// Expected source (Option C from the design): the package manifest is the
-// contract — metricTable and metricSchema define the metric table, and
-// MIGRATION files are treated as the bootstrap that creates it. If the
-// manifest and the migrations disagree, the manifest wins (it's the
-// declared contract). Migrations are not parsed here because the manifest
-// already pins every column the package writes; parsing CREATE TABLE out
-// of MSSQL/Migration SQL is fiddly and easy to drift.
+// Goal: scan what tables THIS program (center code) actually references
+// in its SQL strings and compare them against the database's actual
+// shape. The intent is "code ↔ DB" consistency, not "manifest ↔ DB".
 //
-// System tables (users / audit / config / schema_migrations / orphan_schemas
-// / installed_packages / etc.) have no expected — they're framework-owned
-// and the operator sees only their actual layout.
+// Sources of "expected":
+//   * center/src/**/*.js SQL strings — parsed for table references via
+//     sql-scanner.scanCenterCodeForTables. This drives the inventory: we
+//     only look at tables the code touches.
+//   * db/schema/*.sql + db/migrations/*.sql CREATE TABLE — gives the
+//     expected column shape for tables in the app's main schema.
+//   * center/data/packages/<name>/<version>/manifest.json — gives the
+//     expected column shape for pkg_* tables (their contracts are owned
+//     by package authors, not by our CREATE TABLE statements).
 //
-// Output shape (per schema entry):
-//   { name, source, expected, actual, diff, status }
-//     source: "package:<name>/<version>" | "system"
-//     expected: null | [{ table, columns: [{ name, type, nullable }] }]
-//     actual:   [{ table, columns: [{ name, type, nullable }] }]
-//     diff:     null | { missingTables, extraTables, missingColumns,
-//                         extraColumns, typeMismatches, status }
-//     status:   "in_sync" | "drift" | "system"
+// Source of "actual":
+//   information_schema (MySQL) / sys.* (MSSQL) — tables and columns as
+//   they currently exist on the database.
+//
+// Output per table:
+//   {
+//     schema, name, source: 'code' | 'package',
+//     codeRefs: ["path/file.js:42", ...],  // which files reference it
+//     expected: [{name, type, nullable}],   // null when only "actual" exists
+//     actual:   [{name, type, nullable}],
+//     diff: { missingColumns, extraColumns, typeMismatches } | null,
+//     status: 'in_sync' | 'drift' | 'missing_in_db' | 'unexpected'
+//   }
+//
+// Output per schema:
+//   { name, tables: [ ... ] }
+//
+//   status legend:
+//     in_sync       — code expects it, DB has it, columns match
+//     drift         — code expects it, DB has it, columns differ
+//     missing_in_db — code expects it, DB does NOT have it
+//     unexpected    — DB has it but no code/manifest references it (rare,
+//                     filtered out by default; only shown with showAll)
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { scanCenterCodeForTables, schemaForTable, baseTableName } from './sql-scanner.js';
+import { parseAllCreateTables } from './migration-parser.js';
 
-// JSON maps to nvarchar (MSSQL) / text (MySQL) /* etc */ by the SQL
-// migration layer — the manifest's logical "json" type covers all of
-// them. nvarchar ↔ varchar is also treated as equivalent because the
-// manifest is dialect-agnostic (the migration is what adds the unicode
-// qualifier). Extending here is the right place when a new logical
-// type is added to the manifest schema contract.
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DATA_DIR = path.resolve(HERE, '..', '..', 'data', 'packages');
+
+// JSON ↔ nvarchar / varchar / text equivalence (cross-dialect). Defined
+// here (rather than imported from the old manifest-based service) so the
+// inventory is self-contained — column-level drift has its own logic.
 const TYPE_EQUIV = {
-  json: new Set(['json', 'nvarchar', 'varchar', 'text', 'longtext', 'ntext', 'char']),
-  'varchar<->nvarchar': true
+  json: new Set(['json', 'nvarchar', 'varchar', 'text', 'longtext', 'ntext', 'char'])
 };
 
 function typesEquivalent(actualType, expectedType) {
   const expected = String(expectedType || '').toLowerCase().trim();
   const actual = String(actualType || '').toLowerCase().trim();
-  if (!expected) return true; // empty expected type → no constraint
-  // Strip the (precision) suffix when comparing base types so the
-  // varchar ↔ nvarchar equivalence handles the column_type form
-  // ("varchar(64)" vs "nvarchar(64)") AND the bare data_type form.
+  if (!expected) return true;
   const baseExpected = expected.replace(/\s*\(.*?\)\s*/g, '');
   const baseActual = actual.replace(/\s*\(.*?\)\s*/g, '');
   if (baseExpected === 'json') return TYPE_EQUIV.json.has(baseActual);
@@ -62,120 +75,39 @@ function normalizeColumn(c) {
   };
 }
 
-function manifestToExpected(manifest) {
-  const db = manifest.database || {};
-  const tables = [];
-  const metricSchema = db.metricSchema || {};
-  if (db.metricTable) {
-    const cols = Object.entries(metricSchema).map(([name, def]) => ({
-      name,
-      type: def?.type || 'unknown',
-      nullable: def?.nullable !== false
-    }));
-    tables.push({ name: db.metricTable, columns: cols });
-  }
-  return { version: manifest.version || '?', tables };
-}
-
-function computeDiff(actualTables, expected) {
-  const actualByTable = new Map(actualTables.map((t) => [t.name, t]));
-  const expectedByTable = new Map((expected.tables || []).map((t) => [t.name, t]));
-
-  const missingTables = [];
-  const extraTables = [];
+function diffColumns(expected, actual) {
+  const expectedByName = new Map((expected || []).map((c) => [c.name, c]));
+  const actualByName = new Map((actual || []).map((c) => [c.name, c]));
   const missingColumns = [];
   const extraColumns = [];
   const typeMismatches = [];
-
-  for (const [name, t] of expectedByTable) {
-    if (!actualByTable.has(name)) {
-      missingTables.push({ name, columns: (t.columns || []).map((c) => c.name) });
+  for (const [n, e] of expectedByName) {
+    const a = actualByName.get(n);
+    if (!a) { missingColumns.push({ name: n, expectedType: e.type }); continue; }
+    if (!typesEquivalent(a.type, e.type)) {
+      typeMismatches.push({ name: n, expectedType: e.type, actualType: a.type });
     }
   }
-  for (const name of actualByTable.keys()) {
-    if (!expectedByTable.has(name)) extraTables.push(name);
+  for (const [n, a] of actualByName) {
+    if (!expectedByName.has(n)) extraColumns.push({ name: n, actualType: a.type });
   }
-  for (const [name, expectedTable] of expectedByTable) {
-    const actualTable = actualByTable.get(name);
-    if (!actualTable) continue;
-    const actualCols = new Map(actualTable.columns.map((c) => [c.name, c]));
-    const expectedCols = new Map((expectedTable.columns || []).map((c) => [c.name, c]));
-    for (const [colName, expectedCol] of expectedCols) {
-      if (!actualCols.has(colName)) {
-        missingColumns.push({ table: name, name: colName, expectedType: expectedCol.type });
-      }
-    }
-    for (const [colName, actualCol] of actualCols) {
-      if (!expectedCols.has(colName)) {
-        extraColumns.push({ table: name, name: colName, actualType: actualCol.type });
-      }
-    }
-    for (const [colName, expectedCol] of expectedCols) {
-      const actualCol = actualCols.get(colName);
-      if (!actualCol) continue;
-      if (!typesEquivalent(actualCol.type, expectedCol.type)) {
-        typeMismatches.push({
-          table: name,
-          name: colName,
-          expectedType: expectedCol.type,
-          actualType: actualCol.type
-        });
-      }
-    }
-  }
-
-  const hasDiff =
-    missingTables.length || extraTables.length || missingColumns.length ||
-    extraColumns.length || typeMismatches.length;
-  return {
-    missingTables,
-    extraTables,
-    missingColumns,
-    extraColumns,
-    typeMismatches,
-    status: hasDiff ? 'drift' : 'in_sync'
-  };
+  const hasDiff = missingColumns.length || extraColumns.length || typeMismatches.length;
+  return { missingColumns, extraColumns, typeMismatches, status: hasDiff ? 'drift' : 'in_sync' };
 }
 
-async function readSchema(db, schemaName, dataDir) {
-  const { rows: tables } = await db.execute(db.sql.schemaInventory.listTables, [schemaName]);
-  const actualTables = [];
-  for (const { table_name } of tables) {
-    const { rows: cols } = await db.execute(
-      db.sql.schemaInventory.listColumns,
-      [schemaName, table_name]
-    );
-    actualTables.push({ name: table_name, columns: (cols || []).map(normalizeColumn) });
-  }
-
-  const pkgMatch = schemaName.match(/^pkg_(.+)$/);
-  if (pkgMatch) {
-    const pkgName = pkgMatch[1].replaceAll('_', '-');
-    const expected = readExpectedFromDir(pkgName, dataDir);
-    if (expected) {
-      const diff = computeDiff(actualTables, expected);
-      return {
-        name: schemaName,
-        source: `package:${pkgName}/${expected.version}`,
-        expected: expected.tables,
-        actual: actualTables,
-        diff,
-        status: diff.status
-      };
-    }
-  }
-
-  return {
-    name: schemaName,
-    source: 'system',
-    expected: null,
-    actual: actualTables,
-    diff: null,
-    status: 'system'
-  };
+// Pull the expected column list for a single table from the parsed
+// CREATE TABLE registry.
+function expectedFromMigrations(tableName, registry) {
+  return registry.get(tableName)?.columns || null;
 }
 
-function readExpectedFromDir(pkgName, dataDir) {
+// Pull the expected column list for a pkg_* schema's tables from a
+// package manifest.
+function expectedFromManifest(pkgSchema, dataDir) {
+  // pkgSchema = "pkg_ad_local_port_check"; pkgName = "ad-local-port-check"
+  const m = pkgSchema.match(/^pkg_(.+)$/);
+  if (!m) return null;
+  const pkgName = m[1].replaceAll('_', '-');
   if (!dataDir) return null;
   const pkgDir = path.join(dataDir, pkgName);
   if (!fs.existsSync(pkgDir)) return null;
@@ -187,44 +119,109 @@ function readExpectedFromDir(pkgName, dataDir) {
     });
   } catch { return null; }
   if (versions.length === 0) return null;
-  versions.sort(); // semver-ish string sort works for "1.0.0" / "1.2.3"
+  versions.sort();
   const latest = versions[versions.length - 1];
   const manifestPath = path.join(pkgDir, latest, 'manifest.json');
   if (!fs.existsSync(manifestPath)) return null;
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    return manifestToExpected(manifest);
+    const db = manifest.database || {};
+    const metricSchema = db.metricSchema || {};
+    if (!db.metricTable) return null;
+    return new Map([
+      [db.metricTable, Object.entries(metricSchema).map(([name, def]) => ({
+        name, type: def?.type || 'unknown', nullable: def?.nullable !== false
+      }))]
+    ]);
   } catch {
     return null;
   }
 }
 
-// "Center's own" schemas: the main app schema (matches the DB connection's
-// configured database name) plus every pkg_* schema that an installed
-// package owns. By default we hide everything else — a developer MySQL
-// frequently holds leftover schemas from other unrelated projects and the
-// operator doesn't want to see them in an inventory page. Pass
-// `{ includeAll: true }` to bypass the filter.
-function isCenterSchema(schemaName, dbDatabase) {
-  if (schemaName === dbDatabase) return true;
-  if (schemaName.startsWith('pkg_')) return true;
-  return false;
+// Query DB for the actual column list of a single table. Returns
+// null when the table doesn't exist (no rows in information_schema.COLUMNS).
+async function readActual(db, schemaName, tableName) {
+  const { rows } = await db.execute(db.sql.schemaInventory.listColumns, [schemaName, tableName]);
+  if (!rows || rows.length === 0) return null;
+  return rows.map(normalizeColumn);
 }
 
-export async function getSchemaInventory(db, opts = {}) {
-  const dataDir = opts.dataDir || path.join(process.cwd(), 'data', 'packages');
-  const includeAll = opts.includeAll === true;
-  const { rows: schemaRows } = await db.query(db.sql.schemaInventory.listSchemas);
-  const out = [];
-  for (const row of schemaRows || []) {
-    const schemaName = row.schema_name ?? row.SCHEMA_NAME ?? row.name;
-    if (!schemaName) continue;
-    if (!includeAll && !isCenterSchema(schemaName, db.database)) continue;
-    out.push(await readSchema(db, schemaName, dataDir));
+// Build the per-table entry given all the inputs we already collected.
+function buildTableEntry({ schema, table, codeRefs, expected, actual, source }) {
+  if (actual === null) {
+    return {
+      schema, name: table, source, codeRefs,
+      expected: expected || null,
+      actual: [],
+      diff: null,
+      status: 'missing_in_db'
+    };
   }
-  return { schemas: out };
+  const diff = expected ? diffColumns(expected, actual) : { status: 'in_sync' };
+  return {
+    schema, name: table, source, codeRefs,
+    expected: expected || null,
+    actual,
+    diff,
+    status: diff.status
+  };
 }
 
-// Exported for tests — the diff helper is pure and the most logic-dense
-// bit of the whole feature.
-export const _test = { computeDiff, typesEquivalent, manifestToExpected, normalizeColumn };
+export async function getCodeSchemaInventory(db, opts = {}) {
+  const dataDir = opts.dataDir || DEFAULT_DATA_DIR;
+  const srcRoot = opts.srcRoot;
+  const repoRoot = opts.repoRoot;
+  // The db facade doesn't carry the database name — the caller (route
+  // handler) reads it from config.db.{dialect}.database and passes it
+  // through. pkg_* references go to their own schema; everything else
+  // buckets into this name.
+  const dbName = opts.dbName || db.database || '';
+
+  // 1. Scan center code for table references.
+  const codeRefs = scanCenterCodeForTables(srcRoot);
+
+  // 2. Parse CREATE TABLE statements from migrations + main schema.
+  const migrations = parseAllCreateTables(repoRoot);
+
+  // 3. Walk each code-referenced table, figure out its schema, look up
+  //    expected columns, query actual columns, diff.
+  const schemaMap = new Map(); // schemaName -> { tables: [...] }
+  for (const [rawName, refs] of codeRefs) {
+    const table = baseTableName(rawName);
+    const schema = schemaForTable(rawName, dbName);
+
+    // For pkg_* schemas, expected columns come from the package manifest.
+    // For everything else, they come from CREATE TABLE in migrations.
+    let expected = null;
+    let source = 'code';
+    if (schema.startsWith('pkg_')) {
+      const manifestMap = expectedFromManifest(schema, dataDir);
+      if (manifestMap) expected = manifestMap.get(table) || null;
+      source = 'package';
+    } else {
+      expected = expectedFromMigrations(table, migrations);
+    }
+
+    const actualColumns = await readActual(db, schema, table);
+
+    if (!schemaMap.has(schema)) schemaMap.set(schema, []);
+    schemaMap.get(schema).push(buildTableEntry({
+      schema, table, codeRefs: [...refs], expected,
+      actual: actualColumns, source
+    }));
+  }
+
+  // 4. Build the final list of schemas, sorted by name, with tables
+  //    sorted by name.
+  const schemas = [...schemaMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, tables]) => ({
+      name,
+      tables: tables.sort((a, b) => a.name.localeCompare(b.name))
+    }));
+
+  return { schemas };
+}
+
+// Exported for tests — the diff helper is pure.
+export const _test = { diffColumns, typesEquivalent, schemaForTable, baseTableName };

@@ -49,18 +49,16 @@ export const adminApi = {
   getDdlPreview: (name) => api.get(`/api/admin/packages/${name}/ddl-preview`),
   listOrphanSchemas: () => api.get('/api/admin/orphan-schemas'),
   dropOrphanSchema: (name) => api.delete(`/api/admin/orphan-schemas/${name}`),
-  // Read-only schema inventory (T285 SchemaInventoryView). Walks every
-  // schema in the center DB, lists tables + columns, and for pkg_*
-  // schemas compares against the package manifest's metricSchema to
-  // surface drift. Response shape:
-  //   { schemas: [{ name, source, expected, actual, diff, status }] }
-  //
-  // By default filters to center-owned schemas (the configured DB's
-  // schema + every pkg_*). Pass `{ all: true }` to see every schema on
-  // the server — useful on a developer MySQL that accumulated unrelated
-  // test schemas from other projects.
-  getSchemaInventory: ({ all = false } = {}) =>
-    api.get(`/api/admin/schemas/inventory${all ? '?all=1' : ''}`),
+  // Read-only schema inventory (T285 SchemaInventoryView). Scans center
+  // code for SQL table references and compares each table's expected
+  // shape (from CREATE TABLE in migrations + package manifests) against
+  // the DB's actual shape. Response shape:
+  //   { schemas: [{
+  //       name, tables: [{
+  //         schema, name, source, codeRefs, expected, actual, diff, status
+  //       }]
+  //   }] }
+  getSchemaInventory: () => api.get('/api/admin/schemas/inventory'),
   uninstallPackage: (name, { purgeMetrics = false, confirmDropSchema = false } = {}) =>
     api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } }),
 
