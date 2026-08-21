@@ -2,32 +2,36 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSql } from '../src/db/sql.js';
 
-test('mysql upsertStatus binds 15 params and includes 4 new counter columns', () => {
+test('mysql upsertStatus binds 16 params and includes 4 new counter columns + partner_port_status', () => {
   const sql = buildSql('mysql');
   const upsert = sql.replication.upsertStatus;
   const placeholders = (upsert.match(/\?/g) || []).length;
-  assert.strictEqual(placeholders, 15,
-    `expected 15 ? placeholders in mysql upsertStatus, got ${placeholders}`);
+  assert.strictEqual(placeholders, 16,
+    `expected 16 ? placeholders in mysql upsertStatus, got ${placeholders}`);
   assert.match(upsert, /users_count/);
   assert.match(upsert, /groups_count/);
   assert.match(upsert, /gpos_count/);
   assert.match(upsert, /locked_count/);
+  assert.match(upsert, /partner_port_status/);
   assert.match(upsert, /ON DUPLICATE KEY UPDATE.*users_count\s*=\s*VALUES\(users_count\)/s);
+  assert.match(upsert, /ON DUPLICATE KEY UPDATE.*partner_port_status\s*=\s*VALUES\(partner_port_status\)/s);
 });
 
-test('mssql upsertStatus binds 15 params via MERGE and includes 4 new counter columns', () => {
+test('mssql upsertStatus binds 16 params via MERGE and includes 4 new counter columns + partner_port_status', () => {
   const sql = buildSql('mssql');
   const upsert = sql.replication.upsertStatus;
   // The mssql driver rewrites ? -> @pN at execute() time, so the registry
   // holds SQL in `?` form (same as mysql). Count `?` placeholders here.
   const placeholders = (upsert.match(/\?/g) || []).length;
-  assert.strictEqual(placeholders, 15,
-    `expected 15 ? placeholders in mssql upsertStatus, got ${placeholders}`);
+  assert.strictEqual(placeholders, 16,
+    `expected 16 ? placeholders in mssql upsertStatus, got ${placeholders}`);
   assert.match(upsert, /users_count/);
   assert.match(upsert, /groups_count/);
   assert.match(upsert, /gpos_count/);
   assert.match(upsert, /locked_count/);
+  assert.match(upsert, /partner_port_status/);
   assert.match(upsert, /WHEN MATCHED THEN UPDATE SET[\s\S]*users_count\s*=\s*s\.users_count/);
+  assert.match(upsert, /WHEN MATCHED THEN UPDATE SET[\s\S]*partner_port_status\s*=\s*s\.partner_port_status/);
 });
 
 test('latestSummaryPerDc query exists for both dialects and filters by __dc_summary__', () => {

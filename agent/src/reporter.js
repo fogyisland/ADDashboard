@@ -55,9 +55,19 @@ function baseUrl({ centerUrl, port }) {
 
 // PS script emits entries in PascalCase (SourceDc, DestDc, ...); center's
 // upsertStatus reads camelCase (sourceDc, destDc, ...). Convert at this boundary.
-function toCamelEntry(e) {
+//
+// This must forward ALL 16 fields of the ad_replication_status INSERT shape
+// (see center/src/services/replication.js rowParams). Any field omitted here
+// is silently dropped on the wire and lands as NULL in the DB — that was the
+// bug that kept partnerPortStatus and the 4 counters from ever reaching the
+// centre. collectedAt/agentId are forwarded for symmetry: postReport currently
+// takes them from the snapshot envelope, but per-entry values are the source
+// of truth in the PS1 rows.
+export function toCamelEntry(e) {
   if (!e) return e;
   return {
+    collectedAt: e.CollectedAt ?? e.collectedAt ?? null,
+    agentId: e.AgentId ?? e.agentId ?? null,
     sourceDc: e.SourceDc ?? e.sourceDc ?? null,
     destDc: e.DestDc ?? e.destDc ?? null,
     sourceSite: e.SourceSite ?? e.sourceSite ?? null,
@@ -66,7 +76,15 @@ function toCamelEntry(e) {
     lastSuccessTime: e.LastSuccessTime ?? e.lastSuccessTime ?? null,
     lastAttemptTime: e.LastAttemptTime ?? e.lastAttemptTime ?? null,
     statusCode: e.StatusCode ?? e.statusCode ?? null,
-    errorMessage: e.ErrorMessage ?? e.errorMessage ?? null
+    errorMessage: e.ErrorMessage ?? e.errorMessage ?? null,
+    usersCount: e.UsersCount ?? e.usersCount ?? null,
+    groupsCount: e.GroupsCount ?? e.groupsCount ?? null,
+    gposCount: e.GposCount ?? e.gposCount ?? null,
+    lockedCount: e.LockedCount ?? e.lockedCount ?? null,
+    // PS1 emits this already ConvertTo-Json'd (a string). Forward verbatim;
+    // the centre's rowParams JSON.stringify's non-null values, so a string
+    // stays a string end-to-end.
+    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null
   };
 }
 

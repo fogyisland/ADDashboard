@@ -262,7 +262,19 @@ async function runAdRuntime({ config, logger }) {
     config,
     logger,
     queue,
-    collect: () => runCollector({ powerShellPath: config.powerShellPath, psScriptPath: config.psScriptPath }),
+    collect: () => runCollector({
+      powerShellPath: config.powerShellPath,
+      psScriptPath: config.psScriptPath,
+      // I-3 — collect-replication.ps1's worst-case latency is 187s
+      // (25 partners × 5 ports × 1.5s sequential per-port timeout —
+      // see Get-PartnerPortSnapshot's documented cost in the script).
+      // runCollector's default timeoutMs is 60s, which would SIGKILL
+      // the snapshot mid-emission on large topologies. 200s leaves
+      // ~13s headroom so transient TCPSocket.Wait variability doesn't
+      // trip the timeout, while still bounding a stuck snapshot well
+      // within the agent's scheduler cadence.
+      timeoutMs: 200000
+    }),
     send: (snap) => postReport({
       centerUrl: config.centerUrl,
       agentToken: config.agentToken,

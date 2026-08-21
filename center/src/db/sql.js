@@ -20,7 +20,7 @@ const VARIANTS = {
       lastHeartbeat: 'SELECT last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC LIMIT 1'
     },
     replication: {
-      upsertStatus: `INSERT INTO ad_replication_status (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE collected_at = VALUES(collected_at), agent_id = VALUES(agent_id), source_site = VALUES(source_site), dest_site = VALUES(dest_site), last_success_time = VALUES(last_success_time), last_attempt_time = VALUES(last_attempt_time), status_code = VALUES(status_code), error_message = VALUES(error_message), users_count = VALUES(users_count), groups_count = VALUES(groups_count), gpos_count = VALUES(gpos_count), locked_count = VALUES(locked_count)`,
+      upsertStatus: `INSERT INTO ad_replication_status (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE collected_at = VALUES(collected_at), agent_id = VALUES(agent_id), source_site = VALUES(source_site), dest_site = VALUES(dest_site), last_success_time = VALUES(last_success_time), last_attempt_time = VALUES(last_attempt_time), status_code = VALUES(status_code), error_message = VALUES(error_message), users_count = VALUES(users_count), groups_count = VALUES(groups_count), gpos_count = VALUES(gpos_count), locked_count = VALUES(locked_count), partner_port_status = VALUES(partner_port_status)`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC LIMIT ?`,
       listBySite: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC LIMIT ?`,
@@ -98,6 +98,20 @@ const VARIANTS = {
       listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
       assignSite: 'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
       assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?'
+    },
+    // Cross-DC consistency scoring (Task 5). Reads the latest row per agent
+    // from pkg_ad_domain_consistency.metrics (Task 4 ingest path) and feeds
+    // services/consistency.js's deriveConsistency() majority-hash algorithm.
+    //
+    // MySQL 5.7 portable — NO ROW_NUMBER() / NO window functions. The
+    // correlated (agent_id, ts) IN (subquery) form picks the per-agent
+    // MAX(ts) row via the (agent_id, ts) primary key, identical row shape
+    // to the MSSQL OUTER APPLY branch below. Both branches select the same
+    // column order so service code can iterate without per-dialect branching.
+    // ts is coerced to JS Date by mysql2 / mssql drivers; service code uses
+    // .getTime() uniformly.
+    consistency: {
+      latestPerAgent: `SELECT m.agent_id, m.ts, m.user_count, m.user_hash, m.group_count, m.group_hash, m.gpo_count, m.gpo_hash, m.error_code FROM \`pkg_ad_domain_consistency\`.\`metrics\` m WHERE (m.agent_id, m.ts) IN (SELECT agent_id, MAX(ts) AS max_ts FROM \`pkg_ad_domain_consistency\`.\`metrics\` GROUP BY agent_id)`
     },
     dashboard: {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
@@ -348,7 +362,7 @@ const VARIANTS = {
       lastHeartbeat: 'SELECT TOP 1 last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC'
     },
     replication: {
-      upsertStatus: `MERGE INTO ad_replication_status AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at, agent_id = s.agent_id, source_site = s.source_site, dest_site = s.dest_site, last_success_time = s.last_success_time, last_attempt_time = s.last_attempt_time, status_code = s.status_code, error_message = s.error_message, users_count = s.users_count, groups_count = s.groups_count, gpos_count = s.gpos_count, locked_count = s.locked_count WHEN NOT MATCHED THEN INSERT (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count);`,
+      upsertStatus: `MERGE INTO ad_replication_status AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at, agent_id = s.agent_id, source_site = s.source_site, dest_site = s.dest_site, last_success_time = s.last_success_time, last_attempt_time = s.last_attempt_time, status_code = s.status_code, error_message = s.error_message, users_count = s.users_count, groups_count = s.groups_count, gpos_count = s.gpos_count, locked_count = s.locked_count, partner_port_status = s.partner_port_status WHEN NOT MATCHED THEN INSERT (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
       listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
@@ -428,6 +442,19 @@ const VARIANTS = {
       listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
       assignSite: 'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
       assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?'
+    },
+    // Cross-DC consistency scoring (Task 5). Reads the latest row per agent
+    // from pkg_ad_domain_consistency.metrics (Task 4 ingest path) and feeds
+    // services/consistency.js's deriveConsistency() majority-hash algorithm.
+    //
+    // MSSQL — uses OUTER APPLY TOP 1 to pick the latest (MAX ts) row per
+    // agent. Mirrors the MySQL 5.7 portable (agent_id, ts) IN (subquery)
+    // shape; both dialects produce identical column order so service code
+    // stays dialect-agnostic. Bracketed [pkg_ad_domain_consistency].[metrics]
+    // form is the MSSQL-canonical delimited identifier, but backticks also
+    // parse fine here — bracketed form kept for clarity in MSSQL scripts.
+    consistency: {
+      latestPerAgent: `SELECT m.agent_id, m.ts, m.user_count, m.user_hash, m.group_count, m.group_hash, m.gpo_count, m.gpo_hash, m.error_code FROM [pkg_ad_domain_consistency].[metrics] m OUTER APPLY (SELECT TOP 1 ts AS max_ts FROM [pkg_ad_domain_consistency].[metrics] WHERE agent_id = m.agent_id ORDER BY ts DESC) la WHERE m.ts = la.max_ts`
     },
     dashboard: {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,

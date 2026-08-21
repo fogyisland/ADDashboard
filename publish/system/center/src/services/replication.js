@@ -8,6 +8,20 @@ function rowParams(row) {
   // The 4 counter fields are populated only for the __dc_summary__ self-loop
   // entry emitted by collect-replication.ps1; all other entries pass NULL.
   const isSummary = row.naming_context === '__dc_summary__';
+  // partnerPortStatus on the wire (agent → centre) is already a JSON string
+  // emitted by collect-replication.ps1's ConvertTo-Json -Compress + toCamelEntry
+  // forwarding it verbatim. Other in-process callers (tests, services that
+  // build the JS object directly) pass an object. Bind whatever is given as
+  // a string to the JSON/NVARCHAR(MAX) column — JSON.stringify an already-
+  // stringified payload would produce escaped JSON-in-JSON, forcing every
+  // downstream consumer to call JSON.parse twice. null when omitted so
+  // older callers / pre-feature rows stay valid.
+  let partnerPortStatusJson = null;
+  if (row.partnerPortStatus != null) {
+    partnerPortStatusJson = typeof row.partnerPortStatus === 'string'
+      ? row.partnerPortStatus
+      : JSON.stringify(row.partnerPortStatus);
+  }
   return [
     toMysqlDatetime(row.collectedAt),
     row.agentId,
@@ -23,7 +37,8 @@ function rowParams(row) {
     isSummary ? (row.usersCount ?? null)  : null,
     isSummary ? (row.groupsCount ?? null) : null,
     isSummary ? (row.gposCount ?? null)   : null,
-    isSummary ? (row.lockedCount ?? null) : null
+    isSummary ? (row.lockedCount ?? null) : null,
+    partnerPortStatusJson
   ];
 }
 
