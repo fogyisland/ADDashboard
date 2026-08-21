@@ -27,7 +27,7 @@ import crypto from 'node:crypto';
 // Fallback literal used when the db facade doesn't expose db.sql (ad-hoc
 // test stubs). Must remain identical to db.sql.config.getAgentTokenBundle
 // for both dialects — the SELECT is dialect-portable.
-const FALLBACK_BUNDLE_SQL = "SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_previous_ttl_days')";
+const FALLBACK_BUNDLE_SQL = "SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_version')";
 
 let _cache = null; // { current: string, previous: string }
 

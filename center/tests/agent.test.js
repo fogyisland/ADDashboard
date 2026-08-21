@@ -66,7 +66,9 @@ test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued'
   const upserts = records.filter(r => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(r.sql));
   assert.equal(upserts.length, 1);
   assert.match(upserts[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
-  assert.deepEqual(upserts[0].params, ['agent-1', '1.0.0', null, null, 3]);
+  // 2026-08-21 UX redesign: heartbeat now carries agent_token_version
+  // (defaulted to 0 for pre-feature agents). See routes/agent.js:42 + 51.
+  assert.deepEqual(upserts[0].params, ['agent-1', '1.0.0', null, null, 3, 0]);
 });
 
 test('POST /api/agent/heartbeat with wrong token -> 401 and no UPSERT issued', async () => {

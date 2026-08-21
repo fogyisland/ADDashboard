@@ -21,31 +21,26 @@
             </td>
             <td>
               <code v-if="row.derived" class="derived-value">{{ agentAddress }}</code>
-              <!-- I3 dual-key agent token rotation: read-only mask by default, modal
-                   surfaces the new token exactly once after rotate. The 查看令牌
-                   button drives a separate reveal API call (no rotation) so the
-                   operator can copy the live token for a new agent without
-                   invalidating the existing fleet. -->
+              <!-- 2026-08-21 UX redesign (auto-delivery): two buttons — 复制令牌
+                   is a one-click reveal+copy (no modal, no rotation); 生成新令牌
+                   opens the modal which surfaces the new token once + shows
+                   the live delivery progress ("已推送到 X / N 台 Agent").
+                   Operators no longer RDP-and-edit because agents pick up
+                   the new credential on their next heartbeat via the
+                   agent_token_version counter. -->
               <template v-else-if="row.key === 'ad_agent_token'">
                 <div class="agent-token-row">
                   <code class="token-mask">…{{ maskToken() }}</code>
                   <span :class="['token-mode', `token-mode-${tokenState.mode}`]">
-                    {{ tokenState.mode === 'dual'
-                        ? `双令牌 · 旧令牌 ${formatTs(tokenState.previousExpiresAt)} 过期`
-                        : '单令牌' }}
+                    v{{ tokenState.version }}
                   </span>
-                  <button class="view-btn" @click="onViewTokenClick" :disabled="viewing">
-                    {{ viewing ? '加载中…' : '查看令牌' }}
+                  <button class="copy-btn" @click="onCopyTokenClick" :disabled="copying">
+                    {{ copyBtnLabel }}
                   </button>
-                  <button class="rotate-btn" @click="onRotateClick" :disabled="rotating">
-                    {{ rotating ? '生成中…' : '轮换令牌' }}
+                  <button class="generate-btn" @click="onGenerateClick" :disabled="generating">
+                    {{ generating ? '生成中…' : '生成新令牌' }}
                   </button>
-                  <button
-                    v-if="tokenState.mode === 'dual'"
-                    class="commit-btn"
-                    @click="onCommitClick"
-                    :disabled="committing"
-                  >{{ committing ? '关闭中…' : '关闭旧令牌' }}</button>
+                  <span v-if="copyMsg" class="copy-msg">{{ copyMsg }}</span>
                 </div>
               </template>
               <ConfigFieldRow
@@ -65,8 +60,7 @@
               <span class="desc-text">{{ row.description }}</span>
               <template v-if="row.key === 'ad_agent_token'">
                 <div class="action-hint">
-                  轮换后,RDP 到每台 agent 改 <code>appsettings.json</code> 的 <code>agentToken</code> 字段并重启服务;
-                  旧令牌在 TTL 窗口(默认 30 天)内仍可用,全部切换完后再"关闭旧令牌"。
+                  新装/离线 agent 复制当前令牌后填入 <code>appsettings.json</code> 即可;已联机的 agent 会在下次心跳(< 10s)自动接收新令牌,无需手动操作。
                 </div>
               </template>
             </td>
@@ -130,14 +124,12 @@
     />
 
     <AgentTokenRotateModal
-      v-if="showTokenModal || showViewModal"
-      :mode="showViewModal ? 'view' : 'rotate'"
-      :visible="showTokenModal || showViewModal"
-      :new-token="showViewModal ? viewedToken : rotatedNewToken"
-      :previous-expires-at="tokenState.previousExpiresAt"
-      :ttl-days="tokenState.ttlDays"
+      v-if="showGenerateModal"
+      mode="generate"
+      :visible="showGenerateModal"
+      :new-token="generatedNewToken"
       @close="onModalClose"
-      @committed="onModalCommitted"
+      @copied="onModalCopied"
     />
   </AdminLayout>
 </template>
@@ -222,15 +214,14 @@ const SECTIONS = [
       // `<access_domain>:<listenPort>`. Empty = fall back to server IP
       // (from serverIp in the GET /api/admin/config response).
       { key: 'access_domain', label: '访问域名', description: '客户端与 Agent 访问域名;留空则用服务器 IP。修改后保存即生效,无需重启 center。', type: 'text' },
-      // #167 I1: legacy ConfigView field — now a disabled notice-row. After
-      // I3 dual-key agent-token rotation, this `ad_agent_token` row is a
-      // dead-UI surface: PUT writes go to the legacy `ad_agent_token` key
-      // which is no longer the runtime auth source of truth
-      // (auth/agent-token.js reads `agent_token_current`). The backend
-      // putConfigInTx now rejects writes to this key with 400; the UI
-      // surfaces that rejection as a notice pointing the operator at
-      // the rotation endpoint.
-      { key: 'ad_agent_token', label: 'Agent 令牌', type: 'agent-token', description: 'Agent 与 center 通信的共享密钥,96 hex chars。轮换走 dual-key 流程,旧令牌保留 30 天 grace 窗口。' },
+      // 2026-08-21 UX redesign (auto-delivery): the ad_agent_token row is
+      // now an interactive surface with two buttons (复制令牌 + 生成新令牌).
+      // PUT writes still go to the legacy `ad_agent_token` key which is
+      // no longer the runtime auth source of truth (auth/agent-token.js
+      // reads `agent_token_current`), so the backend putConfigInTx still
+      // rejects writes to this key with 400 — the row's TypeScript shape
+      // is 'agent-token' but the template branch is the only handler.
+      { key: 'ad_agent_token', label: 'Agent 令牌', type: 'agent-token', description: 'Agent 与 center 通信的共享密钥,96 hex chars。复制当前令牌填入新装 agent;生成新令牌已联机 agent 自动接收。' },
     ]
   },
   {
@@ -301,19 +292,20 @@ const agentAddress = computed(() => {
 });
 
 // Token rotation state surfaced by the Agent 令牌 row. Loaded in parallel
-// with getConfig so the badge ("单令牌" / "双令牌 (旧令牌 X 时刻过期)") is
-// populated on first paint. NEVER stores the secret — getAgentTokenState()
-// intentionally omits it; the only time a plaintext token appears in this
-// view is inside AgentTokenRotateModal right after a rotate OR a view.
-const tokenState = ref({ mode: 'single', previousExpiresAt: null, ttlDays: 30 });
-const showTokenModal = ref(false);
-const rotatedNewToken = ref(null);
-// View-mode state: distinct flag so the modal renders in 'view' mode
-// (no commit CTA, no expiry line). reviewedToken holds the live token
-// returned by GET /api/admin/agent-token/reveal — the operator's copy
-// button is the only way to extract it.
-const showViewModal = ref(false);
-const viewedToken = ref(null);
+// with getConfig so the version badge ("v3") is populated on first paint.
+// NEVER stores the secret — getAgentTokenState() intentionally omits it;
+// the only time a plaintext token appears in this view is inside
+// AgentTokenRotateModal after a generate OR transiently in `copiedToken`
+// while the 复制令牌 button is showing "已复制 ✓" feedback.
+const tokenState = ref({ mode: 'single', version: 0, rotatedAt: null });
+const showGenerateModal = ref(false);
+const generatedNewToken = ref(null);
+// 复制令牌 button transient state. `copiedToken` is the most-recently
+// revealed plaintext (kept in memory only, never persisted). `copyMsg`
+// is the inline "已复制 ✓ Agent1 v3" hint that fades after 3s.
+const copying = ref(false);
+const copyMsg = ref('');
+const copiedToken = ref(null);
 const topLevelMsg = ref('');
 const showConfirm = ref(false);
 const confirmBody = ref('');
@@ -334,11 +326,10 @@ function rollbackTitle(row) {
   return isUnrollbackable(row) ? '密码变更不可回滚' : '';
 }
 
-// #167 I1: generateAgentToken / onGenerateToken / onCopyToken / copyMsg
-// were removed because the ad_agent_token ConfigView row is now a
-// read-only notice-row (operators rotate via POST /api/admin/agent-token/rotate).
-// Token generation still happens server-side at /api/admin/agent-token/rotate —
-// these helpers had no caller after the I1 fix.
+// #167 I1: previous onGenerateToken / onCopyToken helpers were removed
+// after the I1 read-only-notice refactor. The 2026-08-21 UX redesign
+// re-introduced a copy flow (one-click reveal + clipboard) plus a
+// generate flow (rotate + delivery progress modal), both below.
 
 async function load() {
   try {
@@ -396,75 +387,88 @@ function formatTs(s) {
 
 function maskToken() {
   // Server deliberately omits current token from /api/admin/agent-token
-  // response (only mode/expiry/ttlDays). The mask shown here is purely
-  // decorative — "…a3f9" — to remind the operator something exists. The
-  // real value lives only in each agent's appsettings.json and inside
-  // AgentTokenRotateModal either after a rotate OR after a reveal.
+  // response (only mode/version/rotatedAt). The mask shown here is
+  // purely decorative — "…a3f9" — to remind the operator something
+  // exists. The real value lives only in each agent's appsettings.json
+  // and inside AgentTokenRotateModal after a generate.
   return 'a3f9';
 }
 
-async function onRotateClick() {
-  rotating.value = true;
+// 复制令牌: one-click reveal + clipboard. The "已复制 ✓ Agent1 v3"
+// inline message sticks for 3s before clearing — long enough for the
+// operator to glance-confirm, short enough that the row doesn't keep
+// showing a stale hint while they scroll. The plaintext lives only in
+// `copiedToken` (memory); nothing is persisted.
+async function onCopyTokenClick() {
+  if (copying.value) return;
+  copying.value = true;
   try {
-    const r = await adminApi.rotateAgentToken();
-    rotatedNewToken.value = r.data.newToken;
-    tokenState.value = {
-      mode: 'dual',
-      previousExpiresAt: new Date(Date.now() + (tokenState.value.ttlDays || 30) * 86400000).toISOString(),
-      ttlDays: tokenState.value.ttlDays || 30
-    };
-    showTokenModal.value = true;
+    const r = await adminApi.revealAgentToken();
+    const tok = r.data?.token;
+    const ver = r.data?.version ?? tokenState.value.version;
+    if (!tok) throw new Error('服务端未返回令牌');
+    copiedToken.value = tok;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(tok);
+        copyMsg.value = `已复制 ✓ (v${ver})`;
+      } catch {
+        copyMsg.value = `已读取令牌(v${ver})—剪贴板不可用,请手动复制`;
+      }
+    } else {
+      copyMsg.value = `已读取令牌(v${ver})—剪贴板不可用,请手动复制`;
+    }
+    setTimeout(() => { copyMsg.value = ''; }, 3000);
   } catch (e) {
-    notifyError(`轮换失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
+    notifyError(`读取令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
   } finally {
-    rotating.value = false;
+    copying.value = false;
   }
 }
 
-async function onCommitClick() {
-  committing.value = true;
+const copyBtnLabel = computed(() => {
+  if (copying.value) return '读取中…';
+  if (copyMsg.value) return '复制令牌';
+  return '复制令牌';
+});
+
+// 生成新令牌: rotate → open modal in generate mode (which owns the
+// delivery polling + progress UI). After rotate, reload token state so
+// the row badge updates to the new version immediately.
+const generating = ref(false);
+async function onGenerateClick() {
+  if (generating.value) return;
+  generating.value = true;
   try {
-    await adminApi.commitAgentToken();
-    tokenState.value = { ...tokenState.value, mode: 'single', previousExpiresAt: null };
+    const r = await adminApi.rotateAgentToken();
+    generatedNewToken.value = r.data.newToken;
+    tokenState.value = {
+      mode: 'dual',
+      version: r.data.version ?? tokenState.value.version,
+      rotatedAt: r.data.rotatedAt || new Date().toISOString()
+    };
+    showGenerateModal.value = true;
   } catch (e) {
-    notifyError(`关闭旧令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
+    notifyError(`生成新令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
   } finally {
-    committing.value = false;
+    generating.value = false;
   }
 }
 
 function onModalClose() {
-  // Clears whichever token payload is in flight. The modal is shared
-  // between rotate (rotatedNewToken) and view (viewedToken) flows — both
-  // refs are reset so a stale secret doesn't linger after close.
-  showTokenModal.value = false;
-  showViewModal.value = false;
-  rotatedNewToken.value = null;
-  viewedToken.value = null;
+  // Clears the generate-mode payload so a stale secret doesn't linger
+  // after close. The modal's own watch on `visible` stops its poll
+  // timer; we just drop the parent-side ref.
+  showGenerateModal.value = false;
+  generatedNewToken.value = null;
 }
 
-// Operator-initiated read of the active token. Calls the reveal API
-// (admin-auth + per-call audit row), then opens the modal in view mode
-// so the operator can copy the live token. Loading state guards the
-// button against double-clicks while the request is in flight.
-async function onViewTokenClick() {
-  viewing.value = true;
-  try {
-    const r = await adminApi.revealAgentToken();
-    viewedToken.value = r.data.token;
-    showViewModal.value = true;
-  } catch (e) {
-    notifyError(`查看令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
-  } finally {
-    viewing.value = false;
-  }
-}
-
-async function onModalCommitted() {
-  // Modal already emits 'close' alongside 'committed', but we re-fetch
-  // here so the row badge updates to single and the commit button
-  // disappears without waiting for the next page load.
-  await reloadTokenState();
+// Modal emits 'copied' when the operator clicks the in-modal 复制
+// button. We surface this as a brief row-level toast too so the
+// feedback is visible even if the modal is partially obscured.
+function onModalCopied() {
+  copyMsg.value = `已复制 ✓ (v${tokenState.value.version})`;
+  setTimeout(() => { copyMsg.value = ''; }, 3000);
 }
 
 async function reloadTokenState() {
@@ -473,17 +477,13 @@ async function reloadTokenState() {
     const s = r.data || {};
     tokenState.value = {
       mode: s.mode || 'single',
-      previousExpiresAt: s.previousExpiresAt || null,
-      ttlDays: typeof s.ttlDays === 'number' ? s.ttlDays : 30
+      version: typeof s.version === 'number' ? s.version : 0,
+      rotatedAt: s.rotatedAt || null
     };
   } catch {
-    tokenState.value = { mode: 'single', previousExpiresAt: null, ttlDays: 30 };
+    tokenState.value = { mode: 'single', version: 0, rotatedAt: null };
   }
 }
-
-const rotating = ref(false);
-const committing = ref(false);
-const viewing = ref(false);
 
 function onRollbackClick(row) {
   rollbackTarget.value = row;
@@ -611,42 +611,13 @@ button.cancel { background: #0b1220; color: var(--text); }
 .token-action:disabled { opacity: 0.5; cursor: not-allowed; }
 .copy-msg { color: var(--accent); font-size: 12px; margin-left: 6px; }
 
-/* #167 I1: read-only notice row used by deprecated ConfigView fields.
-   `readonly-value` shows the historical DB value with reduced opacity;
-   `deprecated-marker` flags the row as moved to another endpoint; the
-   `rotate-endpoint` in the description column points the operator at
-   the new rotation route. */
-.readonly-notice { display: flex; align-items: center; gap: 8px; }
-.readonly-value {
-  display: inline-block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
-  color: var(--muted);
-  background: #0b1220;
-  padding: 6px 10px;
-  border-radius: 3px;
-  border: 1px solid #1e293b;
-  opacity: 0.7;
-}
-.deprecated-marker {
-  display: inline-block;
-  padding: 2px 8px;
-  background: #1e293b;
-  color: var(--muted);
-  border: 1px solid #334155;
-  border-radius: 3px;
-  font-size: 11px;
-}
-.rotate-endpoint {
-  display: inline-block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--accent);
-  background: #0b1220;
-  padding: 3px 8px;
-  border: 1px solid #1e293b;
-  border-radius: 3px;
-}
+/* 2026-08-21 UX redesign (auto-delivery): the ad_agent_token row now
+   renders two buttons (复制令牌 + 生成新令牌) instead of three. The
+   复制令牌 button is a one-click reveal + clipboard; the 生成新令牌
+   button opens the modal in generate mode. The `.token-mode` badge
+   shows the monotonic version counter (v3 / v7 / ...) — single vs dual
+   is implicit (mode flips to dual after a rotate until the 5-min
+   internal grace elapses, which the operator never sees). */
 .agent-token-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .token-mask {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -658,6 +629,7 @@ button.cancel { background: #0b1220; color: var(--text); }
   border: 1px solid #1e293b;
 }
 .token-mode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   padding: 3px 8px;
   border-radius: 3px;
@@ -665,7 +637,7 @@ button.cancel { background: #0b1220; color: var(--text); }
 }
 .token-mode-single { background: #0b1220; color: var(--muted); }
 .token-mode-dual { background: #7f1d1d; color: #fee2e2; border-color: #b91c1c; }
-.rotate-btn, .commit-btn, .view-btn {
+.copy-btn, .generate-btn {
   padding: 4px 12px;
   border: 1px solid #1e293b;
   background: #0b1220;
@@ -674,10 +646,9 @@ button.cancel { background: #0b1220; color: var(--text); }
   cursor: pointer;
   font-size: 12px;
 }
-.rotate-btn:hover:not(:disabled),
-.commit-btn:hover:not(:disabled),
-.view-btn:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
-.rotate-btn:disabled, .commit-btn:disabled, .view-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.copy-btn:hover:not(:disabled),
+.generate-btn:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
+.copy-btn:disabled, .generate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); }
 .action-hint code { background: #0b1220; padding: 1px 4px; border-radius: 2px; }
 .key-label { font-weight: 600; color: var(--text); }

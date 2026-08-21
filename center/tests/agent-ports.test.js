@@ -141,7 +141,9 @@ test('POST /api/agent/heartbeat with ports upserts each and returns counts', asy
   // Verify heartbeat row was written.
   const heartbeatUpserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
   assert.equal(heartbeatUpserts.length, 1, 'must upsert heartbeat row');
-  assert.deepEqual(heartbeatUpserts[0].params, ['dc01', '0.1.0', null, null, 0]);
+  // 2026-08-21 UX redesign: heartbeat now carries agent_token_version
+  // (defaulted to 0 for pre-feature agents). See routes/agent.js:42 + 51.
+  assert.deepEqual(heartbeatUpserts[0].params, ['dc01', '0.1.0', null, null, 0, 0]);
   // Verify port-status upsert ran inside a transaction.
   const portStatusUpserts = records.filter(rec => /ad_agent_port_status/i.test(rec.sql));
   assert.equal(portStatusUpserts.length, 1, 'must upsert exactly one accepted port row');

@@ -55,7 +55,15 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   // auth; seed bootstraps the token on first install; auto_expire silently
   // closes an overlap window). revoke_user_tokens (I1) is the admin action
   // that invalidates a user's JWT token_version — also security-bearing.
+  //
+  // 2026-08-21 UX redesign: `rotate_agent_token` was renamed to
+  // `generate_agent_token` to reflect the new auto-delivery flow (the
+  // action now means "generate a new token AND push it to verified agents"
+  // rather than "rotate the dual-key manually"). Old audit rows keep the
+  // original action string in audit_logs (append-only); the classifier
+  // still maps it so a reader gets the right label/category/severity.
   ['rotate_agent_token',              'security'],
+  ['generate_agent_token',            'security'],
   ['auto_expire_agent_token',         'security'],
   ['commit_agent_token',              'security'],
   ['seed_agent_token',                'system'],
@@ -116,12 +124,13 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['commit_jwt_secret',              'medium'],
   ['seed_jwt_secret',                'info'],
   // #167 C1: agent-token rotation severity mirrors JWT secret lifecycle.
-  // rotate = high (changes server's auth credential immediately);
+  // rotate / generate = high (changes server's auth credential immediately);
   // commit = medium (ends a benign overlap window); seed = info
   // (first-boot bootstrap); auto_expire = high (silently closes overlap);
   // revoke_user_tokens = high (immediately invalidates every JWT issued
   // to that user).
   ['rotate_agent_token',              'high'],
+  ['generate_agent_token',            'high'],
   ['auto_expire_agent_token',         'high'],
   ['commit_agent_token',              'medium'],
   ['seed_agent_token',                'info'],
@@ -175,11 +184,19 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['commit_jwt_secret',              '提交 JWT 签名密钥'],
   ['seed_jwt_secret',                '从 appsettings 初始化 JWT 密钥'],
   // #167 C1: agent-token rotation labels (parallel to I9).
-  ['rotate_agent_token',              '轮换 Agent 令牌'],
+  //
+  // 2026-08-21 UX redesign: the operator-facing concept is now "generate
+  // a new token and push it to verified agents" rather than "rotate the
+  // dual-key manually". The Chinese label reflects that — "生成 Agent 令牌"
+  // instead of "轮换 Agent 令牌". Old `rotate_agent_token` rows from prior
+  // deployments still map to the new label so the audit reader sees a
+  // consistent history.
+  ['rotate_agent_token',              '生成 Agent 令牌'],
+  ['generate_agent_token',            '生成 Agent 令牌'],
   ['auto_expire_agent_token',         'Agent 令牌自动过期'],
   ['commit_agent_token',              '提交 Agent 令牌'],
   ['seed_agent_token',                '从 appsettings 初始化 Agent 令牌'],
-  ['reveal_agent_token',              '查看 Agent 令牌'],
+  ['reveal_agent_token',              '复制 Agent 令牌'],
   ['revoke_user_tokens',              '撤销用户全部令牌']
 ]));
 

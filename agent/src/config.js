@@ -25,7 +25,15 @@ const DEFAULTS = {
   centerHost: '',
   scanOnBoot: true,
   scanOnRuntimeFail: true,
-  scanFailureThreshold: 5
+  scanFailureThreshold: 5,
+  // 2026-08-21 UX redesign (auto-delivery): the agent's last-seen
+  // agent_token_version. Sent on every heartbeat; the centre replies with
+  // a newer agentToken when its own version has been bumped. Default 0 =
+  // fresh-install (matches a server that has never rotated; if the server
+  // HAS rotated and the agent is on version 0, the next heartbeat will
+  // immediately deliver the live token). Persistent so the agent doesn't
+  // re-request the same credential after a restart.
+  agentTokenVersion: 0
 };
 
 export function loadConfig(path) {

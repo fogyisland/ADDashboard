@@ -90,17 +90,27 @@ export const adminApi = {
   getMemberServerBaseline: (hostname) =>
     api.get(`/api/admin/member-servers/${encodeURIComponent(hostname)}/baseline`),
 
-  // ---- Agent token rotation (I3 — dual-key) ----
+  // ---- Agent token rotation (auto-delivery, 2026-08-21 UX redesign) ----
   // The ConfigView "Agent 令牌" row drives these via AgentTokenRotateModal.
-  // GET NEVER returns the secret (server-side by design — see center/src/routes/admin.js:360
+  // GET NEVER returns the secret (server-side by design — see center/src/routes/admin.js:363
   // and audit-classifier protection). Rotate returns newToken ONCE in the
   // response body so the operator can copy it for agent appsettings.json updates.
+  // No operator-set TTL — the server's 5-minute internal grace is invisible;
+  // agents pick up the new credential on their next heartbeat via the
+  // agent_token_version monotonic counter (delivery endpoint surfaces this).
   getAgentTokenState: () => api.get('/api/admin/agent-token'),
   rotateAgentToken: () => api.post('/api/admin/agent-token/rotate'),
   commitAgentToken: () => api.post('/api/admin/agent-token/commit'),
-  // Operator-initiated read of the active agent auth token. Used when
-  // onboarding a new agent without rotating (which would invalidate every
-  // existing agent). Server writes a high-severity reveal_agent_token
-  // audit row per call so credential exposure leaves a trail.
-  revealAgentToken: () => api.get('/api/admin/agent-token/reveal')
+  // Operator-initiated read of the active agent auth token. Drives the
+  // "复制令牌" button on ConfigView — one click reveals + copies to
+  // clipboard without rotating (so existing agents stay valid). Server
+  // writes a high-severity reveal_agent_token audit row per call so
+  // credential exposure leaves a trail.
+  revealAgentToken: () => api.get('/api/admin/agent-token/reveal'),
+  // Read-only snapshot of every agent's last-reported agent_token_version
+  // vs the server's current version. The "生成新令牌" modal polls this
+  // every 2s to render "已推送到 X / N 台 Agent" progress. An agent with
+  // reportedVersion == serverVersion has picked up the new token; lower
+  // means still on the old token (heartbeat hasn't fired, or offline).
+  getAgentTokenDelivery: () => api.get('/api/admin/agent-token/delivery')
 };

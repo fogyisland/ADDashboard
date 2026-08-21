@@ -7,6 +7,7 @@ import { listPorts } from '../services/ports.js';
 import { upsertPortStatuses } from '../services/port-status.js';
 import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
+import { getAgentTokenState } from '../services/agent-token.js';
 
 export function agentRouter({ config, logger, mount = 'full' }) {
   const r = Router();
@@ -31,8 +32,14 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     });
 
     r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
-      const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname } = req.body || {};
+      const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname, agent_token_version } = req.body || {};
       if (!agentId) return res.status(400).json({ error: 'missing agentId' });
+      // 2026-08-21 UX redesign (auto-delivery): the heartbeat is now the
+      // carrier for the agent's last-seen agent_token_version. Default 0
+      // for pre-feature agents (their version matches the server's
+      // initial version, so no delivery happens until a rotation bumps
+      // the server side).
+      const reportedTokenVersion = Number(agent_token_version) || 0;
       try {
         const db = getDb();
         await db.execute(db.sql.heartbeat.upsert, [
@@ -40,8 +47,29 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           agentVersion ?? null,
           toMysqlDatetime(lastReportAt),
           lastReportStatus ?? null,
-          pendingQueueSize ?? 0
+          pendingQueueSize ?? 0,
+          reportedTokenVersion
         ]);
+
+        // Auto-delivery: if the server's current version is newer than
+        // what the agent reported, attach the new token to the response
+        // so the agent can persist it (appsettings.json) and start using
+        // it on the very next heartbeat. Read AFTER the upsert so the
+        // delivery reflects whatever the latest state is — concurrent
+        // rotates during the request are absorbed into the response.
+        //
+        // Fail-soft: getAgentTokenState errors here must not 500 the
+        // heartbeat; the agent's primary purpose is reporting, not
+        // receiving credentials. Log and continue with no delivery.
+        let agentTokenDelivery = null;
+        try {
+          const s = await getAgentTokenState(db);
+          if (s.current && s.version > reportedTokenVersion) {
+            agentTokenDelivery = { agentToken: s.current, agentTokenVersion: s.version };
+          }
+        } catch (e) {
+          logger.warn({ err: e.message, agentId }, 'agent token state read failed; no delivery');
+        }
 
         // Optional port-status ingest (back-compat: pre-feature agents omit `ports`).
         if (ports !== undefined && ports !== null) {
@@ -71,7 +99,11 @@ export function agentRouter({ config, logger, mount = 'full' }) {
             }
           }
 
-          return res.json({ ok: true, accepted, rejected });
+          // Spread the delivery object last so callers can read both
+          // port-acceptance counters and the auto-delivery payload in
+          // one response. agentTokenDelivery is null when no delivery
+          // is needed — callers should check via 'agentToken' in result.
+          return res.json({ ok: true, accepted, rejected, ...(agentTokenDelivery || {}) });
         }
 
         // No ports payload — same non-AD touchLastSeen extension for the
@@ -85,7 +117,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           }
         }
 
-        res.json({ ok: true });
+        res.json({ ok: true, ...(agentTokenDelivery || {}) });
       } catch (e) {
         logger.error({ err: e, agentId }, 'heartbeat failed');
         res.status(500).json({ error: 'internal' });

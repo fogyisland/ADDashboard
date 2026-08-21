@@ -13,6 +13,7 @@ import { requestJson } from './src/reporter.js';
 import { getOsInfo } from './src/os-info.js';
 import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
+import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
 import {
   applyPackageList,
   clearAllTimers
@@ -108,6 +109,12 @@ async function _tryRecoverCenterPortImpl({ config, configPath, logger, trigger }
   return { ok: retry.ok, recovered: true };
 }
 
+// 2026-08-21 UX redesign (auto-delivery): the centre replies to every
+// heartbeat with { agentToken, agentTokenVersion } when its own current
+// version is newer than what the agent reported. The helper that handles
+// version-compare + atomic write + in-memory swap lives in
+// src/agent-token-delivery.js so unit tests can exercise it directly.
+
 // T16: agent type discriminator. 'ad' = legacy DC collector flow (default).
 // 'non-ad' = member-server runtime: self-register on boot, fetch packages
 // from /api/admin/agent/packages-for-host (host-scoped, filtered), heartbeat
@@ -197,7 +204,15 @@ async function runAdRuntime({ config, logger }) {
   const heartbeat = startHeartbeat({
     intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
     payload: () => {
-      const p = { agentId: config.agentId, agentVersion: VERSION, pendingQueueSize: queue.count() };
+      const p = {
+        agentId: config.agentId,
+        agentVersion: VERSION,
+        pendingQueueSize: queue.count(),
+        // 2026-08-21 UX redesign: echo back the agent's last-seen
+        // agent_token_version so the centre can decide whether to attach
+        // a new credential to the response (auto-delivery).
+        agent_token_version: Number(config.agentTokenVersion) || 0
+      };
       if (Array.isArray(latestPortResults) && latestPortResults.length > 0) {
         p.ports = latestPortResults.map(x => ({ port: x.port, ok: x.ok, latencyMs: x.latencyMs }));
       }
@@ -208,12 +223,13 @@ async function runAdRuntime({ config, logger }) {
       return p;
     },
     send: async (p) => {
-      await postHeartbeat({
+      const r = await postHeartbeat({
         centerUrl: config.centerUrl,
         agentToken: config.agentToken,
         port: cachedPorts.heartbeatPort,
         payload: p
       });
+      await applyAgentTokenDelivery({ result: r, config, configPath, logger });
     }
   });
 
@@ -282,7 +298,15 @@ async function runAdRuntime({ config, logger }) {
       snapshot: snap
     }),
     sendHeartbeat: (extra) => {
-      const payload = { agentId: config.agentId, agentVersion: VERSION, ...extra };
+      const payload = {
+        agentId: config.agentId,
+        agentVersion: VERSION,
+        // 2026-08-21 UX redesign: see AD-runtime heartbeat payload above
+        // for the rationale. Same contract — the centre decides whether to
+        // push a new token, we apply the swap when it does.
+        agent_token_version: Number(config.agentTokenVersion) || 0,
+        ...extra
+      };
       if (Array.isArray(latestPortResults) && latestPortResults.length > 0) {
         payload.ports = latestPortResults.map(x => ({ port: x.port, ok: x.ok, latencyMs: x.latencyMs }));
       }
@@ -291,6 +315,9 @@ async function runAdRuntime({ config, logger }) {
         agentToken: config.agentToken,
         port: cachedPorts.heartbeatPort,
         payload
+      }).then(async (r) => {
+        await applyAgentTokenDelivery({ result: r, config, configPath, logger });
+        return r;
       });
     },
     runHealth: async () => {
@@ -494,14 +521,20 @@ async function runNonAdRuntime({ config, logger }) {
       agentVersion: VERSION,
       hostname: config.hostname || osInfo.hostname,
       agentType: 'non-ad',
-      pendingQueueSize: 0
+      pendingQueueSize: 0,
+      // 2026-08-21 UX redesign: same contract as AD runtime — see
+      // applyAgentTokenDelivery for the response-side handling.
+      agent_token_version: Number(config.agentTokenVersion) || 0
     }),
-    send: (p) => postHeartbeat({
-      centerUrl: config.centerUrl,
-      agentToken: config.agentToken,
-      port: cachedPorts.heartbeatPort,
-      payload: p
-    })
+    send: async (p) => {
+      const r = await postHeartbeat({
+        centerUrl: config.centerUrl,
+        agentToken: config.agentToken,
+        port: cachedPorts.heartbeatPort,
+        payload: p
+      });
+      await applyAgentTokenDelivery({ result: r, config, configPath, logger });
+    }
   });
 
   // 4. Periodically refresh the cached heartbeat-port override + retry

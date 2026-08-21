@@ -15,7 +15,7 @@ test('classifier: ACTION_CATEGORY maps every emitted action to one of three cate
     // baseline / apply_up_to / upgrade_db — all 'changes' / 'medium'.
     'mark_applied', 'baseline', 'apply_up_to', 'upgrade_db',
     // #167 C1: agent-token rotation + revoke_user_tokens actions.
-    'rotate_agent_token', 'commit_agent_token', 'seed_agent_token',
+    'rotate_agent_token', 'generate_agent_token', 'commit_agent_token', 'seed_agent_token',
     'auto_expire_agent_token', 'reveal_agent_token', 'revoke_user_tokens'
   ];
   for (const a of EMITTED) {
@@ -35,7 +35,8 @@ test('classifier: CATEGORY_ACTIONS.security is exactly the registered security a
   assert.deepEqual([...CATEGORY_ACTIONS.get('security')].sort(), [
     'agent_self_register', 'auto_expire_agent_token', 'auto_expire_jwt_secret',
     'commit_agent_token', 'commit_jwt_secret',
-    'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed',
+    'delete_user', 'disable_builtin_ad_os_baseline', 'generate_agent_token',
+    'login_failed',
     'reveal_agent_token', 'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
   ]);
 });
@@ -43,7 +44,7 @@ test('classifier: CATEGORY_ACTIONS.security is exactly the registered security a
 test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token rotation actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
     'auto_expire_agent_token', 'auto_expire_jwt_secret', 'delete_user',
-    'disable_builtin_ad_os_baseline', 'login_failed', 'restart_service',
+    'disable_builtin_ad_os_baseline', 'generate_agent_token', 'login_failed', 'restart_service',
     'reveal_agent_token', 'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
   ]);
 });
@@ -93,7 +94,12 @@ test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 4 I9 jwt_secre
 // security for the user-token revoke).
 test('classifier: I3 agent_token actions resolve to non-default categories', () => {
   const cases = [
-    { action: 'rotate_agent_token',      category: 'security', severity: 'high',   label: '轮换 Agent 令牌' },
+    // 2026-08-21 UX redesign: rotate_agent_token label is now "生成" (was
+    // "轮换"). Old audit rows still carry the original action string —
+    // the classifier maps both names to the same Chinese label so the
+    // audit reader sees consistent history.
+    { action: 'rotate_agent_token',      category: 'security', severity: 'high',   label: '生成 Agent 令牌' },
+    { action: 'generate_agent_token',    category: 'security', severity: 'high',   label: '生成 Agent 令牌' },
     { action: 'auto_expire_agent_token', category: 'security', severity: 'high',   label: 'Agent 令牌自动过期' },
     { action: 'commit_agent_token',      category: 'security', severity: 'medium', label: '提交 Agent 令牌' },
     { action: 'seed_agent_token',        category: 'system',   severity: 'info',   label: '从 appsettings 初始化 Agent 令牌' }
@@ -114,7 +120,7 @@ test('classifier: I1 revoke_user_tokens is high severity security', () => {
 });
 
 test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 5 #167 entries', () => {
-  for (const a of ['rotate_agent_token', 'auto_expire_agent_token', 'commit_agent_token', 'seed_agent_token', 'reveal_agent_token', 'revoke_user_tokens']) {
+  for (const a of ['rotate_agent_token', 'generate_agent_token', 'auto_expire_agent_token', 'commit_agent_token', 'seed_agent_token', 'reveal_agent_token', 'revoke_user_tokens']) {
     assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
     assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
     assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
@@ -126,11 +132,13 @@ test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 5 #167 entries
 // even though no state changes — same severity tier as rotate_agent_token
 // (which also surfaces the secret). Security category so it surfaces in
 // the audit-classifier security filter alongside the rotate/commit set.
+// 2026-08-21 UX redesign: label updated from "查看 Agent 令牌" to
+// "复制 Agent 令牌" to match the new ConfigView button name (复制令牌).
 test('classifier: reveal_agent_token resolves to non-default categories', () => {
   const c = classifyAction('reveal_agent_token');
   assert.equal(c.category, 'security');
   assert.equal(c.severity, 'high');
-  assert.equal(c.label, '查看 Agent 令牌');
+  assert.equal(c.label, '复制 Agent 令牌');
 });
 
 test('classifier: unknown action returns the raw action as label + ops/low fallback', () => {

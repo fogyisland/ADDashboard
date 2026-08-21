@@ -336,7 +336,10 @@ export function adminRouter({ config, logger, db }) {
         userId: req.user?.sub ?? null
       });
       invalidateAgentTokenCache();
-      res.json({ newToken: out.newToken, rotatedAt: out.rotatedAt });
+      // 2026-08-21 UX redesign: include version so the modal's progress
+      // counter can match against ad_agent_heartbeat.agent_token_version
+      // for the "已推送到 X / N 台 Agent" line.
+      res.json({ newToken: out.newToken, rotatedAt: out.rotatedAt, version: out.version });
     } catch (e) {
       logger.error({ err: e }, 'agent token rotate failed');
       res.status(500).json({ error: 'rotate failed' });
@@ -360,11 +363,16 @@ export function adminRouter({ config, logger, db }) {
   r.get('/api/admin/agent-token', auth, async (_req, res) => {
     try {
       const s = await getAgentTokenState(_db);
+      // 2026-08-21 UX redesign: drop operator-facing TTL fields. The
+      // internal 5-minute grace is fixed (services/agent-token.js
+      // INTERNAL_GRACE_MS) and not surfaced; previousExpiresAt would only
+      // confuse operators who read it as a "policy" they can change.
+      // version is included so the ConfigView can pass it to the modal
+      // for the progress-counter match.
       res.json({
         mode: s.previous ? 'dual' : 'single',
         rotatedAt: s.rotatedAt || null,
-        previousExpiresAt: s.previousExpiresAt || null,
-        ttlDays: s.ttlDays
+        version: s.version
       });
     } catch (e) {
       logger.error({ err: e }, 'agent token state get failed');
@@ -384,10 +392,47 @@ export function adminRouter({ config, logger, db }) {
         logger,
         userId: req.user?.sub ?? null
       });
-      res.json({ token: out.token, revealedAt: out.revealedAt });
+      // 2026-08-21: include version so the 复制令牌 button (which uses this
+      // same endpoint) can stamp the operator's clipboard payload with the
+      // version they're seeing — useful when cross-referencing against the
+      // delivery counter.
+      res.json({ token: out.token, revealedAt: out.revealedAt, version: out.version });
     } catch (e) {
       logger.error({ err: e }, 'agent token reveal failed');
       res.status(500).json({ error: 'reveal failed' });
+    }
+  });
+
+  // 2026-08-21 UX redesign (auto-delivery): read-only snapshot of every
+  // agent's last-reported agent_token_version, plus the server's current
+  // version. Powers the "已推送到 X / N 台 Agent" counter in the generate
+  // modal. An agent with reportedVersion == serverVersion has picked up
+  // the new token; a lower version means it's still on the old token
+  // (either because its next heartbeat hasn't fired, or it's offline).
+  // No audit row — read-only query, same shape as the heartbeat-report
+  // admin endpoints above.
+  r.get('/api/admin/agent-token/delivery', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      const [tokenState, { rows: agents }] = await Promise.all([
+        getAgentTokenState(_db),
+        db.query(db.sql.heartbeat.tokenDeliveryList)
+      ]);
+      const total = agents.length;
+      const delivered = agents.filter(r => Number(r.agent_token_version) >= tokenState.version).length;
+      res.json({
+        serverVersion: tokenState.version,
+        total,
+        delivered,
+        agents: agents.map(r => ({
+          agentId: r.agent_id,
+          reportedVersion: Number(r.agent_token_version) || 0,
+          lastSeenAt: r.last_heartbeat_at
+        }))
+      });
+    } catch (e) {
+      logger.error({ err: e }, 'agent token delivery list failed');
+      res.status(500).json({ error: 'delivery list failed' });
     }
   });
 
