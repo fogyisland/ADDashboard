@@ -97,5 +97,10 @@ export const adminApi = {
   // response body so the operator can copy it for agent appsettings.json updates.
   getAgentTokenState: () => api.get('/api/admin/agent-token'),
   rotateAgentToken: () => api.post('/api/admin/agent-token/rotate'),
-  commitAgentToken: () => api.post('/api/admin/agent-token/commit')
+  commitAgentToken: () => api.post('/api/admin/agent-token/commit'),
+  // Operator-initiated read of the active agent auth token. Used when
+  // onboarding a new agent without rotating (which would invalidate every
+  // existing agent). Server writes a high-severity reveal_agent_token
+  // audit row per call so credential exposure leaves a trail.
+  revealAgentToken: () => api.get('/api/admin/agent-token/reveal')
 };

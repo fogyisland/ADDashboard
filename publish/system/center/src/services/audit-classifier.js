@@ -59,6 +59,7 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['auto_expire_agent_token',         'security'],
   ['commit_agent_token',              'security'],
   ['seed_agent_token',                'system'],
+  ['reveal_agent_token',              'security'],
   ['revoke_user_tokens',              'security']
 ]));
 
@@ -124,6 +125,7 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['auto_expire_agent_token',         'high'],
   ['commit_agent_token',              'medium'],
   ['seed_agent_token',                'info'],
+  ['reveal_agent_token',              'high'],
   ['revoke_user_tokens',              'high']
 ]));
 
@@ -177,6 +179,7 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['auto_expire_agent_token',         'Agent 令牌自动过期'],
   ['commit_agent_token',              '提交 Agent 令牌'],
   ['seed_agent_token',                '从 appsettings 初始化 Agent 令牌'],
+  ['reveal_agent_token',              '查看 Agent 令牌'],
   ['revoke_user_tokens',              '撤销用户全部令牌']
 ]));
 

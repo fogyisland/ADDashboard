@@ -5,7 +5,8 @@ import {
   getAgentTokenState,
   rotateAgentToken,
   commitAgentToken,
-  seedAgentTokenIfMissing
+  seedAgentTokenIfMissing,
+  revealAgentToken
 } from '../../src/services/agent-token.js';
 
 const noopLogger = { info(){}, warn(){}, error(){}, debug(){} };
@@ -160,6 +161,36 @@ test('seedAgentTokenIfMissing: does NOT expire within TTL', async () => {
   ]).withRecording(records);
   await seedAgentTokenIfMissing(db, 'from-appsettings', noopLogger);
   // No clears
+  const upserts = records.filter(x => /INSERT\s+INTO\s+system_config/i.test(x.sql));
+  assert.equal(upserts.length, 0);
+});
+
+// revealAgentToken: returns current + writes audit row + does NOT mutate
+// system_config. The audit-classifier side ('reveal_agent_token' as
+// security/high) is asserted in tests/audit-classifier.test.js; here we
+// focus on the service contract: token returned verbatim, audit row with
+// action=reveal_agent_token + target=system_config, no upserts.
+test('revealAgentToken: returns current token verbatim + writes reveal_agent_token audit', async () => {
+  const records = [];
+  const db = buildMockDb([
+    { match: /agent_token/i, rows: bundleRows({ current: 'LIVE-TOKEN-VALUE' }) }
+  ]).withRecording(records);
+  const r = await revealAgentToken(db, { logger: noopLogger, userId: 'u1' });
+  assert.equal(r.token, 'LIVE-TOKEN-VALUE');
+  assert.match(r.revealedAt, /^\d{4}-\d{2}-\d{2}T/);
+  // Audit row written
+  const audits = records.filter(x => /audit_logs/i.test(x.sql));
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].params[1], 'reveal_agent_token');
+  assert.equal(audits[0].params[2], 'system_config');
+  // Payload carries revealedAt + tokenLength, NOT the token itself (audit
+  // log readers must never see the live credential; the action's
+  // existence is the trail).
+  const payload = JSON.parse(audits[0].params[3]);
+  assert.match(payload.revealedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(payload.tokenLength, 'LIVE-TOKEN-VALUE'.length);
+  assert.equal(payload.token, undefined);
+  // No system_config writes — reveal is read-only
   const upserts = records.filter(x => /INSERT\s+INTO\s+system_config/i.test(x.sql));
   assert.equal(upserts.length, 0);
 });

@@ -8,7 +8,7 @@ import { listPorts, createPort, updatePort, deletePort } from '../services/ports
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
 import * as email from '../services/email.js';
-import { rotateAgentToken, commitAgentToken, getAgentTokenState } from '../services/agent-token.js';
+import { rotateAgentToken, commitAgentToken, getAgentTokenState, revealAgentToken } from '../services/agent-token.js';
 import { invalidateAgentTokenCache } from '../auth/agent-token.js';
 import { rotateJwtSecret, commitJwtSecret, getJwtSecretState } from '../services/jwt-secret.js';
 import { invalidateJwtSecretCache } from '../auth/user-auth.js';
@@ -369,6 +369,25 @@ export function adminRouter({ config, logger, db }) {
     } catch (e) {
       logger.error({ err: e }, 'agent token state get failed');
       res.status(500).json({ error: 'state get failed' });
+    }
+  });
+
+  // Reveal the active agent auth token. Unlike /rotate this does NOT mutate
+  // system_config — operators use this when onboarding a new agent
+  // (paste into appsettings.json) without invalidating existing agents.
+  // Every call writes a high-severity security audit row (see services/
+  // audit-classifier.js reveal_agent_token) so the "who read the live
+  // credential when" question has a deterministic answer.
+  r.get('/api/admin/agent-token/reveal', auth, async (req, res) => {
+    try {
+      const out = await revealAgentToken(_db, {
+        logger,
+        userId: req.user?.sub ?? null
+      });
+      res.json({ token: out.token, revealedAt: out.revealedAt });
+    } catch (e) {
+      logger.error({ err: e }, 'agent token reveal failed');
+      res.status(500).json({ error: 'reveal failed' });
     }
   });
 

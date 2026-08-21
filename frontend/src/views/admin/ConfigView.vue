@@ -22,7 +22,10 @@
             <td>
               <code v-if="row.derived" class="derived-value">{{ agentAddress }}</code>
               <!-- I3 dual-key agent token rotation: read-only mask by default, modal
-                   surfaces the new token exactly once after rotate. -->
+                   surfaces the new token exactly once after rotate. The 查看令牌
+                   button drives a separate reveal API call (no rotation) so the
+                   operator can copy the live token for a new agent without
+                   invalidating the existing fleet. -->
               <template v-else-if="row.key === 'ad_agent_token'">
                 <div class="agent-token-row">
                   <code class="token-mask">…{{ maskToken() }}</code>
@@ -31,6 +34,9 @@
                         ? `双令牌 · 旧令牌 ${formatTs(tokenState.previousExpiresAt)} 过期`
                         : '单令牌' }}
                   </span>
+                  <button class="view-btn" @click="onViewTokenClick" :disabled="viewing">
+                    {{ viewing ? '加载中…' : '查看令牌' }}
+                  </button>
                   <button class="rotate-btn" @click="onRotateClick" :disabled="rotating">
                     {{ rotating ? '生成中…' : '轮换令牌' }}
                   </button>
@@ -124,9 +130,10 @@
     />
 
     <AgentTokenRotateModal
-      v-if="showTokenModal"
-      :visible="showTokenModal"
-      :new-token="rotatedNewToken"
+      v-if="showTokenModal || showViewModal"
+      :mode="showViewModal ? 'view' : 'rotate'"
+      :visible="showTokenModal || showViewModal"
+      :new-token="showViewModal ? viewedToken : rotatedNewToken"
       :previous-expires-at="tokenState.previousExpiresAt"
       :ttl-days="tokenState.ttlDays"
       @close="onModalClose"
@@ -297,10 +304,16 @@ const agentAddress = computed(() => {
 // with getConfig so the badge ("单令牌" / "双令牌 (旧令牌 X 时刻过期)") is
 // populated on first paint. NEVER stores the secret — getAgentTokenState()
 // intentionally omits it; the only time a plaintext token appears in this
-// view is inside AgentTokenRotateModal right after a rotate response.
+// view is inside AgentTokenRotateModal right after a rotate OR a view.
 const tokenState = ref({ mode: 'single', previousExpiresAt: null, ttlDays: 30 });
 const showTokenModal = ref(false);
 const rotatedNewToken = ref(null);
+// View-mode state: distinct flag so the modal renders in 'view' mode
+// (no commit CTA, no expiry line). reviewedToken holds the live token
+// returned by GET /api/admin/agent-token/reveal — the operator's copy
+// button is the only way to extract it.
+const showViewModal = ref(false);
+const viewedToken = ref(null);
 const topLevelMsg = ref('');
 const showConfirm = ref(false);
 const confirmBody = ref('');
@@ -385,8 +398,8 @@ function maskToken() {
   // Server deliberately omits current token from /api/admin/agent-token
   // response (only mode/expiry/ttlDays). The mask shown here is purely
   // decorative — "…a3f9" — to remind the operator something exists. The
-  // real value lives only in each agent's appsettings.json and in the
-  // rotate-modal one-time display.
+  // real value lives only in each agent's appsettings.json and inside
+  // AgentTokenRotateModal either after a rotate OR after a reveal.
   return 'a3f9';
 }
 
@@ -421,8 +434,30 @@ async function onCommitClick() {
 }
 
 function onModalClose() {
+  // Clears whichever token payload is in flight. The modal is shared
+  // between rotate (rotatedNewToken) and view (viewedToken) flows — both
+  // refs are reset so a stale secret doesn't linger after close.
   showTokenModal.value = false;
+  showViewModal.value = false;
   rotatedNewToken.value = null;
+  viewedToken.value = null;
+}
+
+// Operator-initiated read of the active token. Calls the reveal API
+// (admin-auth + per-call audit row), then opens the modal in view mode
+// so the operator can copy the live token. Loading state guards the
+// button against double-clicks while the request is in flight.
+async function onViewTokenClick() {
+  viewing.value = true;
+  try {
+    const r = await adminApi.revealAgentToken();
+    viewedToken.value = r.data.token;
+    showViewModal.value = true;
+  } catch (e) {
+    notifyError(`查看令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
+  } finally {
+    viewing.value = false;
+  }
 }
 
 async function onModalCommitted() {
@@ -448,6 +483,7 @@ async function reloadTokenState() {
 
 const rotating = ref(false);
 const committing = ref(false);
+const viewing = ref(false);
 
 function onRollbackClick(row) {
   rollbackTarget.value = row;
@@ -629,7 +665,7 @@ button.cancel { background: #0b1220; color: var(--text); }
 }
 .token-mode-single { background: #0b1220; color: var(--muted); }
 .token-mode-dual { background: #7f1d1d; color: #fee2e2; border-color: #b91c1c; }
-.rotate-btn, .commit-btn {
+.rotate-btn, .commit-btn, .view-btn {
   padding: 4px 12px;
   border: 1px solid #1e293b;
   background: #0b1220;
@@ -639,8 +675,9 @@ button.cancel { background: #0b1220; color: var(--text); }
   font-size: 12px;
 }
 .rotate-btn:hover:not(:disabled),
-.commit-btn:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
-.rotate-btn:disabled, .commit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.commit-btn:hover:not(:disabled),
+.view-btn:hover:not(:disabled) { background: var(--accent); color: #0b1220; }
+.rotate-btn:disabled, .commit-btn:disabled, .view-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .action-hint { display: block; margin-top: 6px; font-size: 11px; color: var(--muted); }
 .action-hint code { background: #0b1220; padding: 1px 4px; border-radius: 2px; }
 .key-label { font-weight: 600; color: var(--text); }

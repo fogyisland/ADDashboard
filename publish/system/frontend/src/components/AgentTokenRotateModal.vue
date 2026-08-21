@@ -1,24 +1,28 @@
 <template>
   <div v-if="visible" class="modal-bg" @click.self="$emit('close')">
     <div class="modal" data-test="agent-token-modal">
-      <header><h3>Agent 令牌已轮换</h3></header>
+      <header><h3>{{ mode === 'view' ? 'Agent 令牌(当前)' : 'Agent 令牌已轮换' }}</h3></header>
       <section>
-        <p class="warning">
+        <p class="warning" v-if="mode === 'rotate'">
           新令牌只在此对话框显示一次。立即复制并 RDP 到每台 agent 修改 <code>appsettings.json</code> 的 <code>agentToken</code> 字段,然后重启服务。
+        </p>
+        <p class="warning" v-else>
+          这是当前生效的 Agent 令牌。复制后填入新 agent 的 <code>appsettings.json</code> 的 <code>agentToken</code> 字段;查看行为会写入审计日志。
         </p>
         <label class="token-display">
           <code data-test="new-token">{{ newToken }}</code>
           <button data-test="copy" @click="onCopy">{{ copied ? '已复制' : '复制' }}</button>
         </label>
-        <p class="expiry" v-if="previousExpiresAt">
+        <p class="expiry" v-if="mode === 'rotate' && previousExpiresAt">
           旧令牌仍可用,直到 <strong>{{ formatTs(previousExpiresAt) }}</strong>({{ ttlDays }} 天 grace 窗口)。
         </p>
       </section>
       <footer>
-        <button data-test="close" @click="$emit('close')">稍后处理</button>
-        <button data-test="commit" class="primary" @click="onCommit" :disabled="committing">
+        <button v-if="mode === 'rotate'" data-test="close" @click="$emit('close')">稍后处理</button>
+        <button v-if="mode === 'rotate'" data-test="commit" class="primary" @click="onCommit" :disabled="committing">
           {{ committing ? '关闭中…' : '我已切换完,关闭旧令牌' }}
         </button>
+        <button v-else data-test="close" @click="$emit('close')">关闭</button>
       </footer>
     </div>
   </div>
@@ -31,6 +35,11 @@ import { notifyError } from '../lib/notify.js';
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
+  // 'rotate' (default) = post-rotate flow that surfaces newToken and offers
+  // a commit CTA to close the previous token's grace window. 'view' =
+  // operator-initiated read of the active token — no commit CTA, no expiry
+  // info, single close button.
+  mode: { type: String, default: 'rotate' },
   newToken: { type: String, default: null },
   previousExpiresAt: { type: String, default: null },
   ttlDays: { type: Number, default: 30 }

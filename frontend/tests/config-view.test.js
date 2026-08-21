@@ -15,7 +15,8 @@ vi.mock('../src/api/admin.js', () => ({
       data: { mode: 'single', previousExpiresAt: null, ttlDays: 30 }
     }),
     rotateAgentToken: vi.fn(),
-    commitAgentToken: vi.fn()
+    commitAgentToken: vi.fn(),
+    revealAgentToken: vi.fn()
   }
 }));
 
@@ -31,6 +32,7 @@ beforeEach(() => {
   });
   adminApi.rotateAgentToken.mockReset();
   adminApi.commitAgentToken.mockReset();
+  adminApi.revealAgentToken.mockReset();
 });
 
 const SAMPLE = {
@@ -81,7 +83,7 @@ test('edit a non-risky field enables save; click save calls api; on success snap
 // appears only when mode === 'dual'. The backend putConfigInTx rejects
 // `ad_agent_token` writes with 400 (it lives in agent_token_current/previous
 // now); the UI must not surface an editable input here.
-test('ad_agent_token row renders mask + mode badge + 轮换 button (no input)', async () => {
+test('ad_agent_token row renders mask + mode badge + 查看 + 轮换 buttons (no input)', async () => {
   setActivePinia(createPinia());
   adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
   adminApi.getAgentTokenState.mockResolvedValue({
@@ -92,9 +94,13 @@ test('ad_agent_token row renders mask + mode badge + 轮换 button (no input)', 
   const rows = w.findAll('table.t tbody tr');
   const tokenRow = rows.find((r) => r.text().includes('ad_agent_token'));
   expect(tokenRow).toBeTruthy();
-  // Mask + status badge + button, no editable input.
+  // Mask + status badge + view + rotate buttons, no editable input.
+  // The view button drives a separate reveal API call so the operator
+  // can copy the live token without rotating (which would invalidate
+  // every existing agent on the wire).
   expect(tokenRow.find('.token-mask').exists()).toBe(true);
   expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+  expect(tokenRow.find('button.view-btn').exists()).toBe(true);
   expect(tokenRow.find('button.rotate-btn').exists()).toBe(true);
   expect(tokenRow.find('input').exists()).toBe(false);
   // No deprecated markers — the rotation flow is now reachable in-UI.
@@ -164,6 +170,44 @@ test('agent-token row: rotate failure surfaces notifyError and leaves mode uncha
   expect(w.findComponent({ name: 'AgentTokenRotateModal' }).exists()).toBe(false);
   // Mode badge stays single.
   expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+});
+
+// 查看令牌: operator-initiated read of the active token. Distinct from
+// 轮换 — does NOT mutate system_config, does NOT invalidate any agent.
+// Backed by GET /api/admin/agent-token/reveal which writes a high-severity
+// audit row per call. Click → call API → modal opens in view mode.
+test('agent-token row: 查看 button calls revealAgentToken and opens modal in view mode', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.revealAgentToken.mockResolvedValue({ data: { token: 'LIVE-TOKEN-a3f9', revealedAt: '2026-08-21T00:00:00Z' } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.view-btn').trigger('click');
+  await flushPromises();
+  expect(adminApi.revealAgentToken).toHaveBeenCalled();
+  // Modal renders with the live token payload + view mode
+  const vm = w.vm;
+  expect(vm.showViewModal).toBe(true);
+  expect(vm.viewedToken).toBe('LIVE-TOKEN-a3f9');
+  // Mode badge is NOT flipped to dual — view is a read, no rotation happened
+  expect(tokenRow.find('.token-mode-single').exists()).toBe(true);
+});
+
+test('agent-token row: 查看 failure surfaces notifyError and leaves modal closed', async () => {
+  setActivePinia(createPinia());
+  adminApi.getConfig.mockResolvedValue({ data: SAMPLE });
+  adminApi.revealAgentToken.mockRejectedValue({ response: { data: { error: 'reveal failed' } } });
+  const w = mount(ConfigView);
+  await flushPromises();
+  const tokenRow = w.findAll('table.t tbody tr').find((r) => r.text().includes('ad_agent_token'));
+  await tokenRow.find('button.view-btn').trigger('click');
+  await flushPromises();
+  // Modal should NOT open on failure.
+  expect(w.findComponent({ name: 'AgentTokenRotateModal' }).exists()).toBe(false);
+  const vm = w.vm;
+  expect(vm.showViewModal).toBe(false);
+  expect(vm.viewedToken).toBe(null);
 });
 
 test('agent-token row: initial mode=dual from server renders dual badge + commit button on first paint', async () => {

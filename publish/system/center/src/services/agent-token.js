@@ -26,6 +26,12 @@ const SEED_AUDIT = 'seed_agent_token';
 // seed taxonomy. Without this row, an operator reading the audit log
 // after a TTL-driven auto-clear would see no trace of the event.
 const AUTO_EXPIRE_AUDIT = 'auto_expire_agent_token';
+// reveal_agent_token — operator-initiated read of the active agent auth
+// secret. Does NOT mutate system_config; writes an audit row so the
+// "who read the active token when" question has a deterministic answer.
+// High-severity security event (audit-classifier.js) — every reveal is
+// a credential exposure even though no state changes.
+const REVEAL_AUDIT = 'reveal_agent_token';
 
 function readBundle(db, query) {
   return query(db.sql.config.getAgentTokenBundle).then(({ rows }) => {
@@ -98,6 +104,39 @@ export async function commitAgentToken(db, { logger, userId }) {
   });
   logger?.info?.({ userId }, 'agent token committed');
   return { ok: true };
+}
+
+// Read-only reveal of the active agent auth token. No system_config write —
+// just returns the bundle.current string + a fresh timestamp + audit row.
+//
+// Operators need this when onboarding a new agent: paste the value into
+// appsettings.json's agentToken without having to rotate (which would
+// invalidate every existing agent). The trade-off is that an admin with
+// /api/admin/agent-token/reveal can read the live credential — mitigated
+// by admin-only auth (auth chain at admin.js) + per-call audit row.
+export async function revealAgentToken(db, { logger, userId }) {
+  let result;
+  await db.transaction(async (tx) => {
+    const before = await readBundle(db, (sql) => tx.query(sql));
+    const revealedAt = new Date().toISOString();
+    // Audit row written inside the tx so a write failure rolls back (no
+    // data state changes so this is defensive — matches the rotate/
+    // commit convention so future reads see the audit row atomically
+    // alongside any added bookkeeping writes).
+    await writeAudit({
+      userId,
+      action: REVEAL_AUDIT,
+      target: 'system_config',
+      payload: {
+        revealedAt,
+        tokenLength: before.current.length
+      },
+      logger
+    }, logger, tx);
+    logger?.info?.({ userId, tokenLength: before.current.length, revealedAt }, 'agent token revealed');
+    result = { token: before.current, revealedAt };
+  });
+  return result;
 }
 
 export async function seedAgentTokenIfMissing(db, fromAppsettings, logger) {

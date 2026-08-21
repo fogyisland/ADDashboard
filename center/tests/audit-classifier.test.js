@@ -16,7 +16,7 @@ test('classifier: ACTION_CATEGORY maps every emitted action to one of three cate
     'mark_applied', 'baseline', 'apply_up_to', 'upgrade_db',
     // #167 C1: agent-token rotation + revoke_user_tokens actions.
     'rotate_agent_token', 'commit_agent_token', 'seed_agent_token',
-    'auto_expire_agent_token', 'revoke_user_tokens'
+    'auto_expire_agent_token', 'reveal_agent_token', 'revoke_user_tokens'
   ];
   for (const a of EMITTED) {
     assert.ok(['security', 'changes', 'ops', 'system'].includes(ACTION_CATEGORY.get(a)),
@@ -36,7 +36,7 @@ test('classifier: CATEGORY_ACTIONS.security is exactly the registered security a
     'agent_self_register', 'auto_expire_agent_token', 'auto_expire_jwt_secret',
     'commit_agent_token', 'commit_jwt_secret',
     'delete_user', 'disable_builtin_ad_os_baseline', 'login_failed',
-    'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
+    'reveal_agent_token', 'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
   ]);
 });
 
@@ -44,7 +44,7 @@ test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token ro
   assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
     'auto_expire_agent_token', 'auto_expire_jwt_secret', 'delete_user',
     'disable_builtin_ad_os_baseline', 'login_failed', 'restart_service',
-    'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
+    'reveal_agent_token', 'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
   ]);
 });
 
@@ -114,11 +114,23 @@ test('classifier: I1 revoke_user_tokens is high severity security', () => {
 });
 
 test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 5 #167 entries', () => {
-  for (const a of ['rotate_agent_token', 'auto_expire_agent_token', 'commit_agent_token', 'seed_agent_token', 'revoke_user_tokens']) {
+  for (const a of ['rotate_agent_token', 'auto_expire_agent_token', 'commit_agent_token', 'seed_agent_token', 'reveal_agent_token', 'revoke_user_tokens']) {
     assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
     assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
     assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
   }
+});
+
+// reveal_agent_token: operator-initiated read of the active agent auth
+// secret. High (not medium) because the event exposes the active credential
+// even though no state changes — same severity tier as rotate_agent_token
+// (which also surfaces the secret). Security category so it surfaces in
+// the audit-classifier security filter alongside the rotate/commit set.
+test('classifier: reveal_agent_token resolves to non-default categories', () => {
+  const c = classifyAction('reveal_agent_token');
+  assert.equal(c.category, 'security');
+  assert.equal(c.severity, 'high');
+  assert.equal(c.label, '查看 Agent 令牌');
 });
 
 test('classifier: unknown action returns the raw action as label + ops/low fallback', () => {

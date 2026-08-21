@@ -124,3 +124,50 @@ test('GET /agent-token returns mode=dual when previous is set', async () => {
   assert.equal(r.body.rotatedAt, '2026-08-18T00:00:00.000Z');
   assert.match(r.body.previousExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
 });
+
+// GET /agent-token/reveal — operator-initiated read of the active agent
+// auth token. Admin-only (admin:users perm, same gate as the other agent-
+// token routes). Returns { token, revealedAt } on success. Every reveal
+// writes a reveal_agent_token audit row (security/high per audit-classifier)
+// so credential exposure leaves a trail.
+
+test('GET /reveal returns 200 with token verbatim for admin', async () => {
+  const db = buildMockDb([{
+    match: /agent_token/i,
+    rows: [{ config_key: 'agent_token_current', config_value: 'LIVE-AGENT-TOKEN' }]
+  }]).standard();
+  const app = buildApp(db);
+  const r = await supertest(app)
+    .get('/api/admin/agent-token/reveal')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.token, 'LIVE-AGENT-TOKEN');
+  assert.match(r.body.revealedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('GET /reveal returns 403 for non-admin', async () => {
+  const db = buildMockDb([]).standard();
+  const app = buildApp(db);
+  const r = await supertest(app)
+    .get('/api/admin/agent-token/reveal')
+    .set('Authorization', `Bearer ${operatorToken()}`);
+  assert.equal(r.status, 403);
+});
+
+test('GET /reveal writes reveal_agent_token audit row', async () => {
+  const records = [];
+  const db = buildMockDb([{
+    match: /agent_token/i,
+    rows: [{ config_key: 'agent_token_current', config_value: 'LIVE-TOK' }]
+  }]).withRecording(records);
+  const app = buildApp(db);
+  const r = await supertest(app)
+    .get('/api/admin/agent-token/reveal')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  const audits = records.filter(x => /audit/i.test(x.sql));
+  assert.ok(audits.length >= 1, 'expected reveal_agent_token audit row');
+  const reveal = audits.find(a => a.params[1] === 'reveal_agent_token');
+  assert.ok(reveal, 'expected reveal_agent_token action');
+  assert.equal(reveal.params[2], 'system_config');
+});
