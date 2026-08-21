@@ -78,7 +78,7 @@ describe('SchemaInventoryView', () => {
     expect(wrapper.text()).toContain('缺列 1');
   });
 
-  it('expands detail row when expand button clicked', async () => {
+  it('toggles collapse / re-expand via expand button (default expanded)', async () => {
     adminApi.getSchemaInventory.mockResolvedValue({
       data: { schemas: [
         { name: 'pkg_ad_test', source: 'package:ad-test/1.0.0',
@@ -90,15 +90,15 @@ describe('SchemaInventoryView', () => {
     });
     const wrapper = mountView();
     await flushPromises();
-    // Initially collapsed: detail row's diff-summary not visible.
+    // Default: expanded so DB structure is visible without a click.
+    expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(true);
+    await wrapper.find('[data-test="expand-pkg_ad_test"]').trigger('click');
+    await flushPromises();
     expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(false);
+    // Click again to re-expand.
     await wrapper.find('[data-test="expand-pkg_ad_test"]').trigger('click');
     await flushPromises();
     expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(true);
-    // Click again to collapse.
-    await wrapper.find('[data-test="expand-pkg_ad_test"]').trigger('click');
-    await flushPromises();
-    expect(wrapper.find('[data-test="diff-summary"]').exists()).toBe(false);
   });
 
   it('renders system schema actual tables only, no expected', async () => {
@@ -111,8 +111,7 @@ describe('SchemaInventoryView', () => {
     });
     const wrapper = mountView();
     await flushPromises();
-    await wrapper.find('[data-test="expand-users"]').trigger('click');
-    await flushPromises();
+    // Default: detail row already expanded, no click needed.
     expect(wrapper.text()).toContain('实际表');
     expect(wrapper.text()).toContain('id');
   });

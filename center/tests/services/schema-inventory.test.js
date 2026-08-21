@@ -10,9 +10,10 @@ import os from 'node:os';
 import { getSchemaInventory, _test } from '../../src/services/schema-inventory.js';
 import { buildSql } from '../../src/db/sql.js';
 
-function makeMockDb({ dialect = 'mysql', schemaFixtures }) {
+function makeMockDb({ dialect = 'mysql', schemaFixtures, database }) {
   return {
     dialect,
+    database,
     sql: buildSql(dialect),
     async execute(sql, params = []) {
       const s = String(sql);
@@ -265,9 +266,10 @@ test('getSchemaInventory: pkg_* schema with missing column → drift', async () 
 
 test('getSchemaInventory: system schema (no manifest) → status=system', async () => {
   const db = makeMockDb({
+    database: 'addashboard',
     schemaFixtures: {
-      'users': [{
-        name: 'users',
+      'addashboard': [{
+        name: 'ad_users',
         columns: [
           { column_name: 'id', column_type: 'int', is_nullable: 'NO' }
         ]
@@ -276,7 +278,7 @@ test('getSchemaInventory: system schema (no manifest) → status=system', async 
   });
   const inv = await getSchemaInventory(db, { dataDir: '/nonexistent' });
   assert.equal(inv.schemas.length, 1);
-  assert.equal(inv.schemas[0].name, 'users');
+  assert.equal(inv.schemas[0].name, 'addashboard');
   assert.equal(inv.schemas[0].source, 'system');
   assert.equal(inv.schemas[0].status, 'system');
   assert.equal(inv.schemas[0].expected, null);
@@ -284,6 +286,7 @@ test('getSchemaInventory: system schema (no manifest) → status=system', async 
 
 test('getSchemaInventory: pkg_* schema but no manifest on disk → falls through to system', async () => {
   const db = makeMockDb({
+    database: 'addashboard',
     schemaFixtures: {
       'pkg_ad_orphan': []
     }
@@ -311,4 +314,33 @@ test('getSchemaInventory: extra table in pkg_* schema → drift', async () => {
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('getSchemaInventory: default filters out unrelated schemas (only center DB + pkg_*)', async () => {
+  const db = makeMockDb({
+    database: 'addashboard',
+    schemaFixtures: {
+      'addashboard':             [{ name: 'ad_users', columns: [] }],
+      'pkg_ad_local_port_check': [{ name: 'metrics', columns: [] }],
+      'pudafo_testpilot':        [],
+      'suanming':                [],
+      'exdashboard_test':        []
+    }
+  });
+  const inv = await getSchemaInventory(db, { dataDir: '/nonexistent' });
+  const names = inv.schemas.map((s) => s.name).sort();
+  assert.deepEqual(names, ['addashboard', 'pkg_ad_local_port_check']);
+});
+
+test('getSchemaInventory: includeAll bypasses the center-only filter', async () => {
+  const db = makeMockDb({
+    database: 'addashboard',
+    schemaFixtures: {
+      'addashboard':      [],
+      'pudafo_testpilot': [],
+      'suanming':         []
+    }
+  });
+  const inv = await getSchemaInventory(db, { dataDir: '/nonexistent', includeAll: true });
+  assert.equal(inv.schemas.length, 3);
 });

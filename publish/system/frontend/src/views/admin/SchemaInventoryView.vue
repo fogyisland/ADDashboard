@@ -40,8 +40,8 @@
                   class="expand-btn"
                   :data-test="`expand-${s.name}`"
                   @click="toggle(s.name)"
-                  :aria-label="expanded === s.name ? '收起' : '展开'"
-                >{{ expanded === s.name ? '▾' : '▸' }}</button>
+                  :aria-label="expanded.has(s.name) ? '收起' : '展开'"
+                >{{ expanded.has(s.name) ? '▾' : '▸' }}</button>
               </td>
               <td><code class="schema-name">{{ s.name }}</code></td>
               <td class="source-cell">{{ s.source }}</td>
@@ -73,7 +73,7 @@
                 </span>
               </td>
             </tr>
-            <tr v-if="expanded === s.name" class="detail-row">
+            <tr v-if="expanded.has(s.name)" class="detail-row">
               <td colspan="6">
                 <SchemaInventoryDetail :schema="s" />
               </td>
@@ -95,7 +95,7 @@ import { notifyError } from '../../lib/notify.js';
 const schemas = ref([]);
 const loading = ref(false);
 const error = ref('');
-const expanded = ref(null);
+const expanded = ref(new Set());
 
 const stats = computed(() => {
   if (schemas.value.length === 0) return '';
@@ -114,7 +114,10 @@ function statusLabel(status) {
 }
 
 function toggle(name) {
-  expanded.value = expanded.value === name ? null : name;
+  if (expanded.value.has(name)) expanded.value.delete(name);
+  else expanded.value.add(name);
+  // Trigger reactivity for Set mutations.
+  expanded.value = new Set(expanded.value);
 }
 
 async function load() {
@@ -123,6 +126,9 @@ async function load() {
   try {
     const r = await adminApi.getSchemaInventory();
     schemas.value = r.data?.schemas || [];
+    // Default: every row expanded so the operator sees DB structure up front;
+    // toggle still lets them collapse individual rows.
+    expanded.value = new Set(schemas.value.map((s) => s.name));
   } catch (e) {
     error.value = e?.response?.data?.error || e?.message || '未知错误';
     notifyError(`加载 Schema 库存失败: ${error.value}`);

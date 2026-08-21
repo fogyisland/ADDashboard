@@ -199,13 +199,27 @@ function readExpectedFromDir(pkgName, dataDir) {
   }
 }
 
+// "Center's own" schemas: the main app schema (matches the DB connection's
+// configured database name) plus every pkg_* schema that an installed
+// package owns. By default we hide everything else — a developer MySQL
+// frequently holds leftover schemas from other unrelated projects and the
+// operator doesn't want to see them in an inventory page. Pass
+// `{ includeAll: true }` to bypass the filter.
+function isCenterSchema(schemaName, dbDatabase) {
+  if (schemaName === dbDatabase) return true;
+  if (schemaName.startsWith('pkg_')) return true;
+  return false;
+}
+
 export async function getSchemaInventory(db, opts = {}) {
   const dataDir = opts.dataDir || path.join(process.cwd(), 'data', 'packages');
+  const includeAll = opts.includeAll === true;
   const { rows: schemaRows } = await db.query(db.sql.schemaInventory.listSchemas);
   const out = [];
   for (const row of schemaRows || []) {
     const schemaName = row.schema_name ?? row.SCHEMA_NAME ?? row.name;
     if (!schemaName) continue;
+    if (!includeAll && !isCenterSchema(schemaName, db.database)) continue;
     out.push(await readSchema(db, schemaName, dataDir));
   }
   return { schemas: out };

@@ -1320,11 +1320,18 @@ export function adminRouter({ config, logger, db }) {
   // dataDir is configurable so tests can point at a tmp fixture tree
   // without touching process.cwd(); production leaves it unset and the
   // service falls back to <cwd>/data/packages.
-  r.get('/api/admin/schemas/inventory', auth, async (_req, res) => {
+  r.get('/api/admin/schemas/inventory', auth, async (req, res) => {
     try {
       const { getSchemaInventory } = await import('../services/schema-inventory.js');
       const db = getDb();
-      const inv = await getSchemaInventory(db, { dataDir: config?.schemaInventoryDataDir });
+      // ?all=1 — bypass the center-schema filter so an operator can see
+      // what else lives on the same MySQL/MSSQL instance (useful when
+      // diagnosing a developer DB that's accumulated unrelated schemas).
+      const includeAll = req.query.all === '1' || req.query.all === 'true';
+      const inv = await getSchemaInventory(db, {
+        dataDir: config?.schemaInventoryDataDir,
+        includeAll
+      });
       res.json(inv);
     } catch (e) {
       logger.error({ err: e }, 'admin schema inventory failed');

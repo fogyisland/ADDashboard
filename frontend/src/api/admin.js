@@ -54,7 +54,13 @@ export const adminApi = {
   // schemas compares against the package manifest's metricSchema to
   // surface drift. Response shape:
   //   { schemas: [{ name, source, expected, actual, diff, status }] }
-  getSchemaInventory: () => api.get('/api/admin/schemas/inventory'),
+  //
+  // By default filters to center-owned schemas (the configured DB's
+  // schema + every pkg_*). Pass `{ all: true }` to see every schema on
+  // the server — useful on a developer MySQL that accumulated unrelated
+  // test schemas from other projects.
+  getSchemaInventory: ({ all = false } = {}) =>
+    api.get(`/api/admin/schemas/inventory${all ? '?all=1' : ''}`),
   uninstallPackage: (name, { purgeMetrics = false, confirmDropSchema = false } = {}) =>
     api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } }),
 
