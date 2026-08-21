@@ -137,6 +137,30 @@ function Get-LockoutEvents {
 # index by port without parsing dotted notation.
 $script:DefaultPartnerPortSet = @(135, 445, 50001, 50002, 50003)
 
+# Build the naming_context value for a partner-port row.
+# Column is `ad_replication_status.naming_context VARCHAR(256)` (see
+# db/schema/01-tables.sql). FQDN partners up to 253 chars + the
+# 17-char `__partner_ports__:` prefix blow past 256, and IPv6 literals
+# like `[2001:db8::1]:389` push past any reasonable limit. Truncate the
+# host to 64 chars and append a 4-byte SHA-256 hex suffix derived from
+# the FULL host — preserves uniqueness across partners that share a
+# common 64-char prefix while keeping every emitted value well under
+# 86 chars (64 + 1 separator + 8 hex + 17 prefix).
+function Get-PartnerNamingContext {
+  param([string]$partnerHost)
+  if ([string]::IsNullOrEmpty($partnerHost)) { return $null }
+  $truncated = if ($partnerHost.Length -gt 64) {
+    $partnerHost.Substring(0, 64)
+  } else {
+    $partnerHost
+  }
+  $bytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+    [System.Text.Encoding]::UTF8.GetBytes($partnerHost)
+  )
+  $hashStr = -join ($bytes[0..3] | ForEach-Object { $_.ToString('x2') })
+  return "__partner_ports__:${truncated}_${hashStr}"
+}
+
 function Get-PartnerPortSnapshot {
   [CmdletBinding()]
   param(
@@ -254,7 +278,10 @@ function Get-PartnerPortSnapshot {
       DestDc            = $partnerHost
       SourceSite        = $Site
       DestSite          = $null
-      NamingContext     = "__partner_ports__:$partnerHost"
+      # Sanitized: see Get-PartnerNamingContext for the truncate+hash
+      # rationale. Keeps every emitted value well under
+      # naming_context VARCHAR(256).
+      NamingContext     = Get-PartnerNamingContext -partnerHost $partnerHost
       LastSuccessTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
       LastAttemptTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
       StatusCode        = $statusCode

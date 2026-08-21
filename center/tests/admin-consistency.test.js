@@ -186,3 +186,37 @@ test('GET /api/admin/consistency: outlier shape uses snake_case keys', async () 
   // collected_at is ISO 8601
   assert.match(outlier.collected_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
 });
+
+// --- I-2 route-level contract: MySQL ER_NO_SUCH_TABLE → 200 with empty shape ---
+//
+// Bug fixed in this commit: on a fresh install the SELECT against
+// pkg_ad_domain_consistency.metrics raises ER_NO_SUCH_TABLE 1146 and the
+// route used to 500 (the route's catch logged + returned {error:'internal'}).
+// The service now catches the missing-table error and returns the empty
+// 3-class shape, so this route returns 200 with agent_count=0 across the
+// board — operators see a valid (empty) page instead of a 500.
+test('GET /api/admin/consistency: 200 with empty shape when metrics table missing (I-2)', async () => {
+  // Simulate the MySQL driver error for "table doesn't exist".
+  const tblMissing = new Error("Table 'addashboard.pkg_ad_domain_consistency' doesn't exist");
+  tblMissing.code = 'ER_NO_SUCH_TABLE';
+  tblMissing.errno = 1146;
+  const db = buildMockDb([
+    { match: /pkg_ad_domain_consistency/i, onQuery: () => { throw tblMissing; } }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/admin/consistency')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200, 'I-2: missing-table must NOT propagate as 500');
+  // All 3 classes present, all empty
+  assert.deepEqual(Object.keys(r.body).sort(), ['gpos', 'groups', 'users']);
+  for (const className of ['users', 'groups', 'gpos']) {
+    const c = r.body[className];
+    assert.equal(c.class, className);
+    assert.equal(c.consensus_hash, null);
+    assert.equal(c.consensus_count, 0);
+    assert.equal(c.agent_count, 0);
+    assert.deepEqual(c.outliers, []);
+  }
+});

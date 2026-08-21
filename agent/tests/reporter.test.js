@@ -131,7 +131,7 @@ const INSERT_SHAPE_KEYS = [
 test('toCamelEntry forwards all 16 INSERT-shape fields from a PascalCase entry', () => {
   // partnerPortStatus arrives pre-stringified from the PS1 (ConvertTo-Json
   // -Compress), so assert it survives as an untouched JSON *string*.
-  const portJson = '{"checked_at":"2026-08-20T01:02:03.000Z","ports":{"135":{"reachable":true,"latency_ms":3,"error":null}}}';
+  const portJson = '{"checked_at":"2026-08-20T01:02:03.000Z","ports":{"135":{"reachable":true,"latencyMs":3,"error":null}}}';
   const out = toCamelEntry({
     CollectedAt: '2026-08-20T01:02:03.000Z',
     AgentId: 'DC1',
@@ -217,7 +217,7 @@ test('postReport puts the 4 counters on the wire (previously dropped)', async ()
 });
 
 test('postReport puts partnerPortStatus JSON on the wire (Task 3 primary deliverable)', async () => {
-  const portJson = '{"checked_at":"2026-08-20T00:00:00.000Z","ports":{"135":{"reachable":true,"latency_ms":2,"error":null},"445":{"reachable":false,"latency_ms":null,"error":"timeout"}}}';
+  const portJson = '{"checked_at":"2026-08-20T00:00:00.000Z","ports":{"135":{"reachable":true,"latencyMs":2,"error":null},"445":{"reachable":false,"latencyMs":null,"error":"timeout"}}}';
   let received = null;
   await withServer((req, res) => {
     let body = '';
@@ -242,7 +242,7 @@ test('postReport puts partnerPortStatus JSON on the wire (Task 3 primary deliver
     // Sanity: it is still parseable and carries the per-port map.
     const parsed = JSON.parse(row.partnerPortStatus);
     assert.equal(parsed.ports['445'].reachable, false);
-    assert.equal(parsed.ports['135'].latency_ms, 2);
+    assert.equal(parsed.ports['135'].latencyMs, 2);
     assert.equal(row.namingContext, '__partner_ports__:DC2');
   });
 });

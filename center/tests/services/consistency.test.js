@@ -348,3 +348,78 @@ test('deriveConsistency: defaults to getDb() when called without arg', async () 
     _setDbForTest(null);
   }
 });
+
+// --- I-2 table-missing regression tests -------------------------------
+//
+// Bug fixed in this commit: on a fresh install (or DB that hasn't yet
+// collected any ad_domain_consistency metrics), the SELECT against
+// pkg_ad_domain_consistency.metrics raises ER_NO_SUCH_TABLE (MySQL errno
+// 1146) or InvalidObjectName (MSSQL error 208). The previous code let
+// that propagate to the route, which logged 500. The fix detects the
+// missing-table error and degrades to the empty 3-class shape (200).
+// These tests pin the contract at the service layer; the route layer
+// route is also covered for MySQL specifically.
+
+function makeMockThatThrowsOnConsistencyTable(error) {
+  const records = [];
+  const db = buildRecordingPool(records);
+  // eslint-disable-next-line require-await
+  db.query = async (sql, params) => {
+    records.push({ sql, params: [...(params || [])] });
+    if (/pkg_ad_domain_consistency/i.test(sql) || /consistency/i.test(sql)) {
+      throw error;
+    }
+    // Return default auth rows so the userAuth bundle lookup doesn't
+    // surface a 401 unrelated to the service under test (this service
+    // doesn't go through userAuth, but the helper above standardizes
+    // it for safety).
+    return { rows: [] };
+  };
+  return { db, records };
+}
+
+test('deriveConsistency: MySQL ER_NO_SUCH_TABLE → empty shape for all 3 classes (no 500)', async () => {
+  const err = new Error("Table 'addashboard.pkg_ad_domain_consistency' doesn't exist");
+  err.code = 'ER_NO_SUCH_TABLE';
+  err.errno = 1146;
+  const { db } = makeMockThatThrowsOnConsistencyTable(err);
+  const result = await deriveConsistency(db);
+  assert.deepEqual(result, {
+    users:  { class: 'users',  consensus_hash: null, consensus_count: 0, agent_count: 0, outliers: [] },
+    groups: { class: 'groups', consensus_hash: null, consensus_count: 0, agent_count: 0, outliers: [] },
+    gpos:   { class: 'gpos',   consensus_hash: null, consensus_count: 0, agent_count: 0, outliers: [] }
+  });
+});
+
+test('deriveConsistency: MSSQL InvalidObjectName error → empty shape for all 3 classes (no 500)', async () => {
+  // MSSQL driver wraps the underlying error: outer err.number=208 + code='ETABLE',
+  // and the original SQL Server InvalidObjectName is nested in originalError.info.name.
+  const orig = { info: { name: 'InvalidObjectName' } };
+  const err = new Error('Invalid object name');
+  err.code = 'ETABLE';
+  err.number = 208;
+  err.originalError = orig;
+  const { db } = makeMockThatThrowsOnConsistencyTable(err);
+  const result = await deriveConsistency(db);
+  assert.equal(result.users.consensus_count, 0);
+  assert.equal(result.groups.consensus_count, 0);
+  assert.equal(result.gpos.consensus_count, 0);
+  assert.deepEqual(result.users.outliers, []);
+  assert.deepEqual(result.groups.outliers, []);
+  assert.deepEqual(result.gpos.outliers, []);
+});
+
+test('deriveConsistency: unrelated query error (NOT a missing-table error) still propagates', async () => {
+  // Foreign-key violation or transient connection failure etc. must NOT
+  // be swallowed — only ER_NO_SUCH_TABLE / InvalidObjectName degrade to
+  // the empty shape. Any other error class bubbles up so the route's
+  // catch block can log + 500 it (operator gets a real failure signal).
+  const err = new Error('connection lost');
+  err.code = 'PROTOCOL_CONNECTION_LOST';
+  const { db } = makeMockThatThrowsOnConsistencyTable(err);
+  await assert.rejects(
+    () => deriveConsistency(db),
+    /connection lost/,
+    'non-missing-table errors must not be silently swallowed'
+  );
+});

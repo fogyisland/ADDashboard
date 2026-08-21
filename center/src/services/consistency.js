@@ -18,6 +18,39 @@ import { getDb } from '../db/index.js';
 const CLASS_NAMES = ['users', 'groups', 'gpos'];
 
 /**
+ * Empty shape for one class — used when the metrics table is missing
+ * (fresh install before the ad_domain_consistency package has ever run)
+ * AND when the table is present but empty. Matches the shape
+ * buildClassShape returns for `[]` so callers can iterate uniformly.
+ */
+function emptyShape(className) {
+  return {
+    class: className,
+    consensus_hash: null,
+    consensus_count: 0,
+    agent_count: 0,
+    outliers: []
+  };
+}
+
+/**
+ * Detect "this table doesn't exist" errors from MySQL or MSSQL drivers so
+ * the consistency route can degrade to an empty shape (200) instead of 500.
+ * Both drivers surface a recognizable error code/number; MSSQL additionally
+ * nests the InvalidObjectName in originalError.info.name.
+ */
+function isTableMissingError(e) {
+  if (!e) return false;
+  // MySQL (mysql2) — ER_NO_SUCH_TABLE 1146
+  if (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146) return true;
+  // MSSQL (mssql) — InvalidObjectName maps to ETABLE / number 208
+  if (e.code === 'ETABLE' || e.number === 208) return true;
+  const orig = e.originalError;
+  if (orig && orig.info && orig.info.name === 'InvalidObjectName') return true;
+  return false;
+}
+
+/**
  * Build the snake_case output shape for one class.
  *
  *   {
@@ -123,7 +156,22 @@ export function buildClassShape(className, rows) {
  */
 export async function deriveConsistency(db = null) {
   const d = db ?? getDb();
-  const { rows } = await d.query(d.sql.consistency.latestPerAgent);
+  let rows;
+  try {
+    ({ rows } = await d.query(d.sql.consistency.latestPerAgent));
+  } catch (e) {
+    // Fresh install (or DB just bootstrapped without seeding ad_domain_consistency
+    // metrics yet) raises ER_NO_SUCH_TABLE / InvalidObjectName. Degrade to the
+    // empty shape for all 3 classes instead of 500 — operator still sees a
+    // valid response with agent_count=0 and no outliers, which matches the
+    // "table exists but empty" contract from buildClassShape([]).
+    if (isTableMissingError(e)) {
+      const result = {};
+      for (const className of CLASS_NAMES) result[className] = emptyShape(className);
+      return result;
+    }
+    throw e;
+  }
 
   // Normalize rows into the shape buildClassShape expects. Snake-case keys
   // straight from the SQL result; js Date already from the driver wrappers.

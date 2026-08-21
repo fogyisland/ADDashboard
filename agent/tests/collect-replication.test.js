@@ -102,6 +102,23 @@ test('each lockout event carries EventRecordId, OccurredAt, and the 4 user/compu
 
 // ---------- Task 3: per-partner TCP port probes ----------
 
+test('collect-replication.ps1 declares a Get-PartnerNamingContext function (I-5)', () => {
+  // I-5 fix: naming_context VARCHAR(256) overflow protection. The
+  // helper truncates the host to 64 chars + 4-byte SHA-256 hex suffix
+  // + 17-char `__partner_ports__:` prefix → at most 89 chars, safely
+  // under 256. Pester tests in scripts/tests/cover the truncation
+  // rules; this assertion pins the helper exists and is wired in.
+  const src = readFileSync(psPath, 'utf8');
+  assert.match(src, /function\s+Get-PartnerNamingContext\b/,
+    'expected Get-PartnerNamingContext function definition');
+  // Wired at the row-emission site (not a dead helper).
+  assert.match(src, /NamingContext\s*=\s*Get-PartnerNamingContext/i,
+    'NamingContext assignment must call the sanitizer');
+  // Guard against the old interpolation literal sneaking back in.
+  assert.doesNotMatch(src, /NamingContext\s*=\s*"__partner_ports__:\$partnerHost"/,
+    'raw `__partner_ports__:$partnerHost` interpolation must not exist after I-5 fix');
+});
+
 test('collect-replication.ps1 declares a Get-PartnerPortSnapshot function', () => {
   const src = readFileSync(psPath, 'utf8');
   assert.match(src, /function\s+Get-PartnerPortSnapshot\b/,
@@ -198,8 +215,13 @@ test('Get-PartnerPortSnapshot naming context embeds the partner host (R2)', () =
   const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
   assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
   const body = fnMatch[0];
-  assert.match(body, /NamingContext\s*=\s*"__partner_ports__:\$partnerHost"/,
-    'expected R2 naming context "__partner_ports__:<partner>"');
+  // I-5: naming context is built via the Get-PartnerNamingContext sanitizer
+  // (truncate to 64 chars + 4-byte SHA-256 hex suffix), not raw
+  // `"__partner_ports__:$partnerHost"` interpolation. Pin the helper is
+  // wired in — the actual truncation logic is tested in the Pester
+  // suite (scripts/tests/collect-replication.test.ps1).
+  assert.match(body, /NamingContext\s*=\s*Get-PartnerNamingContext/i,
+    'expected NamingContext to be set via Get-PartnerNamingContext helper');
 });
 
 test('Get-PartnerPortSnapshot partner_port_status JSON includes checked_at + per-port reachable/latency/error', () => {

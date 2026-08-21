@@ -163,3 +163,84 @@ test('partnerPortStatus JS object survives JSON round-trip for both dialects', a
     );
   }
 });
+
+// --- C-1 wire-path regression test ------------------------------------
+//
+// Bug fixed in this commit: when collect-replication.ps1 emits a JSON
+// STRING (its ConvertTo-Json -Compress output) and the agent's
+// toCamelEntry forwards it verbatim, rowParams used to call
+// JSON.stringify on the already-stringified payload, producing escaped
+// JSON-in-JSON ("{\"foo\":1}" as a string literal inside the column).
+// Downstream consumers then had to JSON.parse twice. This test pins the
+// fix: a wire-path payload (string from PS1) must reach the bound param
+// UNMODIFIED — and a single JSON.parse must yield the original object.
+
+test('wire path (PS1 string → toCamelEntry → rowParams): string stays a string, single-parse round-trip', async () => {
+  // Exact shape emitted by collect-replication.ps1's Get-PartnerPortSnapshot:
+  // ConvertTo-Json -Compress -Depth 4 on an ordered @{ checked_at; ports }
+  // hashtable whose `ports` map is keyed by stringified port numbers.
+  const wirePortJson = JSON.stringify({
+    checked_at: '2026-08-20T01:02:03.000Z',
+    ports: {
+      '135':  { reachable: true,  latencyMs: 3,    error: null },
+      '445':  { reachable: true,  latencyMs: 4,    error: null },
+      '50001': { reachable: true, latencyMs: 5,    error: null },
+      '50002': { reachable: false, latencyMs: null, error: 'timeout' },
+      '50003': { reachable: true, latencyMs: 7,    error: null }
+    }
+  });
+  // Simulate the wire path: agent/test passes the PS1 string into
+  // toCamelEntry's input as-is (agent's reporter.js forwards the
+  // string verbatim), then calls upsertStatus with the camel entry.
+  const records = [];
+  const db = buildMockDb([], { dialect: 'mysql' }).withRecording(records);
+  _setDbForTest(db);
+  await upsertStatus([{
+    ...baseRow,
+    sourceDc: 'DC1',
+    destDc: 'DC2',
+    namingContext: '__partner_ports__:DC2',
+    // partnerPortStatus is a STRING here, not an object — that's the
+    // contract on the wire path (post-task 3-fix).
+    partnerPortStatus: wirePortJson
+  }]);
+  assert.equal(records.length, 1);
+  // Bound param must be the SAME string (bytewise), NOT a JSON-in-JSON
+  // escape. Asserting equality on the raw capture pins the contract.
+  assert.strictEqual(records[0].params[15], wirePortJson,
+    'partnerPortStatus must reach the bound param unescaped (no double-encoding)');
+  // And a single JSON.parse on the column value recovers the original
+  // object — proving downstream consumers don't need JSON.parse twice.
+  const recovered = JSON.parse(records[0].params[15]);
+  assert.equal(recovered.checked_at, '2026-08-20T01:02:03.000Z');
+  assert.equal(recovered.ports['135'].reachable, true);
+  assert.equal(recovered.ports['135'].latencyMs, 3);
+  assert.equal(recovered.ports['50002'].reachable, false);
+  assert.equal(recovered.ports['50002'].error, 'timeout');
+});
+
+test('object-path callers (tests, services) still get JSON.stringify of the JS object', async () => {
+  // Backward-compat: the existing in-process callers in this very test
+  // file (and any future service that builds the JS object directly)
+  // must continue to bind a JSON.stringify'd string. This guards against
+  // the C-1 fix accidentally breaking the object-path contract.
+  const records = [];
+  const db = buildMockDb([], { dialect: 'mysql' }).withRecording(records);
+  _setDbForTest(db);
+  const obj = [{ port: 389, state: 'ok' }, { port: 636, state: 'ok' }];
+  await upsertStatus([{ ...baseRow, partnerPortStatus: obj }]);
+  assert.equal(records.length, 1);
+  assert.equal(typeof records[0].params[15], 'string');
+  assert.deepEqual(JSON.parse(records[0].params[15]), obj);
+});
+
+test('null / undefined partnerPortStatus still bind NULL (regression guard)', async () => {
+  for (const value of [undefined, null]) {
+    const records = [];
+    const db = buildMockDb([], { dialect: 'mysql' }).withRecording(records);
+    _setDbForTest(db);
+    await upsertStatus([{ ...baseRow, partnerPortStatus: value }]);
+    assert.equal(records[0].params[15], null,
+      `partnerPortStatus=${value} must bind NULL param`);
+  }
+});
