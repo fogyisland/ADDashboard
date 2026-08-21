@@ -621,6 +621,23 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
+  // ----- Cross-DC Consistency Scoring (Task 5) -----
+  // Read-only view over pkg_ad_domain_consistency.metrics (Task 4 ingest
+  // path): per-class majority-hash consensus + outlier list. snake_case
+  // JSON shape, defined in services/consistency.js → deriveConsistency().
+  // Auth: same [userAuth, requirePerm('admin:users')] chain as every other
+  // route in this router — no per-route auth decisions.
+  r.get('/api/admin/consistency', auth, async (_req, res) => {
+    try {
+      const { deriveConsistency } = await import('../services/consistency.js');
+      const result = await deriveConsistency();
+      res.json(result);
+    } catch (e) {
+      logger.error({ err: e }, 'admin consistency failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   // ----- Sites Catalog -----
   r.get('/api/admin/sites-catalog', auth, async (_req, res) => {
     try {
