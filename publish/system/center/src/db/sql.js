@@ -222,6 +222,28 @@ const VARIANTS = {
       list: `SELECT * FROM orphan_schemas ORDER BY last_seen_at DESC`,
       delete: `DELETE FROM orphan_schemas WHERE name = ?`
     },
+    // Schema inventory (T285 admin/SchemaInventoryView). Lists all schemas
+    // in the active DB (excluding built-in system schemas), plus per-schema
+    // tables + per-table columns. The service layer compares the result
+    // against the expected schema (from package manifests + migrations) to
+    // surface drift. All three queries scope to the connection's own
+    // database so a same-named table in another DB can't false-positive.
+    schemaInventory: {
+      listSchemas: `SELECT SCHEMA_NAME AS schema_name FROM information_schema.SCHEMATA
+                      WHERE SCHEMA_NAME NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+                      ORDER BY SCHEMA_NAME`,
+      listTables: `SELECT TABLE_NAME AS table_name FROM information_schema.TABLES
+                     WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+                     ORDER BY TABLE_NAME`,
+      listColumns: `SELECT COLUMN_NAME AS column_name, DATA_TYPE AS data_type,
+                            IS_NULLABLE AS is_nullable, COLUMN_TYPE AS column_type,
+                            IFNULL(CHARACTER_MAXIMUM_LENGTH, 0) AS char_max_len,
+                            IFNULL(NUMERIC_PRECISION, 0) AS num_precision,
+                            IFNULL(NUMERIC_SCALE, 0) AS num_scale
+                       FROM information_schema.COLUMNS
+                      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                      ORDER BY ORDINAL_POSITION`
+    },
     metricGauge: {
       upsertLatest: `INSERT INTO metric_gauge
         (agent_id, metric_id, ts, value, unit, threshold_warn, threshold_crit)
@@ -574,6 +596,28 @@ const VARIANTS = {
           VALUES (s.name, s.last_seen_at, s.note);`,
       list: `SELECT * FROM orphan_schemas ORDER BY last_seen_at DESC`,
       delete: `DELETE FROM orphan_schemas WHERE name = ?`
+    },
+    // Schema inventory (T285 admin/SchemaInventoryView). MSSQL counterpart —
+    // MSSQL exposes SCHEMA_NAME via sys.schemas rather than
+    // information_schema.SCHEMATA. Filters built-in schemas (sys, guest,
+    // INFORMATION_SCHEMA) so the operator sees only the project's own
+    // schemas. dbo is included because that's the default schema for most
+    // ad-hoc tables and the operator expects to see it.
+    schemaInventory: {
+      listSchemas: `SELECT name AS schema_name FROM sys.schemas
+                      WHERE name NOT IN ('sys', 'INFORMATION_SCHEMA', 'guest')
+                      ORDER BY name`,
+      listTables: `SELECT TABLE_NAME AS table_name FROM information_schema.TABLES
+                     WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
+                     ORDER BY TABLE_NAME`,
+      listColumns: `SELECT COLUMN_NAME AS column_name, DATA_TYPE AS data_type,
+                            IS_NULLABLE AS is_nullable, COLUMN_TYPE AS column_type,
+                            IFNULL(CHARACTER_MAXIMUM_LENGTH, 0) AS char_max_len,
+                            IFNULL(NUMERIC_PRECISION, 0) AS num_precision,
+                            IFNULL(NUMERIC_SCALE, 0) AS num_scale
+                       FROM information_schema.COLUMNS
+                      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+                      ORDER BY ORDINAL_POSITION`
     },
     metricGauge: {
       upsertLatest: `MERGE INTO metric_gauge AS t

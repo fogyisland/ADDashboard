@@ -60,6 +60,7 @@ const groups = [
   ]},
   { title: '数据库运维', items: [
     { label: '版本升级',     path: '/admin/migrations' },
+    { label: 'Schema 库存与对比', path: '/admin/schema-inventory' },
     { label: '未签名 Schema 残留', path: '/admin/orphan-schemas' }
   ]},
   { title: '系统设置', items: [

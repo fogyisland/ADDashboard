@@ -47,6 +47,7 @@ const routes = [
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
   { path: '/admin/heartbeat-report', component: () => import('./views/admin/HeartbeatReportMonitorView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/orphan-schemas', component: () => import('./views/admin/OrphanSchemasView.vue'), meta: { perm: 'admin:users' } },
+  { path: '/admin/schema-inventory', component: () => import('./views/admin/SchemaInventoryView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/:name', component: PackageEditView, meta: { perm: 'admin:packages' } },

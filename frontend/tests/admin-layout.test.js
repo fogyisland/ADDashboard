@@ -20,7 +20,8 @@ const EXPECTED_PATHS = [
   '/admin/member-servers', '/admin/server-groups',
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix', '/admin/ports', '/admin/heartbeat-report', '/admin/packages',
-  '/admin/config', '/admin/email-config', '/admin/audit', '/admin/migrations', '/admin/orphan-schemas'
+  '/admin/migrations', '/admin/schema-inventory', '/admin/orphan-schemas',
+  '/admin/config', '/admin/email-config', '/admin/audit'
 ];
 
 beforeEach(() => {
@@ -30,15 +31,15 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-test('renders 5 nav groups', () => {
+test('renders 6 nav groups', () => {
   const w = mountLayout();
-  expect(w.findAll('.nav-group').length).toBe(5);
+  expect(w.findAll('.nav-group').length).toBe(6);
 });
 
-test('renders all 15 nav-links with correct paths', () => {
+test('renders all 16 nav-links with correct paths', () => {
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
-  expect(links.length).toBe(15);
+  expect(links.length).toBe(16);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
 });
@@ -46,7 +47,7 @@ test('renders all 15 nav-links with correct paths', () => {
 test('all groups open by default', () => {
   const w = mountLayout();
   const details = w.findAll('details');
-  expect(details.length).toBe(5);
+  expect(details.length).toBe(6);
   for (const d of details) {
     expect(d.attributes('open')).toBeDefined();
   }

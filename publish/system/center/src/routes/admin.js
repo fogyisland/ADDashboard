@@ -1311,6 +1311,27 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
+  // ----- Schema inventory (T285 SchemaInventoryView) -----
+  // Read-only endpoint backing the /admin/schema-inventory page. Walks
+  // every schema in the active DB, lists tables + columns, and for pkg_*
+  // schemas compares against the package manifest's metricSchema to
+  // surface drift. Same auth chain as every other admin route — only
+  // admin users can see the schema layout (operators shouldn't need to).
+  // dataDir is configurable so tests can point at a tmp fixture tree
+  // without touching process.cwd(); production leaves it unset and the
+  // service falls back to <cwd>/data/packages.
+  r.get('/api/admin/schemas/inventory', auth, async (_req, res) => {
+    try {
+      const { getSchemaInventory } = await import('../services/schema-inventory.js');
+      const db = getDb();
+      const inv = await getSchemaInventory(db, { dataDir: config?.schemaInventoryDataDir });
+      res.json(inv);
+    } catch (e) {
+      logger.error({ err: e }, 'admin schema inventory failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }
 
