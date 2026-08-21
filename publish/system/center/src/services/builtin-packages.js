@@ -26,7 +26,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const BUILTIN_PACKAGES = [
-  { name: 'ad_os_baseline', version: '1.0.0' }
+  { name: 'ad_os_baseline', version: '1.0.0' },
+  { name: 'ad_domain_consistency', version: '1.0.0' },
+  { name: 'ad_local_port_check', version: '1.0.0' }
 ];
 
 export async function seedBuiltinPackages({ dataDir, sourceDir, writeAudit }) {
