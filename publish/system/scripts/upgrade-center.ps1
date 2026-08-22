@@ -21,8 +21,8 @@
 param(
   [string]$InstallPath,
   [int]$ListenPort = 8080,
-  [string]$AdminUser = 'admin',
-  [Parameter(Mandatory)][string]$AdminPassword,
+  [string]$WebAdminUser = 'admin',
+  [Parameter(Mandatory)][string]$WebAdminPassword,
   [switch]$RebuildFrontend
 )
 
@@ -188,15 +188,15 @@ if (-not (Wait-ForHttpOk -Url $probeUrl -TimeoutSeconds 30 -IntervalSeconds 1)) 
 Write-Ok "HTTP probe green"
 
 # 7. Authenticate as admin. Migration apply requires admin:users permission.
-Write-Step "authenticating as $AdminUser"
+Write-Step "authenticating as $WebAdminUser"
 $token = $null
 try {
-  $loginBody = @{ username = $AdminUser; password = $AdminPassword } | ConvertTo-Json -Compress
+  $loginBody = @{ username = $WebAdminUser; password = $WebAdminPassword } | ConvertTo-Json -Compress
   $loginResp = Invoke-WebRequest -Uri "http://localhost:$ListenPort/api/auth/login" -Method POST -Body $loginBody -ContentType 'application/json' -UseBasicParsing -TimeoutSec 5
   $loginJson = $loginResp.Content | ConvertFrom-Json
   $token = $loginJson.token
 } catch {
-  throw "admin login failed for $AdminUser at http://localhost:$ListenPort/api/auth/login: $($_.Exception.Message)"
+  throw "admin login failed for $WebAdminUser at http://localhost:$ListenPort/api/auth/login: $($_.Exception.Message)"
 }
 if (-not $token) { throw "admin login succeeded but token is empty" }
 Write-Ok "authenticated"

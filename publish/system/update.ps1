@@ -9,18 +9,18 @@
 param(
   [string]$InstallPath,
   [int]$ListenPort = 8080,
-  [string]$AdminUser = 'admin',
-  [Parameter(Mandatory)][string]$AdminPassword
+  [string]$WebAdminUser = 'admin',
+  [Parameter(Mandatory)][string]$WebAdminPassword
 )
 
 $ErrorActionPreference = 'Stop'
 $bundleRoot = Resolve-Path (Join-Path $PSScriptRoot 'scripts')
 $upgradeScript = Join-Path $bundleRoot 'upgrade-center.ps1'
 $forward = @{
-  InstallPath   = $InstallPath
-  ListenPort    = $ListenPort
-  AdminUser     = $AdminUser
-  AdminPassword = $AdminPassword
+  InstallPath     = $InstallPath
+  ListenPort      = $ListenPort
+  WebAdminUser    = $WebAdminUser
+  WebAdminPassword = $WebAdminPassword
 }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $upgradeScript @forward -RebuildFrontend
 exit $LASTEXITCODE

@@ -9,10 +9,10 @@ Describe 'upgrade-center (architecture-extension script)' {
     $errors.Count | Should -Be 0
   }
 
-  It 'declares mandatory -AdminPassword parameter (HTTP auth needs it)' {
+  It 'declares mandatory -WebAdminPassword parameter (HTTP auth needs it)' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'upgrade-center.ps1') -Raw
-    $content | Should -Match '\[Parameter\(Mandatory\)\]\s*\[string\]\$AdminPassword' `
-      'upgrade-center.ps1 must require -AdminPassword — migration apply needs auth, and prompting at runtime is safer than storing credentials.'
+    $content | Should -Match '\[Parameter\(Mandatory\)\]\s*\[string\]\$WebAdminPassword' `
+      'upgrade-center.ps1 must require -WebAdminPassword — migration apply needs auth, and prompting at runtime is safer than storing credentials. WebAdminPassword is the web admin login credential (bcrypt in sys_users), distinct from the DB password in appsettings.json.'
   }
 
   It 'rejects running against an uninitialized install (needsInit check)' {
