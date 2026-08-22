@@ -1,3 +1,8 @@
+# AD Dashboard Center code-only update (legacy hot-fix path).
+# Replaces code + node_modules + dist and restarts the service. Does NOT
+# apply DB migrations or refresh shipped dist — for "扩展架构" deployments
+# that include schema changes, use upgrade-center.ps1 instead. This script
+# is intentionally minimal for the common case of "code-only hot-fix".
 [CmdletBinding()]
 param(
   [string]$InstallPath,
