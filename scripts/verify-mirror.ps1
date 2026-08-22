@@ -1,12 +1,15 @@
 # verify-mirror.ps1 — auto-scan source ↔ publish/ mirror parity.
 #
-# Convention: every non-test source file under center/, agent/, frontend/, and
+# Convention: every non-test source file under center/, agent/, and
 # db/migrations/ is mirrored byte-identical into publish/system/<same-path>
 # (see project memory feedback_full_chain_cleanup.md). Test files are NOT
 # mirrored — that's the runtime-only bundle convention (publish/ is what users
-# run on C:\addashboard, not what we develop in).
+# run on C:\addashboard, not what we develop in). The web source under
+# center/web/ is also mirrored (the frontend workspace was merged into center
+# in 2026-08-22, see docs/superpowers/specs/2026-08-22-center-merge-design.md).
+# The shipped web build lives at center/dist/ → publish/system/center/dist/.
 #
-# This script auto-discovers source files under four roots and verifies each
+# This script auto-discovers source files under each root and verifies each
 # one has a byte-identical mirror. It also flags orphan mirror files (in
 # publish/system/... but with no source counterpart — usually stale).
 #
@@ -34,9 +37,12 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 # Source roots that get mirrored under publish/system/<same-relative-path>.
 # Tests live under <pkg>/tests/ at the repo root, never inside src/, so a
 # plain recursive scan of these roots naturally excludes test files.
+# `center/web` is the merged frontend workspace; we mirror its source but
+# skip `dist/` (build output, mirrored separately as center/dist → center/dist)
+# and `tests/` (frontend test files, not shipped to runtime users).
 $roots = @(
   'center/src',
-  'frontend/src',
+  'center/web',
   'agent',
   'db/migrations'
 )
@@ -44,6 +50,12 @@ $roots = @(
 # Source file extensions. Excludes README.md / package.json / *.json config /
 # etc — only code we actually ship to users.
 $extensions = @('*.js', '*.vue', '*.sql')
+
+# Subdir names to skip during the mirror scan. `dist/` is build output and is
+# mirrored separately (center/dist → publish/system/center/dist). `tests/` is
+# for in-repo testing only and is NOT shipped to runtime users. `node_modules/`
+# is dev-only and never mirrored.
+$skipSubdirs = @('dist', 'tests', 'node_modules')
 
 $pass = 0
 $drift = 0
@@ -62,6 +74,21 @@ function Pair-Line($n, $ok, $detail) {
   }
 }
 
+# Regression guards — assert the new layout (2026-08-22 center+frontend merge).
+# If `publish/system/frontend/` exists it means the old layout was resurrected
+# (the merge permanently moved web files into center/web/). Also assert the
+# shipped web bundle is present at publish/system/center/dist/index.html.
+$frontendMirror = Join-Path $projectRoot 'publish/system/frontend'
+if (Test-Path -LiteralPath $frontendMirror) {
+  Pair-Line 'publish/system/frontend/' $false 'must NOT exist (web is under center/web/ now)'
+  $fail = $true
+}
+$shippedDist = Join-Path $projectRoot 'publish/system/center/dist/index.html'
+if (-not (Test-Path -LiteralPath $shippedDist)) {
+  Pair-Line 'publish/system/center/dist/index.html' $false 'shipped web bundle missing'
+  $missing++
+}
+
 # Build a set of all source files for orphan-detection later.
 $sourceRelSet = @{}
 
@@ -73,10 +100,18 @@ foreach ($root in $roots) {
   foreach ($f in $files) {
     # Normalize to forward-slash relative path from project root.
     $relPath = $f.FullName.Substring($projectRoot.Length).TrimStart('\', '/').Replace('\', '/')
-    # Test files live under <pkg>/tests/ at the repo root and are NOT mirrored
-    # to publish/system/ (publish is the runtime-only bundle users run, not what
-    # we develop in). Skip them so they don't show up as "missing mirror".
-    if ($relPath -match '/tests/') { continue }
+    # Skip files under configured skip-subdirs (dist/, tests/, node_modules/).
+    # These are either built (mirrored via a separate path), in-repo only, or
+    # dev-only and never ship to runtime users. The check uses word-boundary
+    # segments to avoid matching e.g. `dist` as part of another folder name.
+    $skip = $false
+    foreach ($sub in $skipSubdirs) {
+      if ($relPath -match ("(?:^|/){0}/" -f [regex]::Escape($sub))) {
+        $skip = $true
+        break
+      }
+    }
+    if ($skip) { continue }
     $sourceRelSet[$relPath] = $true
 
     $mirrorRel = "publish/system/$relPath"

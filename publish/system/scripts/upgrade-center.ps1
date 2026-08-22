@@ -9,10 +9,10 @@
 #   6. (Built-in packages + SMTP defaults + agent_token bundle re-seed
 #      automatically on normal-mode restart — no extra HTTP call needed.)
 #
-# -RebuildFrontend: force a fresh local `npm run build:frontend` instead of
-# copying the shipped dist. Use when the local frontend source has changes
-# that are not yet in the shipped bundle (stale-UI fix). Equivalent to
-# publish/system/update.{ps1,bat}.
+# -RebuildFrontend: force a fresh local `npm run build:web --workspace=center`
+# instead of copying the shipped dist. Use when the local web UI source has
+# changes that are not yet in the shipped bundle (stale-UI fix). Equivalent
+# to publish/system/update.{ps1,bat}.
 #
 # IMPORTANT: NOT for first-time install. Use install-center.ps1 instead.
 # This script ASSUMES the DB already exists and /init has been completed.
@@ -120,29 +120,29 @@ Copy-Item -Path (Join-Path $srcDir '*') -Destination $InstallPath -Recurse -Forc
 Ensure-NodeModules -InstallPath $InstallPath
 
 # 4. Refresh dist. Priority order:
-#    (a) -RebuildFrontend: force a local `npm run build:frontend` (stale-UI fix
-#        when shipped bundle drifted from local source). Equivalent to
-#        publish/system/update.{ps1,bat}.
+#    (a) -RebuildFrontend: force a local `npm run build:web --workspace=center`
+#        (stale-UI fix when shipped bundle drifted from local source).
+#        Equivalent to publish/system/update.{ps1,bat}.
 #    (b) Shipped bundle present: copy it (default, fast).
 #    (c) Shipped bundle absent AND install dist absent: build locally (legacy
 #        bundles that pre-date the shipped-dist convention).
 #    (d) Shipped bundle absent AND install dist present: leave alone (clobbering
 #        a working dist just because we don't ship one is the wrong default).
 $distPath = Join-Path $InstallPath 'dist'
-$shippedDist = Join-Path $projectRoot 'frontend\dist'
+$shippedDist = Join-Path $projectRoot 'center\dist'
 if ($RebuildFrontend) {
-  Write-Step "rebuilding frontend (npm run build:frontend)"
-  Push-Location (Join-Path $projectRoot 'frontend')
+  Write-Step "rebuilding web UI (npm run build:web --workspace=center)"
+  Push-Location $projectRoot
   try {
-    if (-not (Test-Path 'node_modules')) {
-      Write-Step "installing frontend node_modules (vite missing)"
+    if (-not (Test-Path (Join-Path $projectRoot 'center\web\node_modules'))) {
+      Write-Step "installing web UI node_modules (vite missing)"
       npm install
     }
-    npm run build:frontend
+    npm run build:web --workspace=center
   } finally { Pop-Location }
-  $localDist = Join-Path $projectRoot 'frontend\dist'
+  $localDist = Join-Path $projectRoot 'center\dist'
   if (-not (Test-Path (Join-Path $localDist 'index.html'))) {
-    throw "npm run build:frontend did not produce frontend\dist\index.html"
+    throw "npm run build:web --workspace=center did not produce center\dist\index.html"
   }
   if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
   New-Item -ItemType Directory -Path $distPath -Force | Out-Null
@@ -153,17 +153,17 @@ if ($RebuildFrontend) {
   New-Item -ItemType Directory -Path $distPath -Force | Out-Null
   Copy-Item -Path (Join-Path $shippedDist '*') -Destination $distPath -Recurse -Force
 } elseif (-not (Test-Path (Join-Path $distPath 'index.html'))) {
-  Write-Step "building frontend (shipped dist absent)"
-  if (-not (Test-Path (Join-Path $projectRoot 'frontend\node_modules'))) {
-    Write-Step "installing frontend node_modules (vite missing)"
-    Push-Location (Join-Path $projectRoot 'frontend')
+  Write-Step "building web UI (shipped dist absent)"
+  if (-not (Test-Path (Join-Path $projectRoot 'center\web\node_modules'))) {
+    Write-Step "installing web UI node_modules (vite missing)"
+    Push-Location $projectRoot
     try { npm install } finally { Pop-Location }
   }
-  Push-Location (Join-Path $projectRoot 'frontend')
-  try { npm run build } finally { Pop-Location }
+  Push-Location $projectRoot
+  try { npm run build:web --workspace=center } finally { Pop-Location }
   if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
   New-Item -ItemType Directory -Path $distPath -Force | Out-Null
-  Copy-Item -Path (Join-Path $projectRoot 'frontend\dist\*') -Destination $distPath -Recurse -Force
+  Copy-Item -Path (Join-Path $projectRoot 'center\dist\*') -Destination $distPath -Recurse -Force
 } else {
   Write-Info "install dist already present; leaving alone (shipped dist absent)"
 }
