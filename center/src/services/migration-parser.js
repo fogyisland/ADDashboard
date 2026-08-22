@@ -105,11 +105,18 @@ function walkSql(root) {
 // Returns Map<tableName, { columns }>. Later files override earlier ones
 // (so e.g. db/migrations/004-package-system.sql can win over the initial
 // CREATE TABLE in db/schema/01-tables.sql if they conflict).
-export function parseAllCreateTables(repoRoot = DEFAULT_REPO_ROOT) {
+//
+// `repoRoot` is optional — when the caller doesn't have an explicit path,
+// fall back to the default (resolved from this file's location). The default
+// parameter syntax only handles `undefined`, so we explicitly coalesce `null`
+// to the default — the route handler's loadConfig whitelists keys and emits
+// `null` for missing values, and `path.join(null, ...)` throws.
+export function parseAllCreateTables(repoRoot) {
+  const root = repoRoot || DEFAULT_REPO_ROOT;
   const tables = new Map();
   const sources = [
-    path.join(repoRoot, 'db', 'schema'),
-    path.join(repoRoot, 'db', 'migrations')
+    path.join(root, 'db', 'schema'),
+    path.join(root, 'db', 'migrations')
   ];
   // schema/ first (initial shape), then migrations (additive overrides).
   for (const dir of sources) {

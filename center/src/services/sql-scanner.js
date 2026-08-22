@@ -160,15 +160,19 @@ function walkFiles(root) {
   return out;
 }
 
-export function scanCenterCodeForTables(srcRoot = DEFAULT_SRC_ROOT) {
+export function scanCenterCodeForTables(srcRoot) {
+  // Default parameter syntax only handles `undefined`; coalesce `null` to the
+  // default so the route handler's `cfg.schemaInventorySrcRoot || null`
+  // (set by config.js) doesn't NPE on `path.relative`.
+  const root = srcRoot || DEFAULT_SRC_ROOT;
   const refs = new Map(); // table -> Set<"path:line">
-  if (!fs.existsSync(srcRoot)) return refs;
+  if (!fs.existsSync(root)) return refs;
 
   // We can't parse ES modules perfectly with regex, so we scan the raw
   // file content for SQL-shaped substrings. Any line containing a SQL
   // keyword followed by an identifier is a candidate.
-  for (const file of walkFiles(srcRoot)) {
-    const rel = path.relative(srcRoot, file);
+  for (const file of walkFiles(root)) {
+    const rel = path.relative(root, file);
     const lines = fs.readFileSync(file, 'utf8').split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
