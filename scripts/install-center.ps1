@@ -100,20 +100,21 @@ if (-not $InPlace) {
   $node = (Get-Command node.exe -ErrorAction Stop).Source
   Write-Info "node: $node"
 
-  # 3. Build frontend if dist missing
-  $distPath = Join-Path $projectRoot 'frontend\dist'
+  # 3. Build web UI if dist missing
+  $distPath = Join-Path $projectRoot 'center\dist'
   if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
-    Write-Step "building frontend"
+    Write-Step "building web UI"
     # Fresh publish bundle has no <publish-root>/node_modules. Install at root so
-    # vite is hoisted via workspaces; `npm run build:frontend` delegates to the
-    # frontend workspace. Dev installs always have root node_modules — no-op.
+    # vite is hoisted via workspaces; `npm run build:web --workspace=center`
+    # delegates to the center workspace's web/ subpackage. Dev installs always
+    # have root node_modules — no-op.
     if (-not (Test-Path (Join-Path $projectRoot 'node_modules'))) {
       Write-Step "installing root workspaces (vite missing)"
       Push-Location $projectRoot
       try { npm install } finally { Pop-Location }
     }
     Push-Location $projectRoot
-    try { npm run build:frontend } finally { Pop-Location }
+    try { npm run build:web --workspace=center } finally { Pop-Location }
   }
 
   # 4. Copy center files
@@ -126,32 +127,33 @@ if (-not $InPlace) {
   Write-Info "node: $node"
   Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   $distPath = Join-Path $InstallPath 'dist'
-  $shippedDist = Join-Path $projectRoot 'frontend\dist'
+  $shippedDist = Join-Path $projectRoot 'center\dist'
   if (Test-Path (Join-Path $shippedDist 'index.html')) {
     # Bundle ships dist/ — copy it directly, skip vite build entirely.
     # Avoids stale-dist trap when install re-runs on an existing InstallPath
     # (old logic only rebuilt when dist was missing, so a re-install after a
     # UI change kept serving the old bundle).
-    Write-Step "using shipped frontend dist"
+    Write-Step "using shipped web UI dist"
     if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
     New-Item -ItemType Directory -Path $distPath -Force | Out-Null
     Copy-Item -Path (Join-Path $shippedDist '*') -Destination $distPath -Recurse -Force
   } elseif (-not (Test-Path (Join-Path $distPath 'index.html'))) {
-    Write-Step "building frontend (in-place)"
+    Write-Step "building web UI (in-place)"
     # Fallback for legacy bundles that don't ship dist/. Fresh publish bundle
-    # has no frontend/node_modules. Install in frontend/ so vite is locally
-    # available; `npm run build` runs `vite build` from here. Dev installs
-    # always have frontend/node_modules — no-op.
-    if (-not (Test-Path (Join-Path $projectRoot 'frontend\node_modules'))) {
-      Write-Step "installing frontend node_modules (vite missing)"
-      Push-Location (Join-Path $projectRoot 'frontend')
+    # has no center/web/node_modules. Install in center/ so vite is locally
+    # available; `npm run build:web --workspace=center` runs `vite build` from
+    # the center workspace root. Dev installs always have center/node_modules
+    # — no-op.
+    if (-not (Test-Path (Join-Path $projectRoot 'center\web\node_modules'))) {
+      Write-Step "installing center web node_modules (vite missing)"
+      Push-Location (Join-Path $projectRoot 'center')
       try { npm install } finally { Pop-Location }
     }
-    Push-Location (Join-Path $projectRoot 'frontend')
-    try { npm run build } finally { Pop-Location }
+    Push-Location (Join-Path $projectRoot 'center')
+    try { npm run build:web --workspace=center } finally { Pop-Location }
     if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
     New-Item -ItemType Directory -Path $distPath -Force | Out-Null
-    Copy-Item -Path (Join-Path $projectRoot 'frontend\dist\*') -Destination $distPath -Recurse -Force
+    Copy-Item -Path (Join-Path $projectRoot 'center\dist\*') -Destination $distPath -Recurse -Force
   }
 }
 
