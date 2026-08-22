@@ -59,14 +59,7 @@ export function loadConfig(path) {
     staticDir: cfg.staticDir,
     logLevel: cfg.logLevel || 'info',
     env: cfg.env || 'prod',
-    frontendDevProxy: cfg.frontendDevProxy || null,
-    // Schema inventory code-scanner opts (T285 — `getCodeSchemaInventory`).
-    // Optional; missing values fall back to service-level defaults
-    // (data/packages, center/src, repo root). All three live under
-    // schemaInventory* keys so appsettings.json can spell them as a group.
-    schemaInventorySrcRoot: cfg.schemaInventorySrcRoot || null,
-    schemaInventoryDataDir: cfg.schemaInventoryDataDir || null,
-    schemaInventoryRepoRoot: cfg.schemaInventoryRepoRoot || null
+    frontendDevProxy: cfg.frontendDevProxy || null
   };
 }
 
@@ -84,10 +77,7 @@ export function defaultConfig() {
     staticDir: './dist',
     logLevel: 'info',
     env: 'prod',
-    frontendDevProxy: null,
-    schemaInventorySrcRoot: null,
-    schemaInventoryDataDir: null,
-    schemaInventoryRepoRoot: null
+    frontendDevProxy: null
   };
 }
 

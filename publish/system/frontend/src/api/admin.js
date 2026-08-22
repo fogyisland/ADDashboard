@@ -49,12 +49,6 @@ export const adminApi = {
   getDdlPreview: (name) => api.get(`/api/admin/packages/${name}/ddl-preview`),
   listOrphanSchemas: () => api.get('/api/admin/orphan-schemas'),
   dropOrphanSchema: (name) => api.delete(`/api/admin/orphan-schemas/${name}`),
-  // Read-only schema inventory (T285 SchemaInventoryView). Walks every
-  // schema in the center DB, lists tables + columns, and for pkg_*
-  // schemas compares against the package manifest's metricSchema to
-  // surface drift. Response shape:
-  //   { schemas: [{ name, source, expected, actual, diff, status }] }
-  getSchemaInventory: () => api.get('/api/admin/schemas/inventory'),
   uninstallPackage: (name, { purgeMetrics = false, confirmDropSchema = false } = {}) =>
     api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } }),
 
