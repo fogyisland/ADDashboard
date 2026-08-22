@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Runtime install marker (written by scripts/install-center.ps1 Ensure-CenterNodeModules)
+center/.install-hash
 .env
 .env.local
 *.log
@@ -43,12 +45,14 @@ nssm.zip
 # ...but the published copy under publish/nssm/ IS tracked as a release artifact
 !publish/nssm/
 
-# Green version bundle (publish/) — source code is tracked, build artifacts are not
+# Green version bundle (publish/) — source code is tracked, build artifacts are not.
+# Exception: publish/system/frontend/dist/ IS tracked so the bundle ships the
+# exact build output (avoids cloud-server rebuild drift — see 2026-08-22 lesson).
 publish/center/node_modules/
 publish/agent/node_modules/
 publish/frontend/node_modules/
 publish/center/dist/
-publish/frontend/dist/
+!publish/system/frontend/dist/
 # WPF PackageDesigner self-contained build output (rebuilt via `dotnet publish`)
 publish/designer/
 

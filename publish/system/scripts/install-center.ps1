@@ -126,11 +126,22 @@ if (-not $InPlace) {
   Write-Info "node: $node"
   Ensure-CenterNodeModules -InstallPath $InstallPath -SrcDir $srcDir
   $distPath = Join-Path $InstallPath 'dist'
-  if (-not (Test-Path (Join-Path $distPath 'index.html'))) {
+  $shippedDist = Join-Path $projectRoot 'frontend\dist'
+  if (Test-Path (Join-Path $shippedDist 'index.html')) {
+    # Bundle ships dist/ — copy it directly, skip vite build entirely.
+    # Avoids stale-dist trap when install re-runs on an existing InstallPath
+    # (old logic only rebuilt when dist was missing, so a re-install after a
+    # UI change kept serving the old bundle).
+    Write-Step "using shipped frontend dist"
+    if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
+    New-Item -ItemType Directory -Path $distPath -Force | Out-Null
+    Copy-Item -Path (Join-Path $shippedDist '*') -Destination $distPath -Recurse -Force
+  } elseif (-not (Test-Path (Join-Path $distPath 'index.html'))) {
     Write-Step "building frontend (in-place)"
-    # Fresh publish bundle has no frontend/node_modules. Install in frontend/
-    # so vite is locally available; `npm run build` runs `vite build` from here.
-    # Dev installs always have frontend/node_modules — no-op.
+    # Fallback for legacy bundles that don't ship dist/. Fresh publish bundle
+    # has no frontend/node_modules. Install in frontend/ so vite is locally
+    # available; `npm run build` runs `vite build` from here. Dev installs
+    # always have frontend/node_modules — no-op.
     if (-not (Test-Path (Join-Path $projectRoot 'frontend\node_modules'))) {
       Write-Step "installing frontend node_modules (vite missing)"
       Push-Location (Join-Path $projectRoot 'frontend')

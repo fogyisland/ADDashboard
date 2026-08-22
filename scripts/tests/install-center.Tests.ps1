@@ -373,6 +373,73 @@ Describe 'install-center Start-ServiceSafe diagnostics (Start-Service Win32 surf
   }
 }
 
+Describe 'install-center -InPlace uses shipped dist (avoids stale-dist trap)' {
+  # Bug fixed 2026-08-22: old -InPlace branch only rebuilt dist when
+  # $InstallPath\dist\index.html was missing. Re-installing on an existing
+  # install path kept the old dist even after a UI change in the bundle —
+  # so the cloud server shipped stale UI (e.g. the 2026-08-22 agent token
+  # redesign 复制令牌/生成新令牌 never made it to deployed instances).
+  # Fix: prefer copying the bundle's shipped dist over rebuilding.
+  BeforeAll {
+    $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
+    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'install-center.ps1'
+    $script:srcContent = Get-Content $script:installCenterPath -Raw
+    $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
+  }
+
+  It '-InPlace branch checks for shipped dist FIRST (before deciding to build)' {
+    # The shipped-dist Test-Path must appear in the -InPlace branch before
+    # the `npm run build` invocation, so we never rebuild when the bundle
+    # already ships a dist.
+    $shippedIdx = $script:srcContent.IndexOf('$shippedDist = Join-Path $projectRoot')
+    $buildIdx   = $script:srcContent.IndexOf('try { npm run build }')
+    $shippedIdx | Should -BeGreaterThan -1 '-InPlace branch must reference a shipped dist path'
+    $buildIdx   | Should -BeGreaterThan -1 '-InPlace build command must still exist (fallback path)'
+    $shippedIdx | Should -BeLessThan $buildIdx `
+      'shipped-dist check must come BEFORE the build invocation in the -InPlace branch — else we rebuild even when the bundle ships a fresh dist.'
+  }
+
+  It '-InPlace branch copies from shipped dist when shippedDist/index.html exists' {
+    # Use AST extraction so we only check the -InPlace branch (the else block
+    # at the bottom of the script). The branch must contain a Copy-Item from
+    # $shippedDist and a step log "using shipped frontend dist".
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:installCenterPath, [ref]$null, [ref]$null)
+    # Find the if (-not $InPlace) ... else block by scanning for the line.
+    $scriptText = $script:srcContent
+    $inPlaceIdx = $scriptText.IndexOf('} else {')
+    $inPlaceIdx | Should -BeGreaterThan -1 'if/else branch must exist'
+    $inPlaceBranch = $scriptText.Substring($inPlaceIdx)
+
+    $inPlaceBranch | Should -Match "Test-Path\s+\(Join-Path\s+\`$shippedDist\s+'index\.html'\)" `
+      '-InPlace branch must Test-Path $shippedDist/index.html.'
+    $inPlaceBranch | Should -Match "using shipped frontend dist" `
+      '-InPlace branch must log a step when using the shipped dist.'
+    $inPlaceBranch | Should -Match "Copy-Item\s+-Path\s+\(Join-Path\s+\`$shippedDist\s+'\*'\)" `
+      '-InPlace branch must Copy-Item from $shippedDist/* to $distPath.'
+  }
+
+  It '-InPlace branch falls back to build ONLY when shipped dist absent AND install dist absent' {
+    # The fallback `npm run build` must be inside an elseif whose condition is
+    # `-not (Test-Path (Join-Path $distPath ''index.html''))`. This way:
+    #   - shipped dist present → copy (preferred)
+    #   - shipped dist absent + install dist present → leave alone (no rebuild, no regression)
+    #   - shipped dist absent + install dist absent → rebuild
+    $scriptText = $script:srcContent
+    $inPlaceIdx = $scriptText.IndexOf('} else {')
+    $inPlaceBranch = $scriptText.Substring($inPlaceIdx)
+    # Match the elseif clause with negated Test-Path on the install dist.
+    $inPlaceBranch | Should -Match 'elseif\s*\(\s*-not\s+\(Test-Path\s+\(Join-Path\s+\$distPath\s+''index\.html''\)\)\s*\)' `
+      '-InPlace branch build fallback must be guarded by `elseif (-not (Test-Path $distPath/index.html))`.'
+  }
+
+  It 'mirror sync: -InPlace shipped-dist logic present in publish/system/scripts/install-center.ps1' {
+    $script:pubContent | Should -Match '\$shippedDist = Join-Path \$projectRoot' `
+      'publish mirror -InPlace branch missing shipped-dist resolution — must match scripts/ source.'
+    $script:pubContent | Should -Match 'using shipped frontend dist' `
+      'publish mirror -InPlace branch missing "using shipped frontend dist" log.'
+  }
+}
+
 Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
   # Regression guard for the "only install if node_modules missing" bug. The
   # old guard skipped npm install when node_modules already existed, leaving
