@@ -42,12 +42,18 @@ Describe 'install-center -InPlace switch' {
   }
 }
 
-Describe 'install-center frontend build dependencies (fresh publish bundle)' {
-  # Bug fixed 2026-08-16: in-place branch ran `npm run build` from frontend/ but
-  # fresh publish bundle has no frontend/node_modules → `vite build` failed with
-  # "'vite' is not recognized as an internal or external command". Non-in-place branch had the same gap (relied on
-  # root node_modules existing; fresh publish bundle doesn't have one). Guard:
-  # both branches must check node_modules and install before running the build.
+Describe 'install-center web UI build dependencies (fresh publish bundle)' {
+  # Bug fixed 2026-08-16: in-place branch ran `npm run build` from center/web/
+  # but fresh publish bundle has no center/node_modules → `vite build` failed
+  # with "'vite' is not recognized as an internal or external command".
+  # Non-in-place branch had the same gap (relied on root node_modules existing;
+  # fresh publish bundle doesn't have one). Guard: both branches must check
+  # node_modules and install before running the build.
+  # 2026-08-22 update (center+frontend workspace merge): install guard now
+  # installs <InstallPath>/node_modules (via Ensure-CenterNodeModules) instead
+  # of frontend/node_modules (which no longer exists), and the build invocation
+  # became `npm run build:web --workspace=center`. Strings and regex updated
+  # accordingly.
   BeforeAll {
     $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
     $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'install-center.ps1'
@@ -55,47 +61,46 @@ Describe 'install-center frontend build dependencies (fresh publish bundle)' {
     $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
   }
 
-  It 'in-place branch installs frontend/node_modules before npm run build' {
-    # `npm run build` runs `vite build`, which needs the vite binary. Fresh
-    # publish bundle has no frontend/node_modules, so the install must happen
-    # before the build is attempted.
-    $script:srcContent | Should -Match 'installing frontend node_modules' `
-      'in-place branch must log "installing frontend node_modules" when missing.'
-    # The install guard must appear BEFORE the actual `npm run build` invocation
-    # in the in-place branch. Match the command line specifically (`try { npm
-    # run build }`) so the comments above the call don't false-match.
-    $buildIdx = $script:srcContent.IndexOf('try { npm run build }')
-    $installIdx = $script:srcContent.IndexOf('installing frontend node_modules')
+  It 'in-place branch installs center/node_modules before npm run build:web' {
+    # `npm run build:web --workspace=center` runs `vite build`, which needs
+    # the vite binary. Fresh publish bundle has no center/node_modules, so
+    # the install must happen before the build is attempted. The actual
+    # check is inside Ensure-CenterNodeModules against $InstallPath/node_modules.
+    $script:srcContent | Should -Match 'installing center node_modules' `
+      'in-place branch must log "installing center node_modules" when missing (via Ensure-CenterNodeModules).'
+    # The install guard must appear BEFORE the actual build invocation in the
+    # in-place branch. Match the command line specifically (`try { npm run
+    # build:web --workspace=center }`) so the comments above the call don't
+    # false-match.
+    $buildIdx = $script:srcContent.IndexOf('try { npm run build:web --workspace=center }')
+    $installIdx = $script:srcContent.IndexOf('installing center node_modules')
     $buildIdx | Should -BeGreaterThan -1 'in-place build command line must exist'
-    $installIdx | Should -BeGreaterThan -1 'frontend install guard must exist'
+    $installIdx | Should -BeGreaterThan -1 'center install guard must exist'
     $installIdx | Should -BeLessThan $buildIdx `
-      'frontend install guard must appear BEFORE `npm run build` so vite is available.'
-    # Guard checks the correct directory.
-    $script:srcContent | Should -Match 'frontend\\node_modules' `
-      'install guard must check frontend\node_modules.'
+      'center install guard must appear BEFORE `npm run build:web --workspace=center` so vite is available.'
   }
 
-  It 'non-in-place branch installs root node_modules before npm run build:frontend' {
-    # `npm run build:frontend` from root uses workspaces hoisting. Fresh
-    # publish bundle has no <publish-root>/node_modules, so the install must
-    # happen before the build is attempted.
+  It 'non-in-place branch installs root node_modules before npm run build:web --workspace=center' {
+    # `npm run build:web --workspace=center` from root uses workspaces
+    # hoisting. Fresh publish bundle has no <publish-root>/node_modules, so
+    # the install must happen before the build is attempted.
     $script:srcContent | Should -Match 'installing root workspaces' `
       'non-in-place branch must log "installing root workspaces" when missing.'
-    # The install guard must appear BEFORE the actual `npm run build:frontend`
-    # invocation. Match the command line specifically.
-    $buildIdx = $script:srcContent.IndexOf('try { npm run build:frontend }')
+    # The install guard must appear BEFORE the actual build invocation.
+    # Match the command line specifically.
+    $buildIdx = $script:srcContent.IndexOf('try { npm run build:web --workspace=center }')
     $installIdx = $script:srcContent.IndexOf('installing root workspaces')
     $buildIdx | Should -BeGreaterThan -1 'non-in-place build command line must exist'
     $installIdx | Should -BeGreaterThan -1 'root install guard must exist'
     $installIdx | Should -BeLessThan $buildIdx `
-      'root install guard must appear BEFORE `npm run build:frontend` so vite is hoisted.'
-    # Guard checks the correct directory (root node_modules, not frontend).
+      'root install guard must appear BEFORE `npm run build:web --workspace=center` so vite is hoisted.'
+    # Guard checks the correct directory (root node_modules, not center/web).
     $script:srcContent | Should -Match 'Test-Path\s+\(Join-Path\s+\$projectRoot\s+''node_modules''\)' `
       'install guard must check <publish-root>/node_modules for the root install.'
   }
 
   It 'mirror sync: both install guards present in publish/system/scripts/install-center.ps1' {
-    $script:pubContent | Should -Match 'installing frontend node_modules' `
+    $script:pubContent | Should -Match 'installing center node_modules' `
       'publish mirror missing in-place install guard — must match scripts/ source.'
     $script:pubContent | Should -Match 'installing root workspaces' `
       'publish mirror missing non-in-place install guard — must match scripts/ source.'
@@ -389,10 +394,13 @@ Describe 'install-center -InPlace uses shipped dist (avoids stale-dist trap)' {
 
   It '-InPlace branch checks for shipped dist FIRST (before deciding to build)' {
     # The shipped-dist Test-Path must appear in the -InPlace branch before
-    # the `npm run build` invocation, so we never rebuild when the bundle
-    # already ships a dist.
+    # the `npm run build:web --workspace=center` invocation, so we never rebuild
+    # when the bundle already ships a dist. The build command now appears in
+    # BOTH branches (the merge unified them), so we search AFTER the $shippedDist
+    # assignment (which is unique to the in-place branch) to find the in-place
+    # build invocation specifically.
     $shippedIdx = $script:srcContent.IndexOf('$shippedDist = Join-Path $projectRoot')
-    $buildIdx   = $script:srcContent.IndexOf('try { npm run build }')
+    $buildIdx   = $script:srcContent.IndexOf('try { npm run build:web --workspace=center }', $shippedIdx)
     $shippedIdx | Should -BeGreaterThan -1 '-InPlace branch must reference a shipped dist path'
     $buildIdx   | Should -BeGreaterThan -1 '-InPlace build command must still exist (fallback path)'
     $shippedIdx | Should -BeLessThan $buildIdx `
@@ -402,7 +410,8 @@ Describe 'install-center -InPlace uses shipped dist (avoids stale-dist trap)' {
   It '-InPlace branch copies from shipped dist when shippedDist/index.html exists' {
     # Use AST extraction so we only check the -InPlace branch (the else block
     # at the bottom of the script). The branch must contain a Copy-Item from
-    # $shippedDist and a step log "using shipped frontend dist".
+    # $shippedDist and a step log "using shipped web UI dist" (renamed from
+    # "using shipped frontend dist" after the center+frontend workspace merge).
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:installCenterPath, [ref]$null, [ref]$null)
     # Find the if (-not $InPlace) ... else block by scanning for the line.
     $scriptText = $script:srcContent
@@ -412,14 +421,15 @@ Describe 'install-center -InPlace uses shipped dist (avoids stale-dist trap)' {
 
     $inPlaceBranch | Should -Match "Test-Path\s+\(Join-Path\s+\`$shippedDist\s+'index\.html'\)" `
       '-InPlace branch must Test-Path $shippedDist/index.html.'
-    $inPlaceBranch | Should -Match "using shipped frontend dist" `
+    $inPlaceBranch | Should -Match "using shipped web UI dist" `
       '-InPlace branch must log a step when using the shipped dist.'
     $inPlaceBranch | Should -Match "Copy-Item\s+-Path\s+\(Join-Path\s+\`$shippedDist\s+'\*'\)" `
       '-InPlace branch must Copy-Item from $shippedDist/* to $distPath.'
   }
 
   It '-InPlace branch falls back to build ONLY when shipped dist absent AND install dist absent' {
-    # The fallback `npm run build` must be inside an elseif whose condition is
+    # The fallback `npm run build:web --workspace=center` must be inside an
+    # elseif whose condition is
     # `-not (Test-Path (Join-Path $distPath ''index.html''))`. This way:
     #   - shipped dist present → copy (preferred)
     #   - shipped dist absent + install dist present → leave alone (no rebuild, no regression)
@@ -435,8 +445,8 @@ Describe 'install-center -InPlace uses shipped dist (avoids stale-dist trap)' {
   It 'mirror sync: -InPlace shipped-dist logic present in publish/system/scripts/install-center.ps1' {
     $script:pubContent | Should -Match '\$shippedDist = Join-Path \$projectRoot' `
       'publish mirror -InPlace branch missing shipped-dist resolution — must match scripts/ source.'
-    $script:pubContent | Should -Match 'using shipped frontend dist' `
-      'publish mirror -InPlace branch missing "using shipped frontend dist" log.'
+    $script:pubContent | Should -Match 'using shipped web UI dist' `
+      'publish mirror -InPlace branch missing "using shipped web UI dist" log.'
   }
 }
 
@@ -612,5 +622,45 @@ Describe 'install-center HTTP readiness probe (Wait-ForHttpOk)' {
     $fnText = $fn[0].Extent.Text
     $fnText | Should -Not -Match '(?m)^\s*Write-Info\s' `
       'Wait-ForHttpOk must NOT call Write-Info — it can throw CommandNotFoundException when Logger.psm1 is not pre-imported, silently making the function always return $false. Use Write-Host instead.'
+  }
+}
+
+Describe 'center+frontend workspace merge layout' {
+  # Regression tests for the center+frontend workspace merge (2026-08-22).
+  # These assert the post-merge filesystem layout so a future refactor that
+  # accidentally resurrects the old frontend/ tree (or forgets to track the
+  # shipped dist) gets caught by CI. Path construction uses string
+  # concatenation with `\` (not Join-Path) to keep all path separators
+  # consistent and match the .ps1 convention in this test file.
+  BeforeAll {
+    $script:repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
+  }
+
+  It 'frontend/ directory must NOT exist' {
+    Test-Path "$script:repoRoot\frontend" | Should -BeFalse `
+      'frontend/ directory must be removed after the merge — its files now live at center/web/.'
+  }
+
+  It 'center/web/ must contain the merged frontend source' {
+    Test-Path "$script:repoRoot\center\web\vite.config.js" | Should -BeTrue `
+      'center/web/vite.config.js must exist after the merge.'
+    Test-Path "$script:repoRoot\center\web\index.html" | Should -BeTrue `
+      'center/web/index.html must exist after the merge.'
+  }
+
+  It 'center/web/vite.config.js must output to ../dist' {
+    $viteConfig = Get-Content "$script:repoRoot\center\web\vite.config.js" -Raw
+    $viteConfig | Should -Match "outDir:\s*'\.\./dist'" `
+      'center/web/vite.config.js must declare outDir: "../dist" so vite writes to center/dist/.'
+  }
+
+  It 'publish/system/frontend/ must NOT exist (no shipped frontend tree)' {
+    Test-Path "$script:repoRoot\publish\system\frontend" | Should -BeFalse `
+      'publish/system/frontend/ must be removed after the merge — shipped dist now lives at publish/system/center/dist/.'
+  }
+
+  It 'publish/system/center/dist/index.html MUST exist (shipped dist sanity)' {
+    Test-Path "$script:repoRoot\publish\system\center\dist\index.html" | Should -BeTrue `
+      'publish/system/center/dist/index.html must be tracked (the shipped web bundle).'
   }
 }

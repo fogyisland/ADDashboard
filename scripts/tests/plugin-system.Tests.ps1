@@ -85,28 +85,28 @@ Describe 'plugin-system: center wiring' {
   }
 }
 
-Describe 'plugin-system: frontend tiles + view' {
+Describe 'plugin-system: web UI tiles + view' {
   BeforeAll {
     $script:repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
   }
   It 'metric tile components exist' {
     foreach ($name in @('GaugeTile','CounterTile','TimeseriesTile','StatusTile')) {
-      Test-Path (Join-Path $script:repoRoot "frontend\src\components\metrics\$name.vue") | Should -BeTrue "$name.vue missing"
+      Test-Path (Join-Path $script:repoRoot "center\web\src\components\metrics\$name.vue") | Should -BeTrue "$name.vue missing"
     }
   }
 
   It 'MetricDashboardView exists' {
-    Test-Path (Join-Path $script:repoRoot 'frontend\src\views\MetricDashboardView.vue') | Should -BeTrue
+    Test-Path (Join-Path $script:repoRoot 'center\web\src\views\MetricDashboardView.vue') | Should -BeTrue
   }
 
   It 'router registers /dashboard/metrics' {
-    $path = Join-Path $script:repoRoot 'frontend\src\router.js'
+    $path = Join-Path $script:repoRoot 'center\web\src\router.js'
     $content = Get-Content $path -Raw
     $content | Should -Match '/dashboard/metrics'
   }
 
   It 'AppLayout sidebar links to /dashboard/metrics' {
-    $path = Join-Path $script:repoRoot 'frontend\src\components\AppLayout.vue'
+    $path = Join-Path $script:repoRoot 'center\web\src\components\AppLayout.vue'
     $content = Get-Content $path -Raw
     $content | Should -Match '/dashboard/metrics'
   }
@@ -118,8 +118,8 @@ Describe 'plugin-system: mirror sync' {
   }
   It 'metric tile components are mirrored to publish/' {
     foreach ($name in @('GaugeTile','CounterTile','TimeseriesTile','StatusTile')) {
-      $srcPath = Join-Path $script:repoRoot "frontend\src\components\metrics\$name.vue"
-      $pubPath = Join-Path $script:repoRoot "publish\system\frontend\src\components\metrics\$name.vue"
+      $srcPath = Join-Path $script:repoRoot "center\web\src\components\metrics\$name.vue"
+      $pubPath = Join-Path $script:repoRoot "publish\system\center\web\src\components\metrics\$name.vue"
       if (Test-Path $srcPath) {
         Test-Path $pubPath | Should -BeTrue "publish mirror missing for $name.vue"
         Get-Content $srcPath -Raw | Should -Be (Get-Content $pubPath -Raw) "mirror drift: $name.vue"
@@ -128,14 +128,14 @@ Describe 'plugin-system: mirror sync' {
   }
 
   It 'MetricDashboardView is mirrored to publish/' {
-    $src = Get-Content (Join-Path $script:repoRoot 'frontend\src\views\MetricDashboardView.vue') -Raw
-    $pub = Get-Content (Join-Path $script:repoRoot 'publish\system\frontend\src\views\MetricDashboardView.vue') -Raw
+    $src = Get-Content (Join-Path $script:repoRoot 'center\web\src\views\MetricDashboardView.vue') -Raw
+    $pub = Get-Content (Join-Path $script:repoRoot 'publish\system\center\web\src\views\MetricDashboardView.vue') -Raw
     $pub | Should -Be $src 'MetricDashboardView mirror out of sync'
   }
 
   It 'AppLayout is mirrored to publish/' {
-    $src = Get-Content (Join-Path $script:repoRoot 'frontend\src\components\AppLayout.vue') -Raw
-    $pub = Get-Content (Join-Path $script:repoRoot 'publish\system\frontend\src\components\AppLayout.vue') -Raw
+    $src = Get-Content (Join-Path $script:repoRoot 'center\web\src\components\AppLayout.vue') -Raw
+    $pub = Get-Content (Join-Path $script:repoRoot 'publish\system\center\web\src\components\AppLayout.vue') -Raw
     $pub | Should -Be $src 'AppLayout mirror out of sync'
   }
 
@@ -151,8 +151,8 @@ Describe 'plugin-system: mirror sync' {
   }
 
   It 'router.js is mirrored to publish/' {
-    $src = Get-Content (Join-Path $script:repoRoot 'frontend\src\router.js') -Raw
-    $pubPath = Join-Path $script:repoRoot 'publish\system\frontend\src\router.js'
+    $src = Get-Content (Join-Path $script:repoRoot 'center\web\src\router.js') -Raw
+    $pubPath = Join-Path $script:repoRoot 'publish\system\center\web\src\router.js'
     if (Test-Path $pubPath) {
       $pub = Get-Content $pubPath -Raw
       $pub | Should -Be $src 'router.js mirror out of sync'
