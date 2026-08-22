@@ -46,13 +46,12 @@ nssm.zip
 !publish/nssm/
 
 # Green version bundle (publish/) — source code is tracked, build artifacts are not.
-# Exception: publish/system/frontend/dist/ IS tracked so the bundle ships the
+# Exception: publish/system/center/dist/ IS tracked so the bundle ships the
 # exact build output (avoids cloud-server rebuild drift — see 2026-08-22 lesson).
+# The negation below re-includes the shipped web bundle (overrides dist/ on line 2).
 publish/center/node_modules/
 publish/agent/node_modules/
-publish/frontend/node_modules/
-publish/center/dist/
-!publish/system/frontend/dist/
+!publish/system/center/dist/
 # WPF PackageDesigner self-contained build output (rebuilt via `dotnet publish`)
 publish/designer/
 
@@ -69,7 +68,6 @@ publish/designer/
 
 # Leftover zips dropped in publish/ by user tooling (re-zip if needed)
 publish/db.zip
-publish/frontend.zip
 publish/publish.zip
 
 # .NET build outputs (PackageDesigner WPF app)
