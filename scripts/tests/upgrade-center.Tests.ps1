@@ -72,6 +72,52 @@ Describe 'upgrade-center shipped-dist handling' {
   }
 }
 
+Describe 'upgrade-center -RebuildFrontend (stale-UI trap exit hatch)' {
+  BeforeAll {
+    $script:upgradePath = Join-Path (Join-Path $PSScriptRoot '..') 'upgrade-center.ps1'
+    $script:srcContent = Get-Content $script:upgradePath -Raw
+  }
+
+  It 'declares [switch]$RebuildFrontend in the param block' {
+    # Mirror of scripts/update-center.ps1 -RebuildFrontend — the unified
+    # publish/system/update.{ps1,bat} entry always passes it through to
+    # upgrade-center.ps1 to guarantee local-source = server-dist.
+    $script:srcContent | Should -Match '\[switch\]\$RebuildFrontend' `
+      'upgrade-center.ps1 must declare [switch]$RebuildFrontend.'
+  }
+
+  It 'runs npm run build:frontend when -RebuildFrontend is set' {
+    $script:srcContent | Should -Match 'npm run build:frontend' `
+      'upgrade-center.ps1 must invoke npm run build:frontend in the RebuildFrontend branch.'
+  }
+
+  It 'prefers local frontend\dist (Copy-Item from $localDist in RebuildFrontend branch)' {
+    # The semantic invariant: when -RebuildFrontend is set, the Copy-Item
+    # that lands dist into $distPath must read from a path tied to the
+    # local build (frontend\dist), not the shippedDist variable. We assert
+    # by checking that `$localDist '*'` is used as the Copy-Item -Path
+    # source in the file (separate from `$shippedDist '*'`).
+    # Single-quoted regex: PowerShell preserves `\$` literally, .NET regex
+    # interprets `\$` as literal `$`. So `\s+'\*'` matches `\s+'*'` (whitespace
+    # then single-quoted asterisk). Single `$localDist` not `$$localDist`.
+    $script:srcContent | Should -Match '\$localDist\s+''\*''' `
+      'upgrade-center.ps1 must Copy-Item from a $localDist-suffixed path in the RebuildFrontend branch (proof local build, not shipped bundle, gets copied to dist).'
+    $script:srcContent | Should -Match '\$shippedDist\s+''\*''' `
+      'upgrade-center.ps1 must still Copy-Item from $shippedDist in the shipped-dist branch (regression — the shipped-dist code path is unchanged).'
+  }
+
+  It 'checks if ($RebuildFrontend) BEFORE the shipped-dist elseif (priority order)' {
+    # Regression guard: if a future refactor moves the shipped branch above
+    # the RebuildFrontend branch, -RebuildFrontend silently no-ops (stale UI).
+    $rebuildIdx   = $script:srcContent.IndexOf('if ($RebuildFrontend)')
+    $shippedIdx   = $script:srcContent.IndexOf('Test-Path (Join-Path $shippedDist')
+    $rebuildIdx   | Should -BeGreaterThan -1 'RebuildFrontend branch must exist.'
+    $shippedIdx   | Should -BeGreaterThan -1 'shipped-dist branch must still exist.'
+    $rebuildIdx   | Should -BeLessThan $shippedIdx `
+      'RebuildFrontend branch MUST come BEFORE shipped-dist elseif — otherwise -RebuildFrontend silently falls through to the shipped copy.'
+  }
+}
+
 Describe 'upgrade-center Ensure-NodeModules (idempotent reinstall)' {
   BeforeAll {
     $script:upgradePath = Join-Path (Join-Path $PSScriptRoot '..') 'upgrade-center.ps1'

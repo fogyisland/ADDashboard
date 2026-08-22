@@ -3,11 +3,16 @@
 # wizard on first boot). This script handles subsequent deployments:
 #   1. stop NSSM service
 #   2. replace code (mirror → install path, hash-checked npm install)
-#   3. replace dist (shipped bundle → install path)
+#   3. replace dist (shipped bundle, or local build via -RebuildFrontend)
 #   4. start NSSM service + HTTP probe
 #   5. apply pending DB migrations via HTTP API (the "扩展架构" piece)
 #   6. (Built-in packages + SMTP defaults + agent_token bundle re-seed
 #      automatically on normal-mode restart — no extra HTTP call needed.)
+#
+# -RebuildFrontend: force a fresh local `npm run build:frontend` instead of
+# copying the shipped dist. Use when the local frontend source has changes
+# that are not yet in the shipped bundle (stale-UI fix). Equivalent to
+# publish/system/update.{ps1,bat}.
 #
 # IMPORTANT: NOT for first-time install. Use install-center.ps1 instead.
 # This script ASSUMES the DB already exists and /init has been completed.
@@ -17,7 +22,8 @@ param(
   [string]$InstallPath,
   [int]$ListenPort = 8080,
   [string]$AdminUser = 'admin',
-  [Parameter(Mandatory)][string]$AdminPassword
+  [Parameter(Mandatory)][string]$AdminPassword,
+  [switch]$RebuildFrontend
 )
 
 # $PSScriptRoot is empty in [CmdletBinding()] default param values (parameter
@@ -113,14 +119,35 @@ Copy-Item -Path (Join-Path $srcDir '*') -Destination $InstallPath -Recurse -Forc
 # 3. Hash-checked npm install (idempotent — no-op if deps unchanged).
 Ensure-NodeModules -InstallPath $InstallPath
 
-# 4. Refresh dist from shipped bundle. Avoids stale-UI trap when install
-# re-runs after a frontend change in a newer bundle (same fix as install-
-# center.ps1 -InPlace shipped 2026-08-22). Falls back to local vite build
-# only when shipped dist is absent AND install dist is absent (legacy
-# bundles that pre-date the shipped-dist convention).
+# 4. Refresh dist. Priority order:
+#    (a) -RebuildFrontend: force a local `npm run build:frontend` (stale-UI fix
+#        when shipped bundle drifted from local source). Equivalent to
+#        publish/system/update.{ps1,bat}.
+#    (b) Shipped bundle present: copy it (default, fast).
+#    (c) Shipped bundle absent AND install dist absent: build locally (legacy
+#        bundles that pre-date the shipped-dist convention).
+#    (d) Shipped bundle absent AND install dist present: leave alone (clobbering
+#        a working dist just because we don't ship one is the wrong default).
 $distPath = Join-Path $InstallPath 'dist'
 $shippedDist = Join-Path $projectRoot 'frontend\dist'
-if (Test-Path (Join-Path $shippedDist 'index.html')) {
+if ($RebuildFrontend) {
+  Write-Step "rebuilding frontend (npm run build:frontend)"
+  Push-Location (Join-Path $projectRoot 'frontend')
+  try {
+    if (-not (Test-Path 'node_modules')) {
+      Write-Step "installing frontend node_modules (vite missing)"
+      npm install
+    }
+    npm run build:frontend
+  } finally { Pop-Location }
+  $localDist = Join-Path $projectRoot 'frontend\dist'
+  if (-not (Test-Path (Join-Path $localDist 'index.html'))) {
+    throw "npm run build:frontend did not produce frontend\dist\index.html"
+  }
+  if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
+  New-Item -ItemType Directory -Path $distPath -Force | Out-Null
+  Copy-Item -Path (Join-Path $localDist '*') -Destination $distPath -Recurse -Force
+} elseif (Test-Path (Join-Path $shippedDist 'index.html')) {
   Write-Step "refreshing dist from shipped bundle"
   if (Test-Path $distPath) { Remove-Item -Path $distPath -Recurse -Force }
   New-Item -ItemType Directory -Path $distPath -Force | Out-Null
