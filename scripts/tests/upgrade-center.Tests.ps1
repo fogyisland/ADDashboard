@@ -86,9 +86,9 @@ Describe 'upgrade-center -RebuildFrontend (stale-UI trap exit hatch)' {
       'upgrade-center.ps1 must declare [switch]$RebuildFrontend.'
   }
 
-  It 'runs npm run build:frontend when -RebuildFrontend is set' {
-    $script:srcContent | Should -Match 'npm run build:frontend' `
-      'upgrade-center.ps1 must invoke npm run build:frontend in the RebuildFrontend branch.'
+  It 'runs npm run build:web --workspace=center when -RebuildFrontend is set' {
+    $script:srcContent | Should -Match 'npm run build:web\s+--workspace=center' `
+      'upgrade-center.ps1 must invoke npm run build:web --workspace=center in the RebuildFrontend branch (frontend workspace merged into center/).'
   }
 
   It 'prefers local frontend\dist (Copy-Item from $localDist in RebuildFrontend branch)' {
