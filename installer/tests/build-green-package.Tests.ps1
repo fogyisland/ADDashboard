@@ -50,23 +50,18 @@ Describe 'build-green-package.ps1' {
       "build must not assign `$scriptsDst = Join-Path `$staging 'scripts' — same flatten rule."
   }
 
-  It 'stages upgrade-agent.ps1 (unified install/update entry)' {
-    # 2026-08-23: upgrade-agent.ps1 is the recommended operator entry point —
-    # auto-detects install vs hot-update. The green package must bundle it at
-    # <green>/ root alongside install-agent.ps1 / uninstall-agent.ps1 /
+  It 'stages start.ps1 (unified install/update + operator-facing entry)' {
+    # 2026-08-23: start.ps1 is the operator-facing entry that auto-detects
+    # install vs hot-update. The green package must bundle it at <green>/
+    # root alongside install-agent.ps1 / uninstall-agent.ps1 /
     # Register-ADDashboardAgent.ps1. Without it, operators on air-gapped
-    # targets can't run the single unified entry.
-    $script:content | Should -Match 'upgrade-agent\.ps1' `
-      'build must stage upgrade-agent.ps1 (unified install/update entry, center-symmetry contract).'
-  }
-
-  It 'stages start.bat (operator-facing wrapper, no PowerShell execution-policy friction)' {
-    # 2026-08-23: start.bat is the recommended operator-facing entry —
-    # a thin .bat wrapper that calls upgrade-agent.ps1 with -ExecutionPolicy
-    # Bypass. Without it, operators have to remember the long PowerShell
-    # invocation. The build must bundle it at <green>/ root.
-    $script:content | Should -Match 'start\.bat' `
-      'build must stage start.bat (operator-facing entry that hides PS execution-policy friction).'
+    # targets can't run the single unified entry. The .bat wrapper was
+    # removed in 2026-08-23 because CMD → powershell.exe hop could break
+    # Read-Host console attachment (operator-side freeze on first install).
+    $script:content | Should -Match 'start\.ps1' `
+      'build must stage start.ps1 (unified install/update + operator-facing entry).'
+    $script:content | Should -Not -Match 'start\.bat' `
+      'build must NOT stage start.bat anymore — operator entry is start.ps1.'
   }
 
   It 'stages nssm.exe at <green>/nssm/nssm.exe' {

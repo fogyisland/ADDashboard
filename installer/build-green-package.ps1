@@ -97,7 +97,7 @@ $LASTEXITCODE = 0
 #    resolves to <green>/ and Register-…'s nssm path candidate
 #    `$PSScriptRoot\nssm\nssm.exe` matches the bundled nssm at <green>/nssm/.
 $scriptsSrc = Join-Path $root 'scripts'
-foreach ($file in @('install-agent.ps1','uninstall-agent.ps1','Register-ADDashboardAgent.ps1','upgrade-agent.ps1','start.bat')) {
+foreach ($file in @('install-agent.ps1','uninstall-agent.ps1','Register-ADDashboardAgent.ps1','start.ps1')) {
   $src = Join-Path $scriptsSrc $file
   $dst = Join-Path $staging $file
   if (-not (Test-Path $src)) { throw "scripts\$file missing in source tree" }

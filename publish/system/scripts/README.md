@@ -39,8 +39,8 @@
 
 # 升级 / 卸载
 # 统一入口：已装就热更新（停服务 → 覆盖文件 → npm install → 启动）；未装就在终端提示输入 CenterUrl / AgentToken 后走 install-agent 流程
-start.bat                              # 本地：直接 start.bat（无需 -ExecutionPolicy）
-.\start.bat -ComputerName 'DC-BJ-01'   # 远程（start.bat 内部用 -ExecutionPolicy Bypass 调 upgrade-agent.ps1）
+.\start.ps1                            # 本地：在 PowerShell 窗口直接 .\start.ps1（首次会提示输入 CenterUrl / AgentToken）
+.\start.ps1 -ComputerName 'DC-BJ-01'   # 远程（需先在目标机 WinRM reachable）
 .\uninstall-agent.ps1 -ComputerName 'DC-BJ-01'
 ```
 

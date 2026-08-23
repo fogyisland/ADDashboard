@@ -87,7 +87,7 @@ if (-not $AgentSrc) {
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 # Pre-flight: Node.js 20 LTS is required (green package does NOT bundle
-# Node — unlike MSI). upgrade-agent.ps1 already checks this before
+# Node — unlike MSI). start.ps1 already checks this before
 # delegating here, but operators who call install-agent.ps1 directly
 # (WinRM remote install, automation) need the same guard. Without this,
 # `Get-Command node.exe -ErrorAction Stop` throws an unfriendly

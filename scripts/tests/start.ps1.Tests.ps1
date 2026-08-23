@@ -1,9 +1,9 @@
 BeforeAll {
-  $scriptPath = "$PSScriptRoot/../upgrade-agent.ps1"
+  $scriptPath = "$PSScriptRoot/../start.ps1"
   $content     = Get-Content -LiteralPath $scriptPath -Raw
 }
 
-Describe 'upgrade-agent.ps1' {
+Describe 'start.ps1' {
   It 'is parseable PowerShell' {
     $tokens = $null
     $errors = $null
@@ -65,7 +65,7 @@ Describe 'upgrade-agent.ps1' {
   It 'prompts for CenterUrl + AgentToken interactively on first-time install' {
     # User-facing requirement (2026-08-23): when the script detects no service
     # is registered AND the operator didn't pass -CenterUrl/-AgentToken, it
-    # prompts in the PowerShell terminal so a single `.\upgrade-agent.ps1`
+    # prompts in the PowerShell terminal so a single `.\start.ps1`
     # works without parameter bookkeeping.
     #
     # Token MUST be -AsSecureString so it doesn't echo on screen. Conversion
@@ -95,16 +95,16 @@ Describe 'upgrade-agent.ps1' {
     # no Register-ADDashboardAgent.ps1 import — those would mean the script
     # is duplicating SCM logic instead of delegating.
     $content | Should -Not -Match 'ConvertTo-Json\s*\|\s*Set-Content' `
-      'upgrade-agent.ps1 must NOT write appsettings.json via ConvertTo-Json | Set-Content — that lives in Register-ADDashboardAgent.ps1.'
+      'start.ps1 must NOT write appsettings.json via ConvertTo-Json | Set-Content — that lives in Register-ADDashboardAgent.ps1.'
     $content | Should -Not -Match 'Register-ADDashboardAgent\.ps1' `
-      'upgrade-agent.ps1 must NOT invoke Register-ADDashboardAgent.ps1 directly — install-agent.ps1 owns that delegation. Two-hop dispatch keeps the contract clean.'
+      'start.ps1 must NOT invoke Register-ADDashboardAgent.ps1 directly — install-agent.ps1 owns that delegation. Two-hop dispatch keeps the contract clean.'
   }
 
   It 'always restarts on hot update (no hash-skip)' {
     # Per 2026-08-23 design: hot-update path unconditionally stop → copy →
     # npm install → start. Hash-skip was considered and rejected (stale lockfile
     # risk on partial installs outweighs the npm-install savings; operators
-    # who run upgrade-agent expect something to actually update).
+    # who run start.ps1 expect something to actually update).
     $content | Should -Match 'Stop-Service\s+-Name\s+\$ServiceName' `
       'hot-update must stop the service via Stop-Service (not via NSSM stop).'
     $content | Should -Match 'npm install --omit=dev --no-audit --no-fund' `
@@ -120,9 +120,9 @@ Describe 'upgrade-agent.ps1' {
     # operator's time. Pre-flight the Node check BEFORE the prompts so the
     # error fires before any cred input is requested.
     $content | Should -Match 'Get-Command\s+node\.exe' `
-      'upgrade-agent.ps1 must pre-flight Node.js presence (green package does not bundle Node).'
+      'start.ps1 must pre-flight Node.js presence (green package does not bundle Node).'
     $content | Should -Match 'node\.exe not found on PATH' `
-      'upgrade-agent.ps1 must throw a friendlier error than the raw CommandNotFoundException if Node is missing.'
+      'start.ps1 must throw a friendlier error than the raw CommandNotFoundException if Node is missing.'
     # Order: Node check must appear BEFORE Read-Host CenterUrl + Read-Host -AsSecureString.
     $nodeIdx   = $content.IndexOf('Get-Command node.exe')
     $centerIdx = $content.IndexOf("Read-Host 'Enter CenterUrl")

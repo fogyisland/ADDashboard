@@ -8,7 +8,7 @@
 
 服务名、NSSM 配置、文件落盘位置与 MSI 路径**完全一致**,两条路径可任意切换。
 
-## 推荐入口:`start.bat`
+## 推荐入口:`start.ps1`
 
 绿色包里所有 PS1 都围绕这一个统一入口转。脚本会自动判断当前机器的 agent 状态:
 
@@ -18,10 +18,10 @@
 操作员只需要记住一个命令:
 
 ```cmd
-C:\green\agentInstall\start.bat
+C:\green\agentInstall\start.ps1
 ```
 
-`start.bat` 内部转调 `upgrade-agent.ps1`(PowerShell 脚本,负责交互式 prompt 和具体的 install/update 逻辑)。`.bat` 包装让运维不用管 PowerShell 执行策略和 `.ps1` 扩展名关联。
+`start.ps1` 就是这个统一入口本身(负责交互式 prompt 和具体的 install/update 逻辑)。直接在 PowerShell 终端里 `.\start.ps1` 运行;若目标机 PS 执行策略是 Restricted,用 `powershell -ExecutionPolicy Bypass -File .\start.ps1` 兜底。
 
 ## 目标机器前置条件
 
@@ -58,7 +58,7 @@ Copy-Item -Recurse \\fileserver\share\agentInstall `
 **本地安装(推荐入口 — 交互式问 CenterUrl/AgentToken)**:
 
 ```cmd
-C:\green\agentInstall\start.bat
+C:\green\agentInstall\start.ps1
 ```
 脚本会检测到当前机没装过服务,在终端里问:
 ```
@@ -69,14 +69,14 @@ Enter AgentToken: ********   # SecureString,不回显
 **本地安装(命令行参数版 — 跳过交互式 prompt,适合脚本/CI)**:
 
 ```cmd
-C:\green\agentInstall\start.bat -CenterUrl "http://center.example.com:8080" -AgentToken "<token>"
+C:\green\agentInstall\start.ps1 -CenterUrl "http://center.example.com:8080" -AgentToken "<token>"
 ```
-(`start.bat` 把参数原样转给 `upgrade-agent.ps1`,所有 `-CenterUrl` / `-AgentToken` / `-ComputerName` 都生效。)
+(`start.ps1` 接受所有 `-CenterUrl` / `-AgentToken` / `-ComputerName` 参数,所有 `-CenterUrl` / `-AgentToken` / `-ComputerName` 都生效。)
 
-**底层直接调 PS1**(不需要 `start.bat` 包装的场景,比如已在 PS 进程里):
+**底层直接调 PS1**(已经在 PowerShell 进程里的场景,比如已在 PS 进程里):
 
 ```powershell
-& C:\green\agentInstall\upgrade-agent.ps1 -CenterUrl 'http://center.example.com:8080' -AgentToken '<token>' -InstallPath 'C:\addashboard\Agent' -AgentType ad
+& C:\green\agentInstall\start.ps1 -CenterUrl 'http://center.example.com:8080' -AgentToken '<token>' -InstallPath 'C:\addashboard\Agent' -AgentType ad
 ```
 
 **远程安装**(在管理机上批量推):
@@ -107,10 +107,10 @@ Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 20
 
 ## 升级
 
-直接在已装机器上跑同一个命令即可 — `start.bat` 自动识别「已装」并走热更新分支(stop → 覆盖文件 → npm install → start)。不需要卸载重装。
+直接在已装机器上跑同一个命令即可 — `start.ps1` 自动识别「已装」并走热更新分支(stop → 覆盖文件 → npm install → start)。不需要卸载重装。
 
 ```cmd
-C:\green\agentInstall\start.bat
+C:\green\agentInstall\start.ps1
 ```
 
 会停服务、移除 NSSM 注册、删除 `C:\addashboard\Agent\` 与 `C:\addashboard\Logs\`(如有)。
@@ -124,7 +124,7 @@ C:\green\agentInstall\start.bat
 3. 删除 `C:\addashboard\Agent\`(node_modules 一起删,下次安装会重新拉)
 4. 用新版本绿色包重新跑 install-agent.ps1
 
-或直接调 **`upgrade-center.ps1`** 的 Agent 等价版本(目前 agent 升级路径还是手工,后续规划统一进 `upgrade-agent.ps1`)。
+或直接调 **`upgrade-center.ps1`** 的 Agent 等价版本(目前 agent 升级路径还是手工,start.ps1 已经统一了 install + hot-update 双路径)。
 
 ## 与 MSI 路径的差异
 

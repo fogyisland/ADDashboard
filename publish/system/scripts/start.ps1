@@ -1,5 +1,6 @@
-# upgrade-agent.ps1 — unified install / hot-update entry for the AD Dashboard
-# Agent (green-package path).
+# start.ps1 — unified install / hot-update entry for the AD Dashboard Agent
+# (green-package path). This is the single operator-facing entry point;
+# start.bat and upgrade-agent.ps1 have been folded into this file.
 #
 # Why this exists (mirrors center's upgrade-center.ps1):
 #   Pre-2026-08-23, operators had to choose between install-agent.ps1 (first-time
@@ -8,6 +9,14 @@
 #   either fail with "service not found" or re-apply config on an already-set
 #   install. center has upgrade-center.ps1 as the single entry; this script
 #   brings the agent path up to parity.
+#
+# Why .ps1 (not .bat):
+#   The earlier start.bat → powershell.exe wrapper could freeze when the
+#   user's console had non-interactive stdin (some RDP / WinRM / Task Scheduler
+#   contexts): Read-Host would block waiting for input that never arrived,
+#   and the .bat's CMD intermediate made it hard to tell whether the hang was
+#   in CMD or PowerShell. Going direct (.ps1 from the user's PowerShell window)
+#   preserves console attachment and surfaces any prompt immediately.
 #
 # Behavior:
 #   - Get-Service ADReplicationAgent registered → HOT UPDATE:

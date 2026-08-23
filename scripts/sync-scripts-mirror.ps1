@@ -57,14 +57,13 @@ $productionScripts = @(
   'uninstall-center.ps1'
   'update-center.ps1'
   'upgrade-center.ps1'
-  'upgrade-agent.ps1'
+  'start.ps1'
 )
 
 # Other files at scripts/ root that ship alongside the .ps1s (used by
 # install-center/upgrade-center at runtime, or operator-facing docs).
 $productionOther = @(
   'start-prod.js'   # NSSM spawn target for ADDashboardCenter service
-  'start.bat'       # operator-facing wrapper around upgrade-agent.ps1 (no PowerShell execution-policy friction)
   'README.md'       # scripts/ overview
 )
 

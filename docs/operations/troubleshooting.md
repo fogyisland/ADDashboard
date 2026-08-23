@@ -120,7 +120,7 @@ Get-Content "$DashboardRoot\Logs\ADReplicationAgent-stderr.log" -Tail 200
 **Likely cause:** Better-sqlite3 native module in agent not closing transactions
 **Steps:**
 1. Restart agent: `Restart-Service ADReplicationAgent`
-2. Apply update if newer version available: `.\scripts\upgrade-agent.ps1` (auto-detects install vs hot-update; prompts for CenterUrl/AgentToken on first-time install)
+2. Apply update if newer version available: `.\scripts\start.ps1` (auto-detects install vs hot-update; prompts for CenterUrl/AgentToken on first-time install)
 
 ## Diagnostic Data Collection
 
