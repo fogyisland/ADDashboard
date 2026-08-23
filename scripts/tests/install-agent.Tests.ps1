@@ -155,4 +155,27 @@ Describe 'install-agent.ps1' {
     $content | Should -Not -Match '(?ms)^if\s*\(\s*Test-Path\s+\$bundledSrc\s*\)\s*\{[\s\S]{0,80}Remove-Item\s+\$nodeDst' `
       'Remove-Item $nodeDst must NOT be the first statement of a bare `if (Test-Path $bundledSrc)` block — that runs even when src==dst.'
   }
+
+  It 'invokes npm.cmd by absolute path (not bare `npm` on PATH)' {
+    # 2026-08-23 (round 4): Real install run on KDLWXOFADSRV1 hit
+    # "npm: not recognized" even though the bundled <green>/node/npm.cmd was
+    # prepended to PATH. PowerShell's PATH resolution for `npm` missed the
+    # .cmd file in some way (likely PATHEXT + PowerShell session state
+    # interaction). The robust fix: invoke `& $nodeDst/npm.cmd ...`
+    # directly, bypassing PowerShell's command lookup entirely. npm.cmd
+    # internally resolves node.exe via %~dp0 (same dir), so ABI parity with
+    # NSSM's registered node.exe is guaranteed without depending on PATH.
+    $content = Get-Content $scriptPath -Raw
+    # The script must build $npmCmd = "$nodeDst/npm.cmd" and Test-Path it.
+    $content | Should -Match '\$npmCmd\s*=\s*Join-Path\s+\$nodeDst\s+''npm\.cmd''' `
+      'script must compute $npmCmd from $nodeDst (absolute path) instead of relying on PATH-resolved `npm`.'
+    $content | Should -Match 'Test-Path\s+-LiteralPath\s+\$npmCmd' `
+      'script must Test-Path -LiteralPath $npmCmd before invoking (fail loud if the bundled Node install is incomplete).'
+    # Bare `npm install` must NOT exist as an executable call (must be
+    # `& $npmCmd install`). Exclude comment lines (start with optional
+    # whitespace + #) so doc comments mentioning "npm install" don't trip.
+    # Multiline mode for line-start anchors.
+    $content | Should -Not -Match '(?m)^(?!\s*#)\s*\bnpm\s+install' `
+      'script must NOT call bare `npm install` (must use `& $npmCmd install`). Comments are allowed.'
+  }
 }

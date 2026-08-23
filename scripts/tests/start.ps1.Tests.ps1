@@ -107,7 +107,10 @@ Describe 'start.ps1' {
     # who run start.ps1 expect something to actually update).
     $content | Should -Match 'Stop-Service\s+-Name\s+\$ServiceName' `
       'hot-update must stop the service via Stop-Service (not via NSSM stop).'
-    $content | Should -Match 'npm install --omit=dev --no-audit --no-fund' `
+    # 2026-08-23 (round 4): npm invoked by absolute path (`& $npmCmd install ...`)
+    # for ABI safety — bare `npm install` on PATH was unreliable. Match the
+    # flag combo via regex so the path-invocation form is what's asserted.
+    $content | Should -Match '\$npmCmd\s+install\s+--omit=dev\s+--no-audit\s+--no-fund' `
       'hot-update must always run npm install --omit=dev (no hash-skip gate).'
     $content | Should -Match 'Start-Service\s+-Name\s+\$ServiceName' `
       'hot-update must start the service via Start-Service.'
@@ -164,8 +167,10 @@ Describe 'start.ps1' {
     $content | Should -Match '\$env:PATH\s*=\s*\$nodeDst\s*\+\s*\[IO\.Path\]::PathSeparator' `
       'hot-update must prepend <InstallPath>/node/ to $env:PATH before npm install (avoids ABI drift).'
     # Order: $env:PATH prepend must appear AFTER robocopy refresh (need $nodeDst to exist) but BEFORE npm install.
+    # 2026-08-23 (round 4): npm invocation switched to `& $npmCmd install ...`
+    # (absolute path) — match that form, not bare `npm install`.
     $prependIdx = $content.IndexOf('$env:PATH = $nodeDst')
-    $npmIdx     = $content.IndexOf('npm install --omit=dev --no-audit --no-fund')
+    $npmIdx     = $content.IndexOf('$npmCmd install')
     $prependIdx | Should -BeGreaterOrEqual 0
     $npmIdx     | Should -BeGreaterOrEqual 0
     $prependIdx | Should -BeLessThan $npmIdx `
@@ -217,5 +222,20 @@ Describe 'start.ps1' {
     # <InstallPath>/node/ via the case-collision, no copy needed.
     $content | Should -Match 'src==dst.*skipping Node refresh|skipping Node refresh' `
       'Node refresh must be skipped when src==dst (robocopy with identical src/dst is undefined).'
+  }
+
+  It 'invokes npm.cmd by absolute path in hot-update (not bare `npm` on PATH)' {
+    # 2026-08-23 (round 4): real install on KDLWXOFADSRV1 hit "npm not
+    # recognized" even when $nodeDst was prepended to PATH. PowerShell's
+    # PATH resolution missed the bundled npm.cmd. Robust fix: invoke
+    # `& $nodeDst/npm.cmd ...` to bypass PowerShell's command lookup.
+    # Mirrors install-agent.ps1's identical fix.
+    $content | Should -Match '\$npmCmd\s*=\s*Join-Path\s+\$nodeDst\s+''npm\.cmd''' `
+      'start.ps1 must compute $npmCmd from $nodeDst (absolute path) instead of relying on PATH-resolved `npm`.'
+    $content | Should -Match 'Test-Path\s+-LiteralPath\s+\$npmCmd' `
+      'start.ps1 must Test-Path -LiteralPath $npmCmd before invoking.'
+    # Exclude comment lines (start with optional whitespace + #).
+    $content | Should -Not -Match '(?m)^(?!\s*#)\s*\bnpm\s+install' `
+      'start.ps1 must NOT call bare `npm install` (must use `& $npmCmd install`). Comments are allowed.'
   }
 }

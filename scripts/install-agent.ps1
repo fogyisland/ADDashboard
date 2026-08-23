@@ -171,14 +171,26 @@ function Install-LocalAgent {
   # produces a production-only dependency tree regardless of what the source
   # contains. Operators reading the install log should see this step explicitly
   # so they know where the runtime deps come from.
-  # Prepend the bundled node dir to PATH so npm install uses the same Node
-  # we'll register with NSSM — avoids ABI drift if PATH has a different
-  # node.exe (npm caches based on the running node's version).
+  #
+  # Invoke npm.cmd by absolute path (not bare `npm`): on real installs we
+  # have seen "npm: not recognized" even when the bundled <node>/npm.cmd is
+  # in PATH. The most reliable trigger is `& $nodeDst/npm.cmd ...` which
+  # bypasses PowerShell's PATH resolution entirely. npm.cmd internally
+  # resolves node.exe via %~dp0 (same dir), so ABI parity with NSSM's
+  # $nodeDst/node.exe is guaranteed without depending on PATH at all.
+  #
+  # Prepend the bundled node dir to PATH as defense in depth — if npm.cmd
+  # ever spawns a child that resolves `node` from PATH, it'll still find
+  # the bundled one (avoids ABI drift if PATH has a different node.exe).
   $env:PATH = $nodeDst + [IO.Path]::PathSeparator + $env:PATH
+  $npmCmd = Join-Path $nodeDst 'npm.cmd'
+  if (-not (Test-Path -LiteralPath $npmCmd)) {
+    throw "npm.cmd not found at $npmCmd — bundled Node install is incomplete. Re-extract the green package's node/ directory."
+  }
   Push-Location $InstallPath
   try {
     Write-Step "constructing node_modules via npm install --omit=dev"
-    npm install --omit=dev --no-audit --no-fund
+    & $npmCmd install --omit=dev --no-audit --no-fund
     if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
   } finally { Pop-Location }
 

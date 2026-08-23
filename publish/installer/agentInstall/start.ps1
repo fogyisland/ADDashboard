@@ -248,11 +248,21 @@ if ($srcEqDst) {
 # guard in install-agent.ps1's Install-LocalAgent.
 $env:PATH = $nodeDst + [IO.Path]::PathSeparator + $env:PATH
 
+# Invoke npm.cmd by absolute path (not bare `npm`): same fix as
+# install-agent.ps1 — PowerShell's PATH resolution can miss npm.cmd even
+# when the bundled node/ is prepended (real install on KDLWXOFADSRV1 hit
+# "npm: not recognized"). & $nodeDst/npm.cmd bypasses PATH and uses the
+# bundled node via %~dp0 inside npm.cmd. ABI parity with NSSM guaranteed.
+$npmCmd = Join-Path $nodeDst 'npm.cmd'
+if (-not (Test-Path -LiteralPath $npmCmd)) {
+  throw "npm.cmd not found at $npmCmd — bundled Node install is incomplete. Re-extract the green package's node/ directory."
+}
+
 # npm install — production-only, no audit noise in CI logs.
 Push-Location $InstallPath
 try {
   Write-Step "npm install --omit=dev"
-  npm install --omit=dev --no-audit --no-fund
+  & $npmCmd install --omit=dev --no-audit --no-fund
   if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
 } finally { Pop-Location }
 
