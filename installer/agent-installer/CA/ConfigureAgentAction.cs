@@ -35,6 +35,21 @@ using WixToolset.Dtf.WindowsInstaller;
 //  accepts this; reintroducing an appsettings.json as a File table entry
 //  would change the uninstall semantics (RemoveFiles would delete it)
 //  and must come with a deliberate R2 override.
+//
+//  node_modules construction (2026-08-23):
+//
+//  RunNpmInstall runs `npm install --omit=dev` against the staged Node 20
+//  + agent/package.json, populating INSTALLDIR/node_modules after the file
+//  copy completes. MSI no longer pre-bundles node_modules in Files.wxs.
+//  This runs in the deferred ConfigureAgent CA sequence, after file copy
+//  + WriteAppsettingsJson, BEFORE RegisterNssmService (the service needs
+//  node_modules to exist by the time NSSM starts the process). On REINSTALL
+//  it re-runs, refreshing node_modules against the new package.json. On
+//  uninstall it does NOT run — node_modules is left on disk and the user
+//  manually clears C:\addashboard\Agent (matches the appsettings.json
+//  semantics above). On npm failure (no network, registry unreachable,
+//  prebuild-install failure) the CA throws and MSI rolls back; the install
+//  log will show the captured stdout/stderr so operators can diagnose.
 // ============================================================================
 
 namespace ADDashboard.AgentInstaller.CA
@@ -65,6 +80,8 @@ namespace ADDashboard.AgentInstaller.CA
                 Validate(data);
 
                 WriteAppsettingsJson(data);
+
+                RunNpmInstall(session, data);
 
                 RegisterNssmService(data);
                 SetNssmParameters(data);
@@ -136,6 +153,93 @@ namespace ADDashboard.AgentInstaller.CA
             sb.AppendLine("}");
 
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
+        }
+
+        // 2026-08-23: construct INSTALLDIR\node_modules on the target via
+        // `npm install --omit=dev` against the staged Node 20 + the staged
+        // agent/package.json. MSI no longer bundles node_modules (see
+        // Files.wxs header for rationale). Runs with a longer timeout
+        // (NpmInstallTimeoutMs) than the default 30s because npm install
+        // routinely takes 30-120s on first run; 5min caps the worst case.
+        // On failure, captured stdout+stderr is logged into the MSI install
+        // log so operators can diagnose (registry unreachable, etc.).
+        internal static void RunNpmInstall(Session session, ConfigureAgentData data)
+        {
+            var node = Path.Combine(data.InstallDir, "node", "node.exe");
+            if (!File.Exists(node))
+                throw new Exception($"node.exe not found at {node}");
+
+            // Pin npm cache to a directory under INSTALLDIR so LocalSystem
+            // (the CA's identity, per CustomActions.wxs Impersonate=no) writes
+            // to a path we own rather than C:\Windows\System32\config\
+            // systemprofile\AppData\Local. Easier to reason about; clears on
+            // uninstall with the rest of INSTALLDIR.
+            var npmCache = Path.Combine(data.InstallDir, ".npm-cache");
+            Directory.CreateDirectory(npmCache);
+
+            // Use node + npm-cli.js directly (not npm.cmd) — avoids cmd.exe
+            // shell lookup quirks under LocalSystem and works without PATH
+            // mutation. node_modules\npm ships inside the staged Node 20 tarball
+            // at <node>\node_modules\npm\bin\npm-cli.js — verified at build time
+            // by build-msi.ps1's stage-Node step.
+            var npmCli = Path.Combine(data.InstallDir, "node", "node_modules", "npm", "bin", "npm-cli.js");
+            if (!File.Exists(npmCli))
+                throw new Exception($"npm-cli.js not found at {npmCli} (staged Node 20 bundle is missing npm?)");
+
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = node,
+                Arguments = $"\"{npmCli}\" install --omit=dev --no-audit --no-fund",
+                WorkingDirectory = data.InstallDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            // Prepend INSTALLDIR\node to PATH so prebuild-install (if any
+            // transitive dep ever needs to spawn a node sub-process) finds
+            // the matching binary. Belt-and-suspenders; the FileName above
+            // already uses the absolute path.
+            var currentPath = psi.EnvironmentVariables.ContainsKey("PATH")
+                ? psi.EnvironmentVariables["PATH"]
+                : Environment.GetEnvironmentVariable("PATH") ?? "";
+            psi.EnvironmentVariables["PATH"] = Path.Combine(data.InstallDir, "node") + ";" + currentPath;
+            psi.EnvironmentVariables["NPM_CONFIG_CACHE"] = npmCache;
+            psi.EnvironmentVariables["NODE_ENV"] = "production";
+
+            var output = new StringBuilder();
+            using (var p = new System.Diagnostics.Process())
+            {
+                p.StartInfo = psi;
+                p.OutputDataReceived += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
+                p.ErrorDataReceived  += (_, e) => { if (e.Data != null) output.AppendLine(e.Data); };
+                p.Start();
+                p.BeginOutputReadLine();
+                p.BeginErrorReadLine();
+                if (!p.WaitForExit(NpmInstallTimeoutMs))
+                {
+                    try { p.Kill(); } catch { /* already exited */ }
+                    try { p.WaitForExit(5 * 1000); } catch { /* swallow */ }
+                    throw new Exception(
+                        $"npm install did not exit within {NpmInstallTimeoutMs / 1000}s; killed. " +
+                        $"Captured output:\n{output}");
+                }
+                // Drain async output events before reading the buffer.
+                p.WaitForExit();
+            }
+
+            if (output.Length > 0)
+                session.Log("npm install output:\n{0}", output);
+
+            // Verify node_modules\axios (one of the agent's pinned deps)
+            // actually landed. npm's exit code is 0 even when it skips work
+            // (e.g. an empty package.json), so the post-check is the only
+            // way to confirm real install progress.
+            var axiosPkg = Path.Combine(data.InstallDir, "node_modules", "axios", "package.json");
+            if (!File.Exists(axiosPkg))
+                throw new Exception(
+                    $"npm install exited 0 but {axiosPkg} missing. " +
+                    $"Check registry access and package.json integrity. Output:\n{output}");
         }
 
         internal static void RegisterNssmService(ConfigureAgentData data)
@@ -276,6 +380,11 @@ namespace ADDashboard.AgentInstaller.CA
         // MSI deferred CAs run synchronously inside the install transaction; an
         // unbounded WaitForExit() turns a misbehaving child into a stuck install.
         private const int ProcessTimeoutMs = 30 * 1000;
+
+        // 2026-08-23: npm install routinely takes 30-120s on first run; the
+        // 30s ProcessTimeoutMs is too tight. 5min caps the worst case while
+        // still bounded enough that a hung npm does not freeze the install.
+        private const int NpmInstallTimeoutMs = 5 * 60 * 1000;
 
         /// <summary>
         /// Derive the log directory from the install directory.

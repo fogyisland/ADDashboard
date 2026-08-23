@@ -12,24 +12,42 @@
 #
 # Layout produced:
 #   publish/installer/agentInstall/
-#     agent/              pre-installed agent runtime (lowercase to match
-#                         scripts/install-agent.ps1's $AgentSrc default)
-#     scripts/            install-agent.ps1 + uninstall-agent.ps1 + common/
-#     nssm/nssm.exe       bundled (NSSM.psm1::Get-NssmPath searches
-#                         <root>/nssm/ — see scripts/common/NSSM.psm1:30-37)
+#     agent/                       pre-installed agent runtime (lowercase to
+#                                  match scripts/install-agent.ps1's $AgentSrc default)
+#     install-agent.ps1            LOCAL install script (file-copy + npm install +
+#                                  delegates SCM-facing steps to Register-…)
+#     uninstall-agent.ps1          LOCAL uninstall script (delegates to
+#                                  Register-… -Action Unregister)
+#     Register-ADDashboardAgent.ps1  single entry point shared by install/
+#                                  uninstall + (future) MSI CAs
+#     common/                      Logger.psm1 + NSSM.psm1 + Service.psm1 +
+#                                  Ensure-Nssm.ps1 — modules used by install/
+#                                  uninstall's file-copy + npm-install phase
+#     nssm/nssm.exe                bundled (Register-… searches
+#                                  <PSScriptRoot>\nssm\nssm.exe — see
+#                                  scripts/Register-ADDashboardAgent.ps1:73-82)
 #     README-green-install.md
 #
 # Pre-req on the TARGET machine: Node.js 20 LTS on PATH. install-agent.ps1
 # calls `Get-Command node.exe -ErrorAction Stop`. Unlike the MSI, this
 # bundle does NOT embed Node.js — operators install Node separately.
 # (Bundling Node would inflate the zip by ~30 MB and complicate updates.)
+#
+# Why PS1 files live at agentInstall/ root (not under scripts/):
+#   - Operator expectation: `& C:\green\agentInstall\install-agent.ps1` reads
+#     as "the installer is the package" rather than "the installer is one
+#     sub-component of the package". Same convention as `npm install`,
+#     `pip install`, MSI's `msiexec /i foo.msi` — the entry point is the
+#     leaf artifact, not buried under a subdir.
+#   - Single-grep target: the three PS1 files form the install surface;
+#     having them at root means `ls agentInstall/*.ps1` enumerates the
+#     install scripts with no further navigation.
+#   - common/ stays a sibling: install-agent.ps1 imports
+#     `$PSScriptRoot\common\Logger.psm1` — same `$PSScriptRoot` whether the
+#     script lives at <green>/ or <green>/scripts/, the import path is
+#     symmetric.
 [CmdletBinding()]
-param(
-  # When set, skip rebuilding node_modules. Use this when iterating on the
-  # agent source between green-package builds — pass the existing
-  # publish/installer/agentInstall/ as the source instead.
-  [switch]$SkipNpmInstall
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $root       = Resolve-Path (Join-Path $PSScriptRoot '..')
@@ -39,16 +57,22 @@ $zipPath    = Join-Path $root 'publish\installer\agentInstall.zip'
 
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $staging 'scripts') | Out-Null
 
 # 1. Stage agent source (exclude tests + appsettings.json + node_modules +
 #    package-lock.json + queue.db*). Use robocopy for reliable recursive copy
 #    with directory-name exclusion (PS 5.1's Copy-Item -Exclude doesn't apply
 #    to nested directories under -Recurse).
 #    agent/package.json IS staged — needed at runtime for ESM detection.
-#    agent/package-lock.json is NOT staged; we use the root monorepo lockfile
-#    below (per Task 3 review of build-msi.ps1 — per-workspace lockfiles
-#    drift from the root and ship versions the test suite never ran against).
+#    agent/node_modules is NOT staged — install-agent.ps1 runs
+#    `npm install --omit=dev` on the target machine to construct it fresh
+#    (canonical install path, see install-agent.ps1:75-87). Shipping a
+#    prebuilt node_modules is redundant: ~50 MB double-source-of-truth,
+#    platform-ABI drift risk across hosts, and lockfile drift from the
+#    monorepo root. The green package is small + deterministic to build
+#    without it; the target machine's npm is the single resolver.
+#    agent/package-lock.json is NOT staged — same reason; the target
+#    machine's `npm install` resolves semver ranges from package.json,
+#    which is what the test suite runs against anyway.
 #    queue.db* are runtime SQLite WAL files from local agent runs — never ship.
 $agentSrc = Join-Path $root 'agent'
 $agentDst = Join-Path $staging 'agent'
@@ -56,23 +80,31 @@ robocopy "$agentSrc" "$agentDst" /MIR /XD "node_modules" "tests" /XF "appsetting
 if ($LASTEXITCODE -ge 8) { throw "robocopy agent source failed: $LASTEXITCODE" }
 $LASTEXITCODE = 0
 
-# 2. Stage scripts/ — install + uninstall + common/ modules.
-#    install-agent.ps1 imports common\Logger.psm1 / NSSM.psm1 / Service.psm1
-#    and dot-sources common\Ensure-Nssm.ps1. The layout must match the dev
-#    tree (scripts/ at the same depth as agent/) so $PSScriptRoot resolves
-#    correctly when the operator runs it on the target machine.
-#    Note: robocopy requires dir-to-dir. Single-file items (install-agent.ps1,
-#    uninstall-agent.ps1) use Copy-Item; common/ (a directory) uses robocopy.
+# 2. Stage PS1 files at agentInstall/ root + common/ as a sibling. The dev
+#    tree keeps scripts/ one level below projectRoot/, but the green package
+#    flattens that to <green>/{install,uninstall,Register}-*.ps1 + common/ —
+#    operator expects `& C:\green\agentInstall\install-agent.ps1`, not
+#    `& C:\green\agentInstall\scripts\install-agent.ps1`. install-agent.ps1
+#    imports common\Logger.psm1 and dot-sources common\Ensure-Nssm.ps1 via
+#    `$PSScriptRoot\common\…`, which resolves identically whether the script
+#    lives at <green>/ or <green>/scripts/.
+#    Register-ADDashboardAgent.ps1 is the single entry point for the
+#    SCM-facing steps (appsettings.json write + NSSM install + NSSM
+#    parameters + sc.exe failure recovery + Start/Stop service) —
+#    install-agent.ps1 and uninstall-agent.ps1 both delegate to it. The
+#    layout must keep $PSScriptRoot correct when the operator runs it on
+#    the target machine; with PS1 files at <green>/ root, $PSScriptRoot
+#    resolves to <green>/ and Register-…'s nssm path candidate
+#    `$PSScriptRoot\nssm\nssm.exe` matches the bundled nssm at <green>/nssm/.
 $scriptsSrc = Join-Path $root 'scripts'
-$scriptsDst = Join-Path $staging 'scripts'
-foreach ($file in @('install-agent.ps1','uninstall-agent.ps1')) {
+foreach ($file in @('install-agent.ps1','uninstall-agent.ps1','Register-ADDashboardAgent.ps1','upgrade-agent.ps1','start.bat')) {
   $src = Join-Path $scriptsSrc $file
-  $dst = Join-Path $scriptsDst $file
+  $dst = Join-Path $staging $file
   if (-not (Test-Path $src)) { throw "scripts\$file missing in source tree" }
   Copy-Item -Path $src -Destination $dst -Force
 }
 $commonSrc = Join-Path $scriptsSrc 'common'
-$commonDst = Join-Path $scriptsDst 'common'
+$commonDst = Join-Path $staging 'common'
 if (-not (Test-Path $commonSrc)) { throw "scripts\common\ missing in source tree" }
 if (Test-Path $commonDst) { Remove-Item $commonDst -Recurse -Force }
 # /XD tests drops scripts/common/tests/ (the *.Tests.ps1 files live there).
@@ -82,8 +114,10 @@ robocopy "$commonSrc" "$commonDst" /MIR /XD "tests" /XF "*.Tests.ps1" | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy scripts\common failed: $LASTEXITCODE" }
 $LASTEXITCODE = 0
 
-# 3. Stage nssm.exe. Get-NssmPath searches <root>/nssm/ (per NSSM.psm1:30-37),
-#    so bundling at <green>/nssm/nssm.exe is the cheapest match.
+# 3. Stage nssm.exe at <green>/nssm/nssm.exe. Register-ADDashboardAgent.ps1's
+#    candidate list (Register-…:73-82) searches `$PSScriptRoot\nssm\nssm.exe`
+#    first; with the script at <green>/ root, $PSScriptRoot = <green>/ and the
+#    candidate resolves to the bundled nssm.
 #    Source: publish/system/nssm/nssm.exe (the canonical repo location,
 #    downloaded by scripts/common/Ensure-Nssm.ps1).
 $nssmSrc = Join-Path $root 'publish\system\nssm\nssm.exe'
@@ -97,35 +131,9 @@ if (-not (Test-Path $nssmDst)) {
   Copy-Item -Path $nssmSrc -Destination $nssmDst -Force
 }
 
-# 4. Stage node_modules (npm install --omit=dev, idempotent unless -SkipNpmInstall).
-#    install-agent.ps1's Install-LocalAgent has this exact guard at line 73-75:
-#      if (-not (Test-Path node_modules)) { npm install --omit=dev }
-#    So pre-installing node_modules in the bundle makes first-run install
-#    skip the network step entirely on the target — operators don't need
-#    npm access from the production box.
-$nodeModulesDst = Join-Path $agentDst 'node_modules'
-if ((-not $SkipNpmInstall) -and (-not (Test-Path $nodeModulesDst))) {
-  # Use the ROOT monorepo lockfile so resolution matches what `npm install`
-  # at the repo root produces for the agent workspace. Same rationale as
-  # build-msi.ps1:84-117 — per-workspace lockfiles drift and ship versions
-  # the test suite never ran against.
-  $rootLockSrc = Join-Path $root 'package-lock.json'
-  $pkgDst = Join-Path $agentDst 'package.json'
-  $lockDst = Join-Path $agentDst 'package-lock.json'
-  if (-not (Test-Path $pkgDst)) {
-    throw "agent\package.json missing in staging — robocopy step failed silently?"
-  }
-  if (-not (Test-Path $lockDst)) {
-    Copy-Item -Path $rootLockSrc -Destination $lockDst -Force
-  }
-  Push-Location $agentDst
-  try {
-    npm install --omit=dev --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
-  } finally {
-    Pop-Location
-  }
-}
+# 4. (intentionally empty — node_modules + lockfile are NOT staged here; the
+#    target machine's `install-agent.ps1` runs `npm install --omit=dev` to
+#    construct node_modules fresh. See step 1's comment for the rationale.)
 
 # 5. Stage operator guide. README-green-install.md is the per-bundle guide
 #    that travels INSIDE the green folder so operators can read it on the

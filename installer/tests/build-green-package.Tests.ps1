@@ -20,13 +20,53 @@ Describe 'build-green-package.ps1' {
       'agent staging must exclude node_modules + tests via robocopy /XD.'
   }
 
-  It 'stages scripts/ (install + uninstall + common)' {
+  It 'stages PS1 files + common at agentInstall/ root (not under scripts/)' {
+    # 2026-08-23 layout: operator expects `& C:\green\agentInstall\install-agent.ps1`
+    # (no scripts/ prefix). The three PS1 files form the install surface;
+    # common/ stays a sibling so $PSScriptRoot\common\… resolves correctly.
     $script:content | Should -Match 'install-agent\.ps1' `
-      'green package must bundle scripts/install-agent.ps1.'
+      'green package must bundle install-agent.ps1.'
     $script:content | Should -Match 'uninstall-agent\.ps1' `
-      'green package must bundle scripts/uninstall-agent.ps1.'
+      'green package must bundle uninstall-agent.ps1.'
+    # 2026-08-23 split: install + uninstall now delegate the SCM-facing steps
+    # (appsettings.json + NSSM + sc.exe failure recovery + Start/Stop service)
+    # to a single Register-ADDashboardAgent.ps1 script. The build MUST stage
+    # it alongside install/uninstall or -SkipStart on the target machine has
+    # nothing to invoke.
+    $script:content | Should -Match 'Register-ADDashboardAgent\.ps1' `
+      'green package must bundle Register-ADDashboardAgent.ps1 (single registration entry point shared by install/uninstall).'
     $script:content | Should -Match 'common' `
-      'green package must bundle scripts/common/ (Logger/NSSM/Service/Ensure-Nssm).'
+      'green package must bundle common/ (Logger/NSSM/Service/Ensure-Nssm).'
+  }
+
+  It 'does NOT create an agentInstall/scripts/ subdirectory (PS1 files at root)' {
+    # Regression guard: the 2026-08-23 flatten moved install/uninstall/
+    # Register from agentInstall/scripts/ to agentInstall/. The build script
+    # must NOT mkdir '<staging>/scripts' anymore — that was the line that
+    # produced the wrong layout the first time around.
+    $script:content | Should -Not -Match "Join-Path\s+\$staging\s+'scripts'" `
+      "build must not create <staging>/scripts/ subdir — PS1 files live at agentInstall/ root."
+    $script:content | Should -Not -Match '\$scriptsDst\s*=\s*Join-Path\s+\$staging\s+\\?\x27scripts\\?\x27' `
+      "build must not assign `$scriptsDst = Join-Path `$staging 'scripts' — same flatten rule."
+  }
+
+  It 'stages upgrade-agent.ps1 (unified install/update entry)' {
+    # 2026-08-23: upgrade-agent.ps1 is the recommended operator entry point —
+    # auto-detects install vs hot-update. The green package must bundle it at
+    # <green>/ root alongside install-agent.ps1 / uninstall-agent.ps1 /
+    # Register-ADDashboardAgent.ps1. Without it, operators on air-gapped
+    # targets can't run the single unified entry.
+    $script:content | Should -Match 'upgrade-agent\.ps1' `
+      'build must stage upgrade-agent.ps1 (unified install/update entry, center-symmetry contract).'
+  }
+
+  It 'stages start.bat (operator-facing wrapper, no PowerShell execution-policy friction)' {
+    # 2026-08-23: start.bat is the recommended operator-facing entry —
+    # a thin .bat wrapper that calls upgrade-agent.ps1 with -ExecutionPolicy
+    # Bypass. Without it, operators have to remember the long PowerShell
+    # invocation. The build must bundle it at <green>/ root.
+    $script:content | Should -Match 'start\.bat' `
+      'build must stage start.bat (operator-facing entry that hides PS execution-policy friction).'
   }
 
   It 'stages nssm.exe at <green>/nssm/nssm.exe' {
@@ -38,38 +78,35 @@ Describe 'build-green-package.ps1' {
       'build-green-package.ps1 must stage nssm.exe (used by NSSM.psm1).'
   }
 
-  It 'pre-installs node_modules with npm install --omit=dev' {
-    # install-agent.ps1 has a guard at line 73-75:
-    #   if (-not (Test-Path node_modules)) { npm install --omit=dev }
-    # Pre-installing node_modules in the bundle makes first-run install skip
-    # the network step on the target machine — operators don't need npm access
-    # from production.
-    $script:content | Should -Match 'npm\s+install\s+--omit=dev' `
-      'green package must pre-install node_modules with npm install --omit=dev.'
+  It 'does NOT pre-install node_modules (install-agent.ps1 handles it on target)' {
+    # 2026-08-23: green package now ships WITHOUT node_modules. install-agent.ps1
+    # unconditionally runs `npm install --omit=dev` on the target machine.
+    # Rationale: ~50 MB double-source-of-truth + platform-ABI drift risk +
+    # lockfile drift from the monorepo root. Target's npm is the single
+    # resolver. Guard: NO actual `npm install` invocation exists in this
+    # script (the comment block above mentions it; we match the specific
+    # invocation signature with the production-only + no-audit + no-fund
+    # flags that only existed in the live code, not comments).
+    $script:content | Should -Not -Match 'npm\s+install\s+--omit=dev\s+--no-audit\s+--no-fund' `
+      'green package build must NOT run `npm install --omit=dev --no-audit --no-fund` — target machine handles dep construction.'
+    $script:content | Should -Not -Match '\[switch\]\$SkipNpmInstall' `
+      '-SkipNpmInstall switch is gone (no npm install to skip).'
   }
 
-  It 'uses root monorepo lockfile (not agent/package-lock.json)' {
-    # Per build-msi.ps1:88-94 review: per-workspace lockfiles drift from the
-    # root and ship versions the test suite never runs against. Same rationale
-    # applies here.
-    $script:content | Should -Match "package-lock\.json" `
-      'build-green-package.ps1 must reference the root package-lock.json.'
-    $script:content | Should -Match 'root' `
-      'the package-lock.json reference must be the root monorepo lockfile (rootLockSrc / $root).'
+  It 'does NOT stage agent/package-lock.json (target machine resolves fresh)' {
+    # Same rationale as above. Robocopy /XF "package-lock.json" already drops it;
+    # this test guards against a future change accidentally copying the root
+    # monorepo lockfile (which has workspaces refs that don't apply to a
+    # standalone install).
+    $script:content | Should -Match 'package-lock\.json' `
+      'package-lock.json reference must exist in robocopy /XF exclusion.'
+    $script:content | Should -Not -Match "Copy-Item.*root.*lockfile" `
+      'build-green-package.ps1 must NOT copy the root monorepo lockfile into the green package — agent/ is a standalone install target.'
   }
 
   It 'outputs publish/installer/agentInstall/ + .zip' {
     $script:content | Should -Match 'agentInstall' `
       'final output must be named agentInstall (folder + zip).'
-  }
-
-  It 'has -SkipNpmInstall switch for fast iteration' {
-    # When iterating on agent source, re-running npm install for every
-    # build-green-package.ps1 invocation wastes minutes. The switch lets
-    # the operator copy the previous green package in (the bundle still
-    # contains the source, just no fresh node_modules).
-    $script:content | Should -Match '\[switch\]\$SkipNpmInstall' `
-      'build-green-package.ps1 must declare [switch]$SkipNpmInstall for fast iteration.'
   }
 
   It 'excludes queue.db* (runtime SQLite WAL files, never ship)' {
@@ -96,12 +133,20 @@ Describe 'green package README (operator guide)' {
       'green README must specify Node.js 20 LTS as the version.'
   }
 
-  It 'documents install + uninstall commands' {
+  It 'documents install + uninstall commands at agentInstall/ root (no scripts/ prefix)' {
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'README-green-install.md') -Raw
     $content | Should -Match 'install-agent\.ps1' `
       'green README must include the install-agent.ps1 invocation.'
     $content | Should -Match 'uninstall-agent\.ps1' `
       'green README must include the uninstall-agent.ps1 invocation.'
+    # 2026-08-23 flatten: operator runs `& C:\green\agentInstall\install-agent.ps1`,
+    # NOT `& C:\green\agentInstall\scripts\install-agent.ps1`. The README
+    # docstring must reflect the new layout or operators on the target machine
+    # will fail with "file not found".
+    $content | Should -Not -Match 'agentInstall\\scripts\\install-agent\.ps1' `
+      'green README must NOT reference the old agentInstall\scripts\install-agent.ps1 path — flatten landed 2026-08-23.'
+    $content | Should -Not -Match 'agentInstall\\scripts\\uninstall-agent\.ps1' `
+      'green README must NOT reference the old agentInstall\scripts\uninstall-agent.ps1 path — flatten landed 2026-08-23.'
   }
 
   It 'documents the install path difference vs MSI' {

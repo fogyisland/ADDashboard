@@ -38,7 +38,9 @@
   -AgentToken '<token>'
 
 # 升级 / 卸载
-.\update-agent.ps1 -ComputerName 'DC-BJ-01' -CenterUrl 'http://center:8080' -AgentToken '<token>'
+# 统一入口：已装就热更新（停服务 → 覆盖文件 → npm install → 启动）；未装就在终端提示输入 CenterUrl / AgentToken 后走 install-agent 流程
+start.bat                              # 本地：直接 start.bat（无需 -ExecutionPolicy）
+.\start.bat -ComputerName 'DC-BJ-01'   # 远程（start.bat 内部用 -ExecutionPolicy Bypass 调 upgrade-agent.ps1）
 .\uninstall-agent.ps1 -ComputerName 'DC-BJ-01'
 ```
 

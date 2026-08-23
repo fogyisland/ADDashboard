@@ -119,9 +119,17 @@
       <ComponentRef Id="Agent.Nssm" />
       <!-- WiX 5 auto-harvests Files into Components keyed per file. -->
       <Files Include="$(var.StagingDir)\agent\src\**" Directory="INSTALLDIR.src" />
-      <!-- node_modules: ~700+ files (axios + better-sqlite3 native + pino + transitive).
-           WiX 5 generates a Component per harvested file with ComponentId="*". -->
-      <Files Include="$(var.StagingDir)\node_modules\**" Directory="INSTALLDIR.node_modules" />
+      <!-- node_modules: NOT staged here. The deferred ConfigureAgentAction
+           runs npm install with the production-only flag against the staged
+           Node 20 + the staged agent/package.json right after files are
+           written (see ConfigureAgentAction.cs::RunNpmInstall).
+           INSTALLDIR.node_modules still exists as a Directory (Product.wxs)
+           so the CA has a stable cwd for npm; the MSI ships an empty
+           directory that npm fills in. Rationale: ~50 MB smaller MSI, no
+           platform-ABI drift across hosts, and one source of truth for deps
+           (the target's npm, not a build host's stale node_modules). Target
+           machine needs npm registry access — same pre-req as the green
+           package path. -->
     </ComponentGroup>
   </Fragment>
 </Wix>

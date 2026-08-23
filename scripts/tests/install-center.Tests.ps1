@@ -165,16 +165,16 @@ Describe 'install-center service recovery' {
     $helperContent | Should -Match '\[string\]\$Start\s*=\s*.SERVICE_AUTO_START.'
     $helperContent | Should -Not -Match '\[int\]\$Start\s*=\s*2'
 
-    foreach ($script in @('install-center.ps1','install-agent.ps1')) {
+    foreach ($script in @('install-center.ps1','Register-ADDashboardAgent.ps1')) {
       $scriptPath = Join-Path (Join-Path $PSScriptRoot '..') $script
       $content = Get-Content $scriptPath -Raw
       $content | Should -Not -Match '\-Start\s+2\b'  "Numeric -Start 2 in $script fails NSSM; use -Start SERVICE_AUTO_START."
-      $content | Should -Match '\-Start\s+SERVICE_AUTO_START'  "$script must pass the enum name."
+      $content | Should -Match 'SERVICE_AUTO_START'  "$script must pass the enum name (or its hardcoded literal in Invoke-Nssm)."
 
       # Mirror sync
       $publishScript = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') $script
       $pub = Get-Content $publishScript -Raw
-      $pub | Should -Match '\-Start\s+SERVICE_AUTO_START'  "publish/system/$script mirror out of sync."
+      $pub | Should -Match 'SERVICE_AUTO_START'  "publish/system/$script mirror out of sync."
     }
   }
 
@@ -184,7 +184,12 @@ Describe 'install-center service recovery' {
     # setting $Script:LogDir in its own scope and NSSM.psm1 reading it from
     # inside Set-NssmParameters — which silently returned $null and crashed
     # later as a Join-Path '-Path' binding error. Guard: NSSM.psm1 must
-    # own the state via Set-NssmLogDir, and every install script must call it.
+    # own the state via Set-NssmLogDir, and every NSSM.psm1-consuming
+    # script must call it.
+    # 2026-08-23: install-agent.ps1 + uninstall-agent.ps1 delegate to
+    # Register-ADDashboardAgent.ps1 (self-contained, no NSSM.psm1 import),
+    # so they no longer need Set-NssmLogDir. upgrade-center.ps1 is the
+    # center symmetry entry point and still uses NSSM.psm1.
     $nssmPath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'NSSM.psm1'
     $nssmContent = Get-Content $nssmPath -Raw
     $nssmContent | Should -Match '\$Script:LogDir\s*=.*Split-Path.*''Logs''' `
@@ -195,7 +200,7 @@ Describe 'install-center service recovery' {
       'Drop the old "requires Logger first" comment block — the indirection
       through Logger.psm1 `$Script:` was the root cause of the binding error.'
 
-    foreach ($script in @('install-center.ps1','install-agent.ps1')) {
+    foreach ($script in @('install-center.ps1','upgrade-center.ps1')) {
       $scriptPath = Join-Path (Join-Path $PSScriptRoot '..') $script
       $content = Get-Content $scriptPath -Raw
       $content | Should -Match 'Set-NssmLogDir' `

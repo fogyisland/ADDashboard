@@ -99,3 +99,8 @@ publish/installer/staging-agentInstall/
 # Green package build outputs are release artifacts — track them
 !publish/installer/agentInstall/
 !publish/installer/agentInstall.zip
+# ...but any node_modules that slips into the staged bundle must NEVER be
+# tracked (build-green-package.ps1 explicitly excludes it; this is defense
+# in depth). The bundle is node_modules-free by design — install-agent.ps1
+# runs `npm install --omit=dev` on the target machine instead.
+publish/installer/agentInstall/**/node_modules/

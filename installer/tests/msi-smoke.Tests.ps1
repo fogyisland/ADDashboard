@@ -8,13 +8,18 @@
   produced by `installer/build-msi.ps1` - `bin/x64/Release/zh-CN/addashboard-
   agent-x64-1.0.0.0.msi`).
 
-  What it covers (six It blocks):
+  What it covers (seven It blocks):
     1. silent install with CENTERURL / AGENTTOKEN / AGENTTYPE / INSTALLDIR
     2. expected files land under INSTALLDIR (agent.js, node/, nssm/, scripts/)
-    3. NSSM service ADReplicationAgent registered and Running
-    4. appsettings.json has the keys the deferred CA wrote
-    5. sc.exe qfailure shows NSSM recovery config (reset= 60 actions= restart/...)
-    6. appsettings.json persistence semantics: stays on disk after uninstall
+    3. node_modules\axios landed — proves the deferred CA's `npm install
+       --omit=dev` ran successfully on the target (npm failure rolls the
+       install back via the CA throwing, so this assertion is effectively
+       the same as checking the install step succeeded, but it pins down
+       *which* mechanism built node_modules — not some pre-existing copy)
+    4. NSSM service ADReplicationAgent registered and Running
+    5. appsettings.json has the keys the deferred CA wrote
+    6. sc.exe qfailure shows NSSM recovery config (reset= 60 actions= restart/...)
+    7. appsettings.json persistence semantics: stays on disk after uninstall
        (per R2 + Task 7 finding - file is owned by the CA, not the File table,
        so MSI's RemoveFiles does NOT delete it; cleanup is manual)
 
@@ -197,6 +202,17 @@ Describe 'MSI Agent Installer smoke' {
     Join-Path -Path $script:InstallDir -ChildPath 'appsettings.json'                         | Should -Exist
     Join-Path -Path $script:InstallDir -ChildPath 'scripts\collect-replication.ps1'          | Should -Exist
     Join-Path -Path $script:InstallDir -ChildPath 'scripts\collect-discovery.ps1'            | Should -Exist
+  }
+
+  It 'constructs node_modules\axios via deferred CA npm install' {
+    if ($script:SkipReason) { Set-ItResult -Skipped -Because $script:SkipReason; return }
+    # 2026-08-23: MSI no longer pre-bundles node_modules in Files.wxs.
+    # ConfigureAgentAction.RunNpmInstall runs `npm install --omit=dev`
+    # after file copy, populating INSTALLDIR/node_modules. We pin a single
+    # dep (axios) to confirm real install progress — npm's exit code can be
+    # 0 even when it skips work, so the post-check in RunNpmInstall asserts
+    # this exact file landed.
+    Join-Path -Path $script:InstallDir -ChildPath 'node_modules\axios\package.json' | Should -Exist
   }
 
   It 'registers NSSM service ADReplicationAgent as Running' {

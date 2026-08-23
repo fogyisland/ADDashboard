@@ -8,7 +8,7 @@ param(
   # T16: agent type discriminator. 'ad' (default) installs the legacy DC
   # collector with DisplayName "AD Replication Agent (on <host>)"; 'non-ad'
   # installs the member-server runtime with DisplayName "AD Dashboard
-  # Agent (Member)" and persists agentType to agent-config.json so the
+  # Agent (Member)" and persists agentType to appsettings.json so the
   # running process picks it up on next start. Backward compatible: callers
   # who omit the param keep the pre-T16 behavior.
   [ValidateSet('ad','non-ad')]
@@ -39,24 +39,32 @@ if (-not $InstallPath) {
 #   - Air-gapped environments where pulling the MSI binary is undesirable
 # Both paths produce the same service name (ADReplicationAgent) and the same
 # NSSM configuration, so you can switch between them freely.
+#
+# 2026-08-23 split: this script now ONLY does file copy + `npm install`; the
+# SCM-facing steps (appsettings.json write + NSSM install + NSSM parameters +
+# sc.exe failure recovery + Start-Service) live in
+# Register-ADDashboardAgent.ps1 — the single entry point shared with
+# uninstall-agent.ps1 and (future) the MSI's ConfigureAgentAction. This
+# eliminates the pre-split duplication where the green package was missing
+# the Set-ServiceRecovery call that the MSI always made, and gives the MSI
+# path a future option to delegate to PS1 without a second copy of the logic.
 # ============================================================================
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
+# Logger.psm1 supplies Write-Step / Write-Ok used in this script's file-copy
+# + npm-install phase. The SCM-facing steps (appsettings.json + NSSM + sc.exe
+# failure) live in Register-ADDashboardAgent.ps1 which has its own inline
+# logger so the two scripts are independently self-contained.
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'common\NSSM.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'common\Service.psm1') -Force
-
-# Ensure NSSM is available locally (no-op when remote — only used on the orchestrator)
+# Ensure NSSM is available locally (no-op when remote — only used on the orchestrator).
+# Common\NSSM.psm1 ships nssm.exe alongside agentInstall/ via build-green-package.ps1.
 . (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
 
-# Set log directory inside the NSSM/Logger modules' own $Script: scope — module
-# functions can't see the caller's $Script:LogDir, so we have to push the
-# value across explicitly via the modules' setters. Co-located under the
-# install dir so uninstall/upgrade scripts find it without an extra path arg.
+# Push LogDir into Logger.psm1's module-scoped $Script:LogDir (Write-Step /
+# Write-Ok etc. can't see the caller's variable directly).
 $Script:LogDir = Join-Path $InstallPath 'Logs'
 if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
-Set-NssmLogDir $Script:LogDir
 Set-LogDir $Script:LogDir
 
 if (-not $AgentSrc) { $AgentSrc = Join-Path $projectRoot 'agent' }
@@ -66,19 +74,17 @@ $node = (Get-Command node.exe -ErrorAction Stop).Source
 
 function Install-LocalAgent {
   Write-Step "installing local agent to $InstallPath (agentType=$AgentType)"
-  @($InstallPath, $psScriptDstDir, $Script:LogDir) | ForEach-Object {
+  @($InstallPath, $psScriptDstDir, (Join-Path $InstallPath 'Logs')) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
   Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
   Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
 
   # Always run `npm install --omit=dev` on the target machine to construct
-  # node_modules. The green package ships node_modules as a baseline (for
-  # air-gapped targets where the install might be inspected before npm runs),
-  # but the canonical install path is always npm install — it produces a
-  # production-only dependency tree regardless of what the source contains.
-  # Operators reading the install log should see this step explicitly so they
-  # know where the runtime deps come from.
+  # node_modules. The canonical install path is always npm install — it
+  # produces a production-only dependency tree regardless of what the source
+  # contains. Operators reading the install log should see this step explicitly
+  # so they know where the runtime deps come from.
   Push-Location $InstallPath
   try {
     Write-Step "constructing node_modules via npm install --omit=dev"
@@ -86,48 +92,24 @@ function Install-LocalAgent {
     if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
   } finally { Pop-Location }
 
-  $cfg = @{
-    centerUrl = $CenterUrl
-    agentId = $env:COMPUTERNAME
-    agentToken = $AgentToken
-    logLevel = 'info'
-    pollingIntervalMinutes = 15
-    queueDbPath = (Join-Path $InstallPath 'queue.db')
-    psScriptPath = "$InstallPath\scripts\collect-replication.ps1"
-    healthCheckIntervalMs = 600000
-    # T16: persist agentType so the running process picks it up on next
-    # start. The agent's loadConfig defaults to 'ad', so omitting the
-    # field in an old config keeps the legacy flow.
-    agentType = $AgentType
-  }
-  $cfg | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath 'appsettings.json') -Encoding UTF8
+  # Delegate the SCM-facing steps to Register-ADDashboardAgent.ps1:
+  #   - write appsettings.json (URL / token / agentType)
+  #   - NSSM install + 12 parameter set
+  #   - service recovery (NSSM AppExit + sc.exe failure)
+  #   - Start-Service via NSSM-managed SCM
+  # This is the same code path the MSI's ConfigureAgentAction calls (via its
+  # own CA; the CA file is not refactored to call this PS1 yet — see project
+  # backlog). The green package no longer diverges from the MSI on service
+  # recovery because both go through the same logic.
+  & (Join-Path $PSScriptRoot 'Register-ADDashboardAgent.ps1') `
+      -InstallPath $InstallPath `
+      -CenterUrl   $CenterUrl `
+      -AgentToken  $AgentToken `
+      -AgentType   $AgentType `
+      -NodePath    $node
+  if ($LASTEXITCODE -ne 0) { throw "Register-ADDashboardAgent.ps1 failed: $LASTEXITCODE" }
 
-  # T16: DisplayName differs by agent type. 'ad' keeps the legacy string
-  # (operators may have alerts / dashboards keyed off it); 'non-ad' gets
-  # the new "Member" label so the distinction is visible in services.msc.
-  if ($AgentType -eq 'non-ad') { $displayName = 'AD Dashboard Agent (Member)' }
-  else { $displayName = "AD Replication Agent (on $env:COMPUTERNAME)" }
-
-  # T16: Description differs by agent type. AD agents collect replication
-  # status for DCs; non-AD agents are member-server monitors that fetch
-  # per-host packages and heartbeat to the member-servers.touchLastSeen path.
-  if ($AgentType -eq 'non-ad') {
-    $description = 'AD Dashboard member-server monitor (self-register + heartbeat + package fetch)'
-  }
-  else {
-    $description = 'AD Replication collection agent'
-  }
-
-  Install-NssmService -Name 'ADReplicationAgent' `
-    -Application $node `
-    -AppDirectory $InstallPath `
-    -AppParameters 'agent.js' `
-    -DependOnService @('DNS Client','Netlogon') `
-    -DisplayName $displayName `
-    -Description $description `
-    -Start SERVICE_AUTO_START
-  if (Start-ServiceSafe -Name 'ADReplicationAgent' -WaitSeconds 20) { Write-Ok "agent started on $env:COMPUTERNAME" }
-  else { Write-Err2 "agent failed to start on $env:COMPUTERNAME" }
+  Write-Ok "agent installed on $env:COMPUTERNAME"
 }
 
 foreach ($cn in $ComputerName) {

@@ -94,13 +94,15 @@ cd installer
 
 ```
 publish\installer\agentInstall\
-├── agent\                 预装的 agent 运行时（含 node_modules）
+├── agent\                 预装的 agent 运行时（无 node_modules — 目标机现场构造）
 ├── scripts\               install / uninstall / common\ 模块
 ├── nssm\nssm.exe
 └── README-green-install.md
 ```
 
-绿色包跟 MSI 的 staging 逻辑一致（`build-msi.ps1:14-132` vs `build-green-package.ps1`），改 `agent/` 后两个包都要重新 build。
+绿色包跟 MSI 的 staging 逻辑一致（`build-msi.ps1:1-130` vs `build-green-package.ps1`），改 `agent/` 后两个包都要重新 build。
+
+> **目标机 node_modules 现场构造**(2026-08-23 起):MSI + 绿色包都**不**打包 `node_modules` 了 — MSI 的 deferred CA `ConfigureAgentAction.RunNpmInstall` 和绿色包的 `install-agent.ps1` 都会在**目标机**上跑 `npm install --omit=dev`。所以**两条路径都**要求目标机能访问 npm registry(配 `.npmrc` 走内网镜像)。两条路径的 install 逻辑、产物、行为保持一致。
 
 > ⚠️ **改源后必须本地 rebuild**。本仓库**不**自动 rebuild MSI — 编辑 `installer/agent-installer/`（`.wxs` / `.cs` / `appsettings.template.json` 等）后,`publish/installer/ADDashboardAgent.msi` 仍是上次 build 的旧版。Operator 拿到旧 MSI 装会装到旧行为(Launch message、旧 CA 逻辑等)。commit 前必须跑 `build-msi.ps1` 一次,把新 MSI 一起 commit。
 >

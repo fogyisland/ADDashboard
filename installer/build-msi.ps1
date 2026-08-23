@@ -6,21 +6,22 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $staging = Join-Path $root 'publish\installer\staging'
 if (-not (Test-Path $staging)) { New-Item -ItemType Directory -Force -Path $staging | Out-Null }
 
-# 1. Stage agent source (exclude tests + appsettings.json + node_modules).
-#    Use robocopy for reliable recursive copy with directory-name exclusion: PS 5.1's
-#    Copy-Item -Exclude doesn't apply to nested directories under -Recurse.
-#    robocopy exit codes 8+ indicate real failures; 0-7 are success/info.
+# 1. Stage agent source (exclude tests + appsettings.json + node_modules +
+#    package-lock.json). Use robocopy for reliable recursive copy with
+#    directory-name exclusion: PS 5.1's Copy-Item -Exclude doesn't apply
+#    to nested directories under -Recurse. robocopy exit codes 8+ indicate
+#    real failures; 0-7 are success/info.
 #    Note: agent/package.json is staged (needed at runtime for ESM detection).
-#    agent/package-lock.json is NOT staged — we use the root monorepo lockfile
-#    below (Task 3 review: per-workspace lockfiles drift from the root and
-#    ship versions the test suite never runs against).
+#    agent/package-lock.json is NOT staged — see step 4 comment for why we no
+#    longer copy a lockfile into the MSI.
+#    agent/node_modules is NOT staged — see step 4 comment for why.
 $agentSrc = Join-Path $root 'agent'
 $agentDst = Join-Path $staging 'agent'
 if (Test-Path $agentDst) { Remove-Item $agentDst -Recurse -Force }
 robocopy "$agentSrc" "$agentDst" /MIR /XD "node_modules" "tests" /XF "appsettings.json" "package-lock.json" | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy agent source failed: $LASTEXITCODE" }
 # robocopy returns 0-7 on success; 1 = "files copied". Reset $LASTEXITCODE so
-# downstream checks (npm install, Invoke-WebRequest) aren't poisoned by it.
+# downstream checks (Invoke-WebRequest) aren't poisoned by it.
 $LASTEXITCODE = 0
 
 # 2. Stage appsettings.template.json
@@ -71,50 +72,18 @@ if (-not (Test-Path (Join-Path $nodeDir 'node.exe'))) {
   Remove-Item $nodeZip -Force
 }
 
-# 4. Stage node_modules (npm install --omit=dev, idempotent).
-#    Installs into staging/node_modules (NOT staging/agent/node_modules)
-#    because the runtime layout has node_modules as a sibling of node/ and
-#    src/ under INSTALLDIR; Task 4's CA sets the working dir accordingly.
-#    Prepend the staged Node 20 to PATH so prebuild-install fetches the
-#    matching native binary (NODE_MODULE_VERSION 115); without this, a
-#    build host running a newer Node (e.g. 25.x) would download a binary
-#    that the staged Node 20 cannot load.
-$nodeModulesDst = Join-Path $staging 'node_modules'
-if (-not (Test-Path $nodeModulesDst)) {
-  $origPath = $env:PATH
-  $env:PATH = "$nodeDir;$env:PATH"
-  Push-Location $staging
-  try {
-    # Drive npm with the ROOT monorepo lockfile so resolution matches what
-    # `npm install` at the repo root produces for the agent workspace
-    # (axios 1.18.1, better-sqlite3 11.10.0, pino 9.14.0). The lockfile is
-    # a super-set of the agent's needs; npm ci installs only the deps
-    # declared in the staging package.json (the agent's deps). Using the
-    # root lockfile eliminates the drift found by Task 3 review: a per-
-    # workspace agent lockfile (now removed) was resolving axios 1.19.0
-    # because it was generated in a temp dir outside the workspace.
-    $rootLockSrc = Join-Path $root 'package-lock.json'
-    $pkgDst = Join-Path $staging 'package.json'
-    $lockDst = Join-Path $staging 'package-lock.json'
-    # The staging cwd's "package.json" must declare only the agent's deps so
-    # npm ci installs the correct subset (no center/frontend bloat). The
-    # root's package.json includes all three workspaces; use the agent's.
-    if (-not (Test-Path $pkgDst)) {
-      Copy-Item -Path (Join-Path $root 'agent\package.json') -Destination $pkgDst -Force
-    }
-    if (-not (Test-Path $lockDst)) {
-      Copy-Item -Path $rootLockSrc -Destination $lockDst -Force
-    }
-    npm ci --omit=dev --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { throw "npm ci failed: $LASTEXITCODE" }
-    # Cleanup staging-root package.json + lockfile; node_modules remains
-    Remove-Item $pkgDst -Force -ErrorAction SilentlyContinue
-    Remove-Item $lockDst -Force -ErrorAction SilentlyContinue
-  } finally {
-    Pop-Location
-    $env:PATH = $origPath
-  }
-}
+# 4. (intentionally empty — node_modules + lockfile are NOT staged here.)
+#
+#    Why this step is gone (2026-08-23): the MSI used to run `npm ci
+#    --omit=dev` at build time to pre-populate staging/node_modules, then
+#    bundle ~700+ files via Files.wxs. The deferred ConfigureAgentAction now
+#    runs `npm install --omit=dev` against the staged Node 20 + the staged
+#    agent/package.json on the TARGET machine, so node_modules is constructed
+#    fresh after install. Rationale mirrors build-green-package.ps1:1's
+#    comment — ~50 MB smaller MSI, no platform-ABI drift across hosts, and
+#    one source of truth for deps (the target's npm, not a build host's
+#    stale node_modules). The target machine needs npm registry access;
+#    see ConfigureAgentAction.cs::RunNpmInstall for the failure modes.
 
 # 5. Stage NSSM (copy from publish/nssm). Task 4's ConfigureAgentAction calls
 #    `nssm install ADReplicationAgent` at install time, so nssm.exe must be in
