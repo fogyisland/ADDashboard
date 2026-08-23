@@ -70,7 +70,17 @@ Set-LogDir $Script:LogDir
 if (-not $AgentSrc) { $AgentSrc = Join-Path $projectRoot 'agent' }
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
-$node = (Get-Command node.exe -ErrorAction Stop).Source
+# Pre-flight: Node.js 20 LTS is required (green package does NOT bundle
+# Node — unlike MSI). upgrade-agent.ps1 already checks this before
+# delegating here, but operators who call install-agent.ps1 directly
+# (WinRM remote install, automation) need the same guard. Without this,
+# `Get-Command node.exe -ErrorAction Stop` throws an unfriendly
+# CommandNotFoundException that doesn't point at the README.
+$nodePreFlight = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $nodePreFlight) {
+  throw "node.exe not found on PATH. The green package does NOT bundle Node.js (unlike the MSI). Install Node.js 20 LTS x64 first — see installer/README-green-install.md. If node.exe IS installed but missing from PATH, add its directory to PATH and re-run."
+}
+$node = $nodePreFlight.Source
 
 function Install-LocalAgent {
   Write-Step "installing local agent to $InstallPath (agentType=$AgentType)"

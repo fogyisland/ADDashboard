@@ -178,6 +178,37 @@ Describe 'install-center service recovery' {
     }
   }
 
+  It 'NSSM.psm1 Get-NssmPath includes the green-package candidate (no needless download when nssm is bundled)' {
+    # 2026-08-23: install-agent.ps1 calls Ensure-Nssm.ps1 before delegating
+    # to Register-ADDashboardAgent.ps1. Ensure-Nssm.ps1 first calls
+    # NSSM.psm1::Get-NssmPath and falls through to download only if no
+    # candidate matches. The green package bundles nssm at
+    # <green>/agentInstall/nssm/nssm.exe — NSSM.psm1 (located at
+    # <green>/agentInstall/common/NSSM.psm1) must search one level up for it,
+    # otherwise the bundled nssm is invisible and a needless network call
+    # fires (and breaks air-gapped installs that legitimately bundle nssm).
+    #
+    # Pattern matches the literal substring `'..\nssm'` that appears in the
+    # candidate `(Join-Path (Join-Path $PSScriptRoot '..\nssm') 'nssm.exe')`.
+    # Use a here-string to avoid PS single-quote / backslash escape hell.
+    $pattern = @'
+'\.\.\\nssm'
+'@
+
+    $nssmPath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'common') 'NSSM.psm1'
+    $nssmContent = Get-Content $nssmPath -Raw
+    $nssmContent | Should -Match $pattern `
+      'NSSM.psm1::Get-NssmPath must include <$PSScriptRoot>\..\nssm\nssm.exe so the green package bundled nssm is found (no needless download).'
+
+    # Mirror sync: publish/system/scripts/common/NSSM.psm1 must match.
+    $publishNssmPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts\common') 'NSSM.psm1'
+    if (Test-Path $publishNssmPath) {
+      $pub = Get-Content $publishNssmPath -Raw
+      $pub | Should -Match $pattern `
+        'publish/system/scripts/common/NSSM.psm1 mirror out of sync with NSSM.psm1 green-package candidate.'
+    }
+  }
+
   It 'NSSM.psm1 owns its $Script:LogDir (modules cannot read caller script-scope variables)' {
     # Module functions resolve $Script:LogDir in their OWN module scope, not
     # the caller's script scope. The previous layout had install-center.ps1

@@ -27,9 +27,24 @@ function Set-NssmLogDir {
 
 function Get-NssmPath {
   if ($Script:NssmPath -and (Test-Path $Script:NssmPath)) { return $Script:NssmPath }
+  # Search order — all $PSScriptRoot-relative so the same module resolves
+  # nssm correctly regardless of where the script tree lives:
+  #   1. <root>/publish/system/nssm/nssm.exe  — dev tree (canonical, post-Ensure-Nssm)
+  #   2. <root>/nssm/nssm.exe                 — alt dev tree
+  #   3. <root>/scripts/../nssm/nssm.exe      — GREEN PACKAGE (script at
+  #      <green>/agentInstall/common/, nssm bundled at <green>/agentInstall/nssm/).
+  #      Without this candidate, Ensure-Nssm.ps1 — invoked by install-agent.ps1
+  #      before delegating to Register-ADDashboardAgent.ps1 — fails to find
+  #      the bundled nssm and falls through to a network download, which is
+  #      both wasteful AND breaks air-gapped installs that legitimately bundle
+  #      nssm at <green>/nssm/.
+  #   4. C:\Tools\nssm\win64\nssm.exe         — operator-installed copy
+  #   5. C:\Tools\nssm-2.24\win64\nssm.exe     — operator-installed copy
+  #   6. <root>/tools/nssm.exe                — alt
   $candidates = @(
     (Join-Path (Join-Path $PSScriptRoot '..\..\publish\system\nssm') 'nssm.exe'),
     (Join-Path (Join-Path $PSScriptRoot '..\..\nssm') 'nssm.exe'),
+    (Join-Path (Join-Path $PSScriptRoot '..\nssm') 'nssm.exe'),
     'C:\Tools\nssm\win64\nssm.exe',
     'C:\Tools\nssm-2.24\win64\nssm.exe',
     (Join-Path $PSScriptRoot '..\..\tools\nssm.exe')

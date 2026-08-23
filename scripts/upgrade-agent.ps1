@@ -55,6 +55,19 @@ if (-not (Test-Path $Script:LogDir)) {
 }
 Set-LogDir $Script:LogDir
 
+# Pre-flight: Node.js 20 LTS is required (green package does NOT bundle
+# Node — unlike MSI). Fail fast before we prompt for CenterUrl/AgentToken
+# so the operator doesn't type creds only to discover Node is missing.
+# See installer/README-green-install.md "目标机器前置条件".
+$nodePreFlight = Get-Command node.exe -ErrorAction SilentlyContinue
+if (-not $nodePreFlight) {
+  throw "node.exe not found on PATH. The green package does NOT bundle Node.js (unlike the MSI). Install Node.js 20 LTS x64 first — see installer/README-green-install.md. If node.exe IS installed but missing from PATH, add its directory to PATH and re-run."
+}
+$nodeMajor = ($nodePreFlight.Version.Major.ToString())
+if ([int]$nodeMajor -ne 20) {
+  Write-Step "WARNING: node.exe reports major version $nodeMajor — green package expects 20 LTS. Continuing anyway; if npm install fails, install Node 20 LTS."
+}
+
 $ServiceName = 'ADReplicationAgent'
 $installed = [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)
 

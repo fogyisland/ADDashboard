@@ -112,4 +112,27 @@ Describe 'upgrade-agent.ps1' {
     $content | Should -Match 'Start-Service\s+-Name\s+\$ServiceName' `
       'hot-update must start the service via Start-Service.'
   }
+
+  It 'pre-flights Node.js before delegating (fail fast if not on PATH)' {
+    # 2026-08-23: green package does NOT bundle Node.js (unlike MSI). If the
+    # target machine lacks node.exe on PATH, prompting for CenterUrl/AgentToken
+    # first then failing at "Get-Command node.exe -ErrorAction Stop" wastes the
+    # operator's time. Pre-flight the Node check BEFORE the prompts so the
+    # error fires before any cred input is requested.
+    $content | Should -Match 'Get-Command\s+node\.exe' `
+      'upgrade-agent.ps1 must pre-flight Node.js presence (green package does not bundle Node).'
+    $content | Should -Match 'node\.exe not found on PATH' `
+      'upgrade-agent.ps1 must throw a friendlier error than the raw CommandNotFoundException if Node is missing.'
+    # Order: Node check must appear BEFORE Read-Host CenterUrl + Read-Host -AsSecureString.
+    $nodeIdx   = $content.IndexOf('Get-Command node.exe')
+    $centerIdx = $content.IndexOf("Read-Host 'Enter CenterUrl")
+    $tokenIdx  = $content.IndexOf("Read-Host -AsSecureString 'Enter AgentToken'")
+    $nodeIdx   | Should -BeGreaterOrEqual 0
+    $centerIdx | Should -BeGreaterOrEqual 0
+    $tokenIdx  | Should -BeGreaterOrEqual 0
+    $nodeIdx   | Should -BeLessThan $centerIdx `
+      'Node pre-flight must run BEFORE CenterUrl prompt — fail fast.'
+    $nodeIdx   | Should -BeLessThan $tokenIdx `
+      'Node pre-flight must run BEFORE AgentToken prompt — fail fast.'
+  }
 }
