@@ -14,10 +14,12 @@
 |---|---|---|
 | Windows | Server 2016+ / Win10+ | `[Environment]::OSVersion` |
 | PowerShell | 5.1 (Win 内置) | `$PSVersionTable.PSVersion` |
-| Node.js | 20 LTS x64 | `node --version`(需输出 v20.x)|
-| 网络 | 可达 `CenterUrl`(传给 `-CenterUrl` 的 URL) | `Test-NetConnection center-host -Port 8080` |
+| Node.js | 20 LTS x64(自带 npm) | `node --version`(需输出 v20.x)`npm --version` |
+| 网络 | 可达 `CenterUrl` + npm registry | `Test-NetConnection center-host -Port 8080`;`npm ping` |
 
 MSI 把 Node.js 一起打包进安装包;绿色包**不**打包 Node.js,假设目标机已经装好(运维标配)。
+
+**重要**:即使绿色包已经把 `node_modules` 一起打包过来了,`install-agent.ps1` **仍然**会跑 `npm install --omit=dev` 重新构造一份。原因是 npm 会按目标机的 Node 版本 + 平台 ABI 重新生成 package-lock 解析 + native binding,比直接拷过去更稳。所以目标机需要 **npm + 能访问 npm registry**(若走公司内网镜像就配 `.npmrc`)。
 
 ## 安装步骤
 
@@ -92,7 +94,7 @@ Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 20
 
 | | MSI (主路径) | 绿色包 (旁路) |
 |---|---|---|
-| Node.js | 内嵌 Node 20 LTS | 目标机预装 |
+| Node.js | 内嵌 Node 20 LTS | 目标机预装(自带 npm) |
 | 安装原子性 | InstallFiles + CAs 原子 | 手工,半成品状态可观测 |
 | 远程部署 | `msiexec /qn` via WinRM | PowerShell `Invoke-Command` |
 | 卸载 | `msiexec /x ... /qn` | 跑 uninstall-agent.ps1 |

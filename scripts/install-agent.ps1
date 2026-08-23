@@ -70,10 +70,21 @@ function Install-LocalAgent {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
   Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
-  if (-not (Test-Path (Join-Path $InstallPath 'node_modules'))) {
-    Push-Location $InstallPath; try { npm install --omit=dev } finally { Pop-Location }
-  }
   Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
+
+  # Always run `npm install --omit=dev` on the target machine to construct
+  # node_modules. The green package ships node_modules as a baseline (for
+  # air-gapped targets where the install might be inspected before npm runs),
+  # but the canonical install path is always npm install — it produces a
+  # production-only dependency tree regardless of what the source contains.
+  # Operators reading the install log should see this step explicitly so they
+  # know where the runtime deps come from.
+  Push-Location $InstallPath
+  try {
+    Write-Step "constructing node_modules via npm install --omit=dev"
+    npm install --omit=dev --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
+  } finally { Pop-Location }
 
   $cfg = @{
     centerUrl = $CenterUrl

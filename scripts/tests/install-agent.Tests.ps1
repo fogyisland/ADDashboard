@@ -39,4 +39,18 @@ Describe 'install-agent.ps1' {
     $content | Should -Not -Match 'C:\\addashboard\\Agent' `
       'script must not hardcode C:\addashboard\Agent — must be script-relative.'
   }
+
+  It 'always runs npm install --omit=dev (not conditional on shipped node_modules)' {
+    # 2026-08-23: User reported the published green package contained build files
+    # but no node_modules. The canonical install path now always runs npm install
+    # on the target machine — even though the green package ships node_modules as
+    # a baseline — to guarantee production-only deps resolved against the target's
+    # Node version. Guard: an unconditional `npm install --omit=dev` exists, AND
+    # the prior conditional gate `if (-not (Test-Path node_modules))` is gone.
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'npm\s+install\s+--omit=dev' `
+      'install-agent.ps1 must run `npm install --omit=dev` to construct node_modules on the target.'
+    $content | Should -Not -Match 'if\s*\(\s*-not\s+\(Test-Path\s+\(Join-Path\s+\$InstallPath\s+''node_modules''\)\)\)\s*\{[^}]*npm\s+install' `
+      'the conditional `if (-not (Test-Path node_modules)) { npm install }` gate must NOT exist — npm install is unconditional now.'
+  }
 }
