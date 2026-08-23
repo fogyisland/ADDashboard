@@ -58,9 +58,9 @@ Describe 'build-green-package.ps1' {
       'the package-lock.json reference must be the root monorepo lockfile (rootLockSrc / $root).'
   }
 
-  It 'outputs publish/installer/ADDashboardAgent-green/ + .zip' {
-    $script:content | Should -Match 'ADDashboardAgent-green' `
-      'final output must be named ADDashboardAgent-green (folder + zip).'
+  It 'outputs publish/installer/agentInstall/ + .zip' {
+    $script:content | Should -Match 'agentInstall' `
+      'final output must be named agentInstall (folder + zip).'
   }
 
   It 'has -SkipNpmInstall switch for fast iteration' {
@@ -133,14 +133,14 @@ Describe 'installer README covers both paths' {
 }
 
 Describe 'green package wired into publish.zip' {
-  It 'build-publish-zip.ps1 excludes publish/installer/staging-green/' {
-    # build-green-package.ps1's staging dir is `publish/installer/staging-green/`,
-    # moved to `ADDashboardAgent-green/` at end of build. If a build was
-    # interrupted mid-copy, staging-green would persist; publish.zip should
-    # exclude it (defense in depth, same as MSI's staging exclusion).
+  It 'build-publish-zip.ps1 excludes publish/installer/staging-agentInstall/' {
+    # build-green-package.ps1's staging dir is `publish/installer/staging-agentInstall/`,
+    # moved to `agentInstall/` at end of build. If a build was interrupted
+    # mid-copy, staging-agentInstall would persist; publish.zip should exclude
+    # it (defense in depth, same as MSI's staging exclusion).
     $buildZipPath = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'scripts\build-publish-zip.ps1'
     $content = Get-Content $buildZipPath -Raw
-    $content | Should -Match "staging-green" `
-      'scripts/build-publish-zip.ps1 must exclude publish/installer/staging-green/ so an interrupted build does not ship stale staging.'
+    $content | Should -Match "staging-agentInstall" `
+      'scripts/build-publish-zip.ps1 must exclude publish/installer/staging-agentInstall/ so an interrupted build does not ship stale staging.'
   }
 }

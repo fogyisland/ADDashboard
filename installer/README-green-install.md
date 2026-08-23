@@ -1,6 +1,6 @@
 # AD Dashboard Agent — 绿色包安装指南
 
-本目录是 `ADDashboardAgent-green/` 绿色安装包,无需 MSI、无需 SCCM,直接拷贝 + 跑脚本即可部署 Agent 服务。适合:
+本目录是 `agentInstall/` 绿色安装包,无需 MSI、无需 SCCM,直接拷贝 + 跑脚本即可部署 Agent 服务。适合:
 
 - **空气隔离环境**:不能拉 MSI 二进制,只能手工传文件
 - **MSI 调试**:MSI 安装失败 (2343 / 1925 等) 时用作旁路,验证 Agent 本身能起来
@@ -27,11 +27,11 @@ MSI 把 Node.js 一起打包进安装包;绿色包**不**打包 Node.js,假设�
 
 ```powershell
 # 方式 A:本地解压后整目录拷过去
-Expand-Archive ADDashboardAgent-green.zip -DestinationPath C:\green\
+Expand-Archive agentInstall.zip -DestinationPath C:\green\
 # 或 SMB / WinRM Copy-Item / scp,文件大小约 50-80 MB(含 node_modules)
 
 # 方式 B:从管理机用 WinRM 远程推
-Copy-Item -Recurse \\fileserver\share\ADDashboardAgent-green `
+Copy-Item -Recurse \\fileserver\share\agentInstall `
           \\target-server\C$\green\
 ```
 
@@ -41,7 +41,7 @@ Copy-Item -Recurse \\fileserver\share\ADDashboardAgent-green `
 
 ```powershell
 $env:PSExecutionPolicyPreference = 'Bypass'
-& C:\green\ADDashboardAgent-green\scripts\install-agent.ps1 `
+& C:\green\agentInstall\scripts\install-agent.ps1 `
   -ComputerName localhost `
   -CenterUrl 'http://center.example.com:8080' `
   -AgentToken '<token-from-center-ui>' `
@@ -53,7 +53,7 @@ $env:PSExecutionPolicyPreference = 'Bypass'
 
 ```powershell
 $cred = Get-Credential  # 目标机管理员
-$block = [scriptblock]::Create((Get-Content -Raw 'C:\green\ADDashboardAgent-green\scripts\install-agent.ps1'))
+$block = [scriptblock]::Create((Get-Content -Raw 'C:\green\agentInstall\scripts\install-agent.ps1'))
 Invoke-Command -ComputerName target01,target02 -Credential $cred -ScriptBlock $block `
   -ArgumentList @(@('target01','target02'), 'http://center:8080', '<token>', 'ad', 'C:\addashboard\Agent')
 ```
@@ -71,7 +71,7 @@ Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 20
 ## 卸载
 
 ```powershell
-& C:\green\ADDashboardAgent-green\scripts\uninstall-agent.ps1 `
+& C:\green\agentInstall\scripts\uninstall-agent.ps1 `
   -InstallPath 'C:\addashboard\Agent'
 ```
 

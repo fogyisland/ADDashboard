@@ -1,4 +1,4 @@
-# build-green-package.ps1 — assemble publish/installer/ADDashboardAgent-green/
+# build-green-package.ps1 — assemble publish/installer/agentInstall/
 # (a "green" / portable agent bundle) and its zip.
 #
 # Why this exists alongside build-msi.ps1:
@@ -11,7 +11,7 @@
 #     can switch between paths freely.
 #
 # Layout produced:
-#   publish/installer/ADDashboardAgent-green/
+#   publish/installer/agentInstall/
 #     agent/              pre-installed agent runtime (lowercase to match
 #                         scripts/install-agent.ps1's $AgentSrc default)
 #     scripts/            install-agent.ps1 + uninstall-agent.ps1 + common/
@@ -27,15 +27,15 @@
 param(
   # When set, skip rebuilding node_modules. Use this when iterating on the
   # agent source between green-package builds — pass the existing
-  # publish/installer/ADDashboardAgent-green/ as the source instead.
+  # publish/installer/agentInstall/ as the source instead.
   [switch]$SkipNpmInstall
 )
 
 $ErrorActionPreference = 'Stop'
 $root       = Resolve-Path (Join-Path $PSScriptRoot '..')
-$staging    = Join-Path $root 'publish\installer\staging-green'
-$greenDst   = Join-Path $root 'publish\installer\ADDashboardAgent-green'
-$zipPath    = Join-Path $root 'publish\installer\ADDashboardAgent-green.zip'
+$staging    = Join-Path $root 'publish\installer\staging-agentInstall'
+$greenDst   = Join-Path $root 'publish\installer\agentInstall'
+$zipPath    = Join-Path $root 'publish\installer\agentInstall.zip'
 
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
@@ -133,7 +133,7 @@ if ((-not $SkipNpmInstall) -and (-not (Test-Path $nodeModulesDst))) {
 $readmeDst = Join-Path $staging 'README-green-install.md'
 Copy-Item -Path (Join-Path $PSScriptRoot 'README-green-install.md') -Destination $readmeDst -Force
 
-# 6. Move staging -> final destination (publish/installer/ADDashboardAgent-green/).
+# 6. Move staging -> final destination (publish/installer/agentInstall/).
 #    Use Move-Item rather than leaving as staging/ so the publish bundle has
 #    a stable, descriptive artifact name. Atomic on the same volume.
 if (Test-Path $greenDst) { Remove-Item $greenDst -Recurse -Force }

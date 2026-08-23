@@ -5,7 +5,7 @@
 | 形态 | 文件 | 适用场景 |
 |---|---|---|
 | **MSI**（主路径） | `publish/installer/ADDashboardAgent.msi` | 生产 / SCCM / GPO 批量部署 / `msiexec /qn` |
-| **绿色包**（旁路） | `publish/installer/ADDashboardAgent-green/` + `.zip` | 空气隔离 / MSI 安装调试 / 测试 |
+| **绿色包**（旁路） | `publish/installer/agentInstall/` + `.zip` | 空气隔离 / MSI 安装调试 / 测试 |
 
 两条路径产生的服务名一致（`ADReplicationAgent`），NSSM 配置一致 — 可任意切换。
 
@@ -84,7 +84,7 @@ cd installer
 .\build-green-package.ps1
 ```
 
-产出 `publish/installer/ADDashboardAgent-green/` 文件夹 + `publish/installer/ADDashboardAgent-green.zip`。
+产出 `publish/installer/agentInstall/` 文件夹 + `publish/installer/agentInstall.zip`。
 
 需要本机装好：
 
@@ -93,7 +93,7 @@ cd installer
 构建产物：
 
 ```
-publish\installer\ADDashboardAgent-green\
+publish\installer\agentInstall\
 ├── agent\                 预装的 agent 运行时（含 node_modules）
 ├── scripts\               install / uninstall / common\ 模块
 ├── nssm\nssm.exe
