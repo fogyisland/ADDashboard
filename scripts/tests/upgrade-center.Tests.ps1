@@ -228,70 +228,34 @@ Describe 'upgrade-center HTTP readiness probe' {
   }
 }
 
-Describe 'update entry scripts (publish/system/update.{ps1,bat})' {
+Describe 'update entry scripts removed (publish/system/update.{ps1,bat})' {
   BeforeAll {
-    # The update entry scripts live ONLY at publish/system/ root — there is
-    # no scripts/update.ps1 mirror (same convention as start.ps1 / start.bat).
+    # 2026-08-23 cleanup: publish/system/update.{ps1,bat} were a stale-UI
+    # workaround that always rebuilt dist locally via `npm run build:web`.
+    # Since 2026-08-22 center+frontend merge SDD, publish/system/center/dist/
+    # is git-tracked and byte-identical to a fresh `npm run build:web` for
+    # the same commit (vite build is deterministic). The local rebuild is
+    # redundant — operators should run upgrade-center.ps1 directly and trust
+    # the shipped dist. If a future dev needs the rebuild escape hatch,
+    # pass -RebuildFrontend explicitly on upgrade-center.ps1.
     $script:publishRoot = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system'
     $script:updatePs1   = Join-Path $script:publishRoot 'update.ps1'
     $script:updateBat   = Join-Path $script:publishRoot 'update.bat'
-    $script:updatePs1Content = if (Test-Path $script:updatePs1) { Get-Content $script:updatePs1 -Raw } else { '' }
-    $script:updateBatContent = if (Test-Path $script:updateBat) { Get-Content $script:updateBat -Raw } else { '' }
+    $script:upgradePs1  = Join-Path (Join-Path $script:publishRoot 'scripts') 'upgrade-center.ps1'
   }
 
-  It 'publish/system/update.ps1 exists (top-level entry, parallel to start.ps1)' {
-    Test-Path $script:updatePs1 | Should -BeTrue `
-      'publish/system/update.ps1 must exist as the user-facing post-install entry (parallel to start.ps1).'
+  It 'publish/system/update.ps1 does NOT exist (replaced by upgrade-center.ps1)' {
+    Test-Path $script:updatePs1 | Should -BeFalse `
+      'publish/system/update.ps1 was removed 2026-08-23 — operators run upgrade-center.ps1 directly. If you are adding it back, the -RebuildFrontend always-rebuild policy is now redundant since shipped dist is git-tracked.'
   }
 
-  It 'publish/system/update.bat exists (cmd parallel of update.ps1)' {
-    Test-Path $script:updateBat | Should -BeTrue `
-      'publish/system/update.bat must exist for cmd-shell operators (parallel to start.bat).'
+  It 'publish/system/update.bat does NOT exist (replaced by upgrade-center.ps1)' {
+    Test-Path $script:updateBat | Should -BeFalse `
+      'publish/system/update.bat was removed 2026-08-23 — cmd-shell operators call upgrade-center.ps1 via powershell.exe -File directly.'
   }
 
-  It 'update.ps1 declares mandatory -WebAdminPassword (web login credential, NOT DB password)' {
-    # Regression guard for the rename ae5ae39 — admin password param name
-    # distinguishes "web admin login" from the DB password in appsettings.json.
-    $script:updatePs1Content | Should -Match '\[Parameter\(Mandatory\)\]\s*\[string\]\$WebAdminPassword' `
-      'update.ps1 must require -WebAdminPassword — migration apply needs admin auth, and the name must make clear it is the web admin login credential (bcrypt in sys_users), not the DB password.'
-  }
-
-  It 'update.ps1 forwards -RebuildFrontend to upgrade-center.ps1 (always rebuild policy)' {
-    # The whole point of update.ps1 is the "always rebuild" policy: a future
-    # refactor that drops -RebuildFrontend would silently fall back to shipped-
-    # dist copy (re-introducing the stale-UI trap). Regression guard.
-    $script:updatePs1Content | Should -Match '\$upgradeScript\b' `
-      'update.ps1 must reference $upgradeScript as the forwarding target.'
-    $script:updatePs1Content | Should -Match '@forward\s+-RebuildFrontend' `
-      'update.ps1 must splat @forward and append -RebuildFrontend so callers cannot forget the switch.'
-  }
-
-  It 'update.ps1 splat keys match upgrade-center.ps1 param names (lesson 61 regression)' {
-    # Lesson 61: replace_all double-application on splat keys created
-    # $WebWebAdminUser (runtime crash). Guard both keys must be present and
-    # matching the new param names exactly.
-    $script:updatePs1Content | Should -Match 'WebAdminUser\s*=' `
-      'update.ps1 @forward must include WebAdminUser key (lesson 61 regression guard).'
-    $script:updatePs1Content | Should -Match 'WebAdminPassword\s*=' `
-      'update.ps1 @forward must include WebAdminPassword key (lesson 61 regression guard).'
-    $script:updatePs1Content | Should -Not -Match 'WebWeb' `
-      'update.ps1 must NOT contain doubled prefixes like $WebWebAdminUser (lesson 61 bug).'
-  }
-
-  It 'update.ps1 propagates exit code via exit $LASTEXITCODE' {
-    # Without this line, the wrapping `& powershell.exe -File $upgradeScript`
-    # would lose the failure signal — calling update.ps1 from a script wrapper
-    # would always report success even if upgrade-center.ps1 failed.
-    $script:updatePs1Content | Should -Match 'exit\s+\$LASTEXITCODE' `
-      'update.ps1 must end with `exit $LASTEXITCODE` so failure signals propagate (matches start.ps1:56 pattern).'
-  }
-
-  It 'update.bat forwards %* and appends -RebuildFrontend' {
-    $script:updateBatContent | Should -Match '%\*' `
-      'update.bat must forward caller args via %* so callers pass -WebAdminPassword etc. directly.'
-    $script:updateBatContent | Should -Match '%~dp0' `
-      'update.bat must derive script dir via %~dp0 (works regardless of caller cwd).'
-    $script:updateBatContent | Should -Match '-RebuildFrontend' `
-      'update.bat must append -RebuildFrontend so cmd-shell operators also get always-rebuild policy.'
+  It 'publish/system/scripts/upgrade-center.ps1 still exists (the unified entry)' {
+    Test-Path $script:upgradePs1 | Should -BeTrue `
+      'publish/system/scripts/upgrade-center.ps1 is the post-install entry point. It must exist after removing the deprecated update.{ps1,bat} wrappers.'
   }
 }
