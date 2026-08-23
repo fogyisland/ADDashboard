@@ -79,8 +79,8 @@ Set-LogDir $Script:LogDir
 # (see installer/build-green-package.ps1 step 4) so air-gapped targets don't
 # need a separate Node install. Search order:
 #   1. <green>/node/node.exe — bundled by build-green-package.ps1
-#   2. node.exe on PATH — operator-installed fallback (legacy, pre-bundling)
-#   3. <InstallPath>/node/node.exe — already-copied by a prior install/upgrade
+#   2. <InstallPath>/node/node.exe — already-copied by a prior install/upgrade
+#   3. node.exe on PATH — operator-installed fallback (legacy, pre-bundling)
 # If none found, fail fast BEFORE prompting for CenterUrl/AgentToken so the
 # operator doesn't type creds only to discover Node is missing.
 $bundledGreenNode = Join-Path $PSScriptRoot 'node\node.exe'
@@ -193,11 +193,13 @@ Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Fo
 # Refresh bundled Node.js if present in the green package. New green-package
 # releases may pin a newer Node 20 patch; mirroring <green>/node/ → <InstallPath>/node/
 # keeps the running node in sync. robocopy /MIR + idempotent on identical bytes.
-$bundledGreenNode = Join-Path $PSScriptRoot 'node'
+# Variable name distinct from the pre-flight $bundledGreenNode (file) above —
+# this is the directory, not the exe.
+$bundledGreenNodeDir = Join-Path $PSScriptRoot 'node'
 $nodeDst = Join-Path $InstallPath 'node'
-if (Test-Path (Join-Path $bundledGreenNode 'node.exe')) {
-  Write-Step "refreshing bundled Node.js from $bundledGreenNode to $nodeDst"
-  robocopy $bundledGreenNode $nodeDst /MIR | Out-Null
+if (Test-Path (Join-Path $bundledGreenNodeDir 'node.exe')) {
+  Write-Step "refreshing bundled Node.js from $bundledGreenNodeDir to $nodeDst"
+  robocopy $bundledGreenNodeDir $nodeDst /MIR | Out-Null
   if ($LASTEXITCODE -ge 8) { throw "robocopy node failed: $LASTEXITCODE" }
   $LASTEXITCODE = 0
 }
@@ -211,6 +213,13 @@ if (-not (Test-Path $psScriptDstDir)) {
 }
 Copy-Item -Path (Join-Path $agentSrc 'scripts\collect-replication.ps1') `
           -Destination $psScriptDstDir -Force
+
+# Prepend the install-path node dir to PATH so npm install uses the same Node
+# version NSSM launches. Without this, PATH's npm (could be a different
+# version, or absent on air-gapped targets) would either rebuild node_modules
+# against the wrong ABI or fail with "npm not recognized". Mirrors the same
+# guard in install-agent.ps1's Install-LocalAgent.
+$env:PATH = $nodeDst + [IO.Path]::PathSeparator + $env:PATH
 
 # npm install — production-only, no audit noise in CI logs.
 Push-Location $InstallPath

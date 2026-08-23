@@ -149,7 +149,26 @@ Describe 'start.ps1' {
     # robocopy /MIR is idempotent on identical bytes.
     $content | Should -Match 'refreshing bundled Node\.js' `
       'hot-update must refresh bundled Node.js to track green-package version bumps.'
-    $content | Should -Match 'robocopy\s+\$bundledGreenNode\s+\$nodeDst\s+/MIR' `
+    # Variable name was $bundledGreenNode in early iterations, renamed to
+    # $bundledGreenNodeDir to disambiguate from the pre-flight's file-suffixed
+    # $bundledGreenNode. Match either — test shouldn't lock cosmetic naming.
+    $content | Should -Match 'robocopy\s+\$bundledGreenNode\w*\s+\$nodeDst\s+/MIR' `
       'hot-update Node refresh must use robocopy /MIR for idempotent mirror copy.'
+  }
+
+  It 'prepends <InstallPath>/node/ to PATH before npm install (ABI parity with NSSM)' {
+    # 2026-08-23 fix: without this, npm install resolves against PATH's
+    # Node (could be a different version, or absent on air-gapped targets).
+    # NSSM launches <InstallPath>/node/node.exe; if node_modules was rebuilt
+    # against PATH's Node, native deps (better-sqlite3) crash at load time.
+    $content | Should -Match '\$env:PATH\s*=\s*\$nodeDst\s*\+\s*\[IO\.Path\]::PathSeparator' `
+      'hot-update must prepend <InstallPath>/node/ to $env:PATH before npm install (avoids ABI drift).'
+    # Order: $env:PATH prepend must appear AFTER robocopy refresh (need $nodeDst to exist) but BEFORE npm install.
+    $prependIdx = $content.IndexOf('$env:PATH = $nodeDst')
+    $npmIdx     = $content.IndexOf('npm install --omit=dev --no-audit --no-fund')
+    $prependIdx | Should -BeGreaterOrEqual 0
+    $npmIdx     | Should -BeGreaterOrEqual 0
+    $prependIdx | Should -BeLessThan $npmIdx `
+      'PATH prepend must run BEFORE npm install — otherwise npm uses PATH node, not bundled node.'
   }
 }

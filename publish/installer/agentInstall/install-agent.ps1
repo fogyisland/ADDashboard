@@ -135,7 +135,9 @@ function Install-LocalAgent {
     # node, not the source-tree one. Same resolution rule as start.ps1.
     $node = Join-Path $nodeDst 'node.exe'
   } else {
-    Write-Step "no bundled node at <green>/node/; falling back to PATH-resolved $node"
+    # No bundled node — pre-flight above already resolved $node from PATH or
+    # an existing install. Just note what we're using for the operator's log.
+    Write-Step "no bundled node at <green>/node/; using $node"
   }
 
   # Always run `npm install --omit=dev` on the target machine to construct
