@@ -191,9 +191,12 @@ Write-Step "copying $agentSrc → $InstallPath"
 # package layout places source under <root>/agent and default install under
 # <root>/Agent; on Windows those collapse to the same physical directory
 # and Copy-Item refuses to overwrite files with themselves. Skip when src==dst.
+# Save the boolean to $srcEqDst so the single-file collect-replication.ps1
+# copy below can gate on the same condition.
 $resolvedSrc = (Resolve-Path -LiteralPath $agentSrc -ErrorAction SilentlyContinue).ProviderPath
 $resolvedDst = (Resolve-Path -LiteralPath $InstallPath -ErrorAction SilentlyContinue).ProviderPath
-if ($resolvedSrc -and $resolvedDst -and [string]::Equals($resolvedSrc, $resolvedDst, [StringComparison]::OrdinalIgnoreCase)) {
+$srcEqDst = $resolvedSrc -and $resolvedDst -and [string]::Equals($resolvedSrc, $resolvedDst, [StringComparison]::OrdinalIgnoreCase)
+if ($srcEqDst) {
   Write-Step "source and install path resolve to the same directory ($resolvedSrc); skipping code copy"
 } else {
   Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Force `
@@ -202,12 +205,20 @@ if ($resolvedSrc -and $resolvedDst -and [string]::Equals($resolvedSrc, $resolved
 
 # Refresh bundled Node.js if present in the green package. New green-package
 # releases may pin a newer Node 20 patch; mirroring <green>/node/ → <InstallPath>/node/
-# keeps the running node in sync. robocopy /MIR + idempotent on identical bytes.
+# keeps the running node in sync. robocopy /MIR is idempotent on identical bytes.
 # Variable name distinct from the pre-flight $bundledGreenNode (file) above —
 # this is the directory, not the exe.
+#
+# Skip when src==dst (Windows case-collision). In that case
+# $bundledGreenNodeDir/node and $nodeDst/node resolve to the same physical
+# directory; robocopy /MIR with identical src/dst is undefined (typically
+# exit code 1 "Extra files detected") and adds no value — the bundled node
+# is already in place.
 $bundledGreenNodeDir = Join-Path $PSScriptRoot 'node'
 $nodeDst = Join-Path $InstallPath 'node'
-if (Test-Path (Join-Path $bundledGreenNodeDir 'node.exe')) {
+if ($srcEqDst) {
+  Write-Step "src==dst; skipping Node refresh (bundled node already at $nodeDst)"
+} elseif (Test-Path (Join-Path $bundledGreenNodeDir 'node.exe')) {
   Write-Step "refreshing bundled Node.js from $bundledGreenNodeDir to $nodeDst"
   robocopy $bundledGreenNodeDir $nodeDst /MIR | Out-Null
   if ($LASTEXITCODE -ge 8) { throw "robocopy node failed: $LASTEXITCODE" }
@@ -216,13 +227,19 @@ if (Test-Path (Join-Path $bundledGreenNodeDir 'node.exe')) {
 
 # Copy latest collect-replication.ps1 to the runtime scripts\ dir. install-agent.ps1
 # does this on first install too; doing it again here keeps the running service
-# in sync after the upgrade.
+# in sync after the upgrade. Skipped on Windows case-collision (src==dst)
+# because the file is already in place; copy would fail with "Cannot use the
+# item itself to overwrite the item".
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 if (-not (Test-Path $psScriptDstDir)) {
   New-Item -ItemType Directory -Path $psScriptDstDir -Force | Out-Null
 }
-Copy-Item -Path (Join-Path $agentSrc 'scripts\collect-replication.ps1') `
-          -Destination $psScriptDstDir -Force
+if ($srcEqDst) {
+  Write-Step "src==dst; skipping collect-replication.ps1 single-file copy (already in place)"
+} else {
+  Copy-Item -Path (Join-Path $agentSrc 'scripts\collect-replication.ps1') `
+            -Destination $psScriptDstDir -Force
+}
 
 # Prepend the install-path node dir to PATH so npm install uses the same Node
 # version NSSM launches. Without this, PATH's npm (could be a different

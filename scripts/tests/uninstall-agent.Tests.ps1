@@ -37,4 +37,27 @@ Describe 'uninstall-agent.ps1' {
     $content | Should -Not -Match 'C:\\addashboard\\Agent' `
       'script must not hardcode C:\addashboard\Agent — must be script-relative.'
   }
+
+  It 'refuses to delete install dir when it equals the green-package source dir (Windows case-collision)' {
+    # 2026-08-23: Green package layout places source at <root>/agent and
+    # default install at <root>/Agent. On Windows case-insensitive FS,
+    # those collapse to one directory. A bare Remove-Item -Recurse -Force
+    # on the install path would nuke the green package (including the
+    # uninstall script itself — operator couldn't re-uninstall). Detect
+    # the collision before deleting and skip the removal, leaving the
+    # package on disk. The service was already unregistered above, so the
+    # operator's intent (stop the agent) is satisfied.
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'Resolve-Path\s+-LiteralPath\s+\$InstallPath' `
+      'uninstall-agent.ps1 must Resolve-Path $InstallPath to detect case-collision.'
+    $content | Should -Match 'OrdinalIgnoreCase' `
+      'case-collision check must use OrdinalIgnoreCase (Windows FS is case-insensitive).'
+    $content | Should -Match 'leaving green package on disk' `
+      'when src==dst, uninstall must log that it is leaving the package (operator needs to see why no rm happened).'
+    # Remove-Item must live inside the elseif (case-collision gate) branch,
+    # not at the top level. The regex looks for the elseif branch immediately
+    # preceding the Remove-Item line — if it does, the deletion is gated.
+    $content | Should -Match 'elseif\s*\(\s*Test-Path\s+\$InstallPath\s*\)\s*\{[\s\S]{0,80}Remove-Item\s+-Path\s+\$InstallPath\s+-Recurse\s+-Force' `
+      'Remove-Item on $InstallPath must be inside an elseif branch gated by Test-Path (case-collision takes the if-branch).'
+  }
 }

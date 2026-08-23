@@ -45,8 +45,27 @@ Write-Step "uninstalling agent on $env:COMPUTERNAME"
 # install-agent.ps1's call shape.
 if ($LASTEXITCODE -ne 0) { Write-Err2 "Register Unregister failed: $LASTEXITCODE" }
 
-if (Test-Path $InstallPath) { Remove-Item -Path $InstallPath -Recurse -Force }
-# -RemoveData was a no-op alias for $InstallPath removal in the old layout.
-# Kept for caller compatibility — InstallPath (which contains queue.db and
-# logs) is already gone above.
+# Detect Windows case-collision between InstallPath and the green-package's
+# agent/ source dir. On Windows the default install path <root>/Agent and the
+# source <root>/agent resolve to the same physical directory; if we proceed
+# with Remove-Item here we'd nuke the green package (including install-agent.ps1,
+# agent.js, package.json, etc.). Refuse the directory removal in that case —
+# the service has already been unregistered above, so the operator's intent
+# (stop the agent) is satisfied. The green package remains on disk for
+# re-install or troubleshooting.
+$greenPkgAgent = Join-Path $PSScriptRoot 'agent'
+$devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
+$candidateSrc  = $null
+if (Test-Path $greenPkgAgent) { $candidateSrc = $greenPkgAgent }
+elseif (Test-Path $devTreeAgent) { $candidateSrc = $devTreeAgent }
+$resolvedInstall = (Resolve-Path -LiteralPath $InstallPath -ErrorAction SilentlyContinue).ProviderPath
+$resolvedSrc     = if ($candidateSrc) { (Resolve-Path -LiteralPath $candidateSrc -ErrorAction SilentlyContinue).ProviderPath } else { $null }
+if ($resolvedInstall -and $resolvedSrc -and [string]::Equals($resolvedInstall, $resolvedSrc, [StringComparison]::OrdinalIgnoreCase)) {
+  Write-Step "install path equals source path ($resolvedInstall); leaving green package on disk (service already unregistered)"
+} elseif (Test-Path $InstallPath) {
+  Remove-Item -Path $InstallPath -Recurse -Force
+  # -RemoveData was a no-op alias for $InstallPath removal in the old layout.
+  # Kept for caller compatibility — InstallPath (which contains queue.db and
+  # logs) is already gone above.
+}
 Write-Ok "done"

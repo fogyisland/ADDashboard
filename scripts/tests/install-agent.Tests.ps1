@@ -115,7 +115,44 @@ Describe 'install-agent.ps1' {
       'case-collision check must use OrdinalIgnoreCase (Windows FS is case-insensitive).'
     $content | Should -Match 'skipping code copy' `
       'when src==dst, install-agent.ps1 must log a skip message (operator needs to see why no copy happened).'
-    $content | Should -Match 'if\s*\(\s*\$resolvedSrc\s*-and\s*\$resolvedDst\s*-and' `
-      'guard pattern: only skip when both resolved paths are non-null AND equal (defensive against missing dirs).'
+    $content | Should -Match '\$srcEqDst\s*=\s*\$resolvedSrc\s*-and\s*\$resolvedDst\s*-and' `
+      'guard pattern: store collision boolean in $srcEqDst — both Copy-Item branches gate on it.'
+  }
+
+  It 'gates BOTH Copy-Item calls behind the case-collision check' {
+    # 2026-08-23 (round 2): the recursive Copy-Item (logs/ scripts/*) is
+    # gated, but the single-file Copy-Item for collect-replication.ps1 must
+    # ALSO be gated — otherwise it tries to copy the file onto itself when
+    # src==dst and throws the same error on the very next line.
+    $content = Get-Content $scriptPath -Raw
+    # Both Copy-Item statements must live inside the if/else where the
+    # else-branch is `$srcEqDst`. The simplest invariant: there is NO
+    # `Copy-Item` line at the script's top-level after the case-collision
+    # if-block. Concretely, find the case-collision check and assert the
+    # next non-comment PowerShell statement is a Copy-Item (the else branch).
+    $collisionIdx = $content.IndexOf('[StringComparison]::OrdinalIgnoreCase')
+    $collisionIdx | Should -BeGreaterOrEqual 0
+    $postCollision = $content.Substring($collisionIdx)
+    $postCollision | Should -Match 'else\s*\{' `
+      'case-collision must have an else branch with Copy-Item.'
+    $postCollision | Should -Match 'Copy-Item.*PsScriptSrc|Copy-Item.*collect-replication\.ps1' `
+      'single-file Copy-Item for collect-replication.ps1 must be inside the else branch.'
+  }
+
+  It 'also gates the Node refresh branch behind the case-collision check (no self-wipe)' {
+    # 2026-08-23 (round 3): even with both Copy-Item calls gated, the Node
+    # refresh branch had a `Remove-Item $nodeDst -Recurse -Force` that, in
+    # the case-collision case (src==dst), would wipe the bundled <green>/node/
+    # BEFORE robocopy could mirror it. Result: $node gets reset to a now-
+    # missing node.exe and the install breaks at NSSM launch. Gate the Node
+    # refresh on $srcEqDst as well.
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'src==dst.*skipping Node refresh|skipping Node refresh' `
+      'Node refresh must be skipped when src==dst (otherwise Remove-Item wipes the bundled node).'
+    # Specifically: Remove-Item $nodeDst must live inside an elseif branch
+    # gated by `Test-Path $bundledSrc` — NOT at the top level. If the top-
+    # level form returns, the case-collision gate is bypassed.
+    $content | Should -Not -Match '(?ms)^if\s*\(\s*Test-Path\s+\$bundledSrc\s*\)\s*\{[\s\S]{0,80}Remove-Item\s+\$nodeDst' `
+      'Remove-Item $nodeDst must NOT be the first statement of a bare `if (Test-Path $bundledSrc)` block — that runs even when src==dst.'
   }
 }

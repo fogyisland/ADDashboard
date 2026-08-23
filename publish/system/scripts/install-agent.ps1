@@ -114,8 +114,24 @@ function Install-LocalAgent {
   @($InstallPath, $psScriptDstDir, (Join-Path $InstallPath 'Logs')) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
-  Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
-  Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
+  # Detect Windows case-insensitive source/destination collision. The green
+  # package layout places source under <root>/agent and default install under
+  # <root>/Agent; on Windows those collapse to the same physical directory
+  # (e.g. C:\agentInstall\agent and C:\agentInstall\Agent both map to one
+  # dir). Copy-Item then refuses with "Cannot use the item itself to
+  # overwrite the item" on every file. Skip BOTH the recursive code copy AND
+  # the single-file collect-replication.ps1 copy when source==dest — the
+  # agent code is already in place; npm install + service registration
+  # below still run. (Real install run on KDLWXOFADSRV1 hit this.)
+  $resolvedSrc = (Resolve-Path -LiteralPath $AgentSrc -ErrorAction SilentlyContinue).ProviderPath
+  $resolvedDst = (Resolve-Path -LiteralPath $InstallPath -ErrorAction SilentlyContinue).ProviderPath
+  $srcEqDst = $resolvedSrc -and $resolvedDst -and [string]::Equals($resolvedSrc, $resolvedDst, [StringComparison]::OrdinalIgnoreCase)
+  if ($srcEqDst) {
+    Write-Step "source and install path resolve to the same directory ($resolvedSrc); skipping code copy (agent code already in place)"
+  } else {
+    Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json','Logs'
+    Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
+  }
 
   # Stage bundled Node.js 20 LTS portable at <InstallPath>\node\ so NSSM can
   # launch <InstallPath>\node\node.exe — no Node pre-req on the target machine.
@@ -123,9 +139,19 @@ function Install-LocalAgent {
   # 2026-08-23 user feedback). Source = <green>/node/ (sibling of install-agent.ps1)
   # when running from a green package; falls back to PATH-resolved node.exe's
   # directory when no bundled node was staged (e.g., a hand-built bundle).
+  #
+  # Skip the refresh when src==dst (Windows case-collision: <green>/agent ==
+  # <InstallPath>/Agent). In that case $bundledSrc/node and $nodeDst/node
+  # resolve to the same physical directory — `Remove-Item $nodeDst` would
+  # wipe the bundled node before robocopy could mirror it (and robocopy /MIR
+  # with identical src/dst is undefined behavior). The bundled node is
+  # already in place at <InstallPath>/node/ via the case-collision; no copy
+  # needed.
   $bundledSrc = Join-Path $PSScriptRoot 'node'
   $nodeDst = Join-Path $InstallPath 'node'
-  if (Test-Path $bundledSrc) {
+  if ($srcEqDst) {
+    Write-Step "src==dst; skipping Node refresh (bundled node already at $nodeDst)"
+  } elseif (Test-Path $bundledSrc) {
     Write-Step "copying bundled Node.js from $bundledSrc to $nodeDst"
     if (Test-Path $nodeDst) { Remove-Item $nodeDst -Recurse -Force }
     robocopy $bundledSrc $nodeDst /MIR | Out-Null
@@ -135,7 +161,9 @@ function Install-LocalAgent {
     # node, not the source-tree one. Same resolution rule as start.ps1.
     $node = Join-Path $nodeDst 'node.exe'
   } else {
-    Write-Step "no bundled node at <green>/node/; falling back to PATH-resolved $node"
+    # No bundled node — pre-flight above already resolved $node from PATH or
+    # an existing install. Just note what we're using for the operator's log.
+    Write-Step "no bundled node at <green>/node/; using $node"
   }
 
   # Always run `npm install --omit=dev` on the target machine to construct

@@ -198,4 +198,24 @@ Describe 'start.ps1' {
     $content | Should -Match 'skipping code copy' `
       'when src==dst, hot-update must log a skip message.'
   }
+
+  It 'also gates the single-file collect-replication.ps1 copy behind the case-collision check' {
+    # 2026-08-23 (round 2): the recursive Copy-Item is gated, but the
+    # single-file Copy-Item for collect-replication.ps1 must ALSO be
+    # gated — otherwise hot-update hits the same self-overwrite error on
+    # the very next Copy-Item. Match: the single-file Copy-Item lives
+    # inside the else branch ($srcEqDst false).
+    $content | Should -Match 'src==dst.*skipping collect-replication' `
+      'single-file Copy-Item must log a skip when src==dst.'
+  }
+
+  It 'also gates the bundled Node refresh behind the case-collision check' {
+    # 2026-08-23 (round 3): robocopy /MIR with identical src and dst is
+    # undefined behavior (typically exit code 1 with "Extra files detected"),
+    # and on some Windows builds it can hang or fail noisily. Skip the Node
+    # refresh entirely when src==dst — the bundled node is already at
+    # <InstallPath>/node/ via the case-collision, no copy needed.
+    $content | Should -Match 'src==dst.*skipping Node refresh|skipping Node refresh' `
+      'Node refresh must be skipped when src==dst (robocopy with identical src/dst is undefined).'
+  }
 }
