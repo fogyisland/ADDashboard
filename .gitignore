@@ -45,6 +45,13 @@ nssm.zip
 # ...but the published copy under publish/nssm/ IS tracked as a release artifact
 !publish/nssm/
 
+# Node 20 LTS portable (85 MB extracted) staged at publish/system/node/.
+# Build artifact — downloaded by scripts/common/Ensure-Node.ps1 and copied into
+# the green package's agentInstall/node/ by installer/build-green-package.ps1.
+# Tracked only inside the green package zip (operator artifact); the staging
+# dir itself stays untracked so the repo doesn't carry the binary.
+publish/system/node/
+
 # Green version bundle (publish/) — source code is tracked, build artifacts are not.
 # Exception: publish/system/center/dist/ IS tracked so the bundle ships the
 # exact build output (avoids cloud-server rebuild drift — see 2026-08-22 lesson).

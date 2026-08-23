@@ -96,17 +96,30 @@ if (-not $NssmPath -or -not (Test-Path -LiteralPath $NssmPath)) {
 }
 
 # ---- Node path resolution ----
+# Search order mirrors start.ps1 / install-agent.ps1:
+#   1. <InstallPath>/node/node.exe — copied there by install-agent.ps1 or
+#      start.ps1's hot-update refresh from <green>/node/ (green-package layout).
+#   2. node.exe on PATH — operator-installed fallback.
+# install-agent.ps1 / start.ps1 always pass -NodePath explicitly after their
+# own pre-flight check, so this branch is only hit when Register-… is called
+# standalone (e.g., a future MSI C# custom action delegating here without
+# going through the PS1 install scripts). Keep both branches anyway so the
+# script is independently usable.
 if (-not $NodePath) {
-  $nodeExe = Get-Command node.exe -ErrorAction SilentlyContinue
-  if ($nodeExe) { $NodePath = $nodeExe.Source }
-  else {
-    # Green package on air-gapped target may have staged node alongside.
-    $bundledNode = Join-Path $InstallPath 'node\node.exe'
-    if (Test-Path -LiteralPath $bundledNode) { $NodePath = $bundledNode }
+  $candidates = @(
+    (Join-Path $InstallPath 'node\node.exe'),
+    (Join-Path $PSScriptRoot 'node\node.exe')
+  )
+  foreach ($p in $candidates) {
+    if ($p -and (Test-Path -LiteralPath $p)) { $NodePath = $p; break }
+  }
+  if (-not $NodePath) {
+    $onPath = Get-Command node.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $NodePath = $onPath.Source }
   }
 }
 if (-not $NodePath) {
-  throw 'node.exe not found on PATH or in $env:PATH search paths. Install Node.js 20 LTS, or pass -NodePath.'
+  throw 'node.exe not found. Install Node.js 20 LTS and pass -NodePath, or ensure <InstallPath>/node/node.exe exists (green-package layout).'
 }
 
 $ServiceName = 'ADReplicationAgent'

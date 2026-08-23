@@ -113,18 +113,24 @@ Describe 'start.ps1' {
       'hot-update must start the service via Start-Service.'
   }
 
-  It 'pre-flights Node.js before delegating (fail fast if not on PATH)' {
-    # 2026-08-23: green package does NOT bundle Node.js (unlike MSI). If the
-    # target machine lacks node.exe on PATH, prompting for CenterUrl/AgentToken
-    # first then failing at "Get-Command node.exe -ErrorAction Stop" wastes the
-    # operator's time. Pre-flight the Node check BEFORE the prompts so the
-    # error fires before any cred input is requested.
+  It 'pre-flights Node.js before delegating (bundled → installed → PATH, fail fast if none)' {
+    # 2026-08-23: green package now bundles Node.js 20 LTS at <green>/node/
+    # (see installer/build-green-package.ps1 step 4 — was a target-machine
+    # pre-req before, now bundled for air-gapped parity with MSI). The
+    # resolution order is: bundled green-package node → already-installed node
+    # → PATH fallback → throw. Pre-flight runs BEFORE the CenterUrl/AgentToken
+    # prompts so the operator doesn't type creds only to discover Node is
+    # missing.
+    $content | Should -Match 'bundledGreenNode' `
+      'start.ps1 must probe <green>/node/node.exe first (green-package bundled Node).'
+    $content | Should -Match 'bundledInstalledNode' `
+      'start.ps1 must probe <InstallPath>/node/node.exe second (already-installed node from prior install).'
     $content | Should -Match 'Get-Command\s+node\.exe' `
-      'start.ps1 must pre-flight Node.js presence (green package does not bundle Node).'
-    $content | Should -Match 'node\.exe not found on PATH' `
-      'start.ps1 must throw a friendlier error than the raw CommandNotFoundException if Node is missing.'
+      'start.ps1 must fall back to PATH-resolved node.exe when no bundled node exists.'
+    $content | Should -Match 'node\.exe not found' `
+      'start.ps1 must throw a friendlier error than the raw CommandNotFoundException if no Node is found anywhere.'
     # Order: Node check must appear BEFORE Read-Host CenterUrl + Read-Host -AsSecureString.
-    $nodeIdx   = $content.IndexOf('Get-Command node.exe')
+    $nodeIdx   = $content.IndexOf('bundledGreenNode')
     $centerIdx = $content.IndexOf("Read-Host 'Enter CenterUrl")
     $tokenIdx  = $content.IndexOf("Read-Host -AsSecureString 'Enter AgentToken'")
     $nodeIdx   | Should -BeGreaterOrEqual 0
@@ -134,5 +140,16 @@ Describe 'start.ps1' {
       'Node pre-flight must run BEFORE CenterUrl prompt — fail fast.'
     $nodeIdx   | Should -BeLessThan $tokenIdx `
       'Node pre-flight must run BEFORE AgentToken prompt — fail fast.'
+  }
+
+  It 'refreshes bundled Node.js during hot-update (mirrors <green>/node/ → <InstallPath>/node/)' {
+    # 2026-08-23: green package bumps the bundled Node 20 patch between
+    # releases. Hot-update must mirror the green-package node dir to the
+    # install path so the running node tracks the bundle's pinned version.
+    # robocopy /MIR is idempotent on identical bytes.
+    $content | Should -Match 'refreshing bundled Node\.js' `
+      'hot-update must refresh bundled Node.js to track green-package version bumps.'
+    $content | Should -Match 'robocopy\s+\$bundledGreenNode\s+\$nodeDst\s+/MIR' `
+      'hot-update Node refresh must use robocopy /MIR for idempotent mirror copy.'
   }
 }

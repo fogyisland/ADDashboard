@@ -75,16 +75,30 @@ if (-not (Test-Path $Script:LogDir)) {
 }
 Set-LogDir $Script:LogDir
 
-# Pre-flight: Node.js 20 LTS is required (green package does NOT bundle
-# Node — unlike MSI). Fail fast before we prompt for CenterUrl/AgentToken
-# so the operator doesn't type creds only to discover Node is missing.
-# See installer/README-green-install.md "目标机器前置条件".
-$nodePreFlight = Get-Command node.exe -ErrorAction SilentlyContinue
-if (-not $nodePreFlight) {
-  throw "node.exe not found on PATH. The green package does NOT bundle Node.js (unlike the MSI). Install Node.js 20 LTS x64 first — see installer/README-green-install.md. If node.exe IS installed but missing from PATH, add its directory to PATH and re-run."
+# Pre-flight: Node.js 20 LTS — green package bundles it at <green>/node/
+# (see installer/build-green-package.ps1 step 4) so air-gapped targets don't
+# need a separate Node install. Search order:
+#   1. <green>/node/node.exe — bundled by build-green-package.ps1
+#   2. node.exe on PATH — operator-installed fallback (legacy, pre-bundling)
+#   3. <InstallPath>/node/node.exe — already-copied by a prior install/upgrade
+# If none found, fail fast BEFORE prompting for CenterUrl/AgentToken so the
+# operator doesn't type creds only to discover Node is missing.
+$bundledGreenNode = Join-Path $PSScriptRoot 'node\node.exe'
+$bundledInstalledNode = Join-Path $InstallPath 'node\node.exe'
+$nodeExe = $null
+if (Test-Path -LiteralPath $bundledGreenNode) { $nodeExe = $bundledGreenNode }
+elseif (Test-Path -LiteralPath $bundledInstalledNode) { $nodeExe = $bundledInstalledNode }
+else {
+  $nodeOnPath = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($nodeOnPath) { $nodeExe = $nodeOnPath.Source }
 }
-$nodeMajor = ($nodePreFlight.Version.Major.ToString())
-if ([int]$nodeMajor -ne 20) {
+if (-not $nodeExe) {
+  throw "node.exe not found. The green package SHOULD bundle Node.js 20 LTS at <green>\node\node.exe — verify the bundle layout. If you have a custom bundle without Node, install Node 20 LTS and add it to PATH. See installer/README-green-install.md."
+}
+Write-Step "using Node.js: $nodeExe"
+# Surface major version warning (green package is pinned to Node 20 LTS).
+$nodeMajor = (& $nodeExe --version 2>$null) -replace '^v(\d+)\..*','$1'
+if ($nodeMajor -ne '20') {
   Write-Step "WARNING: node.exe reports major version $nodeMajor — green package expects 20 LTS. Continuing anyway; if npm install fails, install Node 20 LTS."
 }
 
@@ -175,6 +189,18 @@ if (Test-Path $greenPkgAgent) {
 Write-Step "copying $agentSrc → $InstallPath"
 Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Force `
   -Exclude 'node_modules','tests','appsettings.json'
+
+# Refresh bundled Node.js if present in the green package. New green-package
+# releases may pin a newer Node 20 patch; mirroring <green>/node/ → <InstallPath>/node/
+# keeps the running node in sync. robocopy /MIR + idempotent on identical bytes.
+$bundledGreenNode = Join-Path $PSScriptRoot 'node'
+$nodeDst = Join-Path $InstallPath 'node'
+if (Test-Path (Join-Path $bundledGreenNode 'node.exe')) {
+  Write-Step "refreshing bundled Node.js from $bundledGreenNode to $nodeDst"
+  robocopy $bundledGreenNode $nodeDst /MIR | Out-Null
+  if ($LASTEXITCODE -ge 8) { throw "robocopy node failed: $LASTEXITCODE" }
+  $LASTEXITCODE = 0
+}
 
 # Copy latest collect-replication.ps1 to the runtime scripts\ dir. install-agent.ps1
 # does this on first install too; doing it again here keeps the running service

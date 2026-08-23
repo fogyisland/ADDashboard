@@ -73,6 +73,20 @@ Describe 'build-green-package.ps1' {
       'build-green-package.ps1 must stage nssm.exe (used by NSSM.psm1).'
   }
 
+  It 'stages bundled Node.js 20 LTS at <green>/node/ (no target-machine pre-req)' {
+    # 2026-08-23: green package now bundles Node 20 LTS so air-gapped targets
+    # don't need a separate Node install (matches MSI behavior, removes
+    # operator-side "Node not found" freeze). Source = publish/system/node/
+    # (downloaded by Ensure-Node.ps1, gitignored as 85 MB binary). install-
+    # agent.ps1 then copies this to <InstallPath>\node\ at install time.
+    $script:content | Should -Match 'publish\\system\\node' `
+      'Node source must be publish/system/node/ (single source of truth, downloaded by Ensure-Node.ps1).'
+    $script:content | Should -Match "Ensure-Node\.ps1" `
+      'Node staging must auto-bootstrap via Ensure-Node.ps1 when publish/system/node/node.exe is missing — operators should not have to run it manually before the build.'
+    $script:content | Should -Match 'robocopy.*\$nodeSrc.*\$nodeDst.*/MIR' `
+      'Node staging must use robocopy /MIR (preserves directory layout, mirrors npm.cmd / node_modules/).'
+  }
+
   It 'does NOT pre-install node_modules (install-agent.ps1 handles it on target)' {
     # 2026-08-23: green package now ships WITHOUT node_modules. install-agent.ps1
     # unconditionally runs `npm install --omit=dev` on the target machine.
@@ -120,12 +134,18 @@ Describe 'green package README (operator guide)' {
       'installer/README-green-install.md must exist — it is the operator-facing guide bundled INSIDE the green package.'
   }
 
-  It 'documents Node.js 20 LTS pre-req' {
+  It 'documents bundled Node.js 20 LTS (no target-machine Node pre-req)' {
+    # 2026-08-23: green package now bundles Node.js 20 LTS at <green>/node/,
+    # so air-gapped targets don't need a separate Node install (matches MSI
+    # behavior). The pre-req table must NOT list Node.js — bundling makes
+    # the operator-side install zero-friction.
     $content = Get-Content (Join-Path (Join-Path $PSScriptRoot '..') 'README-green-install.md') -Raw
     $content | Should -Match 'Node\.js' `
-      'green README must document the Node.js pre-req (green package does NOT bundle Node, unlike MSI).'
+      'green README must mention Node.js (now bundled, not a pre-req).'
     $content | Should -Match '20' `
-      'green README must specify Node.js 20 LTS as the version.'
+      'green README must specify Node.js 20 LTS as the bundled version.'
+    $content | Should -Match '自带|内嵌' `
+      'green README must state Node is bundled/embedded (not a pre-req).'
   }
 
   It 'documents install + uninstall commands at agentInstall/ root (no scripts/ prefix)' {

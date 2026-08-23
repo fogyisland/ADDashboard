@@ -224,6 +224,25 @@ Describe 'Register-ADDashboardAgent.ps1' {
       'Must also search $PSScriptRoot\nssm\nssm.exe (green-package layout where Register-… is at <green>/ root).'
   }
 
+  It 'resolves Node.js from INSTALLDIR\node + green-package $PSScriptRoot\node + PATH (R4)' {
+    # 2026-08-23: green package bundles Node 20 LTS at <green>/node/. After
+    # install-agent.ps1 copies it to <InstallPath>\node\, Register-… must
+    # resolve the install-path copy first so the running service launches
+    # from the install path (no dependency on the source tree staying put).
+    # Falls back to <green>/node/node.exe if called from the green package
+    # before install (rare but possible in manual Register-only flows), then
+    # to PATH as the legacy pre-bundling fallback.
+    #
+    # Single-quoted regex matches one literal backslash per `\\` in the
+    # pattern (Pester regex matches PowerShell string escapes 1:1 here).
+    $script:Content | Should -Match 'node\\node\.exe' `
+      'Must search <InstallPath>\node\node.exe first (post-install bundled Node).'
+    $script:Content | Should -Match '\$PSScriptRoot\s+\x27node\\node\.exe\x27' `
+      'Must also search <green>/node/node.exe (green-package pre-install layout).'
+    $script:Content | Should -Match 'Get-Command\s+node\.exe' `
+      'Must fall back to PATH-resolved node.exe (legacy operator-installed case).'
+  }
+
   It 'agentType-specific DisplayName / Description (T16 contract)' {
     # 'ad' (default) keeps the legacy 'AD Replication Agent (on <host>)' string
     # so operators with alerts / dashboards keyed on it don't break.

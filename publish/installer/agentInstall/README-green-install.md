@@ -29,12 +29,11 @@ C:\green\agentInstall\start.ps1
 |---|---|---|
 | Windows | Server 2016+ / Win10+ | `[Environment]::OSVersion` |
 | PowerShell | 5.1 (Win 内置) | `$PSVersionTable.PSVersion` |
-| Node.js | 20 LTS x64(自带 npm) | `node --version`(需输出 v20.x)`npm --version` |
 | 网络 | 可达 `CenterUrl` + npm registry | `Test-NetConnection center-host -Port 8080`;`npm ping` |
 
-MSI 把 Node.js 一起打包进安装包;绿色包**不**打包 Node.js,假设目标机已经装好(运维标配)。
+绿色包**自带 Node.js 20 LTS x64**(位于 `<green>/node/`,随包分发,无需目标机预装;与 MSI 行为一致)。`install-agent.ps1` 会把它复制到 `<InstallPath>\node\`,然后 NSSM 启动 `<InstallPath>\node\node.exe agent.js`,完全自包含,适合空气隔离环境。
 
-**绿色包不打包 `node_modules`** — 目标机的 `install-agent.ps1` 会跑 `npm install --omit=dev` 现场构造一份(因为 npm 会按目标机的 Node 版本 + 平台 ABI 解析,而 ship 一份预构建的 `node_modules` 既占空间又有跨主机 ABI drift 风险)。所以目标机需要 **npm + 能访问 npm registry**(若走公司内网镜像就配 `.npmrc`)。
+**绿色包不打包 `node_modules`** — 目标机的 `install-agent.ps1` 会跑 `npm install --omit=dev` 现场构造一份(因为 npm 会按目标机的 Node 版本 + 平台 ABI 解析,而 ship 一份预构建的 `node_modules` 既占空间又有跨主机 ABI drift 风险)。所以目标机需要 **npm + 能访问 npm registry**(若走公司内网镜像就配 `.npmrc`)。`node_modules` 由 `<green>/node/` 自带的 npm 解析,不依赖 PATH 上的 Node。
 
 ## 安装步骤
 
@@ -45,8 +44,8 @@ MSI 把 Node.js 一起打包进安装包;绿色包**不**打包 Node.js,假设�
 ```powershell
 # 方式 A:本地解压后整目录拷过去
 Expand-Archive agentInstall.zip -DestinationPath C:\green\
-# 或 SMB / WinRM Copy-Item / scp,文件大小约 1-2 MB(node_modules 不打包,
-# 在目标机上现场 npm install)
+# 或 SMB / WinRM Copy-Item / scp,文件大小约 80-90 MB(含 Node 20 LTS portable;
+# node_modules 不打包,在目标机上现场 npm install)
 
 # 方式 B:从管理机用 WinRM 远程推
 Copy-Item -Recurse \\fileserver\share\agentInstall `
@@ -107,34 +106,21 @@ Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 20
 
 ## 升级
 
-直接在已装机器上跑同一个命令即可 — `start.ps1` 自动识别「已装」并走热更新分支(stop → 覆盖文件 → npm install → start)。不需要卸载重装。
+直接在已装机器上跑同一个命令即可 — `start.ps1` 自动识别「已装」并走热更新分支(stop → 覆盖文件 + 刷新 bundled Node → npm install → start)。不需要卸载重装。
 
 ```cmd
 C:\green\agentInstall\start.ps1
 ```
 
-会停服务、移除 NSSM 注册、删除 `C:\addashboard\Agent\` 与 `C:\addashboard\Logs\`(如有)。
-
-## 升级
-
-绿色包安装的 agent 升级方式:
-
-1. `nssm stop ADReplicationAgent`
-2. `nssm remove ADReplicationAgent confirm`
-3. 删除 `C:\addashboard\Agent\`(node_modules 一起删,下次安装会重新拉)
-4. 用新版本绿色包重新跑 install-agent.ps1
-
-或直接调 **`upgrade-center.ps1`** 的 Agent 等价版本(目前 agent 升级路径还是手工,start.ps1 已经统一了 install + hot-update 双路径)。
-
 ## 与 MSI 路径的差异
 
 | | MSI (主路径) | 绿色包 (旁路) |
 |---|---|---|
-| Node.js | 内嵌 Node 20 LTS | 目标机预装(自带 npm) |
+| Node.js | 内嵌 Node 20 LTS | 内嵌 Node 20 LTS(`<green>/node/`,自包含) |
 | 安装原子性 | InstallFiles + CAs 原子 | 手工,半成品状态可观测 |
 | 远程部署 | `msiexec /qn` via WinRM | PowerShell `Invoke-Command` |
 | 卸载 | `msiexec /x ... /qn` | 跑 uninstall-agent.ps1 |
-| 升级 | MajorUpgrade 自动 | 重跑 install-agent.ps1 |
+| 升级 | MajorUpgrade 自动 | 重跑 install-agent.ps1 / start.ps1 |
 | 出问题定位 | 翻 verbose log(`/l*v`) | 直接看 PowerShell 输出 |
 | 适用场景 | 生产 / SCCM | 调试 / 空气隔离 / 测试 |
 

@@ -86,17 +86,28 @@ if (-not $AgentSrc) {
 }
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
-# Pre-flight: Node.js 20 LTS is required (green package does NOT bundle
-# Node — unlike MSI). start.ps1 already checks this before
-# delegating here, but operators who call install-agent.ps1 directly
-# (WinRM remote install, automation) need the same guard. Without this,
-# `Get-Command node.exe -ErrorAction Stop` throws an unfriendly
-# CommandNotFoundException that doesn't point at the README.
-$nodePreFlight = Get-Command node.exe -ErrorAction SilentlyContinue
-if (-not $nodePreFlight) {
-  throw "node.exe not found on PATH. The green package does NOT bundle Node.js (unlike the MSI). Install Node.js 20 LTS x64 first — see installer/README-green-install.md. If node.exe IS installed but missing from PATH, add its directory to PATH and re-run."
+# Pre-flight: Node.js 20 LTS. Green package bundles it at <green>/node/
+# (see installer/build-green-package.ps1 step 4). Search order:
+#   1. <green>/node/node.exe — bundled (green-package layout)
+#   2. <InstallPath>/node/node.exe — already-copied by a prior install
+#   3. node.exe on PATH — operator-installed fallback (legacy, pre-bundling)
+# start.ps1 already runs this same check before delegating here; we re-run
+# it so callers who invoke install-agent.ps1 directly (WinRM remote install,
+# automation) get the same friendly error instead of an unfriendly
+# CommandNotFoundException downstream.
+$bundledGreenNode = Join-Path $PSScriptRoot 'node\node.exe'
+$bundledInstalledNode = Join-Path $InstallPath 'node\node.exe'
+$node = $null
+if (Test-Path -LiteralPath $bundledGreenNode) { $node = $bundledGreenNode }
+elseif (Test-Path -LiteralPath $bundledInstalledNode) { $node = $bundledInstalledNode }
+else {
+  $nodeOnPath = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($nodeOnPath) { $node = $nodeOnPath.Source }
 }
-$node = $nodePreFlight.Source
+if (-not $node) {
+  throw "node.exe not found. The green package SHOULD bundle Node.js 20 LTS at <green>\node\node.exe — verify the bundle layout. If you have a custom bundle without Node, install Node 20 LTS and add it to PATH. See installer/README-green-install.md."
+}
+Write-Step "using Node.js: $node"
 
 function Install-LocalAgent {
   Write-Step "installing local agent to $InstallPath (agentType=$AgentType)"
@@ -106,11 +117,36 @@ function Install-LocalAgent {
   Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
   Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
 
+  # Stage bundled Node.js 20 LTS portable at <InstallPath>\node\ so NSSM can
+  # launch <InstallPath>\node\node.exe — no Node pre-req on the target machine.
+  # Matches MSI behavior (no air-gap "Node not found" freeze — see
+  # 2026-08-23 user feedback). Source = <green>/node/ (sibling of install-agent.ps1)
+  # when running from a green package; falls back to PATH-resolved node.exe's
+  # directory when no bundled node was staged (e.g., a hand-built bundle).
+  $bundledSrc = Join-Path $PSScriptRoot 'node'
+  $nodeDst = Join-Path $InstallPath 'node'
+  if (Test-Path $bundledSrc) {
+    Write-Step "copying bundled Node.js from $bundledSrc to $nodeDst"
+    if (Test-Path $nodeDst) { Remove-Item $nodeDst -Recurse -Force }
+    robocopy $bundledSrc $nodeDst /MIR | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy node failed: $LASTEXITCODE" }
+    $LASTEXITCODE = 0
+    # Update $node to the install-path copy so NSSM launches the installed
+    # node, not the source-tree one. Same resolution rule as start.ps1.
+    $node = Join-Path $nodeDst 'node.exe'
+  } else {
+    Write-Step "no bundled node at <green>/node/; falling back to PATH-resolved $node"
+  }
+
   # Always run `npm install --omit=dev` on the target machine to construct
   # node_modules. The canonical install path is always npm install — it
   # produces a production-only dependency tree regardless of what the source
   # contains. Operators reading the install log should see this step explicitly
   # so they know where the runtime deps come from.
+  # Prepend the bundled node dir to PATH so npm install uses the same Node
+  # we'll register with NSSM — avoids ABI drift if PATH has a different
+  # node.exe (npm caches based on the running node's version).
+  $env:PATH = $nodeDst + [IO.Path]::PathSeparator + $env:PATH
   Push-Location $InstallPath
   try {
     Write-Step "constructing node_modules via npm install --omit=dev"

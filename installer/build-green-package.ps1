@@ -20,18 +20,28 @@
 #                                  Register-… -Action Unregister)
 #     Register-ADDashboardAgent.ps1  single entry point shared by install/
 #                                  uninstall + (future) MSI CAs
+#     start.ps1                    operator-facing entry (auto-detects install
+#                                  vs hot-update; prompts for CenterUrl/AgentToken
+#                                  on first-time install)
 #     common/                      Logger.psm1 + NSSM.psm1 + Service.psm1 +
-#                                  Ensure-Nssm.ps1 — modules used by install/
-#                                  uninstall's file-copy + npm-install phase
+#                                  Ensure-Nssm.ps1 + Ensure-Node.ps1 — modules
+#                                  used by install/uninstall's file-copy +
+#                                  npm-install phase
 #     nssm/nssm.exe                bundled (Register-… searches
 #                                  <PSScriptRoot>\nssm\nssm.exe — see
 #                                  scripts/Register-ADDashboardAgent.ps1:73-82)
+#     node/                        Node.js 20 LTS x64 portable (bundled as of
+#                                  2026-08-23; was a target-machine pre-req
+#                                  before). install-agent.ps1 copies this into
+#                                  <InstallPath>\node\ so NSSM can launch
+#                                  <InstallPath>\node\node.exe — no PATH
+#                                  dependency on the target.
 #     README-green-install.md
 #
-# Pre-req on the TARGET machine: Node.js 20 LTS on PATH. install-agent.ps1
-# calls `Get-Command node.exe -ErrorAction Stop`. Unlike the MSI, this
-# bundle does NOT embed Node.js — operators install Node separately.
-# (Bundling Node would inflate the zip by ~30 MB and complicate updates.)
+# Pre-req on the TARGET machine: none beyond Windows + WinRM (for remote
+# install). Node.js + nssm + scripts all ship inside the bundle. Operator
+# downloads/unpacks + runs `.\start.ps1` (or `.\install-agent.ps1 -ComputerName …
+# -CenterUrl … -AgentToken …` for unattended).
 #
 # Why PS1 files live at agentInstall/ root (not under scripts/):
 #   - Operator expectation: `& C:\green\agentInstall\install-agent.ps1` reads
@@ -131,24 +141,47 @@ if (-not (Test-Path $nssmDst)) {
   Copy-Item -Path $nssmSrc -Destination $nssmDst -Force
 }
 
-# 4. (intentionally empty — node_modules + lockfile are NOT staged here; the
-#    target machine's `install-agent.ps1` runs `npm install --omit=dev` to
-#    construct node_modules fresh. See step 1's comment for the rationale.)
+# 4. Stage Node.js 20 LTS x64 portable at <green>/node/. install-agent.ps1
+#    copies this into <InstallPath>\node\ during install so NSSM can launch
+#    <InstallPath>\node\node.exe — no Node pre-req on the target machine
+#    (matches MSI behavior; removes the operator-side "Node not found" freeze
+#    on air-gapped targets — see 2026-08-23 user feedback).
+#    Source: publish/system/node/ (gitignored cache; downloaded by
+#    scripts/common/Ensure-Node.ps1 when missing — same pattern as nssm).
+$nodeSrc = Join-Path $root 'publish\system\node'
+$nodeDst = Join-Path $staging 'node'
+if (-not (Test-Path (Join-Path $nodeSrc 'node.exe'))) {
+  # Auto-bootstrap: download Node if not yet staged. build-green-package.ps1
+  # is the operator's build entry; failing here without a friendly download
+  # would force them to run Ensure-Node.ps1 manually first.
+  . (Join-Path $scriptsSrc 'common\Ensure-Node.ps1') -ProjectRoot $root
+}
+if (-not (Test-Path $nodeDst)) { New-Item -ItemType Directory -Path $nodeDst -Force | Out-Null }
+robocopy "$nodeSrc" "$nodeDst" /MIR | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "robocopy node staging failed: $LASTEXITCODE" }
+$LASTEXITCODE = 0
 
-# 5. Stage operator guide. README-green-install.md is the per-bundle guide
+# 5. (intentionally empty — agent's node_modules + lockfile are NOT staged
+#    here; the target machine's `install-agent.ps1` runs `npm install
+#    --omit=dev` to construct node_modules fresh. See step 1's comment for
+#    the rationale. The bundled <green>/node/ carries npm + its own
+#    node_modules so npm install works on the target.)
+
+# 6. Stage operator guide. README-green-install.md is the per-bundle guide
 #    that travels INSIDE the green folder so operators can read it on the
 #    target machine without a separate docs download.
 $readmeDst = Join-Path $staging 'README-green-install.md'
 Copy-Item -Path (Join-Path $PSScriptRoot 'README-green-install.md') -Destination $readmeDst -Force
 
-# 6. Move staging -> final destination (publish/installer/agentInstall/).
+# 7. Move staging -> final destination (publish/installer/agentInstall/).
 #    Use Move-Item rather than leaving as staging/ so the publish bundle has
 #    a stable, descriptive artifact name. Atomic on the same volume.
 if (Test-Path $greenDst) { Remove-Item $greenDst -Recurse -Force }
 Move-Item -Path $staging -Destination $greenDst -Force
 
-# 7. Build the zip for download / WinRM-friendly transfer. Large (>50 MB
-#    with node_modules) but operators expect a single-file artifact for
+# 8. Build the zip for download / WinRM-friendly transfer. ~80-90 MB (Node
+#    20 LTS portable dominates the size since green packages bundle it for
+#    air-gapped targets — operators expect a single-file artifact for
 #    copying to air-gapped targets.
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 Add-Type -AssemblyName System.IO.Compression
