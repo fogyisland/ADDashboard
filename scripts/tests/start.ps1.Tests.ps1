@@ -171,4 +171,17 @@ Describe 'start.ps1' {
     $prependIdx | Should -BeLessThan $npmIdx `
       'PATH prepend must run BEFORE npm install — otherwise npm uses PATH node, not bundled node.'
   }
+
+  It 'excludes Logs/ from the hot-update copy (avoids overwriting open install.log)' {
+    # 2026-08-23: same fix as install-agent.ps1 — Logger opens
+    # <InstallPath>/Logs/install.log for write, so Copy-Item must NOT try
+    # to overwrite it from a source agent/Logs/ leftover. Logs/ is
+    # runtime state that the running agent regenerates; excluding it from
+    # the source copy is also defensive against stale local-run artifacts.
+    # Copy-Item spans 2 lines via line-continuation backtick, so the regex
+    # uses a non-greedy match across whitespace rather than requiring a
+    # single line.
+    $content | Should -Match 'Copy-Item[\s\S]{0,200}agentSrc[\s\S]{0,200}-Exclude[\s\S]{0,80}\x27Logs\x27' `
+      'hot-update Copy-Item -Exclude MUST include Logs/ — otherwise the open install.log gets overwritten.'
+  }
 }

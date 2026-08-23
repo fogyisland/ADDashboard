@@ -83,4 +83,19 @@ Describe 'install-agent.ps1' {
     $content | Should -Match '\$node\s*=\s*Join-Path\s+\$nodeDst\s+''node\.exe''' `
       'after copying bundled Node, $node must be updated to point at <InstallPath>/node/node.exe for NSSM.'
   }
+
+  It 'excludes Logs/ from the source copy (avoids overwriting open install.log)' {
+    # 2026-08-23: Logger.psm1 opens <InstallPath>/Logs/install.log for write
+    # before install-agent.ps1 runs. If the source agent/ directory also
+    # contains a Logs/installer.log or similar from a previous local run,
+    # Copy-Item -Force would try to overwrite the open file and fail with
+    # "Cannot use item to overwrite itself". Excluding Logs/ keeps the
+    # install.log intact and lets the agent create its own runtime logs
+    # after install.
+    $content = Get-Content $scriptPath -Raw
+    $copyLine = ($content -split "`n" | Where-Object { $_ -match 'Copy-Item.*AgentSrc.*\*.*-Destination.*\$InstallPath' }) | Select-Object -First 1
+    $copyLine | Should -Not -BeNullOrEmpty 'install-agent.ps1 must have a Copy-Item for source → install path.'
+    $copyLine | Should -Match "'Logs'" `
+      'Copy-Item -Exclude MUST include Logs/ — otherwise the open install.log gets overwritten and Copy-Item throws.'
+  }
 }

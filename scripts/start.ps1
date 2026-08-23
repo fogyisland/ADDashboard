@@ -188,7 +188,7 @@ if (Test-Path $greenPkgAgent) {
 }
 Write-Step "copying $agentSrc → $InstallPath"
 Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Force `
-  -Exclude 'node_modules','tests','appsettings.json'
+  -Exclude 'node_modules','tests','appsettings.json','Logs'
 
 # Refresh bundled Node.js if present in the green package. New green-package
 # releases may pin a newer Node 20 patch; mirroring <green>/node/ → <InstallPath>/node/

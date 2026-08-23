@@ -114,7 +114,7 @@ function Install-LocalAgent {
   @($InstallPath, $psScriptDstDir, (Join-Path $InstallPath 'Logs')) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
-  Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json'
+  Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json','Logs'
   Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
 
   # Stage bundled Node.js 20 LTS portable at <InstallPath>\node\ so NSSM can
