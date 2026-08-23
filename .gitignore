@@ -52,6 +52,18 @@ nssm.zip
 publish/center/node_modules/
 publish/agent/node_modules/
 !publish/system/center/dist/
+# Runtime bundle (publish/system/) must NOT contain test files — operators
+# unzip publish.zip to C:\addashboard on Windows servers; test code in the
+# bundle is dead weight + leaks internal test fixtures. Source tests live
+# under <pkg>/tests/ at the repo root and are NEVER mirrored (see
+# scripts/verify-mirror.ps1's $skipSubdirs). Direct matches here catch
+# stray additions (e.g., vitest.config.js, smoke-test.ps1) that bypass the
+# mirror convention.
+publish/system/**/tests/
+publish/system/**/*.test.js
+publish/system/**/*.spec.js
+publish/system/**/vitest.config.js
+publish/system/**/smoke-test.ps1
 # WPF PackageDesigner self-contained build output (rebuilt via `dotnet publish`)
 publish/designer/
 

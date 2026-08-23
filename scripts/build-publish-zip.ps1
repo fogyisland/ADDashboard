@@ -24,9 +24,22 @@ try {
         (Join-Path $publish 'designer'),
         (Join-Path $publish (Join-Path 'installer' 'staging'))
     )
+    # Test files must never reach the published bundle — operators unpack
+    # publish.zip to C:\addashboard on Windows servers. Even if a stray test
+    # file slips past the .gitignore + verify-mirror checks, this filter
+    # strips it from the zip. Source tests live under <pkg>/tests/ at the
+    # repo root; the mirror convention excludes them, this is the safety net.
+    $excludeFilePatterns = @(
+        '\.test\.[^.]+$',
+        '\.spec\.[^.]+$',
+        '[\\/]vitest\.config\.js$',
+        '[\\/]smoke-test\.ps1$'
+    )
     $files = Get-ChildItem -Path $publish -Recurse -File | Where-Object {
         $abs = $_.FullName
-        -not ($excludeDirs | Where-Object { $abs.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($excludeDirs | Where-Object { $abs.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }) { return $false }
+        if ($excludeFilePatterns | Where-Object { $abs -match $_ }) { return $false }
+        return $true
     }
     foreach ($f in $files) {
         $rel = $f.FullName.Substring($publish.Length).TrimStart('\', '/').Replace('\', '/')

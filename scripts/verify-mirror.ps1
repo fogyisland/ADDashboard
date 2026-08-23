@@ -57,6 +57,14 @@ $extensions = @('*.js', '*.vue', '*.sql')
 # is dev-only and never mirrored.
 $skipSubdirs = @('dist', 'tests', 'node_modules')
 
+# Test-related filenames that must NEVER be mirrored to publish/system/. They
+# live in source (so devs can run `npm test` / `npm run test:web`) but are
+# runtime-bundle dead weight (see .gitignore + build-publish-zip.ps1
+# $excludeFilePatterns). Patterns are matched against the file's relative
+# path from project root with a word-boundary segment check, the same way
+# $skipSubdirs is applied.
+$skipFiles = @('vitest.config.js')
+
 $pass = 0
 $drift = 0
 $missing = 0
@@ -111,6 +119,16 @@ foreach ($root in $roots) {
         break
       }
     }
+    # Also skip test-related filenames (vitest.config.js, etc). Same rationale
+    # as $skipSubdirs: never mirrored to publish/system/. Matching is by
+    # basename, so the skip applies regardless of how deep the file lives in
+    # the source tree.
+    if (-not $skip) {
+      $fileName = Split-Path -Path $relPath -Leaf
+      if ($skipFiles -contains $fileName) {
+        $skip = $true
+      }
+    }
     if ($skip) { continue }
     $sourceRelSet[$relPath] = $true
 
@@ -147,6 +165,24 @@ foreach ($root in $roots) {
   $files = Get-ChildItem -Path $mirrorRootAbs -Recurse -File -Include $extensions -ErrorAction SilentlyContinue
   foreach ($f in $files) {
     $relPath = $f.FullName.Substring($projectRoot.Length).TrimStart('\', '/').Replace('\', '/')
+    # Apply the same skip rules as the source scan: skip files under
+    # $skipSubdirs segments and skip test-related filenames. Without this,
+    # a non-mirrored vitest.config.js in the source tree would be flagged as
+    # orphan because the source scan skipped it.
+    $skip = $false
+    foreach ($sub in $skipSubdirs) {
+      if ($relPath -match ("(?:^|/){0}/" -f [regex]::Escape($sub))) {
+        $skip = $true
+        break
+      }
+    }
+    if (-not $skip) {
+      $fileName = Split-Path -Path $relPath -Leaf
+      if ($skipFiles -contains $fileName) {
+        $skip = $true
+      }
+    }
+    if ($skip) { continue }
     # Strip the "publish/system/" prefix to get the equivalent source-relative path.
     $srcRelativeFromMirror = $relPath -replace '^publish/system/', ''
     if (-not $sourceRelSet.ContainsKey($srcRelativeFromMirror)) {
