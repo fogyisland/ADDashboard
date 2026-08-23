@@ -5,6 +5,13 @@ $publish = (Resolve-Path (Join-Path $PSScriptRoot '..\publish')).Path
 $zipPath = Join-Path $publish 'publish.zip'
 $tmpZip = Join-Path $env:TEMP ("publish-{0}.zip" -f [Guid]::NewGuid().ToString('N').Substring(0, 8))
 
+# Always sync the fresh dist into the git-tracked publish mirror before
+# zipping. The build→sync→zip chain is unbreakable: skipping sync means
+# publish.zip can ship a stale dist (the 2026-08-22 morning 500-error
+# was this exact class of bug). sync-dist.ps1 is idempotent — running it
+# when source and destination already match is a no-op (~0.1s).
+. (Join-Path $PSScriptRoot 'sync-dist.ps1')
+
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 if (Test-Path $tmpZip) { Remove-Item $tmpZip -Force }
 
