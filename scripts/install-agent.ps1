@@ -51,23 +51,39 @@ if (-not $InstallPath) {
 # ============================================================================
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 # Logger.psm1 supplies Write-Step / Write-Ok used in this script's file-copy
 # + npm-install phase. The SCM-facing steps (appsettings.json + NSSM + sc.exe
 # failure) live in Register-ADDashboardAgent.ps1 which has its own inline
 # logger so the two scripts are independently self-contained.
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
-# Ensure NSSM is available locally (no-op when remote — only used on the orchestrator).
-# Common\NSSM.psm1 ships nssm.exe alongside agentInstall/ via build-green-package.ps1.
-. (Join-Path $PSScriptRoot 'common\Ensure-Nssm.ps1') -ProjectRoot $projectRoot
-
 # Push LogDir into Logger.psm1's module-scoped $Script:LogDir (Write-Step /
 # Write-Ok etc. can't see the caller's variable directly).
 $Script:LogDir = Join-Path $InstallPath 'Logs'
 if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null }
 Set-LogDir $Script:LogDir
 
-if (-not $AgentSrc) { $AgentSrc = Join-Path $projectRoot 'agent' }
+# Layout-independent agent source resolution.
+#
+# Two supported layouts:
+#   GREEN PACKAGE: $PSScriptRoot\agent\   (script at <green>/agentInstall/,
+#                                         agent/ is a sibling — flat layout)
+#   DEV TREE:      $PSScriptRoot\..\agent\ (script at <repo>/scripts/,
+#                                         parent is repo root — one level up)
+#
+# Detect by file presence; default to whichever layout finds an `agent/`
+# sibling. If neither matches, fall through to a clear error so the operator
+# knows the bundle layout is wrong.
+$greenPkgAgent = Join-Path $PSScriptRoot 'agent'
+$devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
+if (-not $AgentSrc) {
+  if (Test-Path $greenPkgAgent) {
+    $AgentSrc = $greenPkgAgent
+  } elseif (Test-Path $devTreeAgent) {
+    $AgentSrc = $devTreeAgent
+  } else {
+    throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout). Verify the bundle layout — agentInstall/ expects agent/, common/, nssm/ as siblings."
+  }
+}
 if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 # Pre-flight: Node.js 20 LTS is required (green package does NOT bundle

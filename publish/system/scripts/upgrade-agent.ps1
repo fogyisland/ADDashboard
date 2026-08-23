@@ -40,11 +40,22 @@ param(
 )
 
 if (-not $InstallPath) {
-  $InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent')
+  # Layout-independent default: agent/ sibling (green package) → use
+  # script's own dir; agent/ at parent (dev tree) → use parent. Mirror
+  # the resolution below so first-time-install and hot-update agree on
+  # the same root.
+  $greenPkgAgent = Join-Path $PSScriptRoot 'agent'
+  $devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
+  if (Test-Path $greenPkgAgent) {
+    $InstallPath = Join-Path $PSScriptRoot 'Agent'
+  } elseif (Test-Path $devTreeAgent) {
+    $InstallPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'
+  } else {
+    throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout). Verify the bundle layout."
+  }
 }
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
 
 # Push LogDir into Logger.psm1's module-scoped $Script:LogDir so Write-Log can
@@ -142,7 +153,16 @@ if ($svc.Status -ne 'Stopped') {
 # Copy new agent code (exclude node_modules + tests + appsettings.json — node
 # resolves at runtime via npm install; appsettings.json holds the live token
 # + CenterUrl we just don't want to clobber).
-$agentSrc = Join-Path $projectRoot 'agent'
+# Layout-independent resolution (same logic as InstallPath default above):
+$greenPkgAgent = Join-Path $PSScriptRoot 'agent'
+$devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
+if (Test-Path $greenPkgAgent) {
+  $agentSrc = $greenPkgAgent
+} elseif (Test-Path $devTreeAgent) {
+  $agentSrc = $devTreeAgent
+} else {
+  throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout)."
+}
 Write-Step "copying $agentSrc → $InstallPath"
 Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Force `
   -Exclude 'node_modules','tests','appsettings.json'
