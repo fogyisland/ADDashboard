@@ -98,4 +98,24 @@ Describe 'install-agent.ps1' {
     $copyLine | Should -Match "'Logs'" `
       'Copy-Item -Exclude MUST include Logs/ — otherwise the open install.log gets overwritten and Copy-Item throws.'
   }
+
+  It 'skips code copy when source and install path resolve to the same directory (Windows case-collision)' {
+    # 2026-08-23: Green package layout places source at <root>/agent and
+    # default install at <root>/Agent. On Windows case-insensitive FS,
+    # those collapse to the same directory and Copy-Item refuses to
+    # overwrite files with themselves — even with -Exclude Logs, the next
+    # file in the enumeration (e.g. scripts/collect-discovery.ps1) hits
+    # the same error. Detect the collision by comparing Resolve-Path
+    # outputs and skip the copy entirely. npm install + service
+    # registration still run.
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match 'Resolve-Path\s+-LiteralPath\s+\$AgentSrc' `
+      'install-agent.ps1 must Resolve-Path $AgentSrc to detect case-collision.'
+    $content | Should -Match 'OrdinalIgnoreCase' `
+      'case-collision check must use OrdinalIgnoreCase (Windows FS is case-insensitive).'
+    $content | Should -Match 'skipping code copy' `
+      'when src==dst, install-agent.ps1 must log a skip message (operator needs to see why no copy happened).'
+    $content | Should -Match 'if\s*\(\s*\$resolvedSrc\s*-and\s*\$resolvedDst\s*-and' `
+      'guard pattern: only skip when both resolved paths are non-null AND equal (defensive against missing dirs).'
+  }
 }

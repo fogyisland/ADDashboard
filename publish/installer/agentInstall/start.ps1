@@ -187,8 +187,18 @@ if (Test-Path $greenPkgAgent) {
   throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout)."
 }
 Write-Step "copying $agentSrc → $InstallPath"
-Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Force `
-  -Exclude 'node_modules','tests','appsettings.json','Logs'
+# Detect Windows case-insensitive source/destination collision. The green
+# package layout places source under <root>/agent and default install under
+# <root>/Agent; on Windows those collapse to the same physical directory
+# and Copy-Item refuses to overwrite files with themselves. Skip when src==dst.
+$resolvedSrc = (Resolve-Path -LiteralPath $agentSrc -ErrorAction SilentlyContinue).ProviderPath
+$resolvedDst = (Resolve-Path -LiteralPath $InstallPath -ErrorAction SilentlyContinue).ProviderPath
+if ($resolvedSrc -and $resolvedDst -and [string]::Equals($resolvedSrc, $resolvedDst, [StringComparison]::OrdinalIgnoreCase)) {
+  Write-Step "source and install path resolve to the same directory ($resolvedSrc); skipping code copy"
+} else {
+  Copy-Item -Path (Join-Path $agentSrc '*') -Destination $InstallPath -Recurse -Force `
+    -Exclude 'node_modules','tests','appsettings.json','Logs'
+}
 
 # Refresh bundled Node.js if present in the green package. New green-package
 # releases may pin a newer Node 20 patch; mirroring <green>/node/ → <InstallPath>/node/

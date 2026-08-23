@@ -114,7 +114,21 @@ function Install-LocalAgent {
   @($InstallPath, $psScriptDstDir, (Join-Path $InstallPath 'Logs')) | ForEach-Object {
     if (-not (Test-Path $_)) { New-Item -ItemType Directory -Path $_ -Force | Out-Null }
   }
-  Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json','Logs'
+  # Detect Windows case-insensitive source/destination collision. The green
+  # package layout places source under <root>/agent and default install under
+  # <root>/Agent; on Windows those collapse to the same physical directory
+  # (e.g. C:\agentInstall\agent and C:\agentInstall\Agent both map to one
+  # dir). Copy-Item then refuses with "Cannot use the item itself to
+  # overwrite the item" on every file. Skip the copy when source==dest —
+  # the agent code is already in place; npm install + service registration
+  # below still run. (Real install run on KDLWXOFADSRV1 hit this.)
+  $resolvedSrc = (Resolve-Path -LiteralPath $AgentSrc -ErrorAction SilentlyContinue).ProviderPath
+  $resolvedDst = (Resolve-Path -LiteralPath $InstallPath -ErrorAction SilentlyContinue).ProviderPath
+  if ($resolvedSrc -and $resolvedDst -and [string]::Equals($resolvedSrc, $resolvedDst, [StringComparison]::OrdinalIgnoreCase)) {
+    Write-Step "source and install path resolve to the same directory ($resolvedSrc); skipping code copy (agent code already in place)"
+  } else {
+    Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json','Logs'
+  }
   Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
 
   # Stage bundled Node.js 20 LTS portable at <InstallPath>\node\ so NSSM can

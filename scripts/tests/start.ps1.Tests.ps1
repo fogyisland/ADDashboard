@@ -184,4 +184,18 @@ Describe 'start.ps1' {
     $content | Should -Match 'Copy-Item[\s\S]{0,200}agentSrc[\s\S]{0,200}-Exclude[\s\S]{0,80}\x27Logs\x27' `
       'hot-update Copy-Item -Exclude MUST include Logs/ — otherwise the open install.log gets overwritten.'
   }
+
+  It 'skips code copy when source and install path resolve to the same directory (Windows case-collision)' {
+    # 2026-08-23: Mirrors install-agent.ps1 fix. Hot-update hits the same
+    # case-collision trap when the operator's green-package root has
+    # "agent" + "Agent" siblings that Windows case-insensitive FS folds
+    # into one dir. Resolve-Path + OrdinalIgnoreCase detect it; Copy-Item
+    # is gated behind an if/else.
+    $content | Should -Match 'Resolve-Path\s+-LiteralPath\s+\$agentSrc' `
+      'start.ps1 hot-update must Resolve-Path $agentSrc to detect case-collision.'
+    $content | Should -Match 'OrdinalIgnoreCase' `
+      'case-collision check must use OrdinalIgnoreCase (Windows FS is case-insensitive).'
+    $content | Should -Match 'skipping code copy' `
+      'when src==dst, hot-update must log a skip message.'
+  }
 }
