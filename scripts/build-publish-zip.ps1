@@ -1,5 +1,12 @@
 # Build publish.zip from publish/ directory. Write to $env:TEMP first to avoid
 # antivirus scan interference, then move into publish/.
+#
+# Includes ALL operator-deliverable artifacts from publish/:
+#   - publish/installer/ADDashboardAgent.msi       (MSI build artifact)
+#   - publish/installer/ADDashboardAgent-green/    (green package folder)
+#   - publish/installer/ADDashboardAgent-green.zip (green package archive)
+# Both MSI and green-package paths are first-class install options — see
+# installer/README.md §"路径选择" for when to use which.
 $ErrorActionPreference = 'Stop'
 $publish = (Resolve-Path (Join-Path $PSScriptRoot '..\publish')).Path
 $zipPath = Join-Path $publish 'publish.zip'
@@ -29,7 +36,11 @@ try {
     #   publish/installer/staging/  (MSI build dir with embedded node)
     $excludeDirs = @(
         (Join-Path $publish 'designer'),
-        (Join-Path $publish (Join-Path 'installer' 'staging'))
+        (Join-Path $publish (Join-Path 'installer' 'staging')),
+        # build-green-package.ps1 staging dir (moved to ADDashboardAgent-green/
+        # at end of build; should never persist, but exclude defensively in
+        # case a build was interrupted mid-copy).
+        (Join-Path $publish (Join-Path 'installer' 'staging-green'))
     )
     # Test files must never reach the published bundle — operators unpack
     # publish.zip to C:\addashboard on Windows servers. Even if a stray test
