@@ -51,6 +51,57 @@ function Test-IsAdministrator {
   return $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+# Returns $true if <bundleRoot>/center/web/ source exists. Repo-root installs
+# ship the frontend source; green bundles ship pre-built dist only (no
+# center/web/). A rebuild only makes sense when source is present.
+function Test-HasWebSource {
+  return (Test-Path -LiteralPath (Join-Path $bundleRoot 'center/web'))
+}
+
+# Picks the build script that the bundle's package.json defines. Repo root
+# uses `build:web` (= npm run build:web --workspace=center); green bundles
+# (publish/system) ship only `build:frontend`. We probe both so the same
+# start.ps1 works on either layout — and return $null if neither exists.
+function Get-BuildScriptName {
+  $pkgPath = Join-Path $bundleRoot 'package.json'
+  if (-not (Test-Path $pkgPath)) { return $null }
+  try {
+    $pkg = Get-Content -Path $pkgPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    foreach ($name in @('build', 'build:web', 'build:frontend')) {
+      if ($pkg.scripts.PSObject.Properties.Name -contains $name) { return $name }
+    }
+  } catch {}
+  return $null
+}
+
+function Invoke-BundleBuild {
+  # Run npm run <script> at the bundle root when source + script are both
+  # available. Returns $true if we attempted a build and it succeeded (or
+  # there was nothing to build); $false if the build ran but failed —
+  # caller should exit.
+  if (-not (Test-HasWebSource)) {
+    Write-Host '[start] no center/web/ source (green bundle ships dist); skipping rebuild' -ForegroundColor DarkGray
+    return $true
+  }
+  $script = Get-BuildScriptName
+  if (-not $script) {
+    Write-Host '[start] center/web/ source found but no build script defined; skipping rebuild' -ForegroundColor DarkGray
+    return $true
+  }
+  Write-Host "[start] running npm run $script to regenerate dist" -ForegroundColor Cyan
+  Push-Location $bundleRoot
+  try {
+    & npm.cmd run $script
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "[start] npm run $script failed (exit " -NoNewline -ForegroundColor Red
+      Write-Host "$LASTEXITCODE" -NoNewline -ForegroundColor Red
+      Write-Host '). Check node + npm + center/web/node_modules.' -ForegroundColor Red
+      return $false
+    }
+    return $true
+  } finally { Pop-Location }
+}
+
 function Send-SystemUpdateRequest {
   param([int]$ListenPort = 8080, [int]$TimeoutSec = 10)
   $uri = "http://localhost:${ListenPort}/api/system/update"
@@ -105,29 +156,20 @@ $svc = Get-Service -Name 'ADDashboardCenter' -ErrorAction SilentlyContinue
 
 if (-not $svc) {
   # First-time install: rebuild dist (per operator requirement: always
-  # regenerate on install), then register the NSSM service pointing at
-  # <bundleRoot>\center (no file copy). After the service starts, the
-  # operator opens /init to fill in DB credentials + admin user.
+  # regenerate on install when source is available), then register the
+  # NSSM service pointing at <bundleRoot>\center (no file copy). After
+  # the service starts, the operator opens /init to fill in DB
+  # credentials + admin user.
   Write-Host '[start] ADDashboardCenter not registered — first-time install' -ForegroundColor Cyan
-  Write-Host '[start] running npm run build to regenerate dist' -ForegroundColor Cyan
-  Push-Location $bundleRoot
-  try {
-    & npm.cmd run build
-    if ($LASTEXITCODE -ne 0) {
-      Write-Host '[start] npm run build failed (exit ' -NoNewline -ForegroundColor Red
-      Write-Host "$LASTEXITCODE" -NoNewline -ForegroundColor Red
-      Write-Host '). Check node + npm + center/web/node_modules.' -ForegroundColor Red
-      exit $LASTEXITCODE
-    }
-  } finally { Pop-Location }
+  if (-not (Invoke-BundleBuild)) { exit $LASTEXITCODE }
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundleRoot 'scripts\install-center.ps1') -InPlace
   exit $LASTEXITCODE
 }
 
 # Service is registered. Update flow: rebuild dist → apply code + schema.
 # Step 1: rebuild dist from the on-disk source so the freshly-restarted
-# process serves the latest frontend bundle (green bundles ship dist; this
-# regen ensures dev trees and edge-case bundles also stay current).
+# process serves the latest frontend bundle (green bundles ship dist and
+# skip this; repo-root installs always regen).
 # Step 2: prefer the API path so DB migrations apply under the running
 # process's audit log + transaction visibility; fall back to a plain
 # restart if the endpoint isn't there yet (first deploy of
@@ -135,17 +177,7 @@ if (-not $svc) {
 # the service's own startup runs service.upgrade() before routes bind,
 # so any pending migrations land on the new code's first boot.
 Write-Host '[start] service registered — update flow (rebuild + apply)' -ForegroundColor Cyan
-Write-Host '[start] running npm run build to regenerate dist' -ForegroundColor Cyan
-Push-Location $bundleRoot
-try {
-  & npm.cmd run build
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host '[start] npm run build failed (exit ' -NoNewline -ForegroundColor Red
-    Write-Host "$LASTEXITCODE" -NoNewline -ForegroundColor Red
-    Write-Host '). Check node + npm + center/web/node_modules.' -ForegroundColor Red
-    exit $LASTEXITCODE
-  }
-} finally { Pop-Location }
+if (-not (Invoke-BundleBuild)) { exit $LASTEXITCODE }
 
 $listenPort = 8080
 $apiUpdate = $null
