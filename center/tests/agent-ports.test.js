@@ -104,7 +104,8 @@ test('POST /api/agent/heartbeat without ports returns {ok:true} (back-compat)', 
     .set('X-Agent-Token', TOKEN)
     .send({ agentId: 'dc01', agentVersion: '0.1.0' });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { ok: true });
+  // round-12 T6: response carries reportRequested: false (no read-back row).
+  assert.deepEqual(r.body, { ok: true, reportRequested: false });
   // I3: bundle SELECT now happens before the heartbeat upsert, so records
   // contains 2 entries (bundle + upsert). Filter for the upsert only.
   const heartbeatUpserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
@@ -137,13 +138,17 @@ test('POST /api/agent/heartbeat with ports upserts each and returns counts', asy
       ]
     });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { ok: true, accepted: 1, rejected: 1 });
+  // round-12 T6: response carries reportRequested: false (read-back mocked
+  // empty here → no row → defaults to false). See routes/agent.js.
+  assert.deepEqual(r.body, { ok: true, accepted: 1, rejected: 1, reportRequested: false });
   // Verify heartbeat row was written.
   const heartbeatUpserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
   assert.equal(heartbeatUpserts.length, 1, 'must upsert heartbeat row');
   // 2026-08-21 UX redesign: heartbeat now carries agent_token_version
   // (defaulted to 0 for pre-feature agents). See routes/agent.js:42 + 51.
-  assert.deepEqual(heartbeatUpserts[0].params, ['dc01', '0.1.0', null, null, 0, 0]);
+  // round-12 T6: 7th bound param is report_requested_at (null when agent
+  // doesn't forward it — COALESCE preserves the column).
+  assert.deepEqual(heartbeatUpserts[0].params, ['dc01', '0.1.0', null, null, 0, 0, null]);
   // Verify port-status upsert ran inside a transaction.
   const portStatusUpserts = records.filter(rec => /ad_agent_port_status/i.test(rec.sql));
   assert.equal(portStatusUpserts.length, 1, 'must upsert exactly one accepted port row');
@@ -178,7 +183,8 @@ test('POST /api/agent/heartbeat with empty ports[] still takes the ingest path (
     .set('X-Agent-Token', TOKEN)
     .send({ agentId: 'dc01', ports: [] });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { ok: true, accepted: 0, rejected: 0 });
+  // round-12 T6: reportRequested added to response shape.
+  assert.deepEqual(r.body, { ok: true, accepted: 0, rejected: 0, reportRequested: false });
 });
 
 test('POST /api/agent/heartbeat with wrong token -> 401, no DB writes', async () => {

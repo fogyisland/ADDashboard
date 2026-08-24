@@ -160,6 +160,12 @@ const VARIANTS = {
         `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, report_requested_at)
          VALUES (?, CURRENT_TIMESTAMP, ?)
          ON DUPLICATE KEY UPDATE report_requested_at = VALUES(report_requested_at)`,
+      // 2026-08-24 round-12 T6: read back report_requested_at for a single
+      // agent so the heartbeat handler can attach reportRequested: boolean
+      // to its response. Narrow projection (single column, single row) so
+      // the per-heartbeat cost is trivial. Caller binds [agentId].
+      readReportRequestedAt:
+        `SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s
@@ -528,6 +534,12 @@ const VARIANTS = {
            VALUES (s.agent_id, SYSUTCDATETIME(), s.report_requested_at)
          WHEN MATCHED THEN
            UPDATE SET report_requested_at = s.report_requested_at;`,
+      // 2026-08-24 round-12 T6: read back report_requested_at for a single
+      // agent so the heartbeat handler can attach reportRequested: boolean
+      // to its response. Same shape as the MySQL variant (single column,
+      // single row). Caller binds [agentId].
+      readReportRequestedAt:
+        `SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s

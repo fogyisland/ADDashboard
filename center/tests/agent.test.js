@@ -54,7 +54,16 @@ function buildApp({ agentTokenValue, records, extraScripts } = {}) {
 
 test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued', async () => {
   const records = [];
-  const app = buildApp({ agentTokenValue: 'tok', records });
+  // round-12 T6: handler now reads back report_requested_at after the
+  // upsert. The mock returns null so reportRequested stays false.
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
   const res = await supertest(app)
     .post('/api/agent/heartbeat')
     .set('X-Agent-Token', 'tok')
@@ -68,7 +77,11 @@ test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued'
   assert.match(upserts[0].sql, /ON\s+DUPLICATE\s+KEY\s+UPDATE/i);
   // 2026-08-21 UX redesign: heartbeat now carries agent_token_version
   // (defaulted to 0 for pre-feature agents). See routes/agent.js:42 + 51.
-  assert.deepEqual(upserts[0].params, ['agent-1', '1.0.0', null, null, 3, 0]);
+  // round-12 T6: 8th param is report_requested_at (null when agent
+  // doesn't forward it — COALESCE in upsert preserves the column).
+  assert.deepEqual(upserts[0].params, ['agent-1', '1.0.0', null, null, 3, 0, null]);
+  // round-12 T6: response carries reportRequested: false (read-back null).
+  assert.equal(res.body.reportRequested, false);
 });
 
 test('POST /api/agent/heartbeat with wrong token -> 401 and no UPSERT issued', async () => {
@@ -91,6 +104,61 @@ test('POST /api/agent/heartbeat missing agentId -> 400 and no UPSERT issued', as
     .send({});
   assert.equal(res.status, 400);
   assert.equal(records.length, 0);
+});
+
+// round-12 T6: heartbeat response carries `reportRequested: boolean`.
+// The handler reads back report_requested_at after the upsert so the
+// response reflects the post-write state. COALESCE in the upsert means
+// binding null preserves the column — older agents that don't forward
+// the field (or that attempt a "clear" by sending null) get the existing
+// value preserved. See brief Step 4 + Option A rationale.
+test('POST /api/agent/heartbeat: response carries reportRequested: true when flag is set', async () => {
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Mock the post-upsert read-back SELECT to return a non-null
+      // report_requested_at — simulates a pending "report now" request
+      // that was set via the admin route (T5).
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: new Date('2026-08-24T10:00:00Z') }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.reportRequested, true);
+  // UPSERT must include report_requested_at as the 7th bound param
+  // (last_heartbeat_at uses CURRENT_TIMESTAMP so it's not bound).
+  // Agent didn't forward the field → null → COALESCE preserves the column.
+  const upserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0].params.length, 7);
+  assert.equal(upserts[0].params[6], null);
+});
+
+test('POST /api/agent/heartbeat: response carries reportRequested: false when flag is null', async () => {
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Read-back returns null — either the column was never set, or
+      // a future "clear" path managed to wipe it. Either way, the
+      // response should report reportRequested: false.
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.reportRequested, false);
 });
 
 test('POST /api/agent/report with correct token -> 200, config echoed', async () => {
