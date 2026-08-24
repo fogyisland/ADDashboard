@@ -18,6 +18,17 @@ function toIsoOrNull(v) {
   return Number.isFinite(d.getTime()) ? d.toISOString() : null;
 }
 
+// 2026-08-24 round-12 T3 — thrown by requestReport() when the agent row is
+// not in ad_agent_heartbeat. The route layer (T5) catches this by `code`
+// and translates to 404; the service stays HTTP-agnostic.
+export class AgentNotFoundError extends Error {
+  constructor(agentId) {
+    super(`agent not found: ${agentId}`);
+    this.code = 'AGENT_NOT_FOUND';
+    this.agentId = agentId;
+  }
+}
+
 export const heartbeatReportService = {
   async listAgents(db = null) {
     const conn = db ?? getDb();
@@ -87,6 +98,40 @@ export const heartbeatReportService = {
         lastAttemptTime: toIsoOrNull(r.last_attempt_time)
       }))
     };
+  },
+
+  // 2026-08-24 round-12 T3 — set the report_requested_at flag for one agent
+  // so the next heartbeat ack tells it to ship a report immediately. The
+  // UPSERT is silent on existence (it would happily INSERT a stub row for
+  // an unknown agent), so we MUST SELECT 1 first to throw AgentNotFoundError
+  // before any write. The current flag is read once to compute alreadyPending
+  // (no race vs the agent consuming it — we don't care; the agent will treat
+  // the latest value as authoritative).
+  async requestReport(agentId, db = null) {
+    const conn = db ?? getDb();
+    const exists = await conn.execute(
+      'SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ? LIMIT 1',
+      [agentId]
+    );
+    const existsRows = exists?.rows ?? exists?.[0] ?? [];
+    if (existsRows.length === 0) {
+      throw new AgentNotFoundError(agentId);
+    }
+
+    const current = await conn.execute(
+      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ? LIMIT 1',
+      [agentId]
+    );
+    const currentRows = current?.rows ?? current?.[0] ?? [];
+    const alreadyPending = currentRows.length > 0 &&
+      currentRows[0].report_requested_at !== null &&
+      currentRows[0].report_requested_at !== undefined;
+
+    const requestedAt = new Date();
+    const sql = conn.sql.heartbeat.requestReport(agentId, requestedAt.toISOString());
+    await conn.execute(sql, [agentId, requestedAt]);
+
+    return { agentId, requestedAt, alreadyPending };
   },
 
   async _summaryFor(conn, agentId, lastReportAt, since) {
