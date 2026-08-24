@@ -210,6 +210,91 @@ test('db.sql.heartbeat reportSummaryFor returns only MAX(collected_at) rows', as
   }
 });
 
+// 2026-08-24 round-12 — requestReport UPSERT helper
+// Inserts a row if missing (agent's first heartbeat hasn't landed yet) or
+// updates `report_requested_at` if the row exists. The plan guarantees
+// `agentsList` / `dcsList` SELECT expose the new column so callers can
+// detect "already pending" without a separate read.
+test('db.sql.heartbeat.requestReport sets the column on existing row', async (t) => {
+  const conn = await openTestConnection(t);
+  if (!conn) return;
+
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `__t_hb_req_${suffix}`;
+  try {
+    // Seed an agent row WITHOUT report_requested_at populated (NULL default).
+    await conn.execute(
+      `INSERT INTO ad_agent_heartbeat
+         (agent_id, last_heartbeat_at, agent_version, last_report_at,
+          last_report_status, pending_queue_size)
+       VALUES (?, CURRENT_TIMESTAMP, 'v', NULL, NULL, 0)`,
+      [agentId]
+    );
+
+    const ts = '2026-08-24T10:00:00.000Z';
+    const sql = sqlRegistry.requestReport(agentId, ts);
+    await conn.query(sql, [agentId, new Date(ts)]);
+
+    const [rows] = await conn.execute(
+      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].report_requested_at instanceof Date);
+    assert.equal(rows[0].report_requested_at.toISOString(), ts);
+  } finally {
+    await conn.execute('DELETE FROM ad_agent_heartbeat WHERE agent_id = ?', [agentId]).catch(() => {});
+    await conn.end();
+  }
+});
+
+// 2026-08-24 round-12 — COALESCE preserves the column when the heartbeat
+// caller (agent.js round-12 T6) hasn't yet been taught to forward the new
+// field. Pre-T6 callers will pass `null` for `report_requested_at`; the
+// MySQL COALESCE / MSSQL ISNULL guard must NOT clear an existing value.
+test('db.sql.heartbeat.upsert preserves report_requested_at when param is null', async (t) => {
+  const conn = await openTestConnection(t);
+  if (!conn) return;
+
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `__t_hb_preserve_${suffix}`;
+  const originalTs = new Date('2026-08-24T10:00:00Z');
+  try {
+    await conn.execute(
+      `INSERT INTO ad_agent_heartbeat
+         (agent_id, last_heartbeat_at, agent_version, last_report_at,
+          last_report_status, pending_queue_size, report_requested_at)
+       VALUES (?, CURRENT_TIMESTAMP, 'v', NULL, NULL, 0, ?)`,
+      [agentId, originalTs]
+    );
+
+    // Drive the upsert with `null` for the new column; COALESCE keeps the
+    // original value.
+    const upsertSql = sqlRegistry.upsert;
+    const params = [
+      agentId,           // agent_id
+      'v2',              // agent_version
+      null,              // last_report_at
+      null,              // last_report_status
+      0,                 // pending_queue_size
+      null,              // agent_token_version
+      null               // report_requested_at (NULL = preserve)
+    ];
+    await conn.query(upsertSql, params);
+
+    const [rows] = await conn.execute(
+      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    assert.equal(rows.length, 1);
+    assert.ok(rows[0].report_requested_at instanceof Date);
+    assert.equal(rows[0].report_requested_at.toISOString(), originalTs.toISOString());
+  } finally {
+    await conn.execute('DELETE FROM ad_agent_heartbeat WHERE agent_id = ?', [agentId]).catch(() => {});
+    await conn.end();
+  }
+});
+
 test('db.sql.heartbeat latestReportEntries returns only the latest snapshot and caps it at 100', async (t) => {
   const conn = await openTestConnection(t);
   if (!conn) return;

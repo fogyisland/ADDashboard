@@ -126,18 +126,26 @@ const VARIANTS = {
       refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
     },
     heartbeat: {
-      upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = CURRENT_TIMESTAMP, agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size), agent_token_version = VALUES(agent_token_version)`,
+      // 2026-08-24 round-12: report_requested_at added (last col, matching
+      // migration `AFTER agent_token_version`). COALESCE on UPDATE means
+      // a `null` param preserves the existing column — agents pre-T6 that
+      // don't forward the field will not wipe the "report now" request.
+      upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version, report_requested_at) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = CURRENT_TIMESTAMP, agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size), agent_token_version = VALUES(agent_token_version), report_requested_at = COALESCE(VALUES(report_requested_at), report_requested_at)`,
       // 2026-08-21 UX redesign (auto-delivery): list every agent's last
       // reported agent_token_version so the modal can render the
       // "已推送到 X / N 台 Agent" counter. agent_id is the source-of-truth
       // identifier; for AD it's the configured agentId (e.g. DC name),
       // for non-AD it's the hostname (matches the heartbeat payload).
       tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
-      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
+      // 2026-08-24 round-12: SELECT exposes report_requested_at so callers
+      // can detect "already pending" without a separate read. WHERE filter
+      // is round-11's `__healthcheck__` exclusion — preserved.
+      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size, h.report_requested_at
              FROM ad_agent_heartbeat h
              WHERE h.agent_id <> '__healthcheck__'
              ORDER BY h.agent_id`,
       dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
+                 h.report_requested_at,
                  d.dc_name, d.ip_address, d.os_version, d.is_pdc,
                  s.site_name, s.region_code
           FROM ad_agent_heartbeat h
@@ -145,6 +153,13 @@ const VARIANTS = {
           LEFT JOIN ad_sites s ON s.site_id = d.site_id
           WHERE h.agent_id <> '__healthcheck__'
           ORDER BY h.agent_id`,
+      // 2026-08-24 round-12: requestReport UPSERT — insert a stub heartbeat
+      // row if the agent hasn't checked in yet, or set the column if it
+      // has. Caller binds [agentId, requestedAt] (Date or ISO string).
+      requestReport: (agentId, requestedAtIso) =>
+        `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, report_requested_at)
+         VALUES (?, CURRENT_TIMESTAMP, ?)
+         ON DUPLICATE KEY UPDATE report_requested_at = VALUES(report_requested_at)`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s
@@ -477,15 +492,23 @@ const VARIANTS = {
       refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
     },
     heartbeat: {
-      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size, ? AS agent_token_version) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size, agent_token_version = s.agent_token_version WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size, s.agent_token_version);`,
+      // 2026-08-24 round-12: report_requested_at added (last col). ISNULL
+      // on WHEN MATCHED UPDATE means a `null` param preserves the existing
+      // column — agents pre-T6 that don't forward the field will not wipe
+      // the "report now" request.
+      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size, ? AS agent_token_version, ? AS report_requested_at) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size, agent_token_version = s.agent_token_version, report_requested_at = ISNULL(s.report_requested_at, t.report_requested_at) WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version, report_requested_at) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size, s.agent_token_version, s.report_requested_at);`,
       // 2026-08-21 UX redesign (auto-delivery): same shape as the MySQL
       // variant — see the comment above.
       tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
-      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
+      // 2026-08-24 round-12: SELECT exposes report_requested_at so callers
+      // can detect "already pending" without a separate read. WHERE filter
+      // is round-11's `__healthcheck__` exclusion — preserved.
+      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size, h.report_requested_at
              FROM ad_agent_heartbeat h
              WHERE h.agent_id <> '__healthcheck__'
              ORDER BY h.agent_id`,
       dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
+                 h.report_requested_at,
                  d.dc_name, d.ip_address, d.os_version, d.is_pdc,
                  s.site_name, s.region_code
           FROM ad_agent_heartbeat h
@@ -493,6 +516,18 @@ const VARIANTS = {
           LEFT JOIN ad_sites s ON s.site_id = d.site_id
           WHERE h.agent_id <> '__healthcheck__'
           ORDER BY h.agent_id`,
+      // 2026-08-24 round-12: requestReport MERGE — insert a stub heartbeat
+      // row if the agent hasn't checked in yet, or set the column if it
+      // has. Caller binds [agentId, requestedAt].
+      requestReport: (agentId, requestedAtIso) =>
+        `MERGE INTO ad_agent_heartbeat AS t
+         USING (SELECT ? AS agent_id, ? AS report_requested_at) AS s
+         ON t.agent_id = s.agent_id
+         WHEN NOT MATCHED THEN
+           INSERT (agent_id, last_heartbeat_at, report_requested_at)
+           VALUES (s.agent_id, SYSUTCDATETIME(), s.report_requested_at)
+         WHEN MATCHED THEN
+           UPDATE SET report_requested_at = s.report_requested_at;`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s
