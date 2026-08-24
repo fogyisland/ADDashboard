@@ -6,10 +6,9 @@
   "description": "AD Replication Dashboard (green-bundle runtime)",
   "workspaces": [
     "center",
-    "frontend",
     "agent"
   ],
   "scripts": {
-    "build:frontend": "npm run build --workspace=frontend"
+    "build:web": "npm run build:web --workspace=center"
   }
 }
