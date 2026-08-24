@@ -353,3 +353,41 @@ test('db.sql.heartbeat latestReportEntries returns only the latest snapshot and 
     await conn.end();
   }
 });
+
+// 2026-08-24 round-12 T-fix — direct UPDATE … SET … = NULL. The heartbeat
+// UPSERT's COALESCE / ISNULL guard preserves the column when the agent
+// binds `null`, so the T7 ack-loop needs a dedicated helper that
+// bypasses the guard and writes NULL. Without this, the column never
+// clears and the agent keeps running _tick() every 5s.
+test('db.sql.heartbeat.clearReportRequest sets the column to NULL on existing row', async (t) => {
+  const conn = await openTestConnection(t);
+  if (!conn) return;
+
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `__t_hb_clear_${suffix}`;
+  try {
+    // Seed with a non-null report_requested_at — simulates a pending
+    // "report now" request set by the admin route.
+    await conn.execute(
+      `INSERT INTO ad_agent_heartbeat
+         (agent_id, last_heartbeat_at, agent_version, last_report_at,
+          last_report_status, pending_queue_size, report_requested_at)
+       VALUES (?, CURRENT_TIMESTAMP, 'v', NULL, NULL, 0, ?)`,
+      [agentId, new Date('2026-08-24T10:00:00Z')]
+    );
+
+    // Run clearReportRequest — the helper must actually wipe the column.
+    const sql = sqlRegistry.clearReportRequest(agentId);
+    await conn.execute(sql, [agentId]);
+
+    const [rows] = await conn.execute(
+      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].report_requested_at, null);
+  } finally {
+    await conn.execute('DELETE FROM ad_agent_heartbeat WHERE agent_id = ?', [agentId]).catch(() => {});
+    await conn.end();
+  }
+});

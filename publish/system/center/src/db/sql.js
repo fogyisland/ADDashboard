@@ -160,6 +160,17 @@ const VARIANTS = {
         `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, report_requested_at)
          VALUES (?, CURRENT_TIMESTAMP, ?)
          ON DUPLICATE KEY UPDATE report_requested_at = VALUES(report_requested_at)`,
+      // 2026-08-24 round-12 T-fix: clearReportRequest — direct UPDATE that
+      // actually sets `report_requested_at = NULL`. The heartbeat UPSERT's
+      // COALESCE-preserve path correctly handles "absent" / "value" but
+      // cannot express "explicit clear" (a `null` bind would preserve).
+      // Round-12 agents ack a "report now" request by forwarding the body
+      // field as `null`; this UPDATE overrides the column. Caller binds
+      // [agentId].
+      clearReportRequest: (agentId) =>
+        `UPDATE ad_agent_heartbeat
+            SET report_requested_at = NULL
+          WHERE agent_id = ?`,
       // 2026-08-24 round-12 T6: read back report_requested_at for a single
       // agent so the heartbeat handler can attach reportRequested: boolean
       // to its response. Narrow projection (single column, single row) so
@@ -534,6 +545,14 @@ const VARIANTS = {
            VALUES (s.agent_id, SYSUTCDATETIME(), s.report_requested_at)
          WHEN MATCHED THEN
            UPDATE SET report_requested_at = s.report_requested_at;`,
+      // 2026-08-24 round-12 T-fix: clearReportRequest — direct UPDATE that
+      // actually sets `report_requested_at = NULL`. Same rationale as the
+      // MySQL variant: heartbeat MERGE's ISNULL-preserve path cannot
+      // express "explicit clear". Caller binds [agentId].
+      clearReportRequest: (agentId) =>
+        `UPDATE ad_agent_heartbeat
+            SET report_requested_at = NULL
+          WHERE agent_id = @p_agent_id`,
       // 2026-08-24 round-12 T6: read back report_requested_at for a single
       // agent so the heartbeat handler can attach reportRequested: boolean
       // to its response. Same shape as the MySQL variant (single column,

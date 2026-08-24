@@ -40,32 +40,41 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // initial version, so no delivery happens until a rotation bumps
       // the server side).
       const reportedTokenVersion = Number(agent_token_version) || 0;
-      // round-12 T6: 3-way semantic for report_requested_at.
-      //   undefined / null → bind null → UPSERT's COALESCE preserves the column.
-      //   ISO string      → bind a Date → UPSERT sets the column.
-      // We deliberately collapse undefined and null to null (Option A in
-      // the brief's contradiction analysis): the SQL is COALESCE-protected
-      // on UPDATE so null binds always preserve. Agents that attempt a
-      // "clear" by sending null will leave the column untouched — that's
-      // accepted here because (a) T2's SQL chose this guarantee, (b) it
-      // keeps older agents back-compatible (they never send the field),
-      // and (c) the column is only ever overwritten by the admin's
-      // requestReport UPSERT (which uses VALUES() directly, no COALESCE).
-      // See brief Step 4 for full reasoning.
-      const reportRequestedAt = (report_requested_at === undefined || report_requested_at === null)
+      // round-12 T6 + T-fix: 3-way semantic for report_requested_at.
+      //   undefined → older agent / absent field → preserve via UPSERT (COALESCE keeps column)
+      //   null      → round-12 agent cleared the flag → call clearReportRequest UPDATE
+      //   string    → round-12 agent providing a new value → UPSERT sets the column
+      // T6 originally collapsed undefined and null to the same `null` value
+      // and routed both through the UPSERT, but COALESCE / ISNULL in the
+      // upsert SQL guarantees `null` preserves the column — so the
+      // "explicit clear" semantic was silently broken. T-fix splits the
+      // value into two sentinels: `undefined` keeps the preserve path, an
+      // explicit `null` triggers `clearReportRequest` so the column is
+      // actually wiped. Older agents (which never send the field) are
+      // unaffected — they still get the preserve path.
+      const reportRequestedAtRaw = report_requested_at;
+      const reportRequestedAtIsExplicitNull = reportRequestedAtRaw === null;
+      const reportRequestedAt = (reportRequestedAtIsExplicitNull || reportRequestedAtRaw === undefined)
         ? null
-        : new Date(report_requested_at);
+        : new Date(reportRequestedAtRaw);
       try {
         const db = getDb();
-        await db.execute(db.sql.heartbeat.upsert, [
-          agentId,
-          agentVersion ?? null,
-          toMysqlDatetime(lastReportAt),
-          lastReportStatus ?? null,
-          pendingQueueSize ?? 0,
-          reportedTokenVersion,
-          reportRequestedAt
-        ]);
+        // 3-way SQL routing:
+        //   null      → clearReportRequest (direct UPDATE … SET … = NULL)
+        //   undefined / value → upsert (COALESCE preserves undefined→null, sets a value)
+        if (reportRequestedAtIsExplicitNull) {
+          await db.execute(db.sql.heartbeat.clearReportRequest, [agentId]);
+        } else {
+          await db.execute(db.sql.heartbeat.upsert, [
+            agentId,
+            agentVersion ?? null,
+            toMysqlDatetime(lastReportAt),
+            lastReportStatus ?? null,
+            pendingQueueSize ?? 0,
+            reportedTokenVersion,
+            reportRequestedAt
+          ]);
+        }
 
         // Auto-delivery: if the server's current version is newer than
         // what the agent reported, attach the new token to the response

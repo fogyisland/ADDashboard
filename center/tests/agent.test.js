@@ -84,6 +84,50 @@ test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued'
   assert.equal(res.body.reportRequested, false);
 });
 
+// round-12 T-fix: explicit-null body field triggers clearReportRequest
+// instead of the preserve-via-COALESCE path. Without this, the T7 agent's
+// "ack by sending null" loop would never actually wipe the column.
+test('POST /api/agent/heartbeat: explicit null body field triggers clearReportRequest', async () => {
+  let clearCalled = false;
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // The clear path goes through clearReportRequest (UPDATE … = NULL)
+      // — NOT through the heartbeat UPSERT. The mock fires onExecute for
+      // the UPDATE so the test can assert the SQL was issued; the read-
+      // back SELECT returns null so reportRequested stays false.
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: [],
+        onExecute: () => { clearCalled = true; }
+      },
+      {
+        match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }]
+      }
+    ]
+  });
+
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({
+      agentId: 'agent-1',
+      agentVersion: '1.0.0',
+      pendingQueueSize: 0,
+      report_requested_at: null   // explicit clear
+    });
+
+  assert.equal(r.status, 200);
+  assert.equal(clearCalled, true);
+  assert.equal(r.body.reportRequested, false);
+  // UPSERT must NOT have fired — the explicit null routes to clearReportRequest.
+  const upserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(upserts.length, 0);
+});
+
 test('POST /api/agent/heartbeat with wrong token -> 401 and no UPSERT issued', async () => {
   const records = [];
   const app = buildApp({ agentTokenValue: 'tok', records });
