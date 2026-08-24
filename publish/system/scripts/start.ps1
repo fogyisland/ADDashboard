@@ -49,14 +49,24 @@ param(
 )
 
 if (-not $InstallPath) {
-  # Layout-independent default: agent/ sibling (green package) → use
-  # script's own dir; agent/ at parent (dev tree) → use parent. Mirror
-  # the resolution below so first-time-install and hot-update agree on
-  # the same root.
+  # Layout-independent default:
+  #   GREEN PACKAGE: agent/ is a sibling of start.ps1 → $InstallPath IS the
+  #     agent/ directory. NSSM's AppDirectory + AppParameters='agent.js'
+  #     contract (Register-ADDashboardAgent.ps1:184-185) requires
+  #     $InstallPath/agent.js to be the literal entry file, which lives
+  #     inside agent/, not at the agentInstall/ root. Picking $PSScriptRoot/
+  #     Agent/ (capital A) used to be the default — on Windows case-
+  #     insensitive FS that case-folds to the same agent/ dir, but
+  #     $InstallPath/node then resolved to agent/node (non-existent); the
+  #     bundled Node is at the sibling $PSScriptRoot/node.
+  #   DEV TREE: agent/ is one level up at the repo root → $InstallPath is
+  #     <repo>/Agent/ (separate dir on case-sensitive FS so source edits
+  #     don't affect the running install). On Windows this case-collides
+  #     with agent/ and is handled by the src==dst gate below.
   $greenPkgAgent = Join-Path $PSScriptRoot 'agent'
   $devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
   if (Test-Path $greenPkgAgent) {
-    $InstallPath = Join-Path $PSScriptRoot 'Agent'
+    $InstallPath = $greenPkgAgent
   } elseif (Test-Path $devTreeAgent) {
     $InstallPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'
   } else {
@@ -80,6 +90,9 @@ Set-LogDir $Script:LogDir
 # need a separate Node install. Search order:
 #   1. <green>/node/node.exe — bundled by build-green-package.ps1
 #   2. <InstallPath>/node/node.exe — already-copied by a prior install/upgrade
+#      (only valid on dev-tree layout where InstallPath is a separate dir
+#      from the green-package root; on green-pkg InstallPath IS agent/ and
+#      the bundled Node stays at $PSScriptRoot/node, not $InstallPath/node)
 #   3. node.exe on PATH — operator-installed fallback (legacy, pre-bundling)
 # If none found, fail fast BEFORE prompting for CenterUrl/AgentToken so the
 # operator doesn't type creds only to discover Node is missing.
@@ -209,13 +222,18 @@ if ($srcEqDst) {
 # Variable name distinct from the pre-flight $bundledGreenNode (file) above —
 # this is the directory, not the exe.
 #
-# Skip when src==dst (Windows case-collision). In that case
-# $bundledGreenNodeDir/node and $nodeDst/node resolve to the same physical
-# directory; robocopy /MIR with identical src/dst is undefined (typically
-# exit code 1 "Extra files detected") and adds no value — the bundled node
-# is already in place.
+# $nodeDst resolution: when src==dst (Windows case-collision; green-pkg
+# layout where InstallPath IS agent/), the bundled Node is at
+# $PSScriptRoot/node (sibling of agent/, NOT inside InstallPath). Using
+# $InstallPath/node would resolve to agent/node (non-existent) and
+# npm install would fail the Test-Path guard below. In that case, point
+# $nodeDst at the bundled dir directly so PATH prepend + npm.cmd
+# invocation work without any copy. On non-case-collides paths (dev tree,
+# or any future layout where InstallPath and agentSrc are distinct),
+# $nodeDst stays at $InstallPath/node and robocopy refreshes from the
+# bundled dir as before.
 $bundledGreenNodeDir = Join-Path $PSScriptRoot 'node'
-$nodeDst = Join-Path $InstallPath 'node'
+$nodeDst = if ($srcEqDst) { $bundledGreenNodeDir } else { Join-Path $InstallPath 'node' }
 if ($srcEqDst) {
   Write-Step "src==dst; skipping Node refresh (bundled node already at $nodeDst)"
 } elseif (Test-Path (Join-Path $bundledGreenNodeDir 'node.exe')) {
@@ -258,7 +276,11 @@ if (-not (Test-Path -LiteralPath $npmCmd)) {
   throw "npm.cmd not found at $npmCmd — bundled Node install is incomplete. Re-extract the green package's node/ directory."
 }
 
-# npm install — production-only, no audit noise in CI logs.
+# npm install — production-only, no audit noise in CI logs. Must run in
+# $InstallPath (where package.json lives), NOT in $nodeDst (the bundled
+# Node dir has no package.json). src==dst on green-pkg means
+# InstallPath = $PSScriptRoot/agent, which is the agent source dir —
+# Push-Location there before npm install.
 Push-Location $InstallPath
 try {
   Write-Step "npm install --omit=dev"

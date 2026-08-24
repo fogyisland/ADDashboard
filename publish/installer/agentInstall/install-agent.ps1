@@ -140,15 +140,25 @@ function Install-LocalAgent {
   # when running from a green package; falls back to PATH-resolved node.exe's
   # directory when no bundled node was staged (e.g., a hand-built bundle).
   #
-  # Skip the refresh when src==dst (Windows case-collision: <green>/agent ==
-  # <InstallPath>/Agent). In that case $bundledSrc/node and $nodeDst/node
-  # resolve to the same physical directory — `Remove-Item $nodeDst` would
-  # wipe the bundled node before robocopy could mirror it (and robocopy /MIR
-  # with identical src/dst is undefined behavior). The bundled node is
-  # already in place at <InstallPath>/node/ via the case-collision; no copy
-  # needed.
+  # $nodeDst resolution: when src==dst (Windows case-collision; green-pkg
+  # layout where start.ps1 set InstallPath = $PSScriptRoot/agent), the
+  # bundled Node is at $PSScriptRoot/node (sibling of agent/, NOT inside
+  # InstallPath). Using $InstallPath/node would resolve to agent/node
+  # (non-existent) and npm install would fail the Test-Path guard below.
+  # In that case, point $nodeDst at the bundled dir directly so PATH
+  # prepend + npm.cmd invocation work without any copy. On non-case-
+  # collides paths (dev tree, or any future layout where InstallPath and
+  # AgentSrc are distinct), $nodeDst stays at $InstallPath/node and
+  # robocopy refreshes from the bundled dir as before.
+  #
+  # The robocopy path keeps its Remove-Item guard (real install run on
+  # KDLWXOFADSRV1 — round 3). Remove-Item was a self-wipe trap when src
+  # and dst accidentally mapped to the same physical dir; with the new
+  # $nodeDst redirect, src==dst never enters this branch, so Remove-Item
+  # is only used in the true separate-dir (dev-tree) case where it is
+  # safe.
   $bundledSrc = Join-Path $PSScriptRoot 'node'
-  $nodeDst = Join-Path $InstallPath 'node'
+  $nodeDst = if ($srcEqDst) { $bundledSrc } else { Join-Path $InstallPath 'node' }
   if ($srcEqDst) {
     Write-Step "src==dst; skipping Node refresh (bundled node already at $nodeDst)"
   } elseif (Test-Path $bundledSrc) {

@@ -27,6 +27,12 @@ Describe 'install-agent.ps1' {
     # only set in script scope → empty in defaults → Join-Path '..' fails with empty Path.
     # Guard: (a) InstallPath param has NO default value, (b) body resolves the default
     # in script scope via an if-guard.
+    #
+    # 2026-08-24 (round 5): the dev-tree default stays at <repo>/Agent/
+    # (separate dir on case-sensitive FS). The green-pkg default is owned
+    # by start.ps1, which delegates here with -InstallPath explicitly set,
+    # so install-agent.ps1's default is only relevant for direct callers
+    # (WinRM remote install, automation) running from the dev tree.
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
     $installPathParam = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'InstallPath' }
     $installPathParam.DefaultValue | Should -BeNullOrEmpty `
@@ -38,6 +44,19 @@ Describe 'install-agent.ps1' {
       'body must Join-Path to the Agent subdirectory (script-relative install root).'
     $content | Should -Not -Match 'C:\\addashboard\\Agent' `
       'script must not hardcode C:\addashboard\Agent — must be script-relative.'
+  }
+
+  It 'redirects $nodeDst to $bundledSrc when src==dst (in-place green-pkg install)' {
+    # 2026-08-24 (round 5): When start.ps1 delegates here with InstallPath =
+    # $PSScriptRoot/agent (in-place green-pkg), $InstallPath/node resolves
+    # to agent/node — a non-existent path. The bundled Node is at
+    # $PSScriptRoot/node (sibling), so $nodeDst must point at the bundled
+    # dir for PATH prepend + npm.cmd invocation to work. The script must
+    # compute $nodeDst conditionally on $srcEqDst, not unconditionally
+    # from $InstallPath. Mirrors the same fix in start.ps1.
+    $content = Get-Content $scriptPath -Raw
+    $content | Should -Match '\$nodeDst\s*=\s*if\s*\(\s*\$srcEqDst\s*\)\s*\{\s*\$bundledSrc\s*\}\s*else\s*\{\s*Join-Path\s+\$InstallPath\s+''node''' `
+      'install-agent.ps1 must compute $nodeDst as `if ($srcEqDst) { $bundledSrc } else { Join-Path $InstallPath node }`.'
   }
 
   It 'always runs npm install --omit=dev (not conditional on shipped node_modules)' {

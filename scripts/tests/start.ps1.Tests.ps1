@@ -45,10 +45,43 @@ Describe 'start.ps1' {
       '[CmdletBinding()] default param values evaluate in child scope where $PSScriptRoot is empty; default must be resolved in the body.'
     $content | Should -Match 'if\s*\(\s*-not\s+\$InstallPath\s*\)' `
       'body must guard with `if (-not $InstallPath)` to resolve the default in script scope.'
-    $content | Should -Match 'Join-Path.*Agent' `
-      'body must Join-Path to the Agent subdirectory (script-relative install root).'
+    $content | Should -Match 'Join-Path.*[Aa]gent' `
+      'body must Join-Path to the Agent/agent subdirectory (script-relative install root).'
     $content | Should -Not -Match 'C:\\addashboard\\Agent' `
       'script must not hardcode C:\addashboard\Agent — must be script-relative.'
+  }
+
+  It 'defaults InstallPath to the lowercase agent/ dir on green-pkg layout (in-place install)' {
+    # 2026-08-24 (round 5): The previous default of $PSScriptRoot/Agent/ (capital A)
+    # case-collided with $PSScriptRoot/agent/ on Windows and resolved
+    # $InstallPath/node to a non-existent agent/node path. The bundled Node
+    # is at $PSScriptRoot/node (sibling of agent/), NOT inside agent/. The
+    # fix is to make InstallPath = $greenPkgAgent directly: agent.js +
+    # appsettings.json + src/ + scripts/ + package.json all live inside
+    # agent/, so AppDirectory = $InstallPath and AppParameters = 'agent.js'
+    # resolve correctly. NSSM's node path comes from the bundled
+    # $PSScriptRoot/node — start.ps1 / install-agent.ps1 redirect $nodeDst
+    # to $bundledSrc when src==dst so PATH prepend + npm.cmd work.
+    $content | Should -Match '\$InstallPath\s*=\s*\$greenPkgAgent' `
+      'green-pkg default must assign InstallPath = $greenPkgAgent (lowercase), not $PSScriptRoot/Agent/.'
+    # Single quotes to prevent $PSScriptRoot interpolation. The legacy form
+    # is the literal `$InstallPath = Join-Path $PSScriptRoot 'Agent'`
+    # (capital A, no parent resolution). Dev-tree default uses
+    # `Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'`
+    # which is a different shape — that pattern must remain allowed.
+    $content | Should -Not -Match 'InstallPath\s*=\s*Join-Path\s+\$PSScriptRoot\s+''Agent''' `
+      'green-pkg default must NOT use the legacy `$InstallPath = Join-Path $PSScriptRoot ''Agent''` form (capital A, case-collision trap).'
+  }
+
+  It 'redirects $nodeDst to $bundledSrc when src==dst (in-place green-pkg install)' {
+    # 2026-08-24 (round 5): When InstallPath IS agent/ (in-place install),
+    # $InstallPath/node resolves to agent/node — a non-existent path. The
+    # bundled Node is at $PSScriptRoot/node (sibling), so $nodeDst must
+    # point at the bundled dir for PATH prepend + npm.cmd invocation to
+    # work. The script must compute $nodeDst conditionally on $srcEqDst,
+    # not unconditionally from $InstallPath.
+    $content | Should -Match '\$nodeDst\s*=\s*if\s*\(\s*\$srcEqDst\s*\)\s*\{\s*\$bundledGreenNodeDir\s*\}\s*else\s*\{\s*Join-Path\s+\$InstallPath\s+''node''' `
+      'hot-update must compute $nodeDst as `if ($srcEqDst) { $bundledGreenNodeDir } else { Join-Path $InstallPath node }`.'
   }
 
   It 'auto-detects install state via Get-Service ADReplicationAgent' {
@@ -96,8 +129,17 @@ Describe 'start.ps1' {
     # is duplicating SCM logic instead of delegating.
     $content | Should -Not -Match 'ConvertTo-Json\s*\|\s*Set-Content' `
       'start.ps1 must NOT write appsettings.json via ConvertTo-Json | Set-Content — that lives in Register-ADDashboardAgent.ps1.'
-    $content | Should -Not -Match 'Register-ADDashboardAgent\.ps1' `
-      'start.ps1 must NOT invoke Register-ADDashboardAgent.ps1 directly — install-agent.ps1 owns that delegation. Two-hop dispatch keeps the contract clean.'
+    # 2026-08-24 (round 5): the new comments reference Register-ADDashboardAgent.ps1
+    # in passing (e.g., "NSSM's AppDirectory + AppParameters='agent.js' contract
+    # (Register-ADDashboardAgent.ps1:184-185)..."). The legacy assertion
+    # `Should -Not -Match 'Register-ADDashboardAgent\.ps1'` would falsely
+    # match those comments. Restrict to executable references: invocation
+    # forms (`& Register-…`, `.\Register-…`, `Invoke-… -FilePath Register-…`).
+    # Doc-comment mentions are still allowed.
+    $content | Should -Not -Match '(?m)^(?!\s*#).*&\s+.*Register-ADDashboardAgent' `
+      'start.ps1 must NOT call Register-ADDashboardAgent.ps1 via `&` — install-agent.ps1 owns that delegation.'
+    $content | Should -Not -Match '(?m)^(?!\s*#).*Register-ADDashboardAgent\.ps1' `
+      'start.ps1 must NOT reference Register-ADDashboardAgent.ps1 outside comments — install-agent.ps1 owns that delegation.'
   }
 
   It 'always restarts on hot update (no hash-skip)' {
@@ -110,7 +152,9 @@ Describe 'start.ps1' {
     # 2026-08-23 (round 4): npm invoked by absolute path (`& $npmCmd install ...`)
     # for ABI safety — bare `npm install` on PATH was unreliable. Match the
     # flag combo via regex so the path-invocation form is what's asserted.
-    $content | Should -Match '\$npmCmd\s+install\s+--omit=dev\s+--no-audit\s+--no-fund' `
+    # 2026-08-24 (round 5): also exclude doc-comment lines so the regex
+    # doesn't match the explanatory comment block above the install.
+    $content | Should -Match '(?m)^(?!\s*#).*\$npmCmd\s+install\s+--omit=dev\s+--no-audit\s+--no-fund' `
       'hot-update must always run npm install --omit=dev (no hash-skip gate).'
     $content | Should -Match 'Start-Service\s+-Name\s+\$ServiceName' `
       'hot-update must start the service via Start-Service.'
