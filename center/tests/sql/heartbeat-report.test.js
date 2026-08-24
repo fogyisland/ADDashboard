@@ -112,6 +112,68 @@ test('db.sql.heartbeat agentsList and dcsList parse and return seeded rows', asy
   }
 });
 
+// 2026-08-24 round-11: the synthetic __healthcheck__ POST path was removed in
+// round-9 but the historical rows from before that fix still sit in
+// ad_agent_heartbeat. The agentsList / dcsList queries now filter
+// `agent_id <> '__healthcheck__'` so the monitor UI stops showing a phantom
+// offline agent row. This test seeds both a normal agent and the synthetic
+// id, then asserts only the normal agent comes back.
+test('db.sql.heartbeat agentsList / dcsList filter out __healthcheck__', async (t) => {
+  const conn = await openTestConnection(t);
+  if (!conn) return;
+
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `__t_hb_real_${suffix}`;
+  const siteName = `__t_hb_site_real_${suffix}`;
+  let siteId = null;
+  try {
+    await conn.execute(
+      `INSERT INTO ad_sites (site_name, region_code, is_hub, description)
+       VALUES (?, 'TST', 0, 'round-11 __healthcheck__ filter test')`,
+      [siteName]
+    );
+    const [siteRows] = await conn.execute('SELECT site_id FROM ad_sites WHERE site_name = ?', [siteName]);
+    siteId = siteRows[0].site_id;
+    await conn.execute(
+      `INSERT INTO ad_dcs (dc_name, site_id, ip_address, os_version, is_pdc)
+       VALUES (?, ?, '192.0.2.20', 'Windows Test', 0)`,
+      [agentId, siteId]
+    );
+    // Seed BOTH rows in the same INSERT — one real agent + the synthetic id.
+    await conn.execute(
+      `INSERT INTO ad_agent_heartbeat
+         (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size)
+       VALUES
+         (?, CURRENT_TIMESTAMP, 'real-ver',  CURRENT_TIMESTAMP, 'ok', 1),
+         ('__healthcheck__', CURRENT_TIMESTAMP, 'synthetic', NULL, NULL, 0)`,
+      [agentId]
+    );
+
+    // agentsList must return the real agent and never the synthetic id.
+    const [agentRows] = await conn.query(
+      `SELECT agent_id FROM (${sqlRegistry.agentsList}) AS agents WHERE agent_id IN (?, '__healthcheck__')`,
+      [agentId]
+    );
+    assert.equal(agentRows.length, 1, 'agentsList should hide __healthcheck__');
+    assert.equal(agentRows[0].agent_id, agentId);
+
+    // dcsList same guarantee.
+    const [dcRows] = await conn.query(
+      `SELECT agent_id FROM (${sqlRegistry.dcsList}) AS dcs WHERE agent_id IN (?, '__healthcheck__')`,
+      [agentId]
+    );
+    assert.equal(dcRows.length, 1, 'dcsList should hide __healthcheck__');
+    assert.equal(dcRows[0].agent_id, agentId);
+  } finally {
+    await conn.execute('DELETE FROM ad_agent_heartbeat WHERE agent_id IN (?, \'__healthcheck__\')', [agentId]).catch(() => {});
+    await conn.execute('DELETE FROM ad_dcs WHERE dc_name = ?', [agentId]).catch(() => {});
+    if (siteId !== null) {
+      await conn.execute('DELETE FROM ad_sites WHERE site_id = ?', [siteId]).catch(() => {});
+    }
+    await conn.end();
+  }
+});
+
 test('db.sql.heartbeat reportSummaryFor returns only MAX(collected_at) rows', async (t) => {
   const conn = await openTestConnection(t);
   if (!conn) return;

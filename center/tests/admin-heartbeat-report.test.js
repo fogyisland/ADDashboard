@@ -55,7 +55,7 @@ function fakeReplicationRow(overrides = {}) {
 test('agents list: returns rows from ad_agent_heartbeat with reportSummary aggregation', async () => {
   const db = buildMockDb([
     {
-      match: /SELECT\s+h\.agent_id\s*,\s*h\.agent_version\s*,\s*h\.last_heartbeat_at\s*,\s*h\.last_report_at\s*,\s*h\.last_report_status\s*,\s*h\.pending_queue_size\s+FROM\s+ad_agent_heartbeat\s+h\s+ORDER\s+BY\s+h\.agent_id/is,
+      match: /SELECT\s+h\.agent_id\s*,\s*h\.agent_version\s*,\s*h\.last_heartbeat_at\s*,\s*h\.last_report_at\s*,\s*h\.last_report_status\s*,\s*h\.pending_queue_size\s+FROM\s+ad_agent_heartbeat\s+h\s+(?:WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'\s+)?ORDER\s+BY\s+h\.agent_id/is,
       rows: [fakeHeartbeatRow()]
     },
     {
@@ -91,7 +91,7 @@ test('agents list: returns rows from ad_agent_heartbeat with reportSummary aggre
 test('agents list: agent with no reports -> lastReportAt null, reportSummary null', async () => {
   const db = buildMockDb([
     {
-      match: /SELECT\s+h\.agent_id\s*,\s*h\.agent_version\s*,\s*h\.last_heartbeat_at\s*,\s*h\.last_report_at\s*,\s*h\.last_report_status\s*,\s*h\.pending_queue_size\s+FROM\s+ad_agent_heartbeat\s+h\s+ORDER\s+BY\s+h\.agent_id/is,
+      match: /SELECT\s+h\.agent_id\s*,\s*h\.agent_version\s*,\s*h\.last_heartbeat_at\s*,\s*h\.last_report_at\s*,\s*h\.last_report_status\s*,\s*h\.pending_queue_size\s+FROM\s+ad_agent_heartbeat\s+h\s+(?:WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'\s+)?ORDER\s+BY\s+h\.agent_id/is,
       rows: [
         fakeHeartbeatRow({
           agent_id: 'dc-never',
