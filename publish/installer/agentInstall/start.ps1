@@ -48,6 +48,35 @@ param(
   [string]$AgentType = 'ad'
 )
 
+# Set up error logging BEFORE any code that can throw. The trap fires on every
+# terminating error below (and re-throws via `continue`), so install.log always
+# contains a breadcrumb for the "started then stopped" case — the operator
+# opens install.log and sees [ERROR] with the actual exception message.
+# Without this, throws only reach the console + NSSM stderr capture, forcing
+# operators to cross-reference two logs to find the root cause.
+#
+# InstallPath may not be passed yet — first-time install path. Fall back to
+# $PSScriptRoot\Logs\ (sibling of start.ps1, writable on both green-pkg and
+# dev-tree layouts) so even the early "agent/ source not found" throw gets
+# captured. Re-set to <InstallPath>\Logs\ once $InstallPath is resolved.
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
+
+trap {
+  if ($_.Exception) { Write-Err2 $_.Exception.Message }
+  continue
+}
+
+$initialLogDir = if ($InstallPath) {
+  Join-Path $InstallPath 'Logs'
+} else {
+  Join-Path $PSScriptRoot 'Logs'
+}
+if (-not (Test-Path $initialLogDir)) {
+  New-Item -ItemType Directory -Path $initialLogDir -Force | Out-Null
+}
+Set-LogDir $initialLogDir
+
 if (-not $InstallPath) {
   # Layout-independent default:
   #   GREEN PACKAGE: agent/ is a sibling of start.ps1 → $InstallPath IS the
@@ -74,11 +103,10 @@ if (-not $InstallPath) {
   }
 }
 
-$ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'common\Logger.psm1') -Force
-
-# Push LogDir into Logger.psm1's module-scoped $Script:LogDir so Write-Log can
-# tee install.log without us having to wire it through every call.
+# $InstallPath is now resolved (or an earlier throw left a breadcrumb in
+# install.log via the trap above). Point LogDir at the canonical
+# <InstallPath>\Logs\ so subsequent STEP / OK lines and any later throw
+# land in the operator-expected location.
 $Script:LogDir = Join-Path $InstallPath 'Logs'
 if (-not (Test-Path $Script:LogDir)) {
   New-Item -ItemType Directory -Path $Script:LogDir -Force | Out-Null

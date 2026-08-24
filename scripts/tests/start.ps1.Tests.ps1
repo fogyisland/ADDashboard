@@ -282,4 +282,61 @@ Describe 'start.ps1' {
     $content | Should -Not -Match '(?m)^(?!\s*#)\s*\bnpm\s+install' `
       'start.ps1 must NOT call bare `npm install` (must use `& $npmCmd install`). Comments are allowed.'
   }
+
+  It 'logs thrown errors to install.log via a trap that calls Write-Err2 then re-throws' {
+    # 2026-08-24: Without a trap, throws only reach the console + NSSM's
+    # stderr capture — NOT install.log. Operators investigating "started
+    # then stopped" had to cross-reference two logs to find the root
+    # cause. Fix: install a `trap { Write-Err2 ... ; continue }` right
+    # after Import-Module Logger.psm1, BEFORE any code that can throw.
+    # `continue` re-throws so the script still exits with the error
+    # (preserves $LASTEXITCODE for callers); the trap handler leaves a
+    # breadcrumb in install.log first.
+    $content | Should -Match 'trap\s*\{' `
+      'start.ps1 must install a trap handler so thrown errors reach install.log.'
+    $content | Should -Match 'Write-Err2' `
+      'trap must call Write-Err2 (the ERROR-level Write-Log wrapper in Logger.psm1; the `2` suffix disambiguates from the built-in Write-Error cmdlet).'
+    $content | Should -Match 'continue' `
+      'trap must `continue` after logging so the error still propagates (preserves $LASTEXITCODE for callers).'
+    # The trap must come AFTER Import-Module (Write-Err2 is module-scoped,
+    # resolves only after Logger.psm1 loads). And BEFORE the InstallPath
+    # default-resolution throw — early throws must still get logged so a
+    # broken bundle isn't silent. Match the throw statement's unique
+    # trailing phrase ("Tried '...' (green-package layout)") to avoid
+    # matching the explanatory comment that mentions "agent/ source not
+    # found" too.
+    $importIdx      = $content.IndexOf('Import-Module')
+    $trapIdx        = $content.IndexOf('trap {')
+    $installPathIdx = $content.IndexOf("if (-not `$InstallPath) {")
+    $throwIdx       = $content.IndexOf('green-package layout)')
+    $importIdx      | Should -BeGreaterOrEqual 0
+    $trapIdx        | Should -BeGreaterOrEqual 0
+    $installPathIdx | Should -BeGreaterOrEqual 0
+    $throwIdx       | Should -BeGreaterOrEqual 0
+    $trapIdx        | Should -BeGreaterThan $importIdx `
+      'trap must be installed AFTER Import-Module (Write-Err2 is module-scoped).'
+    $trapIdx        | Should -BeLessThan $installPathIdx `
+      'trap must be installed BEFORE InstallPath resolution so early throws are caught.'
+    $trapIdx        | Should -BeLessThan $throwIdx `
+      'trap must precede the "agent/ source not found" throw so the breadcrumb lands in install.log.'
+  }
+
+  It 'sets LogDir BEFORE InstallPath is resolved (with $PSScriptRoot fallback)' {
+    # 2026-08-24: with the trap installed early, LogDir must also be set
+    # early so the trap's Write-Err2 call has a writable target. When
+    # $InstallPath is not passed (first-time install path), fall back to
+    # $PSScriptRoot\Logs\ — writable on both green-pkg (sibling of
+    # start.ps1) and dev-tree (repo root) layouts. After InstallPath is
+    # resolved, the script re-sets LogDir to <InstallPath>\Logs\ (canonical).
+    $content | Should -Match '\$initialLogDir\s*=\s*if\s*\(\s*\$InstallPath\s*\)' `
+      'start.ps1 must compute $initialLogDir conditionally on whether $InstallPath is passed.'
+    $content | Should -Match 'Join-Path\s+\$PSScriptRoot\s+''Logs''' `
+      'fallback LogDir must be $PSScriptRoot\Logs\ (sibling of start.ps1).'
+    # Two Set-LogDir calls: early (initialLogDir) + canonical (after InstallPath).
+    # Both required so early throws AND late throws land in the right place.
+    $content | Should -Match 'Set-LogDir\s+\$initialLogDir' `
+      'must call Set-LogDir $initialLogDir BEFORE InstallPath resolution.'
+    $content | Should -Match 'Set-LogDir\s+\$Script:LogDir' `
+      'must re-call Set-LogDir with canonical <InstallPath>\Logs\ after InstallPath is resolved.'
+  }
 }
