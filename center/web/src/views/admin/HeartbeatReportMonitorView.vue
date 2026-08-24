@@ -34,16 +34,25 @@
     <div v-if="error" class="error-banner" data-test="error-banner">{{ error }}</div>
     <h3>心跳表</h3>
     <table class="t">
-      <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th v-if="tab==='dc'">站点</th><th>最新心跳时间</th><th>延迟</th></tr></thead>
+      <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th v-if="tab==='dc'">站点</th><th>最新心跳时间</th><th>延迟</th><th v-if="tab==='agent'">操作</th></tr></thead>
       <tbody>
-        <tr v-for="row in rows" :key="row.agentId" :data-test="'heartbeat-row'" :data-status="statusOf(row)" @click="openDrawer(row)">
+        <tr v-for="row in rows" :key="row.agentId" :data-test="'heartbeat-row'" :data-agent="row.agentId" :data-status="statusOf(row)" @click="openDrawer(row)">
           <td><span :class="['dot', statusOf(row)]"></span> {{ statusLabel(row) }}</td>
           <td>{{ row.agentId }}</td>
           <td v-if="tab==='dc'">{{ row.siteName || '—' }}</td>
           <td>{{ formatRelative(row.lastHeartbeatAt) }}</td>
           <td>{{ formatLatency(row.lastHeartbeatAt) }}</td>
+          <td v-if="tab==='agent'" @click.stop>
+            <button
+              :data-test="'request-report'"
+              :data-agent="row.agentId"
+              :disabled="isReportButtonDisabled(row) || requestingAgentId === row.agentId"
+              :title="getReportButtonTooltip(row)"
+              @click="onRequestReport(row)"
+            >{{ requestingAgentId === row.agentId ? '请求中…' : getReportButtonLabel(row) }}</button>
+          </td>
         </tr>
-        <tr v-if="!rows.length"><td :colspan="tab === 'dc' ? 5 : 4" class="empty">暂无 Agent — 等待心跳上报</td></tr>
+        <tr v-if="!rows.length"><td :colspan="tab === 'dc' ? 6 : 5" class="empty">暂无 Agent — 等待心跳上报</td></tr>
       </tbody>
     </table>
 
@@ -70,13 +79,24 @@
         <button @click="drawerAgentId=null">关闭</button>
       </div>
     </div>
+
+    <ConfirmDialog
+      v-if="reportConfirmAgentId"
+      :title="`向 ${reportConfirmAgentId} 触发数据回报?`"
+      :body="`立即向 ${reportConfirmAgentId} 发起请求;agent 在下一次心跳会上传最新报告。`"
+      confirm-label="确认回报"
+      @confirm="confirmRequestReport"
+      @cancel="reportConfirmAgentId = null"
+    />
   </AdminLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
+import ConfirmDialog from './ConfirmDialog.vue';
 import { heartbeatReportApi } from '../../api/heartbeatReport.js';
+import { notifyError, notifySuccess } from '../../lib/notify.js';
 
 const tab = ref('agent');
 const agentsRows = ref([]);
@@ -87,6 +107,12 @@ const drawerAgentId = ref(null);
 const drawerPayload = ref(null);
 const error = ref(null);
 let timer = null;
+
+// Task 8: 回报 button state
+const reportConfirmAgentId = ref(null);
+const requestingAgentId = ref(null);
+// 24h threshold for the "回报(待清理)" pending-but-stale state
+const REPORT_PENDING_MS = 24 * 3600 * 1000;
 
 // Center port self-probe panel (Task 7)
 const PROBE_ROLES = ['web', 'heartbeat', 'report'];
@@ -208,6 +234,73 @@ async function openDrawer(row) {
   }
 }
 
+// Task 8: report-request button helpers.
+// isStale returns true when the agent is not "green" (i.e. delayed or worse).
+// Disabling on any non-green state is the right call for an immediate-report
+// trigger — if the agent hasn't been heard from recently the request will
+// pile up at center waiting for the next heartbeat, with no signal back.
+function isStale(row) {
+  return statusOf(row) !== 'green';
+}
+function reportRequestAgeMs(row) {
+  if (!row.reportRequestedAt) return null;
+  return Date.now() - new Date(row.reportRequestedAt).getTime();
+}
+function isReportPending(row) {
+  const age = reportRequestAgeMs(row);
+  return age != null && age >= 0 && age < REPORT_PENDING_MS;
+}
+function isReportStale(row) {
+  const age = reportRequestAgeMs(row);
+  return age != null && age >= REPORT_PENDING_MS;
+}
+function getReportButtonLabel(row) {
+  if (isReportPending(row)) return '已请求回报';
+  if (isReportStale(row)) return '回报(待清理)';
+  return '回报';
+}
+function getReportButtonTooltip(row) {
+  if (isStale(row)) return 'agent 离线;无法回报';
+  if (isReportPending(row)) {
+    const sinceAgo = formatRelative(row.reportRequestedAt);
+    return `已请求回报 ${sinceAgo};等待 agent 下一次心跳`;
+  }
+  if (isReportStale(row)) {
+    const sinceAgo = formatRelative(row.reportRequestedAt);
+    return `上次请求回报 ${sinceAgo} 仍未完成;可再次触发`;
+  }
+  return '立即触发数据回报';
+}
+function isReportButtonDisabled(row) {
+  // Disabled while agent is offline, or while a fresh request is already pending.
+  // Stale (>=24h) requests are re-clickable so the operator can recover.
+  return isStale(row) || isReportPending(row);
+}
+function onRequestReport(row) {
+  if (isReportButtonDisabled(row) || requestingAgentId.value) return;
+  reportConfirmAgentId.value = row.agentId;
+}
+async function confirmRequestReport() {
+  const agentId = reportConfirmAgentId.value;
+  reportConfirmAgentId.value = null;
+  if (!agentId || requestingAgentId.value) return;
+  requestingAgentId.value = agentId;
+  try {
+    await heartbeatReportApi.requestReport(agentId);
+    notifySuccess(`已请求 ${agentId} 回报`);
+    // Refresh list so reportRequestedAt reflects the new state immediately.
+    try { await load(); } catch {}
+  } catch (e) {
+    if (e?.response?.status === 404) {
+      notifyError(`${agentId} 不存在,请先安装 agent`);
+    } else {
+      notifyError(`请求 ${agentId} 回报失败: ${e?.message || '未知错误'}`);
+    }
+  } finally {
+    requestingAgentId.value = null;
+  }
+}
+
 onMounted(async () => {
   try { await load(); } catch {} finally { startTimer(); }
 });
@@ -242,4 +335,24 @@ watch(refreshIntervalSeconds, startTimer);
 .probe-t th, .probe-t td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 13px; }
 .probe-t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .probe-stale-banner { margin-top: 8px; padding: 8px 12px; background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; border-radius: 3px; font-size: 12px; }
+
+/* Task 8: 回报 button in heartbeat table */
+.t button[data-test="request-report"] {
+  padding: 4px 12px;
+  background: var(--accent);
+  color: #0b1220;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.t button[data-test="request-report"]:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.t button[data-test="request-report"]:disabled {
+  background: #1e293b;
+  color: var(--muted);
+  border-color: #1e293b;
+  cursor: not-allowed;
+}
 </style>

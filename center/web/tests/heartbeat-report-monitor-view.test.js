@@ -5,7 +5,9 @@ vi.mock('../src/api/heartbeatReport.js', () => ({
   heartbeatReportApi: {
     listAgents: vi.fn(() => Promise.resolve({ data: { agents: [], heartbeatStaleSeconds: 15 } })),
     listDcs:    vi.fn(() => Promise.resolve({ data: { agents: [], heartbeatStaleSeconds: 15 } })),
-    getDetail:  vi.fn(() => Promise.resolve({ data: { agentId: 'dc01', collectedAt: '2026-08-07T15:00:00Z', entries: [] } }))
+    getDetail:  vi.fn(() => Promise.resolve({ data: { agentId: 'dc01', collectedAt: '2026-08-07T15:00:00Z', entries: [] } })),
+    getProbeStatus: vi.fn(() => Promise.resolve({ data: { probes: {}, nowCenterProbeStale: false } })),
+    requestReport: vi.fn(() => Promise.resolve({ data: { ok: true, agentId: 'agent-online', requestedAt: new Date().toISOString(), alreadyPending: false } }))
   }
 }));
 
@@ -16,9 +18,11 @@ beforeEach(() => {
   heartbeatReportApi.listAgents.mockReset();
   heartbeatReportApi.listDcs.mockReset();
   heartbeatReportApi.getDetail.mockReset();
+  heartbeatReportApi.requestReport.mockReset();
   heartbeatReportApi.listAgents.mockResolvedValue({ data: { agents: [], heartbeatStaleSeconds: 15 } });
   heartbeatReportApi.listDcs.mockResolvedValue({ data: { agents: [], heartbeatStaleSeconds: 15 } });
   heartbeatReportApi.getDetail.mockResolvedValue({ data: { agentId: 'dc01', collectedAt: '2026-08-07T15:00:00Z', entries: [] } });
+  heartbeatReportApi.requestReport.mockResolvedValue({ data: { ok: true, agentId: 'agent-online', requestedAt: new Date().toISOString(), alreadyPending: false } });
 });
 
 const AdminLayoutStub = { template: '<div><slot /></div>' };
@@ -147,5 +151,70 @@ test('report table renders success rate and latest error message', async () => {
   expect(rows[0].text()).toContain('目标不可达');
   expect(rows[1].text()).toContain('5 / 5');
   expect(rows[1].text()).toContain('—');
+  vi.useRealTimers();
+});
+
+// ---- Task 8: 回报 button + 3-state + tooltip ----
+
+const THREE_AGENTS_FIXTURE = (now) => ({
+  data: { heartbeatStaleSeconds: 15, agents: [
+    { agentId: 'agent-online',  lastHeartbeatAt: new Date(now).toISOString(),                reportRequestedAt: null,                       lastReportStatus: null },
+    { agentId: 'agent-pending', lastHeartbeatAt: new Date(now).toISOString(),                reportRequestedAt: new Date(now - 5_000).toISOString(), lastReportStatus: null },
+    { agentId: 'agent-offline', lastHeartbeatAt: new Date(now - 60_000).toISOString(),      reportRequestedAt: null,                       lastReportStatus: null }
+  ] }
+});
+
+test('renders 回报 button for each agent row', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(THREE_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const buttons = wrapper.findAll('button[data-test="request-report"]');
+  expect(buttons.length).toBe(3);
+  vi.useRealTimers();
+});
+
+test('disables button + labels "已请求回报" when reportRequestedAt is set and age < 24h', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(THREE_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const pendingBtn = wrapper.findAll('[data-agent="agent-pending"] button[data-test="request-report"]')[0];
+  expect(pendingBtn.exists()).toBe(true);
+  expect(pendingBtn.attributes('disabled')).toBeDefined();
+  expect(pendingBtn.text()).toBe('已请求回报');
+  vi.useRealTimers();
+});
+
+test('disables button when agent is offline (stale)', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(THREE_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const offlineBtn = wrapper.findAll('[data-agent="agent-offline"] button[data-test="request-report"]')[0];
+  expect(offlineBtn.exists()).toBe(true);
+  expect(offlineBtn.attributes('disabled')).toBeDefined();
+  vi.useRealTimers();
+});
+
+test('clicking enabled button shows confirm modal; confirm calls requestReport API', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(THREE_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const btn = wrapper.findAll('[data-agent="agent-online"] button[data-test="request-report"]')[0];
+  expect(btn.exists()).toBe(true);
+  await btn.trigger('click');
+  await flushPromises();
+  // ConfirmDialog should appear; click its confirm button.
+  const confirmBtn = wrapper.find('button.confirm');
+  expect(confirmBtn.exists()).toBe(true);
+  await confirmBtn.trigger('click');
+  await flushPromises();
+  expect(heartbeatReportApi.requestReport).toHaveBeenCalledWith('agent-online');
   vi.useRealTimers();
 });
