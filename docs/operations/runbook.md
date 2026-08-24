@@ -55,18 +55,22 @@ Invoke-WebRequest http://center:8080/healthz | Select -ExpandProperty Content
 
 ### 更新 Center
 
-**推荐（API 触发，无需 admin shell）：**
+**单一入口**：`start.ps1` 是 install 和 update 共用的唯一 operator 入口：
 
 ```powershell
 # 1. 在 center 管理服务器上覆盖新代码
 cd C:\Repos\ADDashboard
 git pull
 
-# 2. 从本机调一次更新 API（localhost-only，无密码；自动跑 pending migration + 重启）
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update
+# 2. 一个命令搞定（与首次安装同一条命令）
+.\start.ps1
 ```
 
-**首次升级走 API 之前需要手动重启一次**（让新端点代码生效）。之后所有升级都可走纯 API。详见 [`deployment.md` §7](deployment.md#升级与回滚)。
+`start.ps1` 内部行为：
+- service 已注册 → 优先 `POST http://localhost:8080/api/system/update`（localhost-only，no-auth；自动跑 pending migration + `process.exit(0)` + NSSM 用新代码拉起）。
+- API 不可达（首次部署该端点或回滚） → `Restart-Service -Force`，新代码加载后启动 bootstrap 自带的 `service.upgrade()` 会自动应用 pending migration。
+
+**首次升级走 API 之前不需要手动重启** —— `start.ps1` 的 Restart-Service 降级路径 + 启动自动 migration 已经处理了鸡生蛋问题。
 
 **脚本式（兼容旧路径，需 admin shell）：**
 
@@ -74,7 +78,9 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update
 .\scripts\upgrade-center.ps1 -RebuildFrontend
 ```
 
-**注意：** 该路径**不会**自动跑 DB migration；新表结构 / 列仍需按旧文档手动应用 SQL。建议切到 API 触发路径。
+**注意：** 该路径**不会**自动跑 DB migration；新表结构 / 列仍需按旧文档手动应用 SQL。建议切到 `start.ps1` 统一入口。
+
+详见 [`deployment.md` §7](deployment.md#center-升级一条命令startps1)。
 
 ### 滚动更新 Agent
 

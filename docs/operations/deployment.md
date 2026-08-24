@@ -282,25 +282,31 @@ Invoke-WebRequest http://center:8080/healthz
 
 ## 升级与回滚
 
-### Center 升级（API 触发，推荐）
+### Center 升级（一条命令：`start.ps1`）
 
-升级 **不再需要 admin shell**，只需要把新代码覆盖到安装目录，然后从**本机**调一次 HTTP：
+**无论是首次安装还是后续升级，operator 只跑同一个脚本：**
 
 ```powershell
-# 1. 在 center 管理服务器上，把新代码覆盖到当前安装目录
-cd C:\Repos\ADDashboard
-git pull
-
-# 2. 从本机调一次更新 API（localhost-only，无密码）
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update
+# 在 center 管理服务器上，以管理员身份打开 PowerShell
+cd C:\Repos\ADDashboard          # 或 green bundle 的 publish\ 根目录
+git pull                          # 或解压新版 zip 覆盖
+.\start.ps1                       # ← 这一个脚本搞定一切
 ```
 
-服务端会：
-1. 按顺序应用 `db/migrations/` 下所有尚未运行的迁移（幂等，复用现有 `service.upgrade()` 路径）
-2. 写入 `system_update` 审计行（含客户端 IP）
-3. 500ms 后 `process.exit(0)` —— NSSM 看到进程退出后自动用新代码拉起
+`start.ps1` 是**单一入口**（install-or-update 二合一）：
+- service 未注册 → 调用 `install-center.ps1 -InPlace` 完成首次安装 + 启动。
+- service 已注册 → 内部按以下顺序尝试升级：
+  1. **首选**：`POST http://localhost:8080/api/system/update`（localhost-only，no-auth；端点内部跑 `service.upgrade()` 应用 pending migration + 写审计 + `process.exit(0)`；NSSM 用新代码拉起）。
+  2. **降级**：API 不可达（首次部署 `/api/system/update` 端点本身，或回滚）→ `Restart-Service -Force`。新代码加载后，**启动 bootstrap 自带的 `service.upgrade()`** 会自动应用 pending migration，所以此降级路径**安全**。
 
-响应示例（无 pending migration）：
+**约定**：
+- `start.ps1` 是 install 和 update 的**唯一**入口。operator 不再需要单独调 `Invoke-RestMethod -Method Post ...` 或 `Restart-Service`。
+- `/api/system/update` 端点保留为**内部实现**：start.ps1 调用它；远程调用返回 `403 {"error":"localhost-only"}`。远程升级需要 RDP/SSH 进主机后跑 `start.ps1`。
+- 升级期间（约 1-3 秒）`/api/*` 与 `/healthz` 短暂不可用；NSSM 默认 `Restart` 重试策略会自动拉起新进程。
+
+**端点契约**（供运维了解 start.ps1 内部行为）：
+
+`POST /api/system/update` → 200：
 
 ```json
 {
@@ -313,14 +319,10 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update
 }
 ```
 
-**约束：**
-- `/api/system/update` 仅监听 `127.0.0.1` / `::1` / `::ffff:127.0.0.1`，远程调用返回 `403 {"error":"localhost-only"}`（远程升级需 RDP/SSH 进主机再 curl）。
-- 同一台主机第一次部署完后**首次**升级走该 API 之前，需要把服务手动重启一次，让新代码生效（鸡生蛋问题）。后续升级即可纯 API。
-- 升级期间（约 1-3 秒）`/api/*` 与 `/healthz` 短暂不可用；NSSM 默认 `Restart` 重试策略会自动拉起新进程。
-
-### Center 升级（脚本触发，兼容旧路径）
-
-如果仍习惯脚本式升级，可继续用 `scripts/upgrade-center.ps1 -RebuildFrontend`：内部走「停服务 → 重 build → 覆盖拷贝 → `npm install --omit=dev` → 启服务」。**但**该路径不会自动跑迁移，仍需在下文 [§9 自动迁移](#升级到-v20包系统--插件系统) 一节手动应用。
+服务端会：
+1. 按顺序应用 `db/migrations/` 下所有尚未运行的迁移（幂等，复用现有 `service.upgrade()` 路径）
+2. 写入 `system_update` 审计行（含客户端 IP）
+3. 500ms 后 `process.exit(0)` —— NSSM 看到进程退出后自动用新代码拉起
 
 ### Agent 滚动升级（逐台）
 
@@ -452,13 +454,13 @@ npm start
 
 ## Green Bundle（publish/）的默认行为变更
 
-`publish/` 目录下的便携绿色版（zip 解压即用）入口 `start.bat` / `start.ps1` **已从「前台跑 node」改为「默认安装并启动 ADDashboardCenter Windows 服务」**。
+`publish/` 目录下的便携绿色版（zip 解压即用）入口 `start.bat` / `start.ps1` **已从「前台跑 node」改为「默认安装并启动 ADDashboardCenter Windows 服务」**，并与生产路径共用同一个 **`start.ps1` 单入口**（install-or-update 二合一）。
 
 行为对比：
 
 | 入口 | 默认行为 | 开发模式开关 |
 |---|---|---|
-| `start.bat` / `start.ps1` | 调用 `scripts/install-center.ps1 -InPlace` 注册并启动 `ADDashboardCenter` 服务（幂等：首次安装 / 已有服务刷新 NSSM 参数） | `--console` / `-Console`（前台跑 `node server.js`） |
+| `start.bat` / `start.ps1` | 自动判定 install 还是 update：service 未注册 → `install-center.ps1 -InPlace`；service 已注册 → 优先 `POST /api/system/update`，不可达则 `Restart-Service`（启动 bootstrap 自动跑 pending migration） | `--console` / `-Console`（前台跑 `node server.js`） |
 
 `install-center.ps1 -InPlace` 的关键行为：
 
@@ -468,19 +470,15 @@ npm start
 - 日志落到 `<publish 根>\center\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
 - `appsettings.json` 与 `.env` 初始化标记仍按 init 向导逻辑写入 `<InstallPath>` 下。
 
-### Green Bundle 的更新流程（无 admin shell）
-
-绿色版的代码更新走 `POST /api/system/update`，与生产路径一致：
-
-1. 解压新版本 zip 覆盖到当前 `<publish 根>`（或 `git pull`）
-2. 在主机上调 `Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update`
-3. 服务端自动跑 pending migration + `process.exit(0)`；NSSM 拉起新代码
-
-**首次部署完**（指 **第一次** 部署当前版本 → 部署新版本之间）需要手动重启一次服务，让 `/api/system/update` 端点代码生效；之后所有升级均可纯 API。手动重启：
+### Green Bundle 的更新流程（operator 只跑 start.ps1）
 
 ```powershell
-Restart-Service -Name 'ADDashboardCenter' -Force
+# 1. 解压新版本 zip 覆盖到当前 <publish 根>（或 git pull）
+# 2. 在主机上跑（与生产路径完全一致的命令）
+.\start.ps1
 ```
+
+`start.ps1` 内部会自动尝试 `POST /api/system/update`，不可达时 `Restart-Service`。新代码加载后，启动 bootstrap 自带的 `service.upgrade()` 会自动应用 pending migration。
 
 ### 适用与限制
 

@@ -206,6 +206,36 @@ await ((async () => {
     process.exit(2);
   }
   const needsInit = markerLocked ? false : await checkNeedsInit(db);
+
+  // Auto-apply pending DB migrations on every normal-mode startup. Runs
+  // BEFORE buildServerApps so routes that reference newly-added columns
+  // (e.g. ad_agent_heartbeat.report_requested_at from migration 018) see
+  // the schema they expect. Idempotent — already-applied migrations are
+  // skipped in one cheap SELECT. Wrap in try/catch so a failed migration
+  // never blocks the server from serving (the failed row is recorded in
+  // schema_migrations with status='failed' and surfaces via the admin
+  // migrations UI for operator inspection).
+  //
+  // This is the safety net that makes start.ps1's "Restart-Service"
+  // fallback work: when the API endpoint isn't available (first deploy of
+  // /api/system/update, or rollback), the new code still applies its own
+  // pending migrations on the next startup instead of crashing.
+  if (!needsInit && db) {
+    try {
+      const { createMigrationsService } = await import('./src/services/migrations.js');
+      const migrationService = createMigrationsService({ db, logger, getRepoRoot: () => repoRoot });
+      const migrationResult = await migrationService.upgrade({ appliedBy: 'startup' });
+      if (migrationResult.migrations.applied.length > 0 || migrationResult.seed.ran) {
+        logger.info({
+          applied: migrationResult.migrations.applied.length,
+          failed: migrationResult.migrations.failed.length,
+          seed: migrationResult.seed.reason
+        }, 'startup auto-migration');
+      }
+    } catch (e) {
+      logger.warn({ err: e.message }, 'startup auto-migration failed; continuing with current schema');
+    }
+  }
   const finalConfig = config ?? defaultConfig();
 
   // Read multi-port settings from system_config (only in normal mode — the
