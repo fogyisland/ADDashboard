@@ -13,6 +13,7 @@ import { dcsRouter } from './src/routes/dcs.js';
 import { lockoutRouter } from './src/routes/lockout.js';
 import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
 import { heartbeatReportRouter } from './src/routes/heartbeat-report.js';
+import { systemRouter } from './src/routes/system.js';
 import { createProbeLoop } from './src/services/probe.js';
 import { createAlertEvaluationLoop } from './src/services/alert-engine.js';
 import { createEmailDeliveryLoop } from './src/services/email.js';
@@ -310,6 +311,15 @@ await ((async () => {
     logger.info('init mode: serving /api/init/* and /init');
   } else {
     app.use(authRouter({ config: finalConfig, logger, db: getDb() }));
+    // System update endpoint (no auth, localhost-only — see system.js for the
+    // contract). Mounted before all the admin routers so an operator can
+    // trigger an update from the host without needing credentials. The route
+    // applies pending DB migrations and schedules process.exit(0) so NSSM
+    // picks up the new code on the next launch.
+    app.use(systemRouter({
+      logger,
+      getRepoRoot: () => repoRoot
+    }));
     // Bootstrap endpoint for agents (web mount — /config.json only). Lets an
     // agent learn heartbeat/report ports + intervals from the web port
     // without needing to know any other port number up front. The dedicated
