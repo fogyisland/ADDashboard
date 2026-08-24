@@ -350,7 +350,15 @@ function Get-ReplicationSnapshot {
     if (-not (Get-Module -Name ActiveDirectory)) {
       Import-Module ActiveDirectory -ErrorAction Stop
     }
-    $partners = Get-ADReplicationPartnerMetadata -Target $ComputerName -Scope Domain -ErrorAction Stop
+    # Server scope (default) — returns only this DC's replication partners.
+    # -Scope Domain queries all DCs across the domain and fails with
+    # "specified domain either does not exist or could not be contacted"
+    # whenever the local ADWS can't reach even one remote DC for metadata
+    # (KDLWXOFADSRV1 hit this: Get-ADDomain/Get-ADDomainController work,
+    # Get-ADReplicationPartnerMetadata -Scope Domain fails). For an agent
+    # whose job is "give me THIS DC's partners", Server scope is exactly
+    # the right surface area.
+    $partners = Get-ADReplicationPartnerMetadata -Target $ComputerName -ErrorAction Stop
   } catch {
     $metaFailure = [PSCustomObject]@{
       SourceDc         = '*'

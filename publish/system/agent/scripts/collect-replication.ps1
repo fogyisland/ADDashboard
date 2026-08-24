@@ -3,6 +3,18 @@ param(
   [switch]$ForTesting
 )
 
+# 2026-08-24 round-9: PS 5.1 [Console]::OutputEncoding defaults to the
+# system OEM codepage (CN = GBK/936). [Console]::Out/Error.WriteLine
+# serializes non-ASCII (e.g., Chinese AD error text) using that encoding,
+# producing GBK bytes on stdout. The agent child reads stdout as UTF-8
+# by default, so Chinese characters become U+FFFD + isolated surrogate
+# pairs (the mojibake pattern KDLWXOFADSRV1 was emitting). Set UTF-8
+# explicitly so [Console]::Out/Error write UTF-8 bytes that Node decodes
+# correctly. $OutputEncoding covers pipeline redirection for defense in
+# depth. Same trap fires in collect-discovery.ps1 — fixed there too.
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding           = [System.Text.UTF8Encoding]::new($false)
+
 $ErrorActionPreference = 'Continue'
 
 function ConvertTo-UtcIso {
@@ -338,7 +350,15 @@ function Get-ReplicationSnapshot {
     if (-not (Get-Module -Name ActiveDirectory)) {
       Import-Module ActiveDirectory -ErrorAction Stop
     }
-    $partners = Get-ADReplicationPartnerMetadata -Target $ComputerName -Scope Domain -ErrorAction Stop
+    # Server scope (default) — returns only this DC's replication partners.
+    # -Scope Domain queries all DCs across the domain and fails with
+    # "specified domain either does not exist or could not be contacted"
+    # whenever the local ADWS can't reach even one remote DC for metadata
+    # (KDLWXOFADSRV1 hit this: Get-ADDomain/Get-ADDomainController work,
+    # Get-ADReplicationPartnerMetadata -Scope Domain fails). For an agent
+    # whose job is "give me THIS DC's partners", Server scope is exactly
+    # the right surface area.
+    $partners = Get-ADReplicationPartnerMetadata -Target $ComputerName -ErrorAction Stop
   } catch {
     $metaFailure = [PSCustomObject]@{
       SourceDc         = '*'
