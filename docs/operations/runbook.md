@@ -67,7 +67,8 @@ git pull
 ```
 
 `start.ps1` 内部行为：
-- service 已注册 → 优先 `POST http://localhost:8080/api/system/update`（localhost-only，no-auth；自动跑 pending migration + `process.exit(0)` + NSSM 用新代码拉起）。
+- service 未注册 → `npm run build` 重新生成 dist，然后 `install-center.ps1 -InPlace` 注册 NSSM service 并启动。
+- service 已注册 → `npm run build` 重新生成 dist，然后优先 `POST http://localhost:8080/api/system/update`（localhost-only，no-auth；自动跑 pending migration + `process.exit(0)` + NSSM 用新代码拉起）。
 - API 不可达（首次部署该端点或回滚） → `Restart-Service -Force`，新代码加载后启动 bootstrap 自带的 `service.upgrade()` 会自动应用 pending migration。
 
 **首次升级走 API 之前不需要手动重启** —— `start.ps1` 的 Restart-Service 降级路径 + 启动自动 migration 已经处理了鸡生蛋问题。

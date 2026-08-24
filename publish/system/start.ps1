@@ -10,15 +10,17 @@
         1. Run `npm run build` to regenerate dist (always — operator
            requirement).
         2. Call install-center.ps1 -InPlace: register NSSM service
-           pointing at <bundleRoot>\center (no file copy), start it.
+           pointing at <bundleRoot>\center (no file copy), start it,
+           probe /api/init/status.
         3. Operators then open http://<host>:8080/init to complete the
            wizard (DB credentials, admin user).
-    - ADDashboardCenter service already registered → apply any pending
-      DB migrations and pick up the new code:
-        1. POST http://localhost:8080/api/system/update (preferred —
-           applies migrations and exits cleanly; NSSM restarts with
-           new code)
-        2. If the API endpoint is not yet available (404) or the service
+    - ADDashboardCenter service already registered → update flow:
+        1. Run `npm run build` to regenerate dist (so the freshly
+           restarted process serves the latest frontend bundle).
+        2. POST http://localhost:8080/api/system/update (preferred —
+           applies pending DB migrations and exits cleanly; NSSM
+           restarts with new code + new dist).
+        3. If the API endpoint is not yet available (404) or the service
            isn't reachable yet, fall back to a plain service restart.
            The new code, once loaded, auto-applies any pending
            migrations on its own startup, so this fallback is safe.
@@ -122,12 +124,29 @@ if (-not $svc) {
   exit $LASTEXITCODE
 }
 
-# Service is registered. Prefer the API path so DB migrations apply under
-# the running process's audit log + transaction visibility; fall back to
-# a plain restart if the endpoint isn't there yet (first deploy of
+# Service is registered. Update flow: rebuild dist → apply code + schema.
+# Step 1: rebuild dist from the on-disk source so the freshly-restarted
+# process serves the latest frontend bundle (green bundles ship dist; this
+# regen ensures dev trees and edge-case bundles also stay current).
+# Step 2: prefer the API path so DB migrations apply under the running
+# process's audit log + transaction visibility; fall back to a plain
+# restart if the endpoint isn't there yet (first deploy of
 # /api/system/update itself, or rollback). The fallback is safe because
 # the service's own startup runs service.upgrade() before routes bind,
 # so any pending migrations land on the new code's first boot.
+Write-Host '[start] service registered — update flow (rebuild + apply)' -ForegroundColor Cyan
+Write-Host '[start] running npm run build to regenerate dist' -ForegroundColor Cyan
+Push-Location $bundleRoot
+try {
+  & npm.cmd run build
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host '[start] npm run build failed (exit ' -NoNewline -ForegroundColor Red
+    Write-Host "$LASTEXITCODE" -NoNewline -ForegroundColor Red
+    Write-Host '). Check node + npm + center/web/node_modules.' -ForegroundColor Red
+    exit $LASTEXITCODE
+  }
+} finally { Pop-Location }
+
 $listenPort = 8080
 $apiUpdate = $null
 $apiUpdateError = $null
@@ -139,7 +158,8 @@ try {
 
 if ($apiUpdate -and $apiUpdate.StatusCode -ge 200 -and $apiUpdate.StatusCode -lt 300) {
   # 200: service applied migrations and will exit within 500ms; NSSM
-  # auto-restarts with the new code. No further action from us.
+  # auto-restarts with the new code + freshly-built dist. No further
+  # action from us.
   Write-Host "[start] update via API ok ($($apiUpdate.StatusCode)); service will restart itself" -ForegroundColor Green
   if ($apiUpdate.Content) { Write-Host "[start] response: $($apiUpdate.Content)" }
   exit 0
@@ -156,7 +176,8 @@ if ($apiUpdate) {
 }
 
 # API unreachable — fall back to service restart. The new code on disk
-# will load; startup auto-applies pending migrations before serving.
+# + freshly-built dist will load; startup auto-applies pending migrations
+# before serving.
 Write-Host '[start] update API not reachable — restarting service' -ForegroundColor Cyan
 if ($apiUpdateError) {
   Write-Host "[start] reason: $($apiUpdateError.Exception.Message)" -ForegroundColor DarkGray

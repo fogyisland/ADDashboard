@@ -295,6 +295,7 @@ git pull                          # 或解压新版 zip 覆盖
 
 `start.ps1` 是**单一入口**（install-or-update 二合一）：
 - service 未注册 → `npm run build` 重新生成 dist，然后调用 `install-center.ps1 -InPlace` 完成首次安装 + 启动。
+- service 已注册 → `npm run build` 重新生成 dist，然后优先 `POST /api/system/update`（应用 pending migration + `process.exit(0)`），不可达则 `Restart-Service`（启动 bootstrap 自动跑 pending migration）。
 - service 已注册 → 内部按以下顺序尝试升级：
   1. **首选**：`POST http://localhost:8080/api/system/update`（localhost-only，no-auth；端点内部跑 `service.upgrade()` 应用 pending migration + 写审计 + `process.exit(0)`；NSSM 用新代码拉起）。
   2. **降级**：API 不可达（首次部署 `/api/system/update` 端点本身，或回滚）→ `Restart-Service -Force`。新代码加载后，**启动 bootstrap 自带的 `service.upgrade()`** 会自动应用 pending migration，所以此降级路径**安全**。
@@ -460,7 +461,7 @@ npm start
 
 | 入口 | 默认行为 | 开发模式开关 |
 |---|---|---|
-| `start.bat` / `start.ps1` | 自动判定 install 还是 update：service 未注册 → `npm run build` + `install-center.ps1 -InPlace`（重建 dist + 注册 NSSM service）；service 已注册 → 优先 `POST /api/system/update`，不可达则 `Restart-Service`（启动 bootstrap 自动跑 pending migration） | `--console` / `-Console`（前台跑 `node server.js`） |
+| `start.bat` / `start.ps1` | 自动判定 install 还是 update：service 未注册 → `npm run build` + `install-center.ps1 -InPlace`（重建 dist + 注册 NSSM service）；service 已注册 → `npm run build` + 优先 `POST /api/system/update`，不可达则 `Restart-Service`（启动 bootstrap 自动跑 pending migration） | `--console` / `-Console`（前台跑 `node server.js`） |
 
 `install-center.ps1 -InPlace` 的关键行为：
 
