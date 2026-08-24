@@ -77,3 +77,38 @@ test('loadConfig respects explicit scanOnBoot=false override', () => {
   assert.equal(c.scanFailureThreshold, 10);
   rmSync(dir, { recursive: true });
 });
+
+// 2026-08-24 round-8: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a
+// UTF-8 BOM (EF BB BF) into appsettings.json as a side-effect of its
+// encoding mode. Node's JSON.parse rejects leading BOM bytes with
+// `SyntaxError: Unexpected token` — so the agent's loadConfig strips
+// them defensively. Test the strip behavior end-to-end (the round-trip the
+// real installer produces) and the leading-only-strip guard.
+test('loadConfig strips a leading UTF-8 BOM (PS 5.1 Set-Content wrote one)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-cfg-bom-'));
+  const p = join(dir, 'a.json');
+  // Simulate exactly what Register-ADDashboardAgent.ps1 used to write:
+  //   $cfg | ConvertTo-Json | Set-Content -Encoding UTF8
+  // which produces ﻿{...} (3 BOM bytes + JSON).
+  const bom = Buffer.from([0xEF, 0xBB, 0xBF]);
+  const json = Buffer.from(JSON.stringify({
+    centerUrl: 'http://center:8080', agentId: 'DC1', agentToken: 'tok'
+  }), 'utf8');
+  writeFileSync(p, Buffer.concat([bom, json]));
+  const c = loadConfig(p);
+  assert.equal(c.centerUrl, 'http://center:8080');
+  assert.equal(c.agentId, 'DC1');
+  assert.equal(c.agentToken, 'tok');
+  rmSync(dir, { recursive: true });
+});
+
+test('loadConfig still throws on syntactically invalid content (BOM strip does not mask errors)', () => {
+  // The strip is leading-only so a stray embedded BOM still surfaces as
+  // a parse error. Just guards against an overzealous "strip all BOMs"
+  // future fix that would silently accept malformed JSON.
+  const dir = mkdtempSync(join(tmpdir(), 'agent-cfg-bad-'));
+  const p = join(dir, 'a.json');
+  writeFileSync(p, '{ this is not json }');
+  assert.throws(() => loadConfig(p), /JSON|SyntaxError|Unexpected/i);
+  rmSync(dir, { recursive: true });
+});

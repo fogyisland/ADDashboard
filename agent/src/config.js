@@ -38,7 +38,14 @@ const DEFAULTS = {
 
 export function loadConfig(path) {
   const raw = readFileSync(path, 'utf8');
-  const cfg = JSON.parse(raw);
+  // 2026-08-24 round-8: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a
+  // UTF-8 BOM (EF BB BF) into appsettings.json. JSON.parse rejects those
+  // leading bytes with `SyntaxError: Unexpected token` and the agent
+  // crashes on first call. Strip a leading BOM defensively — also covers
+  // manual Notepad edits on Windows which save UTF-8-with-BOM by default.
+  // We only strip the *leading* BOM so a stray embedded one (which would
+  // itself be malformed JSON) is still surfaced as a parse error.
+  const cfg = JSON.parse(raw.replace(/^\uFEFF/, ''));
   const missing = REQUIRED.filter(
     (k) => cfg[k] === undefined || cfg[k] === null || cfg[k] === ''
   );

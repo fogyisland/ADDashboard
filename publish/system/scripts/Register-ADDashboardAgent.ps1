@@ -148,7 +148,17 @@ function Write-AppsettingsJson {
     agentType                = $AgentType
   }
   $jsonPath = Join-Path $InstallPath 'appsettings.json'
-  $cfg | ConvertTo-Json | Set-Content -Path $jsonPath -Encoding UTF8
+  # 2026-08-24 round-8: PowerShell 5.1 `Set-Content -Encoding UTF8` writes a
+  # UTF-8 BOM (EF BB BF) as the first 3 bytes. Node's JSON.parse rejects
+  # those bytes with `SyntaxError: Unexpected token ''` and the agent
+  # crashes on startup. Use [IO.File]::WriteAllText with a no-BOM
+  # UTF8Encoding so appsettings.json is plain UTF-8. The agent's
+  # loadConfig also strips a leading BOM defensively (defense-in-depth
+  # for installs done by hand-edited configs), but we should never produce
+  # a BOM in the first place from our installer.
+  $json = $cfg | ConvertTo-Json
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($jsonPath, $json, $utf8NoBom)
   Write-ROk "wrote $jsonPath"
 }
 
