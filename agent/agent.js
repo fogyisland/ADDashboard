@@ -240,7 +240,8 @@ async function runAdRuntime({ config, logger }) {
     run: async () => {
       const snap = await runDiscovery({
         powerShellPath: config.powerShellPath,
-        psDiscoveryScriptPath: config.psDiscoveryScriptPath
+        psDiscoveryScriptPath: config.psDiscoveryScriptPath,
+        logger
       });
       if (!snap) return;
       await postDiscovery({

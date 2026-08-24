@@ -1,20 +1,45 @@
 import { spawn } from 'node:child_process';
 import { requestJson } from './reporter.js';
 
-export function runDiscovery({ powerShellPath, psDiscoveryScriptPath }) {
+export function runDiscovery({ powerShellPath, psDiscoveryScriptPath, logger }) {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     const child = spawn(powerShellPath, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', psDiscoveryScriptPath], { windowsHide: true });
+    // 2026-08-24 round-9: defense-in-depth — explicit UTF-8 decode so even
+    // if a future PS script forgets [Console]::OutputEncoding = UTF-8,
+    // mojibake doesn't silently corrupt discovery payloads / error logs.
+    // The PS-side fix at the top of collect-discovery.ps1 + collect-
+    // replication.ps1 is the root cause fix; this is the safety net.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', c => stdout += c);
     child.stderr.on('data', c => stderr += c);
-    child.on('error', () => resolve(null));
+    child.on('error', (e) => {
+      // 2026-08-24 round-9: don't swallow spawn failures silently. They
+      // mean the agent can't run PS at all — without this log, the DC
+      // list stays empty and the operator has no clue why.
+      if (logger) logger.warn({ err: e.message }, 'discovery ps spawn failed; ad_dcs row not written');
+      resolve(null);
+    });
     child.on('close', (code) => {
-      if (code !== 0) return resolve(null);
+      if (code !== 0) {
+        if (logger) logger.warn({
+          err: `discovery ps exit ${code}`,
+          stderr: stderr.trim().slice(0, 500),
+          stdout: stdout.trim().slice(0, 200)
+        }, 'discovery ps failed; ad_dcs row not written');
+        return resolve(null);
+      }
       try {
         const obj = JSON.parse(stdout.trim());
         resolve(obj);
-      } catch {
+      } catch (e) {
+        if (logger) logger.warn({
+          err: e.message,
+          stderr: stderr.trim().slice(0, 500),
+          stdout: stdout.trim().slice(0, 500)
+        }, 'discovery ps stdout not parseable; ad_dcs row not written');
         resolve(null);
       }
     });
