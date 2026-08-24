@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { heartbeatReportService } from '../services/heartbeat-report.js';
+import { writeAudit } from '../services/audit.js';
 
 // Admin read-only endpoints that surface per-agent heartbeat + latest-report
 // snapshot data. Three views:
@@ -54,6 +55,40 @@ export function heartbeatReportRouter({ requireAuth, requirePerm }) {
       res.json(out);
     } catch (e) {
       _req.log?.error?.({ err: e.message }, 'heartbeat-report detail failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-24 round-12 T5 — admin-initiated "report now" for a single agent.
+  // Sets the report_requested_at flag so the next heartbeat ack tells the
+  // agent to ship a report immediately. Audit-logged via the
+  // `request_agent_report` action (see audit-classifier.js — T4). The
+  // idempotent UPSERT inside requestReport means rapid clicks refresh the
+  // timestamp without surfacing an error.
+  r.post('/api/admin/agents/:agentId/request-report', ...auth, async (req, res) => {
+    try {
+      const { agentId } = req.params;
+      const out = await heartbeatReportService.requestReport(agentId);
+      await writeAudit({
+        action: 'request_agent_report',
+        target: `agent:${agentId}`,
+        payload: {
+          requestedAt: out.requestedAt.toISOString(),
+          alreadyPending: out.alreadyPending
+        },
+        userId: req.user?.sub ?? null
+      }, req.log);
+      res.json({
+        ok: true,
+        agentId,
+        requestedAt: out.requestedAt.toISOString(),
+        alreadyPending: out.alreadyPending
+      });
+    } catch (e) {
+      if (e.code === 'AGENT_NOT_FOUND') {
+        return res.status(404).json({ error: 'agent_not_found' });
+      }
+      req.log?.error?.({ err: e.message }, 'request-report failed');
       res.status(500).json({ error: 'internal' });
     }
   });
