@@ -14,6 +14,7 @@ import { getOsInfo } from './src/os-info.js';
 import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
+import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
 import {
   applyPackageList,
   clearAllTimers
@@ -201,6 +202,38 @@ async function runAdRuntime({ config, logger }) {
     powerShellPath: config.powerShellPath
   });
 
+  // 2026-08-24 round-12 (T7): state for the heartbeat-callbacks module.
+  // The callbacks own NO state themselves; this `let` is the one and only
+  // backing store, accessed via the getters below. Same pattern for the
+  // scheduler reference: it's created LATER in this function, so we hand
+  // the callback a getter that resolves at call time. By the time any
+  // heartbeat actually fires (>= heartbeatIntervalSeconds), both will be
+  // populated — the first heartbeat fires immediately, but the scheduler
+  // will exist synchronously after the assignment below.
+  let pendingReportRequestClear = false;
+  const getPendingClear = () => pendingReportRequestClear;
+  const setPendingClear = (v) => { pendingReportRequestClear = v; };
+  let schedulerRef = null;
+  const getScheduler = () => schedulerRef;
+
+  const send = makeSendCallback({
+    postHeartbeat: (payload) => postHeartbeat({
+      centerUrl: config.centerUrl,
+      agentToken: config.agentToken,
+      port: cachedPorts.heartbeatPort,
+      payload
+    }),
+    applyAgentTokenDelivery: ({ result }) => applyAgentTokenDelivery({
+      result, config, configPath, logger
+    }),
+    scheduler: { get _tick() { return getScheduler()._tick; } },
+    logger,
+    getPendingClear,
+    setPendingClear
+  });
+
+  const buildPayload = makePayload({ getPendingClear, setPendingClear });
+
   const heartbeat = startHeartbeat({
     intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
     payload: () => {
@@ -220,17 +253,9 @@ async function runAdRuntime({ config, logger }) {
         installed: packageManager.listLocal(),
         pending: packageManager.reportBatch.length + packageManager.queue.length
       };
-      return p;
+      return buildPayload(p);
     },
-    send: async (p) => {
-      const r = await postHeartbeat({
-        centerUrl: config.centerUrl,
-        agentToken: config.agentToken,
-        port: cachedPorts.heartbeatPort,
-        payload: p
-      });
-      await applyAgentTokenDelivery({ result: r, config, configPath, logger });
-    }
+    send
   });
 
   // Site/DCs topology discovery. Runs the PowerShell topology script on a long
@@ -334,6 +359,12 @@ async function runAdRuntime({ config, logger }) {
       return r;
     }
   });
+
+  // 2026-08-24 round-12 (T7): wire the scheduler ref into the heartbeat
+  // callback closure. The heartbeat was started BEFORE the scheduler was
+  // created (preserving the original control flow), so the callback reads
+  // it lazily via getScheduler().
+  schedulerRef = scheduler;
 
   scheduler.start();
   packageManager.start();
