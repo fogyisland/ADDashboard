@@ -68,7 +68,11 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['commit_agent_token',              'security'],
   ['seed_agent_token',                'system'],
   ['reveal_agent_token',              'security'],
-  ['revoke_user_tokens',              'security']
+  ['revoke_user_tokens',              'security'],
+  // round-12: heartbeat "report now" — operator-initiated request to ask
+  // an agent to send an immediate heartbeat report. Classified as 'changes'
+  // because it mutates ad_agent_heartbeat.report_requested_at.
+  ['request_agent_report',            'changes']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -135,7 +139,10 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['commit_agent_token',              'medium'],
   ['seed_agent_token',                'info'],
   ['reveal_agent_token',              'high'],
-  ['revoke_user_tokens',              'high']
+  ['revoke_user_tokens',              'high'],
+  // round-12: heartbeat "report now" — low severity (operator action,
+  // not destructive; only sets a flag the next heartbeat will clear).
+  ['request_agent_report',            'low']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -197,7 +204,11 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['commit_agent_token',              '提交 Agent 令牌'],
   ['seed_agent_token',                '从 appsettings 初始化 Agent 令牌'],
   ['reveal_agent_token',              '复制 Agent 令牌'],
-  ['revoke_user_tokens',              '撤销用户全部令牌']
+  ['revoke_user_tokens',              '撤销用户全部令牌'],
+  // round-12: heartbeat "report now" — Chinese label for the new
+  // request_agent_report action (operator clicks "立即回报" on the agent
+  // list to ask that agent to send a heartbeat immediately).
+  ['request_agent_report',            '请求 Agent 立即回报']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([

@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { postHeartbeat } from './reporter.js';
 
 function checkAdModule() {
   const r = spawnSync(
@@ -21,8 +20,30 @@ function checkDomain() {
 }
 
 async function checkCenter(centerUrl, agentToken, heartbeatPort = undefined) {
+  // 2026-08-24 round-9: replaced the previous `postHeartbeat({ agentId:
+  // '__healthcheck__' })` probe with a plain TCP probe. The synthetic
+  // heartbeat was writing a row to ad_agent_heartbeat every
+  // healthCheckIntervalMs (default 600_000 = 10 min), which the heartbeat
+  // monitor surfaced as an "offline agent" — the dashboard's stale
+  // threshold is 60s but the synthetic probe cadence is 10min, so this
+  // row always displayed 掉线 and confused operators. The real 5s
+  // heartbeat already proves center reachability; a separate
+  // upserting probe is redundant and misleading.
   try {
-    const r = await postHeartbeat({ centerUrl, agentToken, port: heartbeatPort, payload: { agentId: '__healthcheck__' } });
+    const url = new URL(centerUrl);
+    // Prefer the explicit heartbeatPort when provided (the agent
+    // discovers it from /api/agent/ports at boot); fall back to
+    // centerUrl's port; default to 80 if neither is set (e.g.,
+    // http://center.example with no port).
+    let port;
+    if (heartbeatPort) {
+      port = Number(heartbeatPort);
+    } else if (url.port) {
+      port = Number(url.port);
+    } else {
+      port = 80;
+    }
+    const r = await tcpProbe(url.hostname, port, 2000);
     return r.ok;
   } catch {
     return false;

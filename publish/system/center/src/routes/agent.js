@@ -32,7 +32,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     });
 
     r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
-      const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname, agent_token_version } = req.body || {};
+      const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname, agent_token_version, report_requested_at } = req.body || {};
       if (!agentId) return res.status(400).json({ error: 'missing agentId' });
       // 2026-08-21 UX redesign (auto-delivery): the heartbeat is now the
       // carrier for the agent's last-seen agent_token_version. Default 0
@@ -40,16 +40,41 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // initial version, so no delivery happens until a rotation bumps
       // the server side).
       const reportedTokenVersion = Number(agent_token_version) || 0;
+      // round-12 T6 + T-fix: 3-way semantic for report_requested_at.
+      //   undefined → older agent / absent field → preserve via UPSERT (COALESCE keeps column)
+      //   null      → round-12 agent cleared the flag → call clearReportRequest UPDATE
+      //   string    → round-12 agent providing a new value → UPSERT sets the column
+      // T6 originally collapsed undefined and null to the same `null` value
+      // and routed both through the UPSERT, but COALESCE / ISNULL in the
+      // upsert SQL guarantees `null` preserves the column — so the
+      // "explicit clear" semantic was silently broken. T-fix splits the
+      // value into two sentinels: `undefined` keeps the preserve path, an
+      // explicit `null` triggers `clearReportRequest` so the column is
+      // actually wiped. Older agents (which never send the field) are
+      // unaffected — they still get the preserve path.
+      const reportRequestedAtRaw = report_requested_at;
+      const reportRequestedAtIsExplicitNull = reportRequestedAtRaw === null;
+      const reportRequestedAt = (reportRequestedAtIsExplicitNull || reportRequestedAtRaw === undefined)
+        ? null
+        : new Date(reportRequestedAtRaw);
       try {
         const db = getDb();
-        await db.execute(db.sql.heartbeat.upsert, [
-          agentId,
-          agentVersion ?? null,
-          toMysqlDatetime(lastReportAt),
-          lastReportStatus ?? null,
-          pendingQueueSize ?? 0,
-          reportedTokenVersion
-        ]);
+        // 3-way SQL routing:
+        //   null      → clearReportRequest (direct UPDATE … SET … = NULL)
+        //   undefined / value → upsert (COALESCE preserves undefined→null, sets a value)
+        if (reportRequestedAtIsExplicitNull) {
+          await db.execute(db.sql.heartbeat.clearReportRequest, [agentId]);
+        } else {
+          await db.execute(db.sql.heartbeat.upsert, [
+            agentId,
+            agentVersion ?? null,
+            toMysqlDatetime(lastReportAt),
+            lastReportStatus ?? null,
+            pendingQueueSize ?? 0,
+            reportedTokenVersion,
+            reportRequestedAt
+          ]);
+        }
 
         // Auto-delivery: if the server's current version is newer than
         // what the agent reported, attach the new token to the response
@@ -69,6 +94,23 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           }
         } catch (e) {
           logger.warn({ err: e.message, agentId }, 'agent token state read failed; no delivery');
+        }
+
+        // round-12 T6: read back report_requested_at to attach
+        // reportRequested: boolean to the response. This is what the agent
+        // (T7) watches for — when true, its heartbeat callback calls
+        // scheduler._tick(). Fail-soft: if the read fails we report false
+        // rather than 500ing the heartbeat.
+        let reportRequested = false;
+        try {
+          const rb = await db.execute(
+            db.sql.heartbeat.readReportRequestedAt,
+            [agentId]
+          );
+          const row = rb.rows?.[0];
+          reportRequested = !!(row && row.report_requested_at);
+        } catch (e) {
+          logger.warn({ err: e.message, agentId }, 'report_requested_at read-back failed; defaulting to false');
         }
 
         // Optional port-status ingest (back-compat: pre-feature agents omit `ports`).
@@ -103,7 +145,9 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           // port-acceptance counters and the auto-delivery payload in
           // one response. agentTokenDelivery is null when no delivery
           // is needed — callers should check via 'agentToken' in result.
-          return res.json({ ok: true, accepted, rejected, ...(agentTokenDelivery || {}) });
+          // round-12 T6: reportRequested boolean so the agent's heartbeat
+          // callback can decide whether to fire scheduler._tick().
+          return res.json({ ok: true, accepted, rejected, reportRequested, ...(agentTokenDelivery || {}) });
         }
 
         // No ports payload — same non-AD touchLastSeen extension for the
@@ -117,7 +161,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           }
         }
 
-        res.json({ ok: true, ...(agentTokenDelivery || {}) });
+        res.json({ ok: true, reportRequested, ...(agentTokenDelivery || {}) });
       } catch (e) {
         logger.error({ err: e, agentId }, 'heartbeat failed');
         res.status(500).json({ error: 'internal' });
