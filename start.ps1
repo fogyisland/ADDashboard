@@ -6,9 +6,13 @@
   Single entry for both first-time install AND code updates.
 
   Behavior:
-    - ADDashboardCenter service NOT registered → install + start it.
-      Operators then open http://<host>:8080/init to complete the
-      wizard (DB credentials, admin user).
+    - ADDashboardCenter service NOT registered → first-time install:
+        1. Run `npm run build` to regenerate dist (always — operator
+           requirement).
+        2. Call install-center.ps1 -InPlace: register NSSM service
+           pointing at <bundleRoot>\center (no file copy), start it.
+        3. Operators then open http://<host>:8080/init to complete the
+           wizard (DB credentials, admin user).
     - ADDashboardCenter service already registered → apply any pending
       DB migrations and pick up the new code:
         1. POST http://localhost:8080/api/system/update (preferred —
@@ -98,10 +102,22 @@ if (-not (Test-IsAdministrator)) {
 $svc = Get-Service -Name 'ADDashboardCenter' -ErrorAction SilentlyContinue
 
 if (-not $svc) {
-  # First-time install: register service pointing at <bundleRoot>\center (no
-  # file copy). After the service starts, the operator opens /init to fill
-  # in DB credentials + admin user.
+  # First-time install: rebuild dist (per operator requirement: always
+  # regenerate on install), then register the NSSM service pointing at
+  # <bundleRoot>\center (no file copy). After the service starts, the
+  # operator opens /init to fill in DB credentials + admin user.
   Write-Host '[start] ADDashboardCenter not registered — first-time install' -ForegroundColor Cyan
+  Write-Host '[start] running npm run build to regenerate dist' -ForegroundColor Cyan
+  Push-Location $bundleRoot
+  try {
+    & npm.cmd run build
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host '[start] npm run build failed (exit ' -NoNewline -ForegroundColor Red
+      Write-Host "$LASTEXITCODE" -NoNewline -ForegroundColor Red
+      Write-Host '). Check node + npm + center/web/node_modules.' -ForegroundColor Red
+      exit $LASTEXITCODE
+    }
+  } finally { Pop-Location }
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundleRoot 'scripts\install-center.ps1') -InPlace
   exit $LASTEXITCODE
 }
