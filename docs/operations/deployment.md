@@ -282,15 +282,45 @@ Invoke-WebRequest http://center:8080/healthz
 
 ## 升级与回滚
 
-### Center 升级
+### Center 升级（API 触发，推荐）
+
+升级 **不再需要 admin shell**，只需要把新代码覆盖到安装目录，然后从**本机**调一次 HTTP：
 
 ```powershell
-cd ADDashboard
+# 1. 在 center 管理服务器上，把新代码覆盖到当前安装目录
+cd C:\Repos\ADDashboard
 git pull
-.\scripts\update-center.ps1 -RebuildFrontend
+
+# 2. 从本机调一次更新 API（localhost-only，无密码）
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update
 ```
 
-内部步骤：停服务 → 重 build 前端 → 覆盖拷贝 `center/` + `dist/` → `npm install --omit=dev` → 启服务。
+服务端会：
+1. 按顺序应用 `db/migrations/` 下所有尚未运行的迁移（幂等，复用现有 `service.upgrade()` 路径）
+2. 写入 `system_update` 审计行（含客户端 IP）
+3. 500ms 后 `process.exit(0)` —— NSSM 看到进程退出后自动用新代码拉起
+
+响应示例（无 pending migration）：
+
+```json
+{
+  "ok": true,
+  "message": "升级完成: 0 migration 应用, seed unchanged",
+  "restarted": true,
+  "migrationsApplied": [],
+  "migrationsFailed": [],
+  "seed": { "ran": false, "reason": "unchanged" }
+}
+```
+
+**约束：**
+- `/api/system/update` 仅监听 `127.0.0.1` / `::1` / `::ffff:127.0.0.1`，远程调用返回 `403 {"error":"localhost-only"}`（远程升级需 RDP/SSH 进主机再 curl）。
+- 同一台主机第一次部署完后**首次**升级走该 API 之前，需要把服务手动重启一次，让新代码生效（鸡生蛋问题）。后续升级即可纯 API。
+- 升级期间（约 1-3 秒）`/api/*` 与 `/healthz` 短暂不可用；NSSM 默认 `Restart` 重试策略会自动拉起新进程。
+
+### Center 升级（脚本触发，兼容旧路径）
+
+如果仍习惯脚本式升级，可继续用 `scripts/upgrade-center.ps1 -RebuildFrontend`：内部走「停服务 → 重 build → 覆盖拷贝 → `npm install --omit=dev` → 启服务」。**但**该路径不会自动跑迁移，仍需在下文 [§9 自动迁移](#升级到-v20包系统--插件系统) 一节手动应用。
 
 ### Agent 滚动升级（逐台）
 
@@ -306,7 +336,7 @@ git pull
 
 center 没有内置版本管理。最简单的回滚方式是：
 1. `git checkout <previous-tag>` 在部署目录
-2. 重新跑 `update-center.ps1`
+2. `Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update`（自动跑可能需要的降级迁移——若升级路径新增过 migration，降级一般需要手动 reverse；新 API 不会自动 reverse）
 
 ---
 
@@ -320,24 +350,9 @@ center 没有内置版本管理。最简单的回滚方式是：
 
 首次启动向导的 schema 应用器（`center/src/init/schema-applier.js` 的 `applyAll`）在跑完 `01-tables.sql` + `02-seed-roles.sql` 后，会**按文件名顺序自动应用 `db/migrations/` 下的全部迁移**（001 → 002 → 003）。所以走 [首次启动向导](#首次启动向导) 的全新库会自动建好这两张表，**不用手动跑任何 SQL**。
 
-### 存量升级：手动应用 migration 003
+### 存量升级：调用 `/api/system/update`
 
-已初始化的部署被 init 完成标记（`.env` 的 `ADDASHBOARD_INITIALIZED=1` + 注册表）硬锁在向导之外，`update-center.ps1` **只更新代码、不碰数据库**。因此升级到含本特性的版本后，必须对现有库手动应用一次 migration 003。两份迁移都是幂等的（`CREATE TABLE IF NOT EXISTS` / `IF OBJECT_ID(...) IS NULL`），重复执行安全。
-
-**MySQL：**
-
-```powershell
-# 用库里的账户执行；<db> 为 appsettings.json 里配置的库名
-Get-Content .\db\migrations\003-port-healthcheck.sql -Raw | mysql -u <user> -p <db>
-```
-
-**SQL Server：**
-
-```powershell
-sqlcmd -S <server> -d <db> -U <user> -P <pass> -i .\db\migrations\mssql\003-port-healthcheck.sql
-```
-
-应用后 `Restart-Service ADDashboardCenter`（新增端点/服务需要重载代码，若升级步骤已重启则可跳过）。
+迁移随升级 API **自动应用**，无需手动执行 SQL。详见 [§7 Center 升级](#center-升级api-触发推荐)。旧文档中提到的 `mysql ... < 003-*.sql` / `sqlcmd -i 003-*.sql` 步骤已被该 API 取代。
 
 ### 升级到 v2.0+（包系统 / 插件系统）
 
@@ -358,30 +373,13 @@ v2.0 起引入包管理（plugin system）：管理员可上传/启用/升级/�
 
 首次启动向导的 schema 应用器（`center/src/init/schema-applier.js` 的 `applyAll`）按文件名顺序自动应用 `db/migrations/` 下的全部迁移（001 → 002 → 003 → 004）。走 [首次启动向导](#首次启动向导) 的全新库会自动建好这六张表，**不用手动跑任何 SQL**。
 
-#### 存量升级：手动应用 migration 004
+#### 存量升级：调用 `/api/system/update`
 
-`update-center.ps1` **只更新代码、不碰数据库**。升级到含包系统的版本后，必须对现有库手动应用一次 migration 004。两份迁移都是幂等的（`CREATE TABLE IF NOT EXISTS` / `IF OBJECT_ID(...) IS NULL`），重复执行安全。
+同 §7，新版 API 自动应用所有 pending migration，**无需手动跑 SQL**。`migration 004-013` 均在此路径下被自动消费。
 
-**MySQL：**
+#### Migration 013+ 后续迁移
 
-```powershell
-# 用库里的账户执行；<db> 为 appsettings.json 里配置的库名
-Get-Content .\db\migrations\004-package-system.sql -Raw | mysql -u <user> -p <db>
-```
-
-**SQL Server：**
-
-```powershell
-sqlcmd -S <server> -d <db> -U <user> -P <pass> -i .\db\migrations\mssql\004-package-system.sql
-```
-
-应用后 `Restart-Service ADDashboardCenter`（新增端点/服务需要重载代码，若升级步骤已重启则可跳过）。
-
-#### Migration 013（orphan_schemas）
-
-Added by the self-contained monitoring package plan (2026-08-09). Pure
-`CREATE TABLE IF NOT EXISTS`; existing installations pick it up
-automatically on next `/init` wizard boot. No manual action required.
+Migration 014+（alert_metrics、outbox、orphan_schemas 等）均为 `CREATE TABLE IF NOT EXISTS` 风格的幂等 DDL，已初始化的部署在下次调 `/api/system/update` 时自动应用。**不再需要手动执行 SQL**。
 
 #### 新增的 UI 入口
 
@@ -458,22 +456,35 @@ npm start
 
 行为对比：
 
-| 入口 | 旧默认 | 新默认 | 开发模式开关 |
-|---|---|---|---|
-| `start.bat` | 前台跑 `node server.js`（开发态） | 注册并启动 `ADDashboardCenter` 服务（幂等） | `--console` / `-c` |
-| `start.ps1` | （无） | 同上，PowerShell 镜像 | `-Console` |
+| 入口 | 默认行为 | 开发模式开关 |
+|---|---|---|
+| `start.bat` / `start.ps1` | 调用 `scripts/install-center.ps1 -InPlace` 注册并启动 `ADDashboardCenter` 服务（幂等：首次安装 / 已有服务刷新 NSSM 参数） | `--console` / `-Console`（前台跑 `node server.js`） |
 
-新默认下，`start.bat` / `start.ps1` 会以 **管理员身份** 调用 `scripts/install-center.ps1 -InPlace`：
+`install-center.ps1 -InPlace` 的关键行为：
 
 - `InstallPath` 覆盖为 `<publish 根>\center`（**不拷贝**到 `$DashboardRoot\Center`，与生产路径隔离）。
-- `node_modules` 与 `frontend/dist/` 缺失时会自动补齐。
-- NSSM 注册的服务名仍是 `ADDashboardCenter`，启动类型 = 自动。
-- 日志落到 `$DashboardRoot\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
+- `node_modules` 与 `frontend/dist/` 缺失时会自动补齐；hash 变化时也会自动重装。
+- NSSM 注册的服务名仍是 `ADDashboardCenter`，启动类型 = 自动，启动失败有 recovery 重试。
+- 日志落到 `<publish 根>\center\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
 - `appsettings.json` 与 `.env` 初始化标记仍按 init 向导逻辑写入 `<InstallPath>` 下。
 
-适用与限制：
+### Green Bundle 的更新流程（无 admin shell）
 
-- **必须以管理员身份运行** `start.bat` / `start.ps1`（默认模式），否则立即报错并退出。改用 `--console` / `-Console` 无需管理员。
+绿色版的代码更新走 `POST /api/system/update`，与生产路径一致：
+
+1. 解压新版本 zip 覆盖到当前 `<publish 根>`（或 `git pull`）
+2. 在主机上调 `Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update`
+3. 服务端自动跑 pending migration + `process.exit(0)`；NSSM 拉起新代码
+
+**首次部署完**（指 **第一次** 部署当前版本 → 部署新版本之间）需要手动重启一次服务，让 `/api/system/update` 端点代码生效；之后所有升级均可纯 API。手动重启：
+
+```powershell
+Restart-Service -Name 'ADDashboardCenter' -Force
+```
+
+### 适用与限制
+
+- **首次安装**必须以 **管理员身份** 运行 `start.bat` / `start.ps1`（默认模式），否则立即报错并退出。改用 `--console` / `-Console` 无需管理员。
 - 同一台机器上 `publish/center` 路径下的服务实例与 `$DashboardRoot\Center` 下的生产实例 **共享服务名 `ADDashboardCenter`**，二者不能同时跑 —— 绿色版适合作为「试用 + 排错」入口，生产部署仍走仓库根 `scripts/install-center.ps1`（无 `-InPlace`）。
 - 想看完整的服务管理 / 卸载 / 日志路径说明见 [`publish/README.md`](../../publish/README.md)。
 

@@ -55,12 +55,26 @@ Invoke-WebRequest http://center:8080/healthz | Select -ExpandProperty Content
 
 ### 更新 Center
 
+**推荐（API 触发，无需 admin shell）：**
+
 ```powershell
-# 在 center 管理服务器上
+# 1. 在 center 管理服务器上覆盖新代码
 cd C:\Repos\ADDashboard
 git pull
-.\scripts\update-center.ps1 -RebuildFrontend
+
+# 2. 从本机调一次更新 API（localhost-only，无密码；自动跑 pending migration + 重启）
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update
 ```
+
+**首次升级走 API 之前需要手动重启一次**（让新端点代码生效）。之后所有升级都可走纯 API。详见 [`deployment.md` §7](deployment.md#升级与回滚)。
+
+**脚本式（兼容旧路径，需 admin shell）：**
+
+```powershell
+.\scripts\upgrade-center.ps1 -RebuildFrontend
+```
+
+**注意：** 该路径**不会**自动跑 DB migration；新表结构 / 列仍需按旧文档手动应用 SQL。建议切到 API 触发路径。
 
 ### 滚动更新 Agent
 
