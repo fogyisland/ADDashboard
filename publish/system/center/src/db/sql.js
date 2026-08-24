@@ -115,11 +115,11 @@ const VARIANTS = {
     },
     dashboard: {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
-      agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL`,
+      agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
       topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
-      agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS seconds_since_heartbeat FROM ad_agent_heartbeat ORDER BY agent_id`,
+      agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
       dcsBySite: `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
       dcReplicationLinks: (placeholders) => `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders}) ORDER BY source_dc, dest_dc, naming_context`,
@@ -132,9 +132,10 @@ const VARIANTS = {
       // "已推送到 X / N 台 Agent" counter. agent_id is the source-of-truth
       // identifier; for AD it's the configured agentId (e.g. DC name),
       // for non-AD it's the hostname (matches the heartbeat payload).
-      tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat ORDER BY agent_id`,
+      tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
              FROM ad_agent_heartbeat h
+             WHERE h.agent_id <> '__healthcheck__'
              ORDER BY h.agent_id`,
       dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
                  d.dc_name, d.ip_address, d.os_version, d.is_pdc,
@@ -142,6 +143,7 @@ const VARIANTS = {
           FROM ad_agent_heartbeat h
           LEFT JOIN ad_dcs d ON d.dc_name = h.agent_id
           LEFT JOIN ad_sites s ON s.site_id = d.site_id
+          WHERE h.agent_id <> '__healthcheck__'
           ORDER BY h.agent_id`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
@@ -464,11 +466,11 @@ const VARIANTS = {
     },
     dashboard: {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
-      agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL`,
+      agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
       topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, CASE WHEN last_success_time IS NULL OR last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_success_time, last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
-      agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, CASE WHEN last_heartbeat_at IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_heartbeat_at, SYSUTCDATETIME()) AS float) END AS seconds_since_heartbeat FROM ad_agent_heartbeat ORDER BY agent_id`,
+      agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, CASE WHEN last_heartbeat_at IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_heartbeat_at, SYSUTCDATETIME()) AS float) END AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
       dcsBySite: `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
       dcReplicationLinks: (placeholders) => `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, CASE WHEN last_success_time IS NULL OR last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_success_time, last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders}) ORDER BY source_dc, dest_dc, naming_context`,
@@ -478,9 +480,10 @@ const VARIANTS = {
       upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size, ? AS agent_token_version) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size, agent_token_version = s.agent_token_version WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size, s.agent_token_version);`,
       // 2026-08-21 UX redesign (auto-delivery): same shape as the MySQL
       // variant — see the comment above.
-      tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat ORDER BY agent_id`,
+      tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size
              FROM ad_agent_heartbeat h
+             WHERE h.agent_id <> '__healthcheck__'
              ORDER BY h.agent_id`,
       dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
                  d.dc_name, d.ip_address, d.os_version, d.is_pdc,
@@ -488,6 +491,7 @@ const VARIANTS = {
           FROM ad_agent_heartbeat h
           LEFT JOIN ad_dcs d ON d.dc_name = h.agent_id
           LEFT JOIN ad_sites s ON s.site_id = d.site_id
+          WHERE h.agent_id <> '__healthcheck__'
           ORDER BY h.agent_id`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
