@@ -145,9 +145,19 @@ Describe 'Register-ADDashboardAgent.ps1' {
     # NODE_ENV=production is the agent's only required env var.
     $script:Content | Should -Match 'NODE_ENV=production' `
       'NODE_ENV=production must be passed via AppEnvironmentExtra to match install-agent.ps1 pre-split behavior.'
-    # DependOnService must include DNS Client + Netlogon (pre-req for AD).
-    $script:Content | Should -Match 'DNS Client,Netlogon' `
-      'DependOnService must include DNS Client + Netlogon (AD pre-reqs; matches MSI path).'
+    # DependOnService must pass DNS Client + Netlogon as SEPARATE NSSM args, not
+    # as a comma-joined string. NSSM's parser treats "DNS Client,Netlogon" as a
+    # single service-name literal (which doesn't exist) and OpenService fails
+    # with "DNS Client,Netlogon: 服务不存在" — exit code 6 (real install run on
+    # KDLWXOFADSRV1, 2026-08-24). Correct form: two independent array elements
+    # in the @(...) splat so PowerShell emits them as separate argv tokens.
+    $script:Content | Should -Match "'DNS Client'\s*,\s*'Netlogon'" `
+      "DependOnService must pass 'DNS Client' and 'Netlogon' as two separate array elements (NSSM takes multi-value params as separate args, not comma-joined)."
+    # The comma-joined form must NOT appear in any Invoke-Nssm call: even a
+    # doc-comment mention can mislead future edits. Restrict to executable
+    # (non-comment) lines.
+    $script:Content | Should -Not -Match '(?m)^(?!\s*#).*DNS Client,Netlogon' `
+      "No executable line may pass 'DNS Client,Netlogon' as a single argument to Invoke-Nssm — NSSM treats it as one service name and OpenService fails."
   }
 
   It 'sets service recovery (NSSM AppExit + sc.exe failure) — R2 critical fix' {

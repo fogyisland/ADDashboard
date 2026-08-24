@@ -280,7 +280,7 @@ namespace ADDashboard.AgentInstaller.CA
             RunNssmSet(nssm, "DisplayName",          displayName);
             RunNssmSet(nssm, "Description",          description);
             RunNssmSet(nssm, "Start",                "SERVICE_AUTO_START");
-            RunNssmSet(nssm, "DependOnService",      "DNS Client,Netlogon");
+            RunNssmSetMulti(nssm, "DependOnService",      "DNS Client", "Netlogon");
             RunNssmSet(nssm, "AppStdout",            Path.Combine(logDir, "ADReplicationAgent-stdout.log"));
             RunNssmSet(nssm, "AppStderr",            Path.Combine(logDir, "ADReplicationAgent-stderr.log"));
             RunNssmSet(nssm, "AppRotateFiles",       "1");

@@ -186,7 +186,7 @@ function Install-NssmServiceRegistration {
   Invoke-Nssm @('set', $ServiceName, 'DisplayName',          $displayName)
   Invoke-Nssm @('set', $ServiceName, 'Description',          $description)
   Invoke-Nssm @('set', $ServiceName, 'Start',                'SERVICE_AUTO_START')
-  Invoke-Nssm @('set', $ServiceName, 'DependOnService',      'DNS Client,Netlogon')
+  Invoke-Nssm @('set', $ServiceName, 'DependOnService',      'DNS Client', 'Netlogon')
   Invoke-Nssm @('set', $ServiceName, 'AppStdout',            (Join-Path $LogDir "$ServiceName-stdout.log"))
   Invoke-Nssm @('set', $ServiceName, 'AppStderr',            (Join-Path $LogDir "$ServiceName-stderr.log"))
   Invoke-Nssm @('set', $ServiceName, 'AppRotateFiles',       '1')

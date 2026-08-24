@@ -71,6 +71,30 @@ Describe 'Install-NssmService (refresh on existing)' {
     $script:Calls | Should -Contain 'set ADDashboardCenter AppDirectory D:\dashboard\center'
     $script:Calls | Should -Contain 'set ADDashboardCenter Start SERVICE_AUTO_START'
   }
+
+  It 'passes DependOnService values as SEPARATE NSSM args (not comma-joined)' {
+    # 2026-08-24: real install run on KDLWXOFADSRV1 hit "DNS Client,Netlogon:
+    # 服务不存在" because NSSM's parser treats a comma-joined string as ONE
+    # service-name literal and OpenService fails. NSSM's signature is
+    # `nssm set <svc> DependOnService <svc1> [<svc2> ...]` — each dependency
+    # is a separate argv token. The fix: splat the array so PowerShell emits
+    # each name as its own arg. install-center.ps1 doesn't currently pass
+    # -DependOnService so this code path was dormant, but the latent bug
+    # would have fired the moment anyone passed deps.
+    Mock -ModuleName NSSM -CommandName Get-Service -MockWith { $null }
+    Install-NssmService -Name 'ADReplicationAgent' -Application 'C:\node\node.exe' `
+      -AppDirectory 'D:\agent' -AppParameters 'agent.js' `
+      -DependOnService @('DNS Client', 'Netlogon') `
+      -Start SERVICE_AUTO_START
+
+    # Correct shape: TWO separate args after DependOnService, each a service name.
+    # The mock joins args with ' ' so the recorded call reads back as one line.
+    $script:Calls | Should -Contain 'set ADReplicationAgent DependOnService DNS Client Netlogon' `
+      'DependOnService must pass each service name as a separate argv token, NOT comma-joined.'
+    # The comma-joined form must NOT appear anywhere.
+    $script:Calls | Should -Not -Contain 'set ADReplicationAgent DependOnService DNS Client,Netlogon' `
+      'Comma-joined DependOnService value is the documented bug — NSSM treats it as one service-name literal.'
+  }
 }
 
 Describe 'Install-NssmService mirror sync (publish/system/scripts/common/NSSM.psm1)' {

@@ -109,7 +109,18 @@ function Set-NssmParameters {
   Invoke-Nssm @('set', $Name, 'AppRotateOnline', '1')
   Invoke-Nssm @('set', $Name, 'AppRotateBytes', '10485760')
   if ($DependOnService.Count -gt 0) {
-    Invoke-Nssm @('set', $Name, 'DependOnService', ($DependOnService -join ','))
+    # NSSM's DependOnService takes multiple service-name positional args, NOT a
+    # comma-joined string. Real install run on KDLWXOFADSRV1 (2026-08-24) hit
+    # "DNS Client,Netlogon: 服务不存在" when the array was joined — NSSM
+    # parses "DNS Client,Netlogon" as one service-name literal and OpenService
+    # fails. Splat the array so PowerShell emits each name as a separate argv
+    # token (matches NSSM's `nssm set <svc> DependOnService <svc1> [<svc2> ...]`
+    # signature). Note: bare `Invoke-Nssm @('set', $Name, 'DependOnService') +
+    # $DependOnService` is a parser trap — `@()` is interpreted as a splat and
+    # the `+ $arr` is silently dropped. Wrap in parens to force expression
+    # evaluation. The MSI path's equivalent fix: RunNssmSetMulti at
+    # installer/agent-installer/CA/ConfigureAgentAction.cs:283.
+    Invoke-Nssm (@('set', $Name, 'DependOnService') + $DependOnService)
   }
   Invoke-Nssm @('set', $Name, 'AppEnvironmentExtra', 'NODE_ENV=production')
 }
