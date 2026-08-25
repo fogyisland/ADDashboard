@@ -205,6 +205,95 @@ test('POST /api/agent/heartbeat: response carries reportRequested: false when fl
   assert.equal(r.body.reportRequested, false);
 });
 
+// 2026-08-25 cold-start detection: if the existing row's last_heartbeat_at
+// is more than 5 minutes old, the route must wipe any stale
+// report_requested_at so the restarted agent doesn't immediately re-trigger
+// scheduler._tick() on a request the previous process already consumed.
+test('POST /api/agent/heartbeat: cold start (>5min gap) triggers clearReportRequest', async () => {
+  let clearCalled = false;
+  const records = [];
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Cold-start probe: returns a stale last_heartbeat_at (10 min ago).
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: tenMinAgo }] },
+      // Cold-start path triggers the clear — fire onExecute so the test
+      // can assert the SQL was issued.
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: [],
+        onExecute: () => { clearCalled = true; }
+      },
+      // Post-clear read-back returns null → reportRequested: false.
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  assert.equal(clearCalled, true, 'cold-start must trigger clearReportRequest');
+  assert.equal(r.body.reportRequested, false);
+});
+
+test('POST /api/agent/heartbeat: warm heartbeat (<5min gap) does NOT clear', async () => {
+  // Existing heartbeat row is only 30s old — no cold start, no clear.
+  let clearCalled = false;
+  const records = [];
+  const thirtySecAgo = new Date(Date.now() - 30 * 1000).toISOString();
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: thirtySecAgo }] },
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: [],
+        onExecute: () => { clearCalled = true; }
+      },
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  assert.equal(clearCalled, false, 'warm heartbeat must NOT trigger clearReportRequest');
+});
+
+test('POST /api/agent/heartbeat: cold-start probe error does NOT 500 the heartbeat', async () => {
+  // If the readLastHeartbeatAt SELECT throws, the route must swallow it
+  // (best-effort) and continue with the normal upsert path.
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      {
+        match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [],
+        onExecute: () => { throw new Error('probe-failure'); }
+      },
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200, 'cold-start probe error must NOT 500 the heartbeat');
+  assert.equal(r.body.reportRequested, false);
+});
+
 test('POST /api/agent/report with correct token -> 200, config echoed', async () => {
   // scripts provides:
   //  - history_enabled lookup (1st system_config SELECT, narrowed)

@@ -59,6 +59,30 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         : new Date(reportRequestedAtRaw);
       try {
         const db = getDb();
+
+        // 2026-08-25 cold-start detection: if the existing row's
+        // last_heartbeat_at is more than COLD_START_THRESHOLD_S old, treat
+        // this heartbeat as a fresh agent process and wipe any stale
+        // `report_requested_at` so the restarted agent doesn't immediately
+        // re-trigger scheduler._tick() on a request the previous process
+        // already consumed (or that no longer applies). The clear runs
+        // BEFORE the upsert, so the upsert's COALESCE-preserve path sees
+        // a NULL column and leaves it NULL. Best-effort — a failure here
+        // must NOT 500 the heartbeat.
+        const COLD_START_THRESHOLD_S = 5 * 60;
+        try {
+          const cs = await db.execute(db.sql.heartbeat.readLastHeartbeatAt, [agentId]);
+          const lastHb = cs.rows?.[0]?.last_heartbeat_at ?? cs?.[0]?.[0]?.last_heartbeat_at;
+          if (lastHb) {
+            const ageMs = Date.now() - new Date(lastHb).getTime();
+            if (Number.isFinite(ageMs) && ageMs > COLD_START_THRESHOLD_S * 1000) {
+              await db.execute(db.sql.heartbeat.clearReportRequest, [agentId]);
+            }
+          }
+        } catch (e) {
+          logger.warn({ err: e.message, agentId }, 'cold-start detection failed (best-effort)');
+        }
+
         // 3-way SQL routing:
         //   null      → clearReportRequest (direct UPDATE … SET … = NULL)
         //   undefined / value → upsert (COALESCE preserves undefined→null, sets a value)

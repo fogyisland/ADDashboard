@@ -177,6 +177,12 @@ const VARIANTS = {
       // the per-heartbeat cost is trivial. Caller binds [agentId].
       readReportRequestedAt:
         `SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
+      // 2026-08-25: cold-start probe — read existing row's last_heartbeat_at
+      // BEFORE this heartbeat's upsert so the route can detect a restart
+      // (>5min gap) and wipe any stale report_requested_at that the
+      // previous process didn't get to consume. Caller binds [agentId].
+      readLastHeartbeatAt:
+        `SELECT last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s
@@ -643,6 +649,12 @@ const VARIANTS = {
       // single row). Caller binds [agentId].
       readReportRequestedAt:
         `SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
+      // 2026-08-25: cold-start probe — read existing row's last_heartbeat_at
+      // BEFORE this heartbeat's upsert so the route can detect a restart
+      // (>5min gap) and wipe any stale report_requested_at that the
+      // previous process didn't get to consume. Caller binds [agentId].
+      readLastHeartbeatAt:
+        `SELECT last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s

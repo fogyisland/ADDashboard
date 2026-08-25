@@ -8,14 +8,15 @@
 // `getPendingClear` / `setPendingClear` so the caller controls lifecycle and
 // the unit tests can substitute their own backing store.
 //
-// NOTE on the COALESCE bug (T-fix follow-up): T6 picked Option A — the T2
-// SQL uses COALESCE/ISNULL to preserve the column when the bound value is
-// null. So the `report_requested_at: null` we emit here will NOT actually
-// clear the column on the center side. The flag stays set → every subsequent
-// heartbeat response carries reportRequested: true → send() calls
-// scheduler._tick() on EVERY heartbeat (every 5s), not just once.
-// _tick() is idempotent (scheduler dedupes concurrent runs), so this is
-// wasteful (CPU + network) but not destructive. The fix lands in T-fix.
+// T-fix landed (2026-08-25): the centre now splits `undefined` (preserve via
+// UPSERT COALESCE) from explicit `null` (clearReportRequest UPDATE), so the
+// one-shot `setPendingClear(false)` arming below actually wipes the column
+// on the next heartbeat — subsequent responses carry reportRequested: false
+// and _tick() stops firing.
+//
+// 2026-08-25: scheduler._tick() is now deduped via an in-flight promise
+// (see scheduler.js). Concurrent invocations share the same in-progress
+// promise and don't stack parallel collect() runs.
 
 export function makeSendCallback({ postHeartbeat, applyAgentTokenDelivery, scheduler, logger, getPendingClear, setPendingClear }) {
   return async function send(payload) {
