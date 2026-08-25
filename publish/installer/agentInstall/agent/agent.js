@@ -14,6 +14,7 @@ import { getOsInfo } from './src/os-info.js';
 import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
+import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
 import {
   applyPackageList,
   clearAllTimers
@@ -201,6 +202,55 @@ async function runAdRuntime({ config, logger }) {
     powerShellPath: config.powerShellPath
   });
 
+  // 2026-08-24 round-12 (T7): state for the heartbeat-callbacks module.
+  // The callbacks own NO state themselves; this `let` is the one and only
+  // backing store, accessed via the getters below. Same pattern for the
+  // scheduler reference: it's created LATER in this function, so we hand
+  // the callback a getter that resolves at call time. By the time any
+  // heartbeat actually fires (>= heartbeatIntervalSeconds), both will be
+  // populated — the first heartbeat fires immediately, but the scheduler
+  // will exist synchronously after the assignment below.
+  //
+  // 2026-08-25 round-12 fan-out: added discoveryRef for the same reason.
+  // startDiscoveryScheduler is created further down but the heartbeat
+  // callback wiring (above) needs to be in place BEFORE startHeartbeat
+  // constructs its first tick. Lazy getter resolves at the moment a
+  // heartbeat actually fires, by which time the discovery object exists.
+  let pendingReportRequestClear = false;
+  const getPendingClear = () => pendingReportRequestClear;
+  const setPendingClear = (v) => { pendingReportRequestClear = v; };
+  let schedulerRef = null;
+  const getScheduler = () => schedulerRef;
+  let discoveryRef = null;
+  const getDiscovery = () => discoveryRef;
+
+  const send = makeSendCallback({
+    postHeartbeat: (payload) => postHeartbeat({
+      centerUrl: config.centerUrl,
+      agentToken: config.agentToken,
+      port: cachedPorts.heartbeatPort,
+      payload
+    }),
+    applyAgentTokenDelivery: ({ result }) => applyAgentTokenDelivery({
+      result, config, configPath, logger
+    }),
+    scheduler: { get _tick() { return getScheduler()._tick; } },
+    logger,
+    getPendingClear,
+    setPendingClear,
+    // 2026-08-25 round-12 report-now fan-out: hand the heartbeat callback
+    // both extra collectors. discovery is captured lazily via getDiscovery()
+    // because startDiscoveryScheduler() runs AFTER makeSendCallback() is
+    // constructed (and runs first on boot — see the startDiscoveryScheduler
+    // tick-immediately behavior). packageManager is stable from agent.js
+    // scope (created above), so it can be passed directly. See scheduler.js
+    // for why replication already uses the lazy getter.
+    runDiscovery: () => getDiscovery().run(),
+    runPackages: () => packageManager.runAllNow({ triggeredBy: 'report-now' })
+  });
+
+  const buildPayload = makePayload({ getPendingClear, setPendingClear });
+
   const heartbeat = startHeartbeat({
     intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
     payload: () => {
@@ -220,17 +270,9 @@ async function runAdRuntime({ config, logger }) {
         installed: packageManager.listLocal(),
         pending: packageManager.reportBatch.length + packageManager.queue.length
       };
-      return p;
+      return buildPayload(p);
     },
-    send: async (p) => {
-      const r = await postHeartbeat({
-        centerUrl: config.centerUrl,
-        agentToken: config.agentToken,
-        port: cachedPorts.heartbeatPort,
-        payload: p
-      });
-      await applyAgentTokenDelivery({ result: r, config, configPath, logger });
-    }
+    send
   });
 
   // Site/DCs topology discovery. Runs the PowerShell topology script on a long
@@ -334,6 +376,18 @@ async function runAdRuntime({ config, logger }) {
       return r;
     }
   });
+
+  // 2026-08-24 round-12 (T7): wire the scheduler ref into the heartbeat
+  // callback closure. The heartbeat was started BEFORE the scheduler was
+  // created (preserving the original control flow), so the callback reads
+  // it lazily via getScheduler().
+  //
+  // 2026-08-25 round-12 fan-out: same pattern for discoveryRef. The
+  // discovery scheduler is also constructed before its first heartbeat
+  // call, so the lazy getter is just a future-proofing belt — by the
+  // time a heartbeat can see reportRequested:true, both refs are set.
+  schedulerRef = scheduler;
+  discoveryRef = discovery;
 
   scheduler.start();
   packageManager.start();

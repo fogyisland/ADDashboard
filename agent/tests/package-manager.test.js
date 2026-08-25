@@ -274,3 +274,170 @@ test('PackageManager removes cache and timer when package no longer enabled', as
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ============================================================================
+// 2026-08-25 round-12 report-now fan-out: PackageManager.runAllNow() must
+// re-run every synced package in parallel when the operator clicks 回报.
+// Each package is independent; a failure in one does NOT block the others.
+// ============================================================================
+
+test('PackageManager.runAllNow fans out to every synced package in parallel', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pkg-mgr-'));
+  try {
+    // Two packages — a + b
+    for (const name of ['a', 'b']) {
+      const pkgDir = join(dir, 'packages', name, '1.0.0');
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, 'manifest.json'), '{}');
+      writeFileSync(join(pkgDir, 'collect.ps1'), 'echo ' + name);
+      writeFileSync(join(dir, 'packages', name, 'current.json'), JSON.stringify({ version: '1.0.0' }));
+    }
+
+    const pm = new PackageManager({
+      agentId: 'A1',
+      agentVersion: '0.1.0',
+      centerBaseUrl: 'http://unused',
+      agentToken: 'tok',
+      dataDir: dir,
+      logger: fakeLogger()
+    });
+    // Simulate a prior sync (sets pm.packages)
+    pm.packages = [
+      { name: 'a', version: '1.0.0', manifest: { name: 'a', version: '1.0.0', agent: { intervalSec: 60, timeoutMs: 5000 } } },
+      { name: 'b', version: '1.0.0', manifest: { name: 'b', version: '1.0.0', agent: { intervalSec: 60, timeoutMs: 5000 } } }
+    ];
+    // Track parallel entry: both packages must be in-flight simultaneously.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let aEntered = false;
+    let bEntered = false;
+    const releases = [];
+    pm._runPackageScript = async ({ scriptPath }) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (scriptPath.includes('\\a\\')) aEntered = true;
+      if (scriptPath.includes('\\b\\')) bEntered = true;
+      await new Promise(r => releases.push(r));
+      inFlight--;
+      return { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), exitCode: 0, metrics: { ok: true }, error: null };
+    };
+
+    const p = pm.runAllNow({ triggeredBy: 'report-now' });
+    // Let both packages enter their first await
+    await new Promise(r => setImmediate(r));
+    await new Promise(r => setImmediate(r));
+    assert.equal(maxInFlight, 2, 'both packages must be in-flight at the same time');
+    assert.ok(aEntered && bEntered, 'both packages must have entered runOne');
+
+    // Release both
+    releases.forEach(r => r());
+    const r = await p;
+    assert.equal(r.count, 2);
+    assert.equal(r.results.length, 2);
+    assert.ok(r.results.every(x => x.status === 'fulfilled'), 'both packages must fulfill');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PackageManager.runAllNow no-ops cleanly when no packages are installed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pkg-mgr-'));
+  try {
+    const pm = new PackageManager({
+      agentId: 'A1',
+      agentVersion: '0.1.0',
+      centerBaseUrl: 'http://unused',
+      agentToken: 'tok',
+      dataDir: dir,
+      logger: fakeLogger()
+    });
+    // No sync done → pm.packages is []
+    const r = await pm.runAllNow();
+    assert.equal(r.count, 0);
+    assert.deepEqual(r.results, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PackageManager.runAllNow absorbs per-package rejections (other packages still run)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pkg-mgr-'));
+  try {
+    for (const name of ['good', 'bad']) {
+      const pkgDir = join(dir, 'packages', name, '1.0.0');
+      mkdirSync(pkgDir, { recursive: true });
+      writeFileSync(join(pkgDir, 'manifest.json'), '{}');
+      writeFileSync(join(pkgDir, 'collect.ps1'), 'echo ' + name);
+      writeFileSync(join(dir, 'packages', name, 'current.json'), JSON.stringify({ version: '1.0.0' }));
+    }
+    const pm = new PackageManager({
+      agentId: 'A1',
+      agentVersion: '0.1.0',
+      centerBaseUrl: 'http://unused',
+      agentToken: 'tok',
+      dataDir: dir,
+      logger: fakeLogger()
+    });
+    pm.packages = [
+      { name: 'good', version: '1.0.0', manifest: { name: 'good', version: '1.0.0', agent: { intervalSec: 60, timeoutMs: 5000 } } },
+      { name: 'bad',  version: '1.0.0', manifest: { name: 'bad',  version: '1.0.0', agent: { intervalSec: 60, timeoutMs: 5000 } } }
+    ];
+    let goodCalled = 0;
+    let badCalled = 0;
+    pm._runPackageScript = async ({ scriptPath }) => {
+      if (scriptPath.includes('\\good\\')) {
+        goodCalled++;
+        return { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), exitCode: 0, metrics: {}, error: null };
+      }
+      badCalled++;
+      throw new Error('script crashed');
+    };
+
+    const r = await pm.runAllNow();
+    assert.equal(goodCalled, 1, 'good package must run despite bad package failing');
+    assert.equal(badCalled, 1, 'bad package must attempt to run');
+    assert.equal(r.results.length, 2);
+    assert.equal(r.results[0].status, 'fulfilled', 'good package must fulfill');
+    assert.equal(r.results[1].status, 'rejected', 'bad package must reject');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('PackageManager.runAllNow tags per-run logs with triggeredBy=report-now', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pkg-mgr-'));
+  try {
+    const pkgDir = join(dir, 'packages', 'tagged', '1.0.0');
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(pkgDir, 'manifest.json'), '{}');
+    writeFileSync(join(pkgDir, 'collect.ps1'), 'echo tagged');
+    writeFileSync(join(dir, 'packages', 'tagged', 'current.json'), JSON.stringify({ version: '1.0.0' }));
+
+    const logCalls = [];
+    const capturingLogger = {
+      info: (obj, msg) => logCalls.push({ obj, msg }),
+      warn: () => {}, error: () => {}, debug: () => {}
+    };
+    const pm = new PackageManager({
+      agentId: 'A1',
+      agentVersion: '0.1.0',
+      centerBaseUrl: 'http://unused',
+      agentToken: 'tok',
+      dataDir: dir,
+      logger: capturingLogger
+    });
+    pm.packages = [{ name: 'tagged', version: '1.0.0', manifest: { name: 'tagged', version: '1.0.0', agent: { intervalSec: 60, timeoutMs: 5000 } } }];
+    pm._runPackageScript = async () => ({ startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), exitCode: 0, metrics: {}, error: null });
+
+    await pm.runAllNow({ triggeredBy: 'report-now' });
+
+    const runLog = logCalls.find(c => c.obj?.event === 'package.run');
+    assert.ok(runLog, 'must log per-run event');
+    assert.equal(runLog.obj.triggeredBy, 'report-now', 'per-run log must carry the triggeredBy tag');
+    const fanOutLog = logCalls.find(c => c.obj?.event === 'package.runAllNow');
+    assert.ok(fanOutLog, 'must log fan-out event');
+    assert.equal(fanOutLog.obj.triggeredBy, 'report-now');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

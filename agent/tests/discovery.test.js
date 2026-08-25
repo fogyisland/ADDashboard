@@ -70,6 +70,52 @@ test('startDiscoveryScheduler stop() prevents further calls', async () => {
   assert.equal(calls, 1, 'only the immediate fire should have run');
 });
 
+// 2026-08-25 round-12 report-now fan-out: startDiscoveryScheduler now
+// exposes `run` so the heartbeat callback can invoke discovery on demand.
+// Verify both shape and that run() actually invokes the user's run fn.
+test('startDiscoveryScheduler exposes run() for on-demand invocation (report-now fan-out)', async () => {
+  let calls = 0;
+  const sched = startDiscoveryScheduler({
+    intervalHours: 24, // long interval — only the immediate fire contributes to baseline count
+    run: async () => { calls++; }
+  });
+  // Settle the immediate fire
+  await new Promise(r => setTimeout(r, 30));
+  const baseline = calls;
+  assert.ok(baseline >= 1, 'baseline immediate fire expected');
+
+  // Now exercise run() — must invoke the user's run fn
+  await sched.run();
+  assert.equal(calls, baseline + 1, 'sched.run() must invoke the user-provided run fn');
+
+  // After stop(), run() must be a no-op (defensive — guards against late
+  // heartbeat callbacks firing after shutdown)
+  sched.stop();
+  await sched.run();
+  assert.equal(calls, baseline + 1, 'sched.run() after stop() must be a no-op');
+});
+
+test('startDiscoveryScheduler.run() absorbs synchronous throws from user run fn', async () => {
+  const events = [];
+  const fakeLogger = { warn: (e, msg) => events.push({ e, msg }) };
+  let calls = 0;
+  const sched = startDiscoveryScheduler({
+    intervalHours: 24,
+    run: async () => { calls++; throw new Error('user run fn boom'); },
+    logger: fakeLogger
+  });
+  await new Promise(r => setTimeout(r, 30));
+  // The immediate fire threw — but startDiscoveryScheduler's tick already
+  // catches it. Now exercise sched.run() — must also absorb the throw
+  // (so the heartbeat callback's Promise.allSettled doesn't see a sync reject).
+  await sched.run();
+  assert.ok(calls >= 2, 'user run fn must have been invoked via tick + sched.run');
+  // Both should have logged a warn — verify the run-on-demand path logged too
+  const onDemandWarn = events.find(e => e.e?.triggeredBy === 'report-now');
+  assert.ok(onDemandWarn, 'sched.run() failures must log with triggeredBy=report-now');
+  sched.stop();
+});
+
 // 2026-08-24 round-9: runDiscovery now logs the failure (stderr / exit
 // code) through the injected logger instead of returning null silently.
 // The previous silent-return made the DC list mysteriously empty when

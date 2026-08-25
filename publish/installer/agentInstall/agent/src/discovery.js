@@ -66,5 +66,20 @@ export function startDiscoveryScheduler({ intervalHours, run, logger }) {
   tick();
   const ms = Math.max(1, intervalHours) * 3_600_000;
   const h = setInterval(tick, ms);
-  return { stop() { stopped = true; clearInterval(h); } };
+  // 2026-08-25 round-12 report-now fan-out: expose `run` so the heartbeat
+  // callback can invoke discovery on demand when the operator clicks 回报.
+  // Same try/catch + logger pattern as the periodic tick so a synchronous
+  // throw inside run() doesn't propagate to the heartbeat callback.
+  // Caller's run() already includes its own success/failure logging (PS
+  // spawn failure at agent.js:266-281) — this is just the safety net for
+  // an unexpected JS throw outside the PS-spawn path.
+  const runNow = async () => {
+    if (stopped) return;
+    try { await run(); }
+    catch (e) { if (logger) logger.warn({ err: e.message, triggeredBy: 'report-now' }, 'discovery on-demand failed'); }
+  };
+  return {
+    stop() { stopped = true; clearInterval(h); },
+    run: runNow
+  };
 }

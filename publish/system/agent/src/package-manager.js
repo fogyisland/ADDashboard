@@ -41,6 +41,7 @@ export class PackageManager {
     this.queue = [];        // persisted (failed flush)
     this.reportBatch = [];  // in-memory pending flush
     this.tasks = new Map(); // name -> { timer, intervalMs }
+    this.packages = [];     // last synced package list (used by runAllNow)
     this._fetchJson = fetchJson || defaultFetchJson;
     this._runPackageScript = runScriptFn || runPackageScript;
     this._syncTimer = null;
@@ -87,6 +88,13 @@ export class PackageManager {
     }
 
     this.reschedule(packages);
+    // 2026-08-25 round-12 report-now fan-out: keep the latest synced list so
+    // runAllNow() can re-run every package on operator demand (heartbeat
+    // reportRequested=true). Without this, only the periodic timers + a
+    // future sync would know what's installed; report-now has no other way
+    // to enumerate packages. Storing the list here (rather than re-reading
+    // disk) keeps the fan-out cheap and avoids stale-cache issues mid-sync.
+    this.packages = packages;
     return { ok: true, count: packages.length };
   }
 
@@ -139,6 +147,7 @@ export class PackageManager {
     const scriptPath = join(this.cacheDir, pkg.name, pkg.version, 'collect.ps1');
     const params = pkg.params || {};
     const timeoutMs = pkg.manifest?.agent?.timeoutMs || DEFAULT_TIMEOUT_MS;
+    const startedAt = new Date();
     const r = await this._runPackageScript({
       scriptPath,
       params,
@@ -149,9 +158,93 @@ export class PackageManager {
       // future change; for now runPackageScript uses node:child_process.spawn
       // directly with no injection.
     });
+    // 2026-08-25 round-12 report-now fan-out: emit a per-package local log
+    // line so an operator can confirm "this package ran, posted at <ts>".
+    // runOne() is also called from the periodic timer, not only runAllNow();
+    // the same per-run log is useful there too. Format kept stable so any
+    // future log-shipping tooling can match by `event=package.run`.
+    this.logger?.info({
+      event: 'package.run',
+      package: pkg.name,
+      version: pkg.version,
+      startedAt: startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      exitCode: r.exitCode,
+      pushed: true,
+      triggeredBy: this._triggeredBy || 'timer'
+    }, 'package run complete');
     this.reportBatch.push({ packageName: pkg.name, ...r });
     if (this.reportBatch.length >= FLUSH_BATCH_THRESHOLD) {
       await this.flushReportQueue();
+    }
+  }
+
+  // 2026-08-25 round-12 report-now fan-out: re-run every installed package
+  // right now (operator clicked 回报 in the heartbeat monitor). Each package
+  // is independent — runs in parallel via Promise.allSettled, each writes
+  // its own batch entry + log line. No global "all done" gate; if one
+  // package's PS script times out, the others still complete and post.
+  //
+  // Concurrency model: the periodic setInterval timers in `tasks` keep
+  // firing on schedule. runAllNow() is additive — it does NOT cancel or
+  // reschedule the timers, and it does NOT skip a periodic fire that's
+  // already in flight. A click-and-timer race is fine: both paths push
+  // results into the same reportBatch, which the periodic flush pulls
+  // every 5s. Worst case = one extra run for the user (already idempotent
+  // for the metricstore via single-row UPSERT + a per-cycle primary key).
+  //
+  // Returns: { count, results } — count = packages attempted,
+  // results = Promise.allSettled raw output (for tests).
+  async runAllNow({ triggeredBy = 'report-now' } = {}) {
+    const pkgs = Array.isArray(this.packages) ? this.packages : [];
+    if (pkgs.length === 0) {
+      this.logger?.info({ event: 'package.runAllNow', count: 0, triggeredBy }, 'no packages to run');
+      return { count: 0, results: [] };
+    }
+    // Tag every runOne() call so the per-package log lines identify which
+    // fan-out fired them (operator-initiated vs periodic timer). Reset on
+    // exit so the next periodic tick logs `triggeredBy=timer` again.
+    const prevTag = this._triggeredBy;
+    this._triggeredBy = triggeredBy;
+    const startedAt = new Date();
+    this.logger?.info({
+      event: 'package.runAllNow',
+      count: pkgs.length,
+      startedAt: startedAt.toISOString(),
+      packages: pkgs.map(p => p.name),
+      triggeredBy
+    }, 'package fan-out started');
+    try {
+      const results = await Promise.allSettled(pkgs.map(pkg => this.runOne(pkg)));
+      const finishedAt = new Date();
+      const summary = results.map((r, i) => ({
+        package: pkgs[i].name,
+        status: r.status,
+        exitCode: r.status === 'fulfilled' ? r.value?.exitCode : null,
+        error: r.status === 'rejected' ? String(r.reason?.message || r.reason) : null
+      }));
+      this.logger?.info({
+        event: 'package.runAllNow',
+        count: pkgs.length,
+        startedAt: startedAt.toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        durationMs: finishedAt - startedAt,
+        summary,
+        triggeredBy
+      }, 'package fan-out complete');
+      // Best-effort flush — even if the periodic 5s timer hasn't fired, get
+      // the freshly-collected batch to center before the heartbeat reports
+      // done. Failures here are absorbed by the existing flushReportQueue
+      // path (persists to report-queue.json), so this is purely an
+      // optimization, not a correctness gate.
+      if (this.reportBatch.length > 0) {
+        await this.flushReportQueue().catch((e) =>
+          this.logger?.warn({ err: e.message, triggeredBy }, 'runAllNow flush crashed (queue persisted)')
+        );
+      }
+      return { count: pkgs.length, results };
+    } finally {
+      this._triggeredBy = prevTag;
     }
   }
 
