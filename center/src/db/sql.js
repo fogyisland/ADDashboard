@@ -603,7 +603,23 @@ const VARIANTS = {
       // on WHEN MATCHED UPDATE means a `null` param preserves the existing
       // column — agents pre-T6 that don't forward the field will not wipe
       // the "report now" request.
-      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT ? AS agent_id, ? AS agent_version, ? AS last_report_at, ? AS last_report_status, ? AS pending_queue_size, ? AS agent_token_version, ? AS report_requested_at) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size, agent_token_version = s.agent_token_version, report_requested_at = ISNULL(s.report_requested_at, t.report_requested_at) WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version, report_requested_at) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size, s.agent_token_version, s.report_requested_at);`,
+      //
+      // 2026-08-25: date params (`last_report_at`, `report_requested_at`)
+      // wrapped with `CAST(? AS DATETIME2)`. Without the cast, tedious
+      // binds the JS Date / ISO string with an inferred type (varchar or
+      // nvarchar), and MSSQL then throws "Conversion failed when
+      // converting date and/or time from character string" (error 241) on
+      // the assignment to the datetime2 column. Same fix pattern as
+      // ad_replication_status.upsertStatus (Bug B, ad8745a).
+      upsert: `MERGE INTO ad_agent_heartbeat AS t USING (SELECT
+         ? AS agent_id,
+         ? AS agent_version,
+         CAST(? AS DATETIME2) AS last_report_at,
+         ? AS last_report_status,
+         ? AS pending_queue_size,
+         ? AS agent_token_version,
+         CAST(? AS DATETIME2) AS report_requested_at
+       ) AS s ON t.agent_id = s.agent_id WHEN MATCHED THEN UPDATE SET last_heartbeat_at = SYSUTCDATETIME(), agent_version = s.agent_version, last_report_at = s.last_report_at, last_report_status = s.last_report_status, pending_queue_size = s.pending_queue_size, agent_token_version = s.agent_token_version, report_requested_at = ISNULL(s.report_requested_at, t.report_requested_at) WHEN NOT MATCHED THEN INSERT (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version, report_requested_at) VALUES (s.agent_id, SYSUTCDATETIME(), s.agent_version, s.last_report_at, s.last_report_status, s.pending_queue_size, s.agent_token_version, s.report_requested_at);`,
       // 2026-08-21 UX redesign (auto-delivery): same shape as the MySQL
       // variant — see the comment above.
       tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
@@ -625,10 +641,14 @@ const VARIANTS = {
           ORDER BY h.agent_id`,
       // 2026-08-24 round-12: requestReport MERGE — insert a stub heartbeat
       // row if the agent hasn't checked in yet, or set the column if it
-      // has. Caller binds [agentId, requestedAt].
+      // has. Caller binds [agentId, requestedAt] (Date).
+      //
+      // 2026-08-25: `report_requested_at` wrapped with `CAST(? AS DATETIME2)`
+      // for the same reason as upsert above — bound JS Date without cast
+      // hits error 241.
       requestReport: (agentId, requestedAtIso) =>
         `MERGE INTO ad_agent_heartbeat AS t
-         USING (SELECT ? AS agent_id, ? AS report_requested_at) AS s
+         USING (SELECT ? AS agent_id, CAST(? AS DATETIME2) AS report_requested_at) AS s
          ON t.agent_id = s.agent_id
          WHEN NOT MATCHED THEN
            INSERT (agent_id, last_heartbeat_at, report_requested_at)
@@ -639,10 +659,15 @@ const VARIANTS = {
       // actually sets `report_requested_at = NULL`. Same rationale as the
       // MySQL variant: heartbeat MERGE's ISNULL-preserve path cannot
       // express "explicit clear". Caller binds [agentId].
+      //
+      // 2026-08-25: uses `?` not the unbound `@p_agent_id` literal — the
+      // mssql driver remaps `?` to `@p1, @p2, …` but a hand-written
+      // `@p_agent_id` is never bound, so MSSQL would throw "Must declare
+      // scalar variable". Fix is identical in shape to the MySQL variant.
       clearReportRequest: (agentId) =>
         `UPDATE ad_agent_heartbeat
             SET report_requested_at = NULL
-          WHERE agent_id = @p_agent_id`,
+          WHERE agent_id = ?`,
       // 2026-08-24 round-12 T6: read back report_requested_at for a single
       // agent so the heartbeat handler can attach reportRequested: boolean
       // to its response. Same shape as the MySQL variant (single column,
@@ -661,18 +686,18 @@ const VARIANTS = {
          INNER JOIN (
            SELECT TOP 1 collected_at AS max_collected
            FROM ad_replication_status
-           WHERE agent_id = ? AND collected_at >= ?
+           WHERE agent_id = CAST(? AS NVARCHAR(64)) AND collected_at >= CAST(? AS DATETIME2)
            ORDER BY collected_at DESC
-         ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
+         ) m ON s.collected_at = m.max_collected AND s.agent_id = CAST(? AS NVARCHAR(64))
          ORDER BY s.source_dc, s.dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                  status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
-         WHERE agent_id = ?
+         WHERE agent_id = CAST(? AS NVARCHAR(64))
            AND collected_at = (
              SELECT TOP 1 collected_at FROM ad_replication_status
-             WHERE agent_id = ? AND collected_at >= ?
+             WHERE agent_id = CAST(? AS NVARCHAR(64)) AND collected_at >= CAST(? AS DATETIME2)
              ORDER BY collected_at DESC
            )
          ORDER BY source_dc, dest_dc`
