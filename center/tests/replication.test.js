@@ -63,3 +63,38 @@ test('upsertStatus coerces null/undefined nullable text fields to null', async (
   assert.equal(params[4], null, 'sourceSite -> null');
   assert.equal(params[10], null, 'errorMessage -> null');
 });
+
+// 2026-08-25 production p5 NVARCHAR bug: KDLWXOFADSRV1 reports were rejected
+// because sourceSite reached p5 as a non-null non-string value, which the
+// tedious NVARCHAR validator rejects ("Validation failed for parameter 'p5'.
+// Invalid string."). The new asNullableString() coercion in rowParams()
+// must:
+//   - leave true null as null (so the SQL MERGE sets the column to NULL)
+//   - coerce a stray non-string non-null value (0, false, {}, etc.) to a
+//     string so the driver accepts the parameter
+test('upsertStatus: sourceSite=null stays null at p5 (no NVARCHAR crash)', async () => {
+  const records = [];
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  const row = { ...baseRow, sourceSite: null, destSite: null };
+  await upsertStatus([row], { appendHistory: false });
+  const params = records[0].params;
+  assert.equal(params[4], null, 'sourceSite=null must stay null');
+  assert.equal(params[5], null, 'destSite=null must stay null');
+});
+
+test('upsertStatus: non-string non-null sourceSite is coerced to string (defensive)', async () => {
+  // Simulate the production shape where PS1 emitted a number / object instead
+  // of a string. The ?? null fallback only catches null/undefined, so a 0 /
+  // false / {} slips through. asNullableString must coerce these so the
+  // MSSQL driver accepts the parameter.
+  const records = [];
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  const row1 = { ...baseRow, sourceSite: 0 };
+  await upsertStatus([row1], { appendHistory: false });
+  assert.equal(records[0].params[4], '0', 'sourceSite=0 must coerce to "0"');
+  const row2 = { ...baseRow, sourceSite: false };
+  await upsertStatus([row2], { appendHistory: false });
+  assert.equal(records[1].params[4], 'false', 'sourceSite=false must coerce to "false"');
+});

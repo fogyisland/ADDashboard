@@ -76,7 +76,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           if (lastHb) {
             const ageMs = Date.now() - new Date(lastHb).getTime();
             if (Number.isFinite(ageMs) && ageMs > COLD_START_THRESHOLD_S * 1000) {
-              await db.execute(db.sql.heartbeat.clearReportRequest, [agentId]);
+              await db.execute(db.sql.heartbeat.clearReportRequest(agentId), [agentId]);
             }
           }
         } catch (e) {
@@ -87,7 +87,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         //   null      → clearReportRequest (direct UPDATE … SET … = NULL)
         //   undefined / value → upsert (COALESCE preserves undefined→null, sets a value)
         if (reportRequestedAtIsExplicitNull) {
-          await db.execute(db.sql.heartbeat.clearReportRequest, [agentId]);
+          await db.execute(db.sql.heartbeat.clearReportRequest(agentId), [agentId]);
         } else {
           await db.execute(db.sql.heartbeat.upsert, [
             agentId,
