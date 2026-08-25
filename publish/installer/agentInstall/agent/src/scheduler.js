@@ -2,40 +2,56 @@ export function createScheduler({ config, logger, queue, collect, send, sendHear
   let pollTimer = null;
   let healthTimer = null;
   let stopFlag = false;
+  // 2026-08-25: dedupe concurrent _tick() invocations. Heartbeat-callbacks
+  // (T7) calls scheduler._tick() on every heartbeat response that carries
+  // reportRequested: true; with heartbeatIntervalSeconds=3 and a collect()
+  // that can take 60s (collect-replication.ps1 timeout), up to 20 ticks
+  // can stack on top of each other, each spawning its own PowerShell
+  // process. The in-flight promise below lets concurrent callers share
+  // a single run instead of stacking parallel collects.
+  let tickInFlight = null;
 
   async function tick() {
     if (stopFlag) return;
-    const r = await collect();
-    if (!r.ok) {
-      logger.warn({ error: r.error }, 'collect failed');
-      await sendHeartbeat({ lastReportStatus: 'failed', lastReportAt: null, pendingQueueSize: queue.count() });
-      return;
-    }
-    queue.enqueue(JSON.stringify(r.snapshot));
-    let sent = 0;
-    while (!stopFlag) {
-      const items = queue.peek(10);
-      if (items.length === 0) break;
-      for (const it of items) {
-        try {
-          const snap = JSON.parse(it.payload);
-          const res = await send(snap);
-          if (!res.ok) {
-            await sendHeartbeat({ lastReportStatus: 'failed', lastReportAt: null, pendingQueueSize: queue.count() });
-            return;
-          }
-          queue.delete([it.id]);
-          sent++;
-        } catch (e) {
-          logger.warn({ err: e.message }, 'send failed');
+    if (tickInFlight) return tickInFlight;
+    tickInFlight = (async () => {
+      try {
+        const r = await collect();
+        if (!r.ok) {
+          logger.warn({ error: r.error }, 'collect failed');
+          await sendHeartbeat({ lastReportStatus: 'failed', lastReportAt: null, pendingQueueSize: queue.count() });
           return;
         }
+        queue.enqueue(JSON.stringify(r.snapshot));
+        let sent = 0;
+        while (!stopFlag) {
+          const items = queue.peek(10);
+          if (items.length === 0) break;
+          for (const it of items) {
+            try {
+              const snap = JSON.parse(it.payload);
+              const res = await send(snap);
+              if (!res.ok) {
+                await sendHeartbeat({ lastReportStatus: 'failed', lastReportAt: null, pendingQueueSize: queue.count() });
+                return;
+              }
+              queue.delete([it.id]);
+              sent++;
+            } catch (e) {
+              logger.warn({ err: e.message }, 'send failed');
+              return;
+            }
+          }
+        }
+        const lastReportAt = new Date().toISOString();
+        const lastReportStatus = sent > 0 ? 'success' : 'empty';
+        await sendHeartbeat({ lastReportStatus, lastReportAt, pendingQueueSize: queue.count() });
+        logger.info({ sent, pending: queue.count() }, 'cycle complete');
+      } finally {
+        tickInFlight = null;
       }
-    }
-    const lastReportAt = new Date().toISOString();
-    const lastReportStatus = sent > 0 ? 'success' : 'empty';
-    await sendHeartbeat({ lastReportStatus, lastReportAt, pendingQueueSize: queue.count() });
-    logger.info({ sent, pending: queue.count() }, 'cycle complete');
+    })();
+    return tickInFlight;
   }
 
   function start() {
