@@ -140,7 +140,7 @@ function Write-AppsettingsJson {
     logLevel                 = 'info'
     pollingIntervalMinutes   = 15
     heartbeatIntervalSeconds = 5
-    discoveryIntervalHours   = 4
+    discoveryIntervalHours   = 1
     queueDbPath              = (Join-Path $InstallPath 'queue.db')
     psScriptPath             = (Join-Path $InstallPath 'scripts\collect-replication.ps1')
     psDiscoveryScriptPath    = (Join-Path $InstallPath 'scripts\collect-discovery.ps1')

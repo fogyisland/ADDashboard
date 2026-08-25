@@ -144,7 +144,7 @@ namespace ADDashboard.AgentInstaller.CA.Tests
                 Assert.Contains("\"agentType\": \"ad\"", text);
                 Assert.Contains("\"pollingIntervalMinutes\": 15", text);
                 Assert.Contains("\"heartbeatIntervalSeconds\": 5", text);
-                Assert.Contains("\"discoveryIntervalHours\": 4", text);
+                Assert.Contains("\"discoveryIntervalHours\": 1", text);
                 Assert.Contains("collect-replication.ps1", text);
                 Assert.Contains("collect-discovery.ps1", text);
                 // agentId is the local machine name — not asserting a specific

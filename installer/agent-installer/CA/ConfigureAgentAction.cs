@@ -144,7 +144,7 @@ namespace ADDashboard.AgentInstaller.CA
             sb.AppendLine("  \"logLevel\": \"info\",");
             sb.AppendLine("  \"pollingIntervalMinutes\": 15,");
             sb.AppendLine("  \"heartbeatIntervalSeconds\": 5,");
-            sb.AppendLine("  \"discoveryIntervalHours\": 4,");
+            sb.AppendLine("  \"discoveryIntervalHours\": 1,");
             sb.AppendLine($"  \"queueDbPath\": \"{EscapeJson(Path.Combine(data.InstallDir, "queue.db"))}\",");
             sb.AppendLine($"  \"psScriptPath\": \"{EscapeJson(Path.Combine(data.InstallDir, "scripts", "collect-replication.ps1"))}\",");
             sb.AppendLine($"  \"psDiscoveryScriptPath\": \"{EscapeJson(Path.Combine(data.InstallDir, "scripts", "collect-discovery.ps1"))}\",");

@@ -139,7 +139,7 @@ Invoke-Sqlcmd -ServerInstance <host> -Database AD_Monitoring -InputFile db\migra
 
 ### DC/Site 发现
 
-agent 每 `discovery_interval_hours`（默认 4 小时）采集本地 DC 元数据，POST 到 `/api/agent/discover`。center UPSERT 到 `ad_dcs`；`site_id` 永远由 admin 在中心侧维护，agent 不会触碰。
+agent 在 NSSM 服务启动时立即执行一次 `collect-discovery.ps1` 上报本地 DC 元数据，并按 `discovery_interval_hours`（默认 1 小时）周期重复；POST 到 `/api/agent/discover`。center UPSERT 到 `ad_dcs`；`site_id` 永远由 admin 在中心侧维护，agent 不会触碰。
 
 admin 通过 `/admin/sites-catalog` 维护站点，通过 `/admin/dcs-catalog` 分配 DC 到站点。`/admin/site-replication-matrix` 页面展示选中站点的 DC×DC 复制矩阵，每 `site_matrix_refresh_seconds`（默认 10 秒）自动刷新。
 

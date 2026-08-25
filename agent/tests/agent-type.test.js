@@ -38,7 +38,7 @@ function writeAppsettings(dir, extra = {}) {
     logLevel: 'info',
     pollingIntervalMinutes: 15,
     heartbeatIntervalSeconds: 5,
-    discoveryIntervalHours: 4,
+    discoveryIntervalHours: 1,
     queueDbPath: join(dir, 'queue.db'),
     agentDataDir: join(dir, 'data'),
     powerShellPath: 'powershell.exe',

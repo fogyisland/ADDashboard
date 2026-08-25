@@ -34,7 +34,7 @@ $templateDst = Join-Path $staging 'appsettings.template.json'
   "logLevel": "info",
   "pollingIntervalMinutes": 15,
   "heartbeatIntervalSeconds": 5,
-  "discoveryIntervalHours": 4,
+  "discoveryIntervalHours": 1,
   "queueDbPath": "INSTALLDIR\\queue.db",
   "psScriptPath": "INSTALLDIR\\scripts\\collect-replication.ps1",
   "psDiscoveryScriptPath": "INSTALLDIR\\scripts\\collect-discovery.ps1",

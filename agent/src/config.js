@@ -5,7 +5,7 @@ const DEFAULTS = {
   logLevel: 'info',
   pollingIntervalMinutes: 15,
   heartbeatIntervalSeconds: 5,
-  discoveryIntervalHours: 4,
+  discoveryIntervalHours: 1,
   psDiscoveryScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-discovery.ps1',
   queueDbPath: 'C:\\addashboard\\Agent\\queue.db',
   agentDataDir: 'C:\\addashboard\\Agent\\data',
