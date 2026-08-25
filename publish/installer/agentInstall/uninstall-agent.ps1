@@ -7,8 +7,29 @@ param(
 # $PSScriptRoot is empty in [CmdletBinding()] default param values (parameter
 # binding scope is a child of script scope; auto-vars only set in script scope).
 # Resolve default InstallPath in the body where $PSScriptRoot is available.
+#
+# Two supported layouts (mirror of start.ps1:88-104 + install-agent.ps1):
+#   GREEN PACKAGE: $PSScriptRoot\agent\  (script at <green>/agentInstall/,
+#                                         agent/ is a sibling — flat layout).
+#                     Uninstall path mirrors install: the green package's
+#                     install path IS the current directory's agent/ subdir,
+#                     so uninstall targets the same dir without prompting.
+#   DEV TREE:      $PSScriptRoot\..\Agent\ (script at <repo>/scripts/,
+#                                          parent is repo root).
+#
+# Without this green-pkg-first check, the legacy default always resolves to
+# <PSScriptRoot>\..\Agent = C:\Agent on a green-pkg run → Set-LogDir fails →
+# Logger.psm1:21 Add-Content can't write to C:\Agent\Logs\install.log.
 if (-not $InstallPath) {
-  $InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent')
+  $greenPkgAgent = Join-Path $PSScriptRoot 'agent'
+  $devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
+  if (Test-Path $greenPkgAgent) {
+    $InstallPath = $greenPkgAgent
+  } elseif (Test-Path $devTreeAgent) {
+    $InstallPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'
+  } else {
+    throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout). Verify the bundle layout."
+  }
 }
 
 # ============================================================================

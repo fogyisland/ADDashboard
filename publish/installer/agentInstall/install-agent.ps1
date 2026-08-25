@@ -24,8 +24,33 @@ param(
 # $PSScriptRoot is empty in [CmdletBinding()] default param values (parameter
 # binding scope is a child of script scope; auto-vars only set in script scope).
 # Resolve default InstallPath in the body where $PSScriptRoot is available.
+#
+# Two supported layouts (mirror of start.ps1:88-104):
+#   GREEN PACKAGE: $PSScriptRoot\agent\  (script at <green>/agentInstall/,
+#                                         agent/ is a sibling — flat layout).
+#                     The green package's install path IS the current
+#                     directory's agent/ subdir: operators run
+#                     install-agent.ps1 from where they extracted the bundle
+#                     and nothing else. No external path to specify.
+#   DEV TREE:      $PSScriptRoot\..\Agent\ (script at <repo>/scripts/,
+#                                          parent is repo root — one level up;
+#                                          Agent/ is a separate install dir).
+#
+# Without this green-pkg-first check, the legacy default always resolves to
+# <PSScriptRoot>\..\Agent = C:\Agent on a green-pkg run, which doesn't exist
+# on the operator's machine → Set-LogDir fails → Logger.psm1:21 Add-Content
+# can't write to C:\Agent\Logs\install.log (real install run on KDLWXOFADSRV1
+# hit this; see 2026-08-25 round-12).
 if (-not $InstallPath) {
-  $InstallPath = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent')
+  $greenPkgAgent = Join-Path $PSScriptRoot 'agent'
+  $devTreeAgent  = Join-Path (Join-Path $PSScriptRoot '..') 'agent'
+  if (Test-Path $greenPkgAgent) {
+    $InstallPath = $greenPkgAgent
+  } elseif (Test-Path $devTreeAgent) {
+    $InstallPath = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')) 'Agent'
+  } else {
+    throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout). Verify the bundle layout — agentInstall/ expects agent/, common/, nssm/ as siblings."
+  }
 }
 
 # ============================================================================
