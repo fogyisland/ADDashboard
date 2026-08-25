@@ -402,7 +402,43 @@ const VARIANTS = {
       lastHeartbeat: 'SELECT TOP 1 last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC'
     },
     replication: {
-      upsertStatus: `MERGE INTO ad_replication_status AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at, agent_id = s.agent_id, source_site = s.source_site, dest_site = s.dest_site, last_success_time = s.last_success_time, last_attempt_time = s.last_attempt_time, status_code = s.status_code, error_message = s.error_message, users_count = s.users_count, groups_count = s.groups_count, gpos_count = s.gpos_count, locked_count = s.locked_count, partner_port_status = s.partner_port_status WHEN NOT MATCHED THEN INSERT (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
+      upsertStatus: `MERGE INTO ad_replication_status AS t
+         USING (SELECT
+           CAST(? AS DATETIME2)       AS collected_at,
+           CAST(? AS NVARCHAR(64))    AS agent_id,
+           CAST(? AS NVARCHAR(128))   AS source_dc,
+           CAST(? AS NVARCHAR(128))   AS dest_dc,
+           CAST(? AS NVARCHAR(64))    AS source_site,
+           CAST(? AS NVARCHAR(64))    AS dest_site,
+           CAST(? AS NVARCHAR(128))   AS naming_context,
+           CAST(? AS DATETIME2)       AS last_success_time,
+           CAST(? AS DATETIME2)       AS last_attempt_time,
+           ?                          AS status_code,
+           CAST(? AS NVARCHAR(2048))  AS error_message,
+           ?                          AS users_count,
+           ?                          AS groups_count,
+           ?                          AS gpos_count,
+           ?                          AS locked_count,
+           CAST(? AS NVARCHAR(MAX))   AS partner_port_status
+         ) AS s
+         ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context
+         WHEN MATCHED THEN UPDATE SET
+           collected_at = s.collected_at,
+           agent_id = s.agent_id,
+           source_site = s.source_site,
+           dest_site = s.dest_site,
+           last_success_time = s.last_success_time,
+           last_attempt_time = s.last_attempt_time,
+           status_code = s.status_code,
+           error_message = s.error_message,
+           users_count = s.users_count,
+           groups_count = s.groups_count,
+           gpos_count = s.gpos_count,
+           locked_count = s.locked_count,
+           partner_port_status = s.partner_port_status
+         WHEN NOT MATCHED THEN INSERT
+           (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status)
+           VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
       listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
