@@ -110,7 +110,7 @@ export const heartbeatReportService = {
   async requestReport(agentId, db = null) {
     const conn = db ?? getDb();
     const exists = await conn.execute(
-      'SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ? LIMIT 1',
+      'SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ?',
       [agentId]
     );
     const existsRows = exists?.rows ?? exists?.[0] ?? [];
@@ -119,7 +119,7 @@ export const heartbeatReportService = {
     }
 
     const current = await conn.execute(
-      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ? LIMIT 1',
+      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?',
       [agentId]
     );
     const currentRows = current?.rows ?? current?.[0] ?? [];

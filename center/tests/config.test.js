@@ -62,13 +62,13 @@ test('getAgentConfig exposes discoveryIntervalHours from system_config', async (
   assert.equal(cfg.agentToken, 't0k');
 });
 
-test('getAgentConfig defaults discoveryIntervalHours to 4 when missing', async () => {
+test('getAgentConfig defaults discoveryIntervalHours to 1 when missing', async () => {
   const db = buildMockDb([
     { match: /FROM\s+system_config/i, rows: [] }
   ]).standard();
   _setDbForTest(db);
   const cfg = await getAgentConfig();
-  assert.equal(cfg.discoveryIntervalHours, 4);
+  assert.equal(cfg.discoveryIntervalHours, 1);
 });
 
 test('getAgentConfig defaults ports + stale-seconds when keys missing', async () => {

@@ -402,7 +402,43 @@ const VARIANTS = {
       lastHeartbeat: 'SELECT TOP 1 last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC'
     },
     replication: {
-      upsertStatus: `MERGE INTO ad_replication_status AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context WHEN MATCHED THEN UPDATE SET collected_at = s.collected_at, agent_id = s.agent_id, source_site = s.source_site, dest_site = s.dest_site, last_success_time = s.last_success_time, last_attempt_time = s.last_attempt_time, status_code = s.status_code, error_message = s.error_message, users_count = s.users_count, groups_count = s.groups_count, gpos_count = s.gpos_count, locked_count = s.locked_count, partner_port_status = s.partner_port_status WHEN NOT MATCHED THEN INSERT (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
+      upsertStatus: `MERGE INTO ad_replication_status AS t
+         USING (SELECT
+           CAST(? AS DATETIME2)       AS collected_at,
+           CAST(? AS NVARCHAR(64))    AS agent_id,
+           CAST(? AS NVARCHAR(128))   AS source_dc,
+           CAST(? AS NVARCHAR(128))   AS dest_dc,
+           CAST(? AS NVARCHAR(64))    AS source_site,
+           CAST(? AS NVARCHAR(64))    AS dest_site,
+           CAST(? AS NVARCHAR(128))   AS naming_context,
+           CAST(? AS DATETIME2)       AS last_success_time,
+           CAST(? AS DATETIME2)       AS last_attempt_time,
+           ?                          AS status_code,
+           CAST(? AS NVARCHAR(2048))  AS error_message,
+           ?                          AS users_count,
+           ?                          AS groups_count,
+           ?                          AS gpos_count,
+           ?                          AS locked_count,
+           CAST(? AS NVARCHAR(MAX))   AS partner_port_status
+         ) AS s
+         ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context
+         WHEN MATCHED THEN UPDATE SET
+           collected_at = s.collected_at,
+           agent_id = s.agent_id,
+           source_site = s.source_site,
+           dest_site = s.dest_site,
+           last_success_time = s.last_success_time,
+           last_attempt_time = s.last_attempt_time,
+           status_code = s.status_code,
+           error_message = s.error_message,
+           users_count = s.users_count,
+           groups_count = s.groups_count,
+           gpos_count = s.gpos_count,
+           locked_count = s.locked_count,
+           partner_port_status = s.partner_port_status
+         WHEN NOT MATCHED THEN INSERT
+           (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status)
+           VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
       listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
@@ -410,7 +446,55 @@ const VARIANTS = {
       partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN DATEADD(MINUTE, -?, ?) AND DATEADD(MINUTE, ?, ?)`
     },
     discovery: {
-      upsertDc: `MERGE INTO ad_dcs AS t USING (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)) AS s(dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) ON t.dc_name = s.dc_name WHEN MATCHED THEN UPDATE SET site_hint = s.site_hint, os_version = s.os_version, when_created = s.when_created, is_pdc = s.is_pdc, is_gc = s.is_gc, is_rid_master = s.is_rid_master, is_schema_master = s.is_schema_master, is_domain_naming_master = s.is_domain_naming_master, is_infrastructure_master = s.is_infrastructure_master, discovered_at = SYSUTCDATETIME(), discovered_by_agent_id = s.discovered_by_agent_id WHEN NOT MATCHED THEN INSERT (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (s.dc_name, s.site_hint, s.os_version, s.when_created, s.is_pdc, s.is_gc, s.is_rid_master, s.is_schema_master, s.is_domain_naming_master, s.is_infrastructure_master, s.discovered_at, s.discovered_by_agent_id);`
+      // 2026-08-25 Bug C: tedious driver rejects row-constructor params
+      // (`USING (VALUES (?, ?, ...))`) when ANY NVARCHAR column is NULL.
+      // site_hint and os_version are nullable NVARCHAR(64); when an agent
+      // reports a DC and either field is null, the driver throws
+      // "Validation failed for parameter 'pN'. Invalid string" before
+      // SQL Server sees the query, and the row silently never lands —
+      // which is why freshly-installed agents' DCs never appear in the
+      // 域控清单 (admin → AD 域控清单). Rewrite to the same
+      // `USING (SELECT CAST(? AS TYPE) AS col, ...)` subquery pattern
+      // already proven in upsertStatus (line 405). The tedious driver
+      // validates NVARCHAR params correctly when each one is bound via
+      // its own named CAST in a subquery.
+      //
+      // Column types match db/schema/mssql/01-tables.sql:78-97:
+      //   dc_name NVARCHAR(128) PK, site_hint NVARCHAR(64) NULL,
+      //   os_version NVARCHAR(64) NULL, when_created DATETIME2 NULL,
+      //   is_* BIT NOT NULL (8 role flags), discovered_at DATETIME2,
+      //   discovered_by_agent_id NVARCHAR(64) NULL.
+      upsertDc: `MERGE INTO ad_dcs AS t
+         USING (SELECT
+           CAST(? AS NVARCHAR(128))   AS dc_name,
+           CAST(? AS NVARCHAR(64))    AS site_hint,
+           CAST(? AS NVARCHAR(64))    AS os_version,
+           CAST(? AS DATETIME2)       AS when_created,
+           ?                          AS is_pdc,
+           ?                          AS is_gc,
+           ?                          AS is_rid_master,
+           ?                          AS is_schema_master,
+           ?                          AS is_domain_naming_master,
+           ?                          AS is_infrastructure_master,
+           CAST(? AS DATETIME2)       AS discovered_at,
+           CAST(? AS NVARCHAR(64))    AS discovered_by_agent_id
+         ) AS s
+         ON t.dc_name = s.dc_name
+         WHEN MATCHED THEN UPDATE SET
+           site_hint = s.site_hint,
+           os_version = s.os_version,
+           when_created = s.when_created,
+           is_pdc = s.is_pdc,
+           is_gc = s.is_gc,
+           is_rid_master = s.is_rid_master,
+           is_schema_master = s.is_schema_master,
+           is_domain_naming_master = s.is_domain_naming_master,
+           is_infrastructure_master = s.is_infrastructure_master,
+           discovered_at = SYSUTCDATETIME(),
+           discovered_by_agent_id = s.discovered_by_agent_id
+         WHEN NOT MATCHED THEN INSERT
+           (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id)
+           VALUES (s.dc_name, s.site_hint, s.os_version, s.when_created, s.is_pdc, s.is_gc, s.is_rid_master, s.is_schema_master, s.is_domain_naming_master, s.is_infrastructure_master, s.discovered_at, s.discovered_by_agent_id);`
     },
     users: {
       findByUsername: `SELECT TOP 1 u.id, u.username, u.password_hash, u.role_id, u.status, u.token_version, r.role_name, STRING_AGG(rp.permission, ',') AS permissions FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id LEFT JOIN role_permissions rp ON rp.role_id = r.id WHERE u.username = ? GROUP BY u.id, u.username, u.password_hash, u.role_id, u.status, u.token_version, r.role_name`,
