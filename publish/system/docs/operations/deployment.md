@@ -73,7 +73,7 @@ cd ADDashboard
 
 1. 校验 Node.js 可达
 2. **自动下载 NSSM 2.24**（如果 `<repo>/nssm/nssm.exe` 不存在）到项目本地
-3. `npm run build:frontend`（仅当 `frontend/dist/index.html` 不存在时）— invoked from **project root** (npm workspaces hoist vite to root `node_modules/.bin/`; `cd frontend && npm run build` won't find it)
+3. `npm run build:frontend`（仅当 `frontend/dist/index.html` 不存在时）
 4. 拷贝 `center/` + `frontend/dist/` → `$DashboardRoot\Center\`
 5. `npm install --omit=dev` 安装 center 的运行时依赖
 6. 用 NSSM 注册 `ADDashboardCenter` 服务（启动类型=自动）
@@ -111,6 +111,56 @@ cd ADDashboard
 ## Agent 部署
 
 每台 DC 上都需要一份 agent。脚本支持**本地安装**和**远程批量安装**（通过 WinRM `Invoke-Command`）。
+
+### Agent MSI 安装（推荐）
+
+自 v2.1 起，MSI 是 AD Dashboard Agent 的**首选**安装路径。MSI 自包含 Node.js 20 LTS、node_modules、NSSM，**装机时零网络访问**。服务以 LocalSystem 身份运行（与 `install-agent.ps1` 一致，不可配置）。
+
+#### 双击安装（GUI）
+
+1. 把 `addashboard-agent-x64-<version>.msi` 拷到目标机（DC 或成员服务器）
+2. 双击，按向导填：
+   - **Agent 类型**：ad（域控）或 non-ad（成员服务器）
+   - **CenterUrl + AgentToken**：从中心的 `appsettings.json` `agentToken` 字段复制
+   - **安装路径**：默认 `$DashboardRoot\Agent`
+3. Finish — 服务 `ADReplicationAgent` 自动启动
+
+#### 静默安装（SCCM / Ansible / 命令行）
+
+```powershell
+msiexec /i addashboard-agent-x64-1.0.0.0.msi /qn /l*v "$env:TEMP\agent-install.log" `
+  CENTERURL="http://center:8081" `
+  AGENTTOKEN="456fb..." `
+  AGENTTYPE="ad"
+```
+
+可加 `INSTALLDIR="D:\addashboard\Agent"` 改安装路径。
+
+退出码：
+- `0` = 成功
+- `1603` = 属性校验失败（看 `$env:TEMP\agent-install.log`）
+
+#### 升级
+
+跑新版 MSI 即可，旧版自动卸载并升级（MajorUpgrade）。默认 `PRESERVE_APPSETTINGS=0`，会用本次安装时传的 `CENTERURL` / `AGENTTOKEN` **覆盖** `appsettings.json`；如需保留旧配置请传 `PRESERVE_APPSETTINGS=1`。
+
+#### 卸载
+
+```powershell
+msiexec /x addashboard-agent-x64-1.0.0.0.msi /qn
+```
+
+服务自动注销。`appsettings.json`（安装时由自定义动作生成，不在 MSI File 表中）和 `queue.db`（运行时 SQLite）不会被 MSI 自动删除；如需彻底清理请手动 `Remove-Item -Recurse $InstallDir`。
+
+#### 与 WinRM 推送的关系
+
+MSI 是**本地**装（双击或 msiexec）。要批量推到多台 DC/member 仍用 `.\scripts\install-agent.ps1 -ComputerName ...`（走 WinRM）。两条路径产生**同名服务 `ADReplicationAgent` + 同 NSSM 配置**，可任意切换。
+
+#### 验证
+
+- `Get-Service ADReplicationAgent` 状态应为 Running
+- `Get-Content $DashboardRoot\Logs\ADReplicationAgent-stdout.log -Tail 50` 看启动日志
+- 中心侧：登录 → Agents 视图，新装机器 30 秒内应出现
 
 ### 单机本地安装（在 DC 上执行）
 
@@ -232,15 +282,48 @@ Invoke-WebRequest http://center:8080/healthz
 
 ## 升级与回滚
 
-### Center 升级
+### Center 升级（一条命令：`start.ps1`）
+
+**无论是首次安装还是后续升级，operator 只跑同一个脚本：**
 
 ```powershell
-cd ADDashboard
-git pull
-.\scripts\update-center.ps1 -RebuildFrontend
+# 在 center 管理服务器上，以管理员身份打开 PowerShell
+cd C:\Repos\ADDashboard          # 或 green bundle 的 publish\ 根目录
+git pull                          # 或解压新版 zip 覆盖
+.\start.ps1                       # ← 这一个脚本搞定一切
 ```
 
-内部步骤：停服务 → 重 build 前端 → 覆盖拷贝 `center/` + `dist/` → `npm install --omit=dev` → 启服务。
+`start.ps1` 是**单一入口**（install-or-update 二合一）：
+- service 未注册 → 若 `center/web/` 源码存在，按 `package.json` 中可用的 build 脚本（`build` / `build:web` / `build:frontend`）重新生成 dist，然后调用 `install-center.ps1 -InPlace` 完成首次安装 + 启动。
+- service 已注册 → 同上重建 dist，然后优先 `POST /api/system/update`（应用 pending migration + `process.exit(0)`），不可达则 `Restart-Service`（启动 bootstrap 自动跑 pending migration）。
+- service 已注册 → 内部按以下顺序尝试升级：
+  1. **首选**：`POST http://localhost:8080/api/system/update`（localhost-only，no-auth；端点内部跑 `service.upgrade()` 应用 pending migration + 写审计 + `process.exit(0)`；NSSM 用新代码拉起）。
+  2. **降级**：API 不可达（首次部署 `/api/system/update` 端点本身，或回滚）→ `Restart-Service -Force`。新代码加载后，**启动 bootstrap 自带的 `service.upgrade()`** 会自动应用 pending migration，所以此降级路径**安全**。
+
+**约定**：
+- `start.ps1` 是 install 和 update 的**唯一**入口。operator 不再需要单独调 `Invoke-RestMethod -Method Post ...` 或 `Restart-Service`。
+- `/api/system/update` 端点保留为**内部实现**：start.ps1 调用它；远程调用返回 `403 {"error":"localhost-only"}`。远程升级需要 RDP/SSH 进主机后跑 `start.ps1`。
+- 升级期间（约 1-3 秒）`/api/*` 与 `/healthz` 短暂不可用；NSSM 默认 `Restart` 重试策略会自动拉起新进程。
+
+**端点契约**（供运维了解 start.ps1 内部行为）：
+
+`POST /api/system/update` → 200：
+
+```json
+{
+  "ok": true,
+  "message": "升级完成: 0 migration 应用, seed unchanged",
+  "restarted": true,
+  "migrationsApplied": [],
+  "migrationsFailed": [],
+  "seed": { "ran": false, "reason": "unchanged" }
+}
+```
+
+服务端会：
+1. 按顺序应用 `db/migrations/` 下所有尚未运行的迁移（幂等，复用现有 `service.upgrade()` 路径）
+2. 写入 `system_update` 审计行（含客户端 IP）
+3. 500ms 后 `process.exit(0)` —— NSSM 看到进程退出后自动用新代码拉起
 
 ### Agent 滚动升级（逐台）
 
@@ -256,7 +339,7 @@ git pull
 
 center 没有内置版本管理。最简单的回滚方式是：
 1. `git checkout <previous-tag>` 在部署目录
-2. 重新跑 `update-center.ps1`
+2. `Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/system/update`（自动跑可能需要的降级迁移——若升级路径新增过 migration，降级一般需要手动 reverse；新 API 不会自动 reverse）
 
 ---
 
@@ -270,24 +353,9 @@ center 没有内置版本管理。最简单的回滚方式是：
 
 首次启动向导的 schema 应用器（`center/src/init/schema-applier.js` 的 `applyAll`）在跑完 `01-tables.sql` + `02-seed-roles.sql` 后，会**按文件名顺序自动应用 `db/migrations/` 下的全部迁移**（001 → 002 → 003）。所以走 [首次启动向导](#首次启动向导) 的全新库会自动建好这两张表，**不用手动跑任何 SQL**。
 
-### 存量升级：手动应用 migration 003
+### 存量升级：调用 `/api/system/update`
 
-已初始化的部署被 init 完成标记（`.env` 的 `ADDASHBOARD_INITIALIZED=1` + 注册表）硬锁在向导之外，`update-center.ps1` **只更新代码、不碰数据库**。因此升级到含本特性的版本后，必须对现有库手动应用一次 migration 003。两份迁移都是幂等的（`CREATE TABLE IF NOT EXISTS` / `IF OBJECT_ID(...) IS NULL`），重复执行安全。
-
-**MySQL：**
-
-```powershell
-# 用库里的账户执行；<db> 为 appsettings.json 里配置的库名
-Get-Content .\db\migrations\003-port-healthcheck.sql -Raw | mysql -u <user> -p <db>
-```
-
-**SQL Server：**
-
-```powershell
-sqlcmd -S <server> -d <db> -U <user> -P <pass> -i .\db\migrations\mssql\003-port-healthcheck.sql
-```
-
-应用后 `Restart-Service ADDashboardCenter`（新增端点/服务需要重载代码，若升级步骤已重启则可跳过）。
+迁移随升级 API **自动应用**，无需手动执行 SQL。详见 [§7 Center 升级](#center-升级api-触发推荐)。旧文档中提到的 `mysql ... < 003-*.sql` / `sqlcmd -i 003-*.sql` 步骤已被该 API 取代。
 
 ### 升级到 v2.0+（包系统 / 插件系统）
 
@@ -308,24 +376,13 @@ v2.0 起引入包管理（plugin system）：管理员可上传/启用/升级/�
 
 首次启动向导的 schema 应用器（`center/src/init/schema-applier.js` 的 `applyAll`）按文件名顺序自动应用 `db/migrations/` 下的全部迁移（001 → 002 → 003 → 004）。走 [首次启动向导](#首次启动向导) 的全新库会自动建好这六张表，**不用手动跑任何 SQL**。
 
-#### 存量升级：手动应用 migration 004
+#### 存量升级：调用 `/api/system/update`
 
-`update-center.ps1` **只更新代码、不碰数据库**。升级到含包系统的版本后，必须对现有库手动应用一次 migration 004。两份迁移都是幂等的（`CREATE TABLE IF NOT EXISTS` / `IF OBJECT_ID(...) IS NULL`），重复执行安全。
+同 §7，新版 API 自动应用所有 pending migration，**无需手动跑 SQL**。`migration 004-013` 均在此路径下被自动消费。
 
-**MySQL：**
+#### Migration 013+ 后续迁移
 
-```powershell
-# 用库里的账户执行；<db> 为 appsettings.json 里配置的库名
-Get-Content .\db\migrations\004-package-system.sql -Raw | mysql -u <user> -p <db>
-```
-
-**SQL Server：**
-
-```powershell
-sqlcmd -S <server> -d <db> -U <user> -P <pass> -i .\db\migrations\mssql\004-package-system.sql
-```
-
-应用后 `Restart-Service ADDashboardCenter`（新增端点/服务需要重载代码，若升级步骤已重启则可跳过）。
+Migration 014+（alert_metrics、outbox、orphan_schemas 等）均为 `CREATE TABLE IF NOT EXISTS` 风格的幂等 DDL，已初始化的部署在下次调 `/api/system/update` 时自动应用。**不再需要手动执行 SQL**。
 
 #### 新增的 UI 入口
 
@@ -398,26 +455,35 @@ npm start
 
 ## Green Bundle（publish/）的默认行为变更
 
-`publish/` 目录下的便携绿色版（zip 解压即用）入口 `start.bat` / `start.ps1` **已从「前台跑 node」改为「默认安装并启动 ADDashboardCenter Windows 服务」**。
+`publish/` 目录下的便携绿色版（zip 解压即用）入口 `start.bat` / `start.ps1` **已从「前台跑 node」改为「默认安装并启动 ADDashboardCenter Windows 服务」**，并与生产路径共用同一个 **`start.ps1` 单入口**（install-or-update 二合一）。
 
 行为对比：
 
-| 入口 | 旧默认 | 新默认 | 开发模式开关 |
-|---|---|---|---|
-| `start.bat` | 前台跑 `node server.js`（开发态） | 注册并启动 `ADDashboardCenter` 服务（幂等） | `--console` / `-c` |
-| `start.ps1` | （无） | 同上，PowerShell 镜像 | `-Console` |
+| 入口 | 默认行为 | 开发模式开关 |
+|---|---|---|
+| `start.bat` / `start.ps1` | 自动判定 install 还是 update：service 未注册 → 若 `center/web/` 源码存在则按 `package.json` 中可用的 build 脚本（`build` / `build:web` / `build:frontend`）重新生成 dist + `install-center.ps1 -InPlace`（注册 NSSM service）；service 已注册 → 同上重建 dist + 优先 `POST /api/system/update`，不可达则 `Restart-Service`（启动 bootstrap 自动跑 pending migration） | `--console` / `-Console`（前台跑 `node server.js`） |
 
-新默认下，`start.bat` / `start.ps1` 会以 **管理员身份** 调用 `scripts/install-center.ps1 -InPlace`：
+`install-center.ps1 -InPlace` 的关键行为：
 
 - `InstallPath` 覆盖为 `<publish 根>\center`（**不拷贝**到 `$DashboardRoot\Center`，与生产路径隔离）。
-- `node_modules` 与 `frontend/dist/` 缺失时会自动补齐。
-- NSSM 注册的服务名仍是 `ADDashboardCenter`，启动类型 = 自动。
-- 日志落到 `$DashboardRoot\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
+- `node_modules` 与 `frontend/dist/` 缺失时会自动补齐；hash 变化时也会自动重装。
+- NSSM 注册的服务名仍是 `ADDashboardCenter`，启动类型 = 自动，启动失败有 recovery 重试。
+- 日志落到 `<publish 根>\center\Logs\ADDashboardCenter-{stdout,stderr}.log`（10MB 滚动）。
 - `appsettings.json` 与 `.env` 初始化标记仍按 init 向导逻辑写入 `<InstallPath>` 下。
 
-适用与限制：
+### Green Bundle 的更新流程（operator 只跑 start.ps1）
 
-- **必须以管理员身份运行** `start.bat` / `start.ps1`（默认模式），否则立即报错并退出。改用 `--console` / `-Console` 无需管理员。
+```powershell
+# 1. 解压新版本 zip 覆盖到当前 <publish 根>（或 git pull）
+# 2. 在主机上跑（与生产路径完全一致的命令）
+.\start.ps1
+```
+
+`start.ps1` 内部会自动尝试 `POST /api/system/update`，不可达时 `Restart-Service`。新代码加载后，启动 bootstrap 自带的 `service.upgrade()` 会自动应用 pending migration。
+
+### 适用与限制
+
+- **首次安装**必须以 **管理员身份** 运行 `start.bat` / `start.ps1`（默认模式），否则立即报错并退出。改用 `--console` / `-Console` 无需管理员。
 - 同一台机器上 `publish/center` 路径下的服务实例与 `$DashboardRoot\Center` 下的生产实例 **共享服务名 `ADDashboardCenter`**，二者不能同时跑 —— 绿色版适合作为「试用 + 排错」入口，生产部署仍走仓库根 `scripts/install-center.ps1`（无 `-InPlace`）。
 - 想看完整的服务管理 / 卸载 / 日志路径说明见 [`publish/README.md`](../../publish/README.md)。
 
@@ -432,8 +498,8 @@ npm start
 | `Agent 心跳正常但无数据` | 验证 `Test-NetConnection center -Port 8080`；检查 DC 上 appsettings.json 的 `agentToken` 是否与 center 的 `system_config.ad_agent_token` 一致 |
 | `前端 502 Bad Gateway` | center 进程退出，查 stderr log；常见 OOM（`Get-Process | Sort WorkingSet` 查 top 5） |
 | `install-center.ps1 报 'nssm.exe not found'` | 检查 `<repo>/publish/nssm/nssm.exe` 是否存在（被 .gitignore 排除的情况：需 `git checkout HEAD -- publish/` 或手动 `Ensure-Nssm.ps1`） |
-| `'vite' 不是内部或外部命令 / 'vite' is not recognized` | 在 `frontend/` 手动跑 `npm run build` 找不到 vite — npm workspaces 把 vite **hoist 到项目根 `node_modules/.bin/`**，不会落到 `frontend/node_modules/.bin/`。<br/>**正确做法**：跑 `install-center.ps1`（自动 install + build），或回到项目根跑 `npm install` 后用 `npm run build:frontend`。**不要** `cd frontend && npm run build`。<br/>install-center.ps1 自带 Guard 2（v2.1+）会在 build 前双向检查 `<root>/node_modules/.bin/vite.cmd` 和 `frontend/node_modules/.bin/vite.cmd`，缺哪个都直接报错并 exit 1 |
 | `首次启动没出现 /init` | 检查 `.env` 是否已被错误写入 `ADDASHBOARD_INITIALIZED=1`；清掉后重启 |
+| `更新后 /init 页面 404 / 浏览器空白（dist 缺失）` | 重跑 `.\start.ps1`（`Invoke-BundleBuild` 自愈 build）；若 `/init` 仍 404 跑 `.\publish\system\reset-marker.ps1` 清掉 init 标记。详见 [troubleshooting.md](troubleshooting.md) |
 
 更多故障模式参见 [`troubleshooting.md`](troubleshooting.md)。
 
@@ -485,107 +551,3 @@ $DashboardRoot\
     ├── ADReplicationAgent-stdout.log
     └── ADReplicationAgent-stderr.log
 ```
-
-## WPF Package Designer — Metric-Centric Redesign
-
-The Package Designer is now metric-centric. The 3-tab editor (form / SQL / PS1)
-has been replaced by a single editor that picks metrics from a 5-entry catalog
-and auto-generates `manifest.json`, `migrations/001_initial.sql`, and
-`collect.ps1`.
-
-### Build & publish
-
-```bash
-dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained
-```
-
-Output: `PackageDesigner/bin/PackageDesigner/Release/net8.0-windows/win-x64/publish/PackageDesigner.exe`
-(self-contained, ~163 MB). Run on Windows 10/11 — no .NET runtime required on the target.
-
-### Smoke test status (2026-08-13)
-
-The smoke driver lives at `smoke/wpf-smoke/` and drives the same VM/service API the
-UI uses — no display required. UI-only flows (clicking through New package → catalog
-checkboxes → file menu) need a real Windows VM with a display and remain a manual gate.
-
-**Automated smoke (run from this repo, no VM required):**
-
-```bash
-cd smoke/wpf-smoke && dotnet run -c Release
-```
-
-Result on this machine (2026-08-13, commit 26ada07): **38 passed / 0 failed**.
-
-| Flow | Spec smoke | Status |
-|---|---|---|
-| VM ctor + DataContext wiring (paramless ctor, Catalog/SelectedMetrics/CustomMigrations seeded) | 1 | ✅ verified by reflection |
-| Toggle cpu_pct + memory_pct → 2 rows, all 3 previews re-render | 2 | ✅ verified via `PreviewManifestJson` / `PreviewMigrationSql` / `PreviewCollectScript` |
-| Override cpu_pct warn→75 → preview manifest reflects new warn; PS1 stays threshold-free | 3 | ✅ verified — VM setter persists, generator applies override |
-| Add custom migration `002_add_ad_tables.sql` + save → manifest.migrations lists both, RawFiles has both files | 4 | ✅ verified via `PersistenceService.Load` round-trip |
-| Save → reopen → same metrics + custom migration content preserved | 5 | ⚠️ partial — metrics re-seed; **warn/crit values revert to catalog defaults** (see known gap below) |
-| Regenerated manifest validates against `Resources/manifest-schema.json`; `collect.ps1` runs in PS 5.1 and emits `{agent_id, ts, metrics}` JSON | 6 | ✅ verified — live run under PowerShell 5.1.26100 emitted `{"metrics":{"cpu_pct":39.96,"memory_pct":95.75},"agent_id":"DESKTOP-G0P5C1T","ts":"2026-08-13T05:18:52Z"}` |
-| Save with empty name → validation error visible in status, `.pkgproj` not written | 7 | ✅ verified |
-
-Live `collect.ps1` output is captured in `smoke/wpf-smoke/collect-ps1-live-run.txt`.
-
-### Known gaps (v2 follow-up)
-
-1. **Warn/Crit/Unit/Label overrides do not survive save → reopen.** The override lives only
-   on `MetricGenerator.Selection` in memory. `MetricEditorViewModel` ctor re-seeds
-   `SelectedMetrics` from `Database.MetricSchema`, which is the catalog type map (no per-metric
-   overrides). After reload, the user's warn=75 / crit=92 silently revert to catalog defaults.
-   `manifest.json` on disk DOES contain the edited thresholds (regenerated on each save), so
-   the published package is correct — only the editor's working state is wrong on reopen.
-   **Fix:** add a `Metrics` list (or parallel `MetricOverrides` dictionary) to `PackageManifest`
-   — currently violates R1 (Models layer is locked). Tracked as v2 backlog item I-3-adjacent.
-
-2. **Save button missing from editor save row.** Spec §Acceptance line 380 calls for both
-   "Save" and "Save As…" buttons; only "Save As…" is wired. Menu Ctrl+S delegates correctly
-   (post-C-2 fix). Tracked as v2 I-3.
-
-### Manual UI smoke (Windows 11 VM required)
-
-These flows need a real display and cannot be driven from this repo. Run them on the Windows
-11 VM before tagging a release:
-
-- Open Package Designer fresh → File → New package → pick template → name it. Verify the
-  metric-centric editor appears with 3 panes (catalog / configured / preview). Confirm
-  no raw manifest form, no raw SQL/PS1 editor is visible anywhere in the UI.
-- Click `cpu_pct` and `memory_pct` in the catalog; verify the configured-metrics table
-  populates and the 3 preview tabs re-render live.
-- Edit `cpu_pct`'s warn to 75; switch to the manifest preview tab; verify the regenerated
-  `metrics[]` block shows `"warn": 75`. Switch to the PS1 preview tab; verify the threshold
-  does NOT appear in the script.
-- Add a custom migration via the editor; save; reopen the saved `.pkgproj` (File → Open);
-  verify the editor re-seeds the custom migration and its content is preserved. (Warn/crit
-  reversion to defaults is the known gap above — verify the *catalog defaults* reappear, not
-  the user's edited values, and acknowledge it as a v2 limitation.)
-- Open the saved `.pkgproj` in a text editor / zip utility; verify `manifest.json`'s
-  `database.migrations` lists the auto-001 plus the custom migration; unzip and verify both
-  files are present; verify the auto-001 reflects the picked metrics.
-
-### Repro commands (Windows 11 VM)
-
-```powershell
-cd <repo-root>
-dotnet publish PackageDesigner.csproj -c Release -r win-x64 --self-contained
-.\PackageDesigner\bin\PackageDesigner\Release\net8.0-windows\win-x64\publish\PackageDesigner.exe
-```
-
-### v2 backlog cleanup (2026-08-13)
-
-Closed 6 backlog items from the WPF redesign SDD:
-
-| Item | Severity | What changed |
-|---|---|---|
-| D3 | Important | Added `Models/MetricOverride` + `PackageManifest.MetricOverrides`. VM ctor rehydrates; `SaveTo` writes through. Round-trip tests assert rehydrated VM state, not just JSON. |
-| I-3 | Important | New `Common/RelayCommand` + `SaveCommand` / `SaveAsCommand` / `LastSavePath` on `MetricEditorViewModel`. Editor's save row now has Save + Save As… buttons. |
-| I-4 | Important | `MetricGenerator.GenerateManifestJson` always emits `"runtime":"powershell"` regardless of input. |
-| D2 | Minor | Deleted `SqlFileViewModel` / `PowerShellFileViewModel` + their tests (dead post-v1). |
-| M-3..M-7 | Minor | Dead ternary removed; CS0642 bare `;` removed; atomicity test portable; `JsonSerializerOptions` deduplicated; `PackageManifest` got a spec-rationale XML-doc summary. |
-
-**R1 waiver:** `PackageManifest` is the only Models file touched (added `MetricOverrides`). All other Models files remain locked. Services layer lock unchanged.
-
-**Test counts:** 113 → 122 xUnit (+13 net new − 4 deleted in D2). 0 new warnings; 2 warnings eliminated (M-4 + M-6 dedup).
-
-**Smoke:** `smoke/wpf-smoke/` driver 39/39 (38 from v1 + 1 strengthened for D3). Live `collect.ps1` run under PS 5.1 still emits valid JSON.

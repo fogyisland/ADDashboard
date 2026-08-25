@@ -499,6 +499,7 @@ npm start
 | `前端 502 Bad Gateway` | center 进程退出，查 stderr log；常见 OOM（`Get-Process | Sort WorkingSet` 查 top 5） |
 | `install-center.ps1 报 'nssm.exe not found'` | 检查 `<repo>/publish/nssm/nssm.exe` 是否存在（被 .gitignore 排除的情况：需 `git checkout HEAD -- publish/` 或手动 `Ensure-Nssm.ps1`） |
 | `首次启动没出现 /init` | 检查 `.env` 是否已被错误写入 `ADDASHBOARD_INITIALIZED=1`；清掉后重启 |
+| `更新后 /init 页面 404 / 浏览器空白（dist 缺失）` | 重跑 `.\start.ps1`（`Invoke-BundleBuild` 自愈 build）；若 `/init` 仍 404 跑 `.\publish\system\reset-marker.ps1` 清掉 init 标记。详见 [troubleshooting.md](troubleshooting.md) |
 
 更多故障模式参见 [`troubleshooting.md`](troubleshooting.md)。
 

@@ -255,7 +255,7 @@ export class PackageManager {
       method: 'POST',
       url: `${this.centerBaseUrl}/api/agent/packages/report`,
       headers: { 'X-Agent-Token': this.agentToken },
-      body: { runs: all },
+      body: { source: 'package-manager', runs: all },
       timeoutMs: 30_000
     });
     if (r.ok) {

@@ -168,7 +168,18 @@ if ($RebuildFrontend) {
   Write-Info "install dist already present; leaving alone (shipped dist absent)"
 }
 
-# 5. Start NSSM service. Start-ServiceSafe has pre-flight NSSM diagnostics +
+# 5. Refresh NSSM AppStderr config. install-center.ps1 sets AppStderr='' so pino-roll
+# (which rotates <InstallPath>/logs/center.<date>.<n>.log) is the sole writer of the
+# rotated log file. Existing installs installed before round-12 still have AppStderr
+# pointing at ADDashboardCenter-stderr.log, which races pino-roll for the rotated
+# file handle on each daily rename (NSSM append → rename vs pino-roll append →
+# rename in the same second). Re-apply the empty AppStderr override on every upgrade
+# so all installs converge on the round-12 setting, regardless of when they were
+# first installed. Idempotent — re-running the script with AppStderr='' already
+# set is a no-op at the NSSM level.
+Invoke-Nssm @('set', 'ADDashboardCenter', 'AppStderr', '')
+
+# 6. Start NSSM service. Start-ServiceSafe has pre-flight NSSM diagnostics +
 # Win32 error surfacing (see scripts/common/Service.psm1 for details).
 if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   Write-Ok "service started"
@@ -177,7 +188,7 @@ if (Start-ServiceSafe -Name 'ADDashboardCenter' -WaitSeconds 20) {
   exit 1
 }
 
-# 6. HTTP readiness probe — wait for /api/init/status to come back 2xx.
+# 7. HTTP readiness probe — wait for /api/init/status to come back 2xx.
 # Cold cache (modules loading, DB pool init, route mount) takes 2-15s before
 # Express binds the listening socket. Single-shot Invoke-WebRequest races the
 # boot; Wait-ForHttpOk polls until 2xx or 30s timeout.

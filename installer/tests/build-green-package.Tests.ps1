@@ -64,6 +64,39 @@ Describe 'build-green-package.ps1' {
       'build must NOT stage start.bat anymore — operator entry is start.ps1.'
   }
 
+  It 'agentInstall/start.ps1 is the AGENT unified entry (not the center entry)' {
+    # 2026-08-25 regression guard: c7964e4 + earlier center-side commits
+    # overwrote publish/installer/agentInstall/start.ps1 with the center-side
+    # start.ps1 (because both files share the basename). The center script
+    # probes Get-Service ADDashboardCenter and calls install-center.ps1;
+    # running that on a DC trying to install the agent fails with
+    # `install-center.ps1 not found` because the agent bundle has no
+    # scripts/ subdir. The agent start.ps1 must reference ADReplicationAgent
+    # (the agent service name) and install-agent.ps1 (the agent installer).
+    $stagedStart = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish/installer/agentInstall/start.ps1'
+    Test-Path $stagedStart | Should -BeTrue `
+      'agentInstall/start.ps1 must exist (staged by build).'
+    $stagedContent = Get-Content -LiteralPath $stagedStart -Raw
+    $stagedContent | Should -Match 'ADReplicationAgent' `
+      'agentInstall/start.ps1 must reference the agent service (ADReplicationAgent), not ADDashboardCenter — the center start.ps1 was mistakenly synced here.'
+    $stagedContent | Should -Match 'install-agent\.ps1' `
+      'agentInstall/start.ps1 must reference the agent installer (install-agent.ps1).'
+    $stagedContent | Should -Not -Match 'ADDashboardCenter' `
+      'agentInstall/start.ps1 must NOT reference ADDashboardCenter — that is the center service name and means the center start.ps1 leaked into the agent bundle.'
+
+    # Source parity guard: the staged file must be byte-identical to
+    # scripts/start.ps1. Any future edit to scripts/start.ps1 must also
+    # update the bundle (run build-green-package.ps1) — drift here means
+    # operators get the wrong version.
+    $srcStart = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'scripts/start.ps1'
+    Test-Path $srcStart | Should -BeTrue `
+      'scripts/start.ps1 (the agent unified entry) must exist.'
+    $srcHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $srcStart).Hash
+    $stagedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stagedStart).Hash
+    $stagedHash | Should -Be $srcHash `
+      "agentInstall/start.ps1 must be byte-identical to scripts/start.ps1 (staged=$stagedHash src=$srcHash). Re-run installer/build-green-package.ps1 to refresh."
+  }
+
   It 'stages nssm.exe at <green>/nssm/nssm.exe' {
     # NSSM.psm1::Get-NssmPath searches <root>/nssm/ (NSSM.psm1:30-37) — placing
     # nssm at <green>/nssm/ is the cheapest matching layout. install-agent.ps1

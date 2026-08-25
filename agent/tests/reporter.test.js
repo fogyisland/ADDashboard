@@ -111,6 +111,42 @@ test('fetchConfig hits /config.json with X-Agent-Token and parses response', asy
   });
 });
 
+// 2026-08-25 round-12 observability: the agent stamps `source` on every
+// outgoing body so the centre's per-route info log can attribute the
+// request to a specific collector / PS script. Without this the log
+// shows 'unknown' (backward compat for old agents), which the operator
+// can't tie back to the script they meant to debug.
+test('postReport stamps source="collect-replication" on the body', async () => {
+  let received = null;
+  await withServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => { received = JSON.parse(body); res.end('{}'); });
+  }, async (url) => {
+    await postReport({
+      centerUrl: url, agentToken: 't',
+      snapshot: { AgentId: 'X', CollectedAt: '2026-07-11T00:00:00Z', Entries: [] }
+    });
+    assert.equal(received.source, 'collect-replication');
+  });
+});
+
+test('postHeartbeat stamps source="heartbeat" on the body', async () => {
+  let received = null;
+  await withServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => { received = JSON.parse(body); res.end('{}'); });
+  }, async (url) => {
+    await postHeartbeat({ centerUrl: url, agentToken: 't', payload: { agentId: 'X' } });
+    assert.equal(received.source, 'heartbeat');
+    // The payload's other fields must be preserved alongside source —
+    // we use object spread, so {source, ...payload} merges without
+    // clobbering agentId/ports/etc.
+    assert.equal(received.agentId, 'X');
+  });
+});
+
 // --- Task 3 fix round 1 regression tests -------------------------------
 //
 // toCamelEntry used to forward only 9 of the 16 ad_replication_status

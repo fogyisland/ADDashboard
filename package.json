@@ -16,5 +16,7 @@
     "build:web": "npm run build:web --workspace=center",
     "start": "node scripts/start-prod.js"
   },
-  "dependencies": {}
+  "dependencies": {
+    "pino-roll": "^4.0.0"
+  }
 }

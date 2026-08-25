@@ -88,14 +88,50 @@ function Invoke-BundleBuild {
     Write-Host '[start] center/web/ source found but no build script defined; skipping rebuild' -ForegroundColor DarkGray
     return $true
   }
-  Write-Host "[start] running npm run $script to regenerate dist" -ForegroundColor Cyan
+  # Green bundles do NOT ship node_modules. `npm run build:web` resolves through
+  # `npm run build:web --workspace=center` → `vite build --config web/vite.config.js`,
+  # and vite is a devDependency hoisted to <bundleRoot>/node_modules by npm
+  # workspaces. install-center.ps1 -InPlace only runs `npm install --omit=dev`
+  # inside center/ (devs don't need vite at runtime), so root node_modules is
+  # empty for a fresh green-bundle first install AND for any subsequent update
+  # flow that hits this script. Without it, the build silently exits with
+  # "vite: not found" and the freshly-restarted center process serves no UI
+  # bundle (static fallback 404s on every /init, /login, etc.).
+  #
+  # Scope the install to the center workspace ONLY. The bundle also declares
+  # `agent` as a workspace, and agent has native deps (better-sqlite3) that
+  # require Python 3.x + node-gyp on the host — irrelevant for the center
+  # web build, and the user's center host typically doesn't have them.
+  # `npm install --workspace=center` lets us hoist vite to root node_modules
+  # without dragging agent's native build chain along. Vite's postinstall
+  # (esbuild binary download) is preserved — `--ignore-scripts` would skip
+  # it and break the subsequent build.
+  #
+  # Self-heal: run scoped install at the bundle root if node_modules is
+  # missing OR if it has no `vite` binary. Idempotent — npm skips up-to-
+  # date deps on re-run.
+  $rootNm = Join-Path $bundleRoot 'node_modules'
+  $viteBin = Join-Path $rootNm 'vite'
+  if (-not (Test-Path $rootNm) -or -not (Test-Path $viteBin)) {
+    $reason = if (Test-Path $rootNm) { 'vite missing in root node_modules' } else { 'root node_modules missing' }
+    Write-Host "[start] $reason — running npm install --workspace=center" -ForegroundColor Cyan
+    Push-Location $bundleRoot
+    try {
+      & npm.cmd install --workspace=center
+      if ($LASTEXITCODE -ne 0) {
+        Write-Host "[start] npm install failed (exit $LASTEXITCODE); cannot build" -ForegroundColor Red
+        return $false
+      }
+    } finally { Pop-Location }
+  }
+  Write-Host "[start] running npm run $script to regenerate dist into center/dist/" -ForegroundColor Cyan
   Push-Location $bundleRoot
   try {
     & npm.cmd run $script
     if ($LASTEXITCODE -ne 0) {
       Write-Host "[start] npm run $script failed (exit " -NoNewline -ForegroundColor Red
       Write-Host "$LASTEXITCODE" -NoNewline -ForegroundColor Red
-      Write-Host '). Check node + npm + center/web/node_modules.' -ForegroundColor Red
+      Write-Host '). Check node + npm + root node_modules/vite.' -ForegroundColor Red
       return $false
     }
     return $true

@@ -112,6 +112,20 @@ export function packageRunner({ db, getLogger, config }) {
     }
 
     const agentId = req.headers['x-agent-id'] || null;
+    // 2026-08-25 round-12 observability: log every package-report batch
+    // with the run list and per-run exit code so the operator can see
+    // whether the agent is actually executing the package scripts and
+    // which ones are landing vs erroring. source='package-manager' is
+    // stamped by agent/src/package-manager.js flushReportQueue. Uses
+    // req.log (set by app.js middleware) for parity with the rest of
+    // the agent endpoints.
+    req.log.info({
+      event: 'agent.packages.report',
+      source: req.body?.source ?? 'unknown',
+      agentId,
+      runsCount: runs.length,
+      packages: runs.map(r => `${r.packageName}:${r.exitCode ?? 'n/a'}`).slice(0, 20)
+    }, 'agent packages report received');
 
     const result = { processed: 0, errors: [] };
     for (const run of runs) {

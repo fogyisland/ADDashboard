@@ -486,6 +486,72 @@ Describe 'install-center -InPlace uses shipped dist (avoids stale-dist trap)' {
   }
 }
 
+Describe 'install-center NSSM AppStderr override (round-12 pino-roll coexistence)' {
+  # Round-12 observability: the center process owns its own daily-rotated log
+  # via pino-roll at <InstallPath>/logs/center.<date>.<n>.log. NSSM also writes
+  # the same file handle if AppStderr points at it (or any path under /logs/) —
+  # both writers append + rename the rotated file, which races on the
+  # same-second rename and produces truncated tails / EBADF. install-center.ps1
+  # must disable NSSM stderr capture so pino-roll is the sole writer. Without
+  # this override the daily rotation silently corrupts the rotated file on
+  # every install.
+  BeforeAll {
+    $script:installCenterPath = Join-Path (Join-Path $PSScriptRoot '..') 'install-center.ps1'
+    $script:publishInstallCenterPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'install-center.ps1'
+    $script:srcContent = Get-Content $script:installCenterPath -Raw
+    $script:pubContent = Get-Content $script:publishInstallCenterPath -Raw
+  }
+
+  It 'overrides NSSM AppStderr to empty string (disable stderr capture)' {
+    # NSSM treats AppStderr="" as "no stderr redirection" — NSSM will not open
+    # any file for the service's stderr. The actual call is
+    #   Invoke-Nssm @('set', 'ADDashboardCenter', 'AppStderr', '')
+    # — comma + optional whitespace + `''` (two adjacent single quotes = empty
+    # string in PS) is the exact form we pin. Use a here-string to avoid PS
+    # single-quote / backslash escape hell.
+    $pattern = @'
+'AppStderr'.*,\s*''
+'@
+    $script:srcContent | Should -Match $pattern `
+      'install-center.ps1 must call nssm set ADDashboardCenter AppStderr '''' after Install-NssmService so pino-roll is the sole writer of the rotated log.'
+  }
+
+  It 'AppStderr override appears AFTER Install-NssmService (NSSM params order)' {
+    # Install-NssmService sets AppStderr=<LogDir>/ADDashboardCenter-stderr.log
+    # via Set-NssmParameters. The override must come AFTER that call so the
+    # empty-string value wins — NSSM applies the most recent value.
+    $installIdx = $script:srcContent.IndexOf('Install-NssmService -Name ''ADDashboardCenter''')
+    $overrideIdx = $script:srcContent.IndexOf("'AppStderr', ''")
+    $installIdx | Should -BeGreaterThan -1 'Install-NssmService call must exist'
+    $overrideIdx | Should -BeGreaterThan -1 'AppStderr override must exist'
+    $overrideIdx | Should -BeGreaterThan $installIdx `
+      'AppStderr override must come AFTER Install-NssmService — NSSM applies the most recent value, so the empty-string override wins over the default -stderr.log.'
+  }
+
+  It 'AppStderr override appears BEFORE Set-ServiceRecovery (Start-Service order)' {
+    # The override should land before the service actually starts, so the first
+    # Start-Service after install honors the empty AppStderr (no file open on
+    # boot, no race with pino-roll's first rotation). Set-ServiceRecovery
+    # configures recovery options only — Start-ServiceSafe (next line) is what
+    # actually starts. The override sits between Install-NssmService and
+    # Set-ServiceRecovery so it lands before Start-ServiceSafe.
+    $overrideIdx  = $script:srcContent.IndexOf("'AppStderr', ''")
+    $recoveryIdx  = $script:srcContent.IndexOf("Set-ServiceRecovery -Name 'ADDashboardCenter'")
+    $overrideIdx | Should -BeGreaterThan -1 'AppStderr override must exist'
+    $recoveryIdx | Should -BeGreaterThan -1 'Set-ServiceRecovery call must exist'
+    $overrideIdx | Should -BeLessThan $recoveryIdx `
+      'AppStderr override must come BEFORE Set-ServiceRecovery / Start-ServiceSafe so the first service start honors the empty AppStderr.'
+  }
+
+  It 'mirror sync: publish/system/scripts/install-center.ps1 has the AppStderr override' {
+    $pattern = @'
+'AppStderr'.*,\s*''
+'@
+    $script:pubContent | Should -Match $pattern `
+      'publish mirror missing AppStderr override — production install will set AppStderr=-stderr.log and race pino-roll.'
+  }
+}
+
 Describe 'install-center Ensure-CenterNodeModules (idempotent reinstall)' {
   # Regression guard for the "only install if node_modules missing" bug. The
   # old guard skipped npm install when node_modules already existed, leaving

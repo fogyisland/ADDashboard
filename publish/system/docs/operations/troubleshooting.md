@@ -120,7 +120,59 @@ Get-Content "$DashboardRoot\Logs\ADReplicationAgent-stderr.log" -Tail 200
 **Likely cause:** Better-sqlite3 native module in agent not closing transactions
 **Steps:**
 1. Restart agent: `Restart-Service ADReplicationAgent`
-2. Apply update if newer version available: `.\scripts\update-agent.ps1`
+2. Apply update if newer version available: `.\scripts\start.ps1` (auto-detects install vs hot-update; prompts for CenterUrl/AgentToken on first-time install)
+
+### Symptom: 更新后 `/init` 页面 404 / 浏览器空白（dist 缺失）
+
+**Likely cause:** `start.ps1` (update flow) 跑完但 `center\dist\index.html` 不存在。Vue SPA 找不到 bundle → 路由 fallback 全 404。green bundle (`publish/system/`) 不带 `node_modules/`；`install-center.ps1 -InPlace` 只在 `center/` 跑 `npm install --omit=dev`，**根 `node_modules` 是空的**。`npm run build:web` 通过 `npm run build:web --workspace=center` → `vite build`，vite 是 devDependency，期望被 npm workspaces hoist 到根 `node_modules`。根为空时 vite 找不到，`npm run` 静默退出（exit 0 但无产物），中心服务起来后 serve 一个空的 dist。
+
+**Steps:**
+1. 直接重跑 `.\start.ps1`：现在的 `Invoke-BundleBuild` 会自检 `<bundleRoot>/node_modules` 和 `node_modules/vite`，缺则跑 `npm install --workspace=center` 把 vite hoist 上去，再重 build。
+2. 验证产物：`Test-Path "$DashboardRoot\Center\dist\index.html"` 应为 True。
+3. 浏览器刷新 `http://localhost:8080/init`。
+
+**预防：** 任何对根目录 `start.ps1` 的修改必须同步到 `publish/system/start.ps1`（`scripts/verify-mirror.ps1` 强制 byte-identical，0 drift 是门槛）。操作员拿到的就是 `publish/system/` 里的文件；只改根不同步 → 操作员仍被老逻辑坑。
+
+### Symptom: `start.ps1` 报 `gyp ERR! find Python`
+
+**Likely cause:** green bundle 的 `package.json` 把 `center` 和 `agent` 都声明成 workspace。`agent` 依赖 `better-sqlite3@^11.3.0`（native module，需要 Python 3.x + node-gyp）。在中心服务器（通常没装 Python 3.x）跑 `npm install` 会遍历所有 workspace，触发 better-sqlite3 的 native build 链直接失败。
+
+**Steps:**
+1. 改 install scope：`start.ps1` 已用 `npm install --workspace=center`，只装 center 的 deps 到根 `node_modules`，跳过 agent workspace → 不触发 better-sqlite3 build。
+2. **不要加 `--ignore-scripts`**：那会跳过 vite 的 esbuild binary postinstall → 后续 `vite build` 会因找不到 esbuild 直接失败。
+3. 验证 vite 已 hoist：`Test-Path "$DashboardRoot\node_modules\vite\bin"` 应为 True。
+
+**Why scoped install 而不是 `--omit=dev`：** center workspace 自身需要 `vite` 等 devDeps（用于 `npm run build:web`），但 runtime 不需要；agent workspace 的 native deps 是 runtime 需要但不需要 Python 来 build。`--workspace=center` 把 vite 装到根 `node_modules`（给 root-level `npm run build:web` 用），同时不动 agent workspace。
+
+### Symptom: 服务起来了但 `/init` 路由 404（init 标记卡住）
+
+**Likely cause:** init 标记 `<installPath>/.env` 的 `ADDASHBOARD_INITIALIZED=1`（外加 `HKLM\SOFTWARE\ADDashboard\Initialized=1`）是**硬锁**（`center/src/init/marker.js` + `server.js:172-208` bootstrap）。一旦写入，`needsInit` 检查直接返回 false，`/api/init/*`（除 `/status`）全部 404。即使因为断电、迁移失败、dist 缺失等导致流程中断，标记一旦落盘就锁住 wizard。
+
+`/api/init/finalize` 写标记是在 DB schema + seed + admin 全部成功后 — 标记存在代表**整套 init 流程都跑完了**。如果标记存在但 wizard 看不到，意味着 DB 状态和标记不一致（admin 缺失、迁移没跑、DB 表结构错乱等）。
+
+**Steps（按顺序）：**
+
+1. **重跑 build + restart**：
+   ```powershell
+   .\start.ps1
+   ```
+   重建 dist；优先 POST `/api/system/update`（应用 pending migration + 自动重启）；不可达则 fallback 到 `Restart-Service`。新代码加载后启动 bootstrap 自带 `service.upgrade()` 自动应用 pending migration。
+
+2. **如果上一步后 `/init` 仍 404**（init 标记卡住），跑恢复脚本：
+   ```powershell
+   .\publish\system\reset-marker.ps1
+   ```
+   行为：停服务 → 备份 `.env` + `appsettings.json` → 删除 → 清注册表 `HKLM\SOFTWARE\ADDashboard\Initialized` → 启动服务 → 探测 `/healthz` 和 `/api/init/status`。预期输出 `init/status: {"needsInit":true}`。
+
+3. **如果 `needsInit` 仍 false**（admin 行残留在 DB 里），手动 SQL 清掉：
+   ```sql
+   DELETE FROM sys_users WHERE role_id IN (SELECT id FROM sys_roles WHERE role_name='admin');
+   ```
+   然后 `Restart-Service ADDashboardCenter`。
+
+4. 浏览器打开 `http://localhost:8080/init` 走完整 3 屏向导（DB 连接 → admin 设置 → 初始化）。
+
+**预防：** 永远在 `/init` 走完 3 屏看到「初始化完成」之前不要关掉那个浏览器 tab — 流程是事务化的，但标记写入本身不是事务的一部分，存在「标记写了一半」的小窗口。
 
 ## Diagnostic Data Collection
 

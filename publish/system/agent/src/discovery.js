@@ -51,7 +51,7 @@ export function postDiscovery({ centerUrl, agentToken, payload }) {
     method: 'POST',
     url: `${centerUrl}/api/agent/discover`,
     headers: { 'X-Agent-Token': agentToken },
-    body: payload,
+    body: { source: 'collect-discovery', ...payload },
     timeoutMs: 30000
   });
 }

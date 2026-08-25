@@ -34,6 +34,25 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
       const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname, agent_token_version, report_requested_at } = req.body || {};
       if (!agentId) return res.status(400).json({ error: 'missing agentId' });
+      // 2026-08-25 round-12 observability: log every agent request on entry
+      // with the data shape the operator needs to verify validity. The
+      // `source` field is stamped by the agent (see agent/src/reporter.js
+      // postHeartbeat) so the log line shows which collector emitted the
+      // heartbeat — old agents that don't stamp source are logged as
+      // 'unknown' for backward compat.
+      req.log.info({
+        event: 'agent.heartbeat',
+        source: req.body?.source ?? 'unknown',
+        agentId,
+        agentVersion,
+        agentType: agentType ?? 'ad',
+        hostname,
+        portsCount: Array.isArray(ports) ? ports.length : 0,
+        pendingQueueSize,
+        lastReportStatus,
+        agentTokenVersion: Number(agent_token_version) || 0,
+        reportRequestedAt: report_requested_at ?? null
+      }, 'agent heartbeat received');
       // 2026-08-21 UX redesign (auto-delivery): the heartbeat is now the
       // carrier for the agent's last-seen agent_token_version. Default 0
       // for pre-feature agents (their version matches the server's
@@ -199,6 +218,23 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       if (!agentId || !collectedAt || !Array.isArray(data)) {
         return res.status(400).json({ error: 'missing agentId, collectedAt, or data[]' });
       }
+      // 2026-08-25 round-12 observability: log every report with the data
+      // shape the operator needs to validate. source='collect-replication'
+      // is stamped by agent/src/reporter.js postReport so the log line
+      // shows which PS script produced the entries; old agents fall back to
+      // 'unknown'. partnerPortEntries/lockoutEvent counts let the operator
+      // spot the Bug Z/W class of silent drops at a glance (e.g. count=0
+      // when the PS1 emits them is a smoking gun).
+      req.log.info({
+        event: 'agent.report',
+        source: req.body?.source ?? 'unknown',
+        agentId,
+        collectedAt,
+        entries: data.length,
+        partnerPortEntries: data.filter(r => r?.namingContext?.startsWith?.('__partner_ports__') || r?.naming_context?.startsWith?.('__partner_ports__')).length,
+        summaryEntries: data.filter(r => r?.namingContext === '__dc_summary__' || r?.naming_context === '__dc_summary__').length,
+        lockoutEvents: Array.isArray(req.body?.lockoutEvents) ? req.body.lockoutEvents.length : 0
+      }, 'agent report received');
       try {
         const db = getDb();
         const cfg = await getConfig();
@@ -249,6 +285,19 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       if (!agentId || !collectedAt || !dc?.name) {
         return res.status(400).json({ error: 'missing agentId/collectedAt/dc.name' });
       }
+      // 2026-08-25 round-12 observability: log every discover request so
+      // the operator can verify whether collect-discovery.ps1 is firing
+      // and what shape (dc.name, dc.site, dc.rolesCount) it's emitting.
+      // source='collect-discovery' is stamped by agent/src/discovery.js.
+      req.log.info({
+        event: 'agent.discover',
+        source: req.body?.source ?? 'unknown',
+        agentId,
+        collectedAt,
+        dcName: dc.name,
+        dcSite: dc.site ?? null,
+        rolesCount: Array.isArray(dc.roles) ? dc.roles.length : 0
+      }, 'agent discover received');
       try {
         await upsertDiscoveredDc({ agentId, collectedAt, dc });
         res.json({ ok: true });

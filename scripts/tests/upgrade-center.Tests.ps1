@@ -143,6 +143,50 @@ Describe 'upgrade-center Ensure-NodeModules (idempotent reinstall)' {
   }
 }
 
+Describe 'upgrade-center NSSM AppStderr override (round-12 pino-roll coexistence)' {
+  # Round-12 observability: existing installs (pre-round-12) have AppStderr
+  # pointing at ADDashboardCenter-stderr.log, which races pino-roll for the
+  # rotated file handle on each daily rename. upgrade-center.ps1 re-applies
+  # the empty AppStderr override on every upgrade so all installs converge on
+  # the round-12 setting — backward compat for installs created before pino-roll.
+  # The override must come BEFORE Start-ServiceSafe so the first service start
+  # after the upgrade honors the empty AppStderr (no file open, no race).
+  BeforeAll {
+    $script:upgradePath = Join-Path (Join-Path $PSScriptRoot '..') 'upgrade-center.ps1'
+    $script:publishPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') 'publish\system\scripts') 'upgrade-center.ps1'
+    $script:srcContent = Get-Content $script:upgradePath -Raw
+    $script:pubContent = Get-Content $script:publishPath -Raw
+  }
+
+  It 'overrides NSSM AppStderr to empty string (refresh pre-round-12 installs)' {
+    # The actual call is `Invoke-Nssm @('set', 'ADDashboardCenter', 'AppStderr', '')`
+    # — comma + optional whitespace + `''` is the exact form we pin. Use a
+    # here-string to avoid PS single-quote / backslash escape hell.
+    $pattern = @'
+'AppStderr'.*,\s*''
+'@
+    $script:srcContent | Should -Match $pattern `
+      'upgrade-center.ps1 must call nssm set ADDashboardCenter AppStderr '''' so existing installs (pre-round-12) converge on the empty AppStderr setting.'
+  }
+
+  It 'AppStderr override appears BEFORE Start-ServiceSafe (first start honors it)' {
+    $overrideIdx = $script:srcContent.IndexOf("'AppStderr', ''")
+    $startIdx    = $script:srcContent.IndexOf("Start-ServiceSafe -Name 'ADDashboardCenter'")
+    $overrideIdx | Should -BeGreaterThan -1 'AppStderr override must exist'
+    $startIdx    | Should -BeGreaterThan -1 'Start-ServiceSafe call must exist'
+    $overrideIdx | Should -BeLessThan $startIdx `
+      'AppStderr override must come BEFORE Start-ServiceSafe — the service must be started with the empty AppStderr already set, otherwise the first boot still races pino-roll.'
+  }
+
+  It 'mirror sync: publish/system/scripts/upgrade-center.ps1 has the AppStderr override' {
+    $pattern = @'
+'AppStderr'.*,\s*''
+'@
+    $script:pubContent | Should -Match $pattern `
+      'publish mirror missing AppStderr override — production upgrade will leave pre-round-12 installs racing pino-roll.'
+  }
+}
+
 Describe 'upgrade-center HTTP migration apply (the "扩展架构" piece)' {
   BeforeAll {
     $script:upgradePath = Join-Path (Join-Path $PSScriptRoot '..') 'upgrade-center.ps1'

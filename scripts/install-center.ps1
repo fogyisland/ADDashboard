@@ -166,6 +166,16 @@ Install-NssmService -Name 'ADDashboardCenter' `
   -Description 'AD Replication Dashboard Center (Node.js + Express + Vue 3)' `
   -Start SERVICE_AUTO_START
 
+# Round-12 observability: redirect NSSM AppStderr away from ADDashboardCenter-stderr.log.
+# The center process owns its own rotated log via pino-roll (server.js → createRotatedLogger
+# → <InstallPath>/logs/center.<date>.<n>.log). If NSSM also writes to stderr, the two
+# writers race for file handles on the rotated paths and NSSM's append-then-rename
+# collides with pino-roll's same-second rename — the rotated file ends up with a
+# truncated tail or a write-time EBADF. Disable stderr capture so pino-roll is the
+# sole writer of the daily-rotated log. AppStdout stays at -stdout.log so any
+# uncaught pino stdout write (none expected) still surfaces somewhere searchable.
+Invoke-Nssm @('set', 'ADDashboardCenter', 'AppStderr', '')
+
 # Configure auto-restart: NSSM picks up process.exit(0) and re-launches with new appsettings.json;
 # Windows Service Recovery handles crashes (OOM, segfault, kill -9).
 # Helper in scripts/common/Service.psm1 owns the NSSM + sc.exe wiring.

@@ -3,7 +3,7 @@ import { createApp } from './src/app.js';
 import { loadConfigOrNull, defaultConfig, getRegistryUrl, seedListenPortIfMissing, getListenPort, sha256Hex } from './src/config.js';
 import { healthzRouter } from './src/routes/healthz.js';
 import { init, close, getDb } from './src/db/index.js';
-import { createLogger } from './src/logger.js';
+import { createLogger, createRotatedLogger } from './src/logger.js';
 import { startServers, closeAll } from './src/multi-port.js';
 import { authRouter } from './src/routes/auth.js';
 import { agentRouter } from './src/routes/agent.js';
@@ -100,35 +100,35 @@ export function buildServerApps({ config, db, logger, needsInit, systemConfig = 
 
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || './appsettings.json';
 const installPath = installPathFromConfigPath(configPath);
-const logger = createLogger({ component: 'center', level: 'info' });
 
-// Last-line-of-defense traps for any exception that escapes the (async)
-// bootstrap. Without these, an uncaught throw outside the explicit
-// IIFE .catch fires Node's default behavior (exit 1, no stderr trace),
-// which combined with NSSM restart produces the "ran for <1500ms,
-// restart delayed" diagnostic with no visible cause. The logger is
-// synchronous (pino destination {dest:2,sync:true}) so the lines below
-// land on stderr before process.exit fires.
+// Fatal-trap registration MUST happen synchronously at module load so that
+// tests that mock `process.on` (see init-mode-survival.test.js) see the
+// uncaughtException / unhandledRejection listeners immediately on import.
+// The bootstrap below installs the rotated logger into these traps via
+// setFatalLogger — until that happens, the traps use the sync stderr
+// fallback (same destination the previous module-top-level logger used).
+// Without this split, the tests' `await import('...')` would race the
+// bootstrap's `await createRotatedLogger(...)` and the listeners would
+// appear missing.
+const fatalState = { logger: null };
+function setFatalLogger(logger) { fatalState.logger = logger; }
 process.on('uncaughtException', (err, origin) => {
-  // "db not initialized" fires repeatedly while the service runs in init-mode
-  // (agents send heartbeats / fetchConfig before the operator completes the
-  // /api/init wizard). Crashing on it makes the service unreachable from
-  // /api/init, which means the wizard can't be completed, which means the
-  // DB never initializes — NSSM restart loop. Log and stay alive.
+  const log = fatalState.logger || createLogger({ component: 'center', level: 'info' });
   if (err && err.message && err.message.startsWith('db not initialized')) {
-    logger.warn({ err: err.message, origin }, 'init-mode uncaughtException (kept alive)');
+    log.warn({ err: err.message, origin }, 'init-mode uncaughtException (kept alive)');
     return;
   }
-  logger.fatal({ err: err && err.message, stack: err && err.stack, origin }, 'uncaughtException');
+  log.fatal({ err: err && err.message, stack: err && err.stack, origin }, 'uncaughtException');
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
+  const log = fatalState.logger || createLogger({ component: 'center', level: 'info' });
   const err = reason instanceof Error ? reason : new Error(String(reason));
   if (err.message && err.message.startsWith('db not initialized')) {
-    logger.warn({ err: err.message }, 'init-mode unhandledRejection (kept alive)');
+    log.warn({ err: err.message }, 'init-mode unhandledRejection (kept alive)');
     return;
   }
-  logger.fatal({ err: err.message, stack: err.stack }, 'unhandledRejection');
+  log.fatal({ err: err.message, stack: err.stack }, 'unhandledRejection');
   process.exit(1);
 });
 
@@ -170,6 +170,29 @@ const resolveBuiltinSourceDir = () => {
 
 if (invokedDirectly) {
 await ((async () => {
+  // Create the rotated-file logger FIRST — every subsequent log line
+  // (bootstrap progress, runtime diagnostics, fatal traps) lands in
+  // <installPath>/logs/center.log via pino-roll's daily rotation. Sync
+  // SonicBoom writes preserve the "fatal line survives process.exit()"
+  // guarantee the previous stderr logger had. See src/logger.js for the
+  // full rationale; NSSM AppStderr must be cleared by the installer so
+  // pino-roll is the sole writer of this file (see install-center.ps1).
+  const logFile = process.env.ADDASHBOARD_LOG_FILE
+      || join(installPath, 'logs', 'center.log');
+  const logger = await createRotatedLogger({
+    component: 'center',
+    level: 'info',
+    file: logFile
+  });
+
+  // Hand the rotated logger to the fatal-trap handlers that were registered
+  // synchronously at module load (above). Until this point the traps used
+  // a sync stderr fallback — the file-open side effect of createRotatedLogger
+  // must not run during import (tests import buildServerApps from this
+  // module and need zero file-open side effects). The handlers keep the
+  // same behavior either way (sync destination + process.exit), so this
+  // handoff is invisible to the rest of the system.
+  setFatalLogger(logger);
   // Init-complete marker (file + registry) hard-locks the wizard off once
   // /finalize has run. Checked first so an attacker who deletes appsettings.json
   // cannot re-trigger the wizard without also clearing the marker.
@@ -554,7 +577,13 @@ await ((async () => {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
   }
 })().catch(err => {
-  logger.error({ err: err.message }, 'fatal');
+  // Bootstrap itself rejected — fall back to a sync stderr logger so the
+  // crash trace is at least on fd 2 (which the install script's stderr
+  // capture will route somewhere — see install-center.ps1's stderr
+  // handling). The rotated logger isn't available here because the
+  // failure may have happened during its construction.
+  const fallback = createLogger({ component: 'center', level: 'info' });
+  fallback.fatal({ err: err.message, stack: err.stack }, 'bootstrap failed before logger ready');
   process.exit(1);
 }));
 } // end if (invokedDirectly)

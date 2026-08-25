@@ -93,7 +93,7 @@ export function postHeartbeat({ centerUrl, agentToken, port, payload }) {
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/heartbeat`,
     headers: { 'X-Agent-Token': agentToken },
-    body: payload,
+    body: { source: 'heartbeat', ...payload },
   });
 }
 
@@ -103,6 +103,7 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
     url: `${baseUrl({ centerUrl, port })}/api/agent/report`,
     headers: { 'X-Agent-Token': agentToken },
     body: {
+      source: 'collect-replication',
       agentId: snapshot.AgentId ?? snapshot.agentId,
       collectedAt: snapshot.CollectedAt ?? snapshot.collectedAt,
       data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []
