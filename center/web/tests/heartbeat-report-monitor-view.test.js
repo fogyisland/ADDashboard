@@ -7,7 +7,9 @@ vi.mock('../src/api/heartbeatReport.js', () => ({
     listDcs:    vi.fn(() => Promise.resolve({ data: { agents: [], heartbeatStaleSeconds: 15 } })),
     getDetail:  vi.fn(() => Promise.resolve({ data: { agentId: 'dc01', collectedAt: '2026-08-07T15:00:00Z', entries: [] } })),
     getProbeStatus: vi.fn(() => Promise.resolve({ data: { probes: {}, nowCenterProbeStale: false } })),
-    requestReport: vi.fn(() => Promise.resolve({ data: { ok: true, agentId: 'agent-online', requestedAt: new Date().toISOString(), alreadyPending: false } }))
+    requestReport: vi.fn(() => Promise.resolve({ data: { ok: true, agentId: 'agent-online', requestedAt: new Date().toISOString(), alreadyPending: false } })),
+    deleteAgent: vi.fn(() => Promise.resolve({ data: { ok: true, agentId: 'agent-online', deleted: { heartbeat: 1, replication: 2, package_runs: 0 } } })),
+    deleteDc:    vi.fn(() => Promise.resolve({ data: { ok: true, dcName: 'dc01', deleted: { dcs: 1 } } }))
   }
 }));
 
@@ -19,10 +21,14 @@ beforeEach(() => {
   heartbeatReportApi.listDcs.mockReset();
   heartbeatReportApi.getDetail.mockReset();
   heartbeatReportApi.requestReport.mockReset();
+  heartbeatReportApi.deleteAgent.mockReset();
+  heartbeatReportApi.deleteDc.mockReset();
   heartbeatReportApi.listAgents.mockResolvedValue({ data: { agents: [], heartbeatStaleSeconds: 15 } });
   heartbeatReportApi.listDcs.mockResolvedValue({ data: { agents: [], heartbeatStaleSeconds: 15 } });
   heartbeatReportApi.getDetail.mockResolvedValue({ data: { agentId: 'dc01', collectedAt: '2026-08-07T15:00:00Z', entries: [] } });
   heartbeatReportApi.requestReport.mockResolvedValue({ data: { ok: true, agentId: 'agent-online', requestedAt: new Date().toISOString(), alreadyPending: false } });
+  heartbeatReportApi.deleteAgent.mockResolvedValue({ data: { ok: true, agentId: 'agent-online', deleted: { heartbeat: 1, replication: 2, package_runs: 0 } } });
+  heartbeatReportApi.deleteDc.mockResolvedValue({ data: { ok: true, dcName: 'dc01', deleted: { dcs: 1 } } });
 });
 
 const AdminLayoutStub = { template: '<div><slot /></div>' };
@@ -216,5 +222,143 @@ test('clicking enabled button shows confirm modal; confirm calls requestReport A
   await confirmBtn.trigger('click');
   await flushPromises();
   expect(heartbeatReportApi.requestReport).toHaveBeenCalledWith('agent-online');
+  vi.useRealTimers();
+});
+
+// ---- 2026-08-26 round-19+ delete buttons on heartbeat + report tables ----
+
+const TWO_AGENTS_FIXTURE = (now) => ({
+  data: { heartbeatStaleSeconds: 15, agents: [
+    { agentId: 'a-online', lastHeartbeatAt: new Date(now).toISOString(),
+      lastReportAt: new Date(now).toISOString(),
+      reportSummary: { totalLinks: 2, successCount: 2, failCount: 0, latestErrorMessage: null, latestFailedLink: null } },
+    { agentId: 'a-stale',  lastHeartbeatAt: new Date(now - 60_000).toISOString(),
+      lastReportAt: new Date(now - 60_000).toISOString(),
+      reportSummary: { totalLinks: 1, successCount: 0, failCount: 1, latestErrorMessage: '目标不可达', latestFailedLink: null } }
+  ] }
+});
+
+test('agent tab renders 删除 button on heartbeat row + report row', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(TWO_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  // Heartbeat table: one 删除 per row (2 rows = 2 buttons)
+  const hbDeletes = wrapper.findAll('button[data-test="delete-heartbeat-agent"]');
+  expect(hbDeletes.length).toBe(2);
+  expect(hbDeletes[0].attributes('data-id')).toBe('a-online');
+  expect(hbDeletes[1].attributes('data-id')).toBe('a-stale');
+  expect(hbDeletes[0].text()).toBe('删除');
+  // Report table: one 删除 per row
+  const repDeletes = wrapper.findAll('button[data-test="delete-report-agent"]');
+  expect(repDeletes.length).toBe(2);
+  expect(repDeletes[0].attributes('data-id')).toBe('a-online');
+  vi.useRealTimers();
+});
+
+test('clicking heartbeat-row 删除 shows confirm modal; confirm calls deleteAgent API', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(TWO_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const btn = wrapper.findAll('[data-agent="a-online"] button[data-test="delete-heartbeat-agent"]')[0];
+  expect(btn.exists()).toBe(true);
+  await btn.trigger('click');
+  await flushPromises();
+  // ConfirmDialog should appear; agent-kind title + body
+  expect(wrapper.text()).toContain('删除 agent a-online');
+  const confirmBtn = wrapper.find('button.confirm.danger');
+  expect(confirmBtn.exists()).toBe(true);
+  await confirmBtn.trigger('click');
+  await flushPromises();
+  expect(heartbeatReportApi.deleteAgent).toHaveBeenCalledWith('a-online');
+  // After delete, listAgents is re-called (reload).
+  expect(heartbeatReportApi.listAgents.mock.calls.length).toBeGreaterThanOrEqual(2);
+  vi.useRealTimers();
+});
+
+test('clicking report-row 删除 also routes through deleteAgent (cascade)', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(TWO_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const btn = wrapper.findAll('button[data-test="delete-report-agent"]')[0];
+  expect(btn.exists()).toBe(true);
+  await btn.trigger('click');
+  await flushPromises();
+  const confirmBtn = wrapper.find('button.confirm.danger');
+  expect(confirmBtn.exists()).toBe(true);
+  await confirmBtn.trigger('click');
+  await flushPromises();
+  // Report-row delete cascades through the same deleteAgent endpoint —
+  // one click removes heartbeat + replication + report rows together.
+  expect(heartbeatReportApi.deleteAgent).toHaveBeenCalledWith('a-online');
+  expect(heartbeatReportApi.deleteDc).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+test('DC tab heartbeat-row 删除 routes through deleteDc (no cascade)', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue({ data: { agents: [], heartbeatStaleSeconds: 15 } });
+  heartbeatReportApi.listDcs.mockResolvedValue({
+    data: { heartbeatStaleSeconds: 15, agents: [
+      { agentId: 'MOCK-NCADSRV1', dcName: 'MOCK-NCADSRV1', siteName: 'MOCK-NC',
+        lastHeartbeatAt: new Date(now).toISOString(), lastReportAt: new Date(now).toISOString(),
+        reportSummary: { totalLinks: 2, successCount: 2, failCount: 0, latestErrorMessage: null, latestFailedLink: null } }
+    ] }
+  });
+  const wrapper = mountView();
+  await flushPromises();
+  await wrapper.find('[data-test="tab-dc"]').trigger('click');
+  await flushPromises();
+  const btn = wrapper.findAll('button[data-test="delete-heartbeat-dc"]')[0];
+  expect(btn.exists()).toBe(true);
+  await btn.trigger('click');
+  await flushPromises();
+  expect(wrapper.text()).toContain('删除 DC MOCK-NCADSRV1');
+  const confirmBtn = wrapper.find('button.confirm.danger');
+  expect(confirmBtn.exists()).toBe(true);
+  await confirmBtn.trigger('click');
+  await flushPromises();
+  expect(heartbeatReportApi.deleteDc).toHaveBeenCalledWith('MOCK-NCADSRV1');
+  expect(heartbeatReportApi.deleteAgent).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+test('cancelling the delete confirm modal does NOT call any delete API', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(TWO_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const btn = wrapper.findAll('button[data-test="delete-heartbeat-agent"]')[0];
+  await btn.trigger('click');
+  await flushPromises();
+  // Cancel button (first .cancel in the dialog) closes the modal.
+  const cancelBtn = wrapper.find('button.cancel');
+  expect(cancelBtn.exists()).toBe(true);
+  await cancelBtn.trigger('click');
+  await flushPromises();
+  expect(heartbeatReportApi.deleteAgent).not.toHaveBeenCalled();
+  expect(heartbeatReportApi.deleteDc).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+test('clicking delete button on row does NOT open the drawer (stop propagation)', async () => {
+  const now = new Date('2026-08-07T15:30:00Z').getTime();
+  vi.setSystemTime(now);
+  heartbeatReportApi.listAgents.mockResolvedValue(TWO_AGENTS_FIXTURE(now));
+  const wrapper = mountView();
+  await flushPromises();
+  const btn = wrapper.findAll('button[data-test="delete-heartbeat-agent"]')[0];
+  await btn.trigger('click');
+  await flushPromises();
+  // Drawer should NOT have opened — confirm modal should be the only overlay.
+  expect(wrapper.find('[data-test="drawer"]').exists()).toBe(false);
+  expect(wrapper.find('button.confirm.danger').exists()).toBe(true);
   vi.useRealTimers();
 });
