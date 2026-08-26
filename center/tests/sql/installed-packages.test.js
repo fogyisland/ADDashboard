@@ -61,16 +61,21 @@ test('installedPackagesSql: mysql.upsert uses ON DUPLICATE KEY UPDATE on (name)'
   assert.match(installedPackagesSql.upsert.mysql, /INSERT INTO installed_packages/);
   assert.match(installedPackagesSql.upsert.mysql, /ON DUPLICATE KEY UPDATE/);
   assert.match(installedPackagesSql.upsert.mysql, /version = VALUES/);
-  // 9 placeholders: name, version, type, manifest_json, enabled,
-  // params_json, installed_at, updated_at, source.
-  assert.strictEqual((installedPackagesSql.upsert.mysql.match(/\?/g) || []).length, 9);
+  // 10 placeholders: name, version, type, manifest_json, enabled,
+  // params_json, interval_override_sec, installed_at, updated_at, source.
+  // interval_override_sec is intentionally NOT in the UPDATE SET list
+  // so operator-set overrides survive re-imports.
+  assert.strictEqual((installedPackagesSql.upsert.mysql.match(/\?/g) || []).length, 10);
+  assert.doesNotMatch(installedPackagesSql.upsert.mysql, /interval_override_sec\s*=\s*VALUES/i);
 });
 
 test('installedPackagesSql: mssql.upsert uses MERGE on (name)', () => {
   assert.match(installedPackagesSql.upsert.mssql, /MERGE INTO installed_packages/i);
   assert.match(installedPackagesSql.upsert.mssql, /USING \(SELECT/);
   assert.match(installedPackagesSql.upsert.mssql, /ON t\.name = s\.name/);
-  assert.strictEqual((installedPackagesSql.upsert.mssql.match(/\?/g) || []).length, 9);
+  assert.strictEqual((installedPackagesSql.upsert.mssql.match(/\?/g) || []).length, 10);
+  // MERGE WHEN MATCHED branch must NOT touch interval_override_sec either.
+  assert.doesNotMatch(installedPackagesSql.upsert.mssql, /interval_override_sec\s*=\s*s\.interval_override_sec/i);
 });
 
 test('installedPackagesSql: list and get/delete are simple SELECT/DELETE', () => {
@@ -84,7 +89,7 @@ test('installedPackagesSql: list and get/delete are simple SELECT/DELETE', () =>
 
 // ---- helper function: upsert ----
 
-test('installedPackages.upsert: stringifies manifest/params, passes 9 params', async () => {
+test('installedPackages.upsert: stringifies manifest/params, passes 10 params', async () => {
   const db = makeMockDb();
   db._addScript(/INSERT\s+INTO\s+installed_packages/i, { rows: [], affectedRows: 1, insertId: 7 });
   await installedPackages.upsert(db, {
@@ -100,7 +105,7 @@ test('installedPackages.upsert: stringifies manifest/params, passes 9 params', a
   const call = db._calls[0];
   assert.match(call.sql, /INSERT INTO installed_packages/);
   assert.match(call.sql, /ON DUPLICATE KEY UPDATE/);
-  assert.equal(call.params.length, 9);
+  assert.equal(call.params.length, 10);
   assert.equal(call.params[0], 'pkg-a');
   assert.equal(call.params[1], '1.2.3');
   assert.equal(call.params[2], 'gauge');
@@ -109,10 +114,12 @@ test('installedPackages.upsert: stringifies manifest/params, passes 9 params', a
   // enabled is converted to 0/1.
   assert.equal(call.params[4], 1);
   assert.equal(call.params[5], JSON.stringify({ intervalSec: 30 }));
+  // interval_override_sec is the 7th placeholder; undefined → null.
+  assert.equal(call.params[6], null);
   // installed_at / updated_at are Date instances.
-  assert.ok(call.params[6] instanceof Date);
   assert.ok(call.params[7] instanceof Date);
-  assert.equal(call.params[8], 'local');
+  assert.ok(call.params[8] instanceof Date);
+  assert.equal(call.params[9], 'local');
 });
 
 test('installedPackages.upsert: enabled=false emits 0', async () => {
@@ -131,7 +138,7 @@ test('installedPackages.upsert: enabled=false emits 0', async () => {
   assert.equal(db._calls[0].params[5], null); // null params stays null
 });
 
-test('installedPackages.upsert: mssql uses MERGE sql', async () => {
+test('installedPackages.upsert: mssql uses MERGE sql with 10 params', async () => {
   const db = makeMockDb({ dialect: 'mssql' });
   db._addScript(/MERGE\s+INTO\s+installed_packages/i, { rows: [], affectedRows: 1, insertId: 7 });
   await installedPackages.upsert(db, {
@@ -144,7 +151,39 @@ test('installedPackages.upsert: mssql uses MERGE sql', async () => {
     source: 'local'
   });
   assert.match(db._calls[0].sql, /MERGE INTO installed_packages/i);
-  assert.equal(db._calls[0].params.length, 9);
+  assert.equal(db._calls[0].params.length, 10);
+});
+
+test('installedPackages.upsert: intervalOverrideSec propagates to placeholder #7', async () => {
+  const db = makeMockDb();
+  db._addScript(/INSERT\s+INTO\s+installed_packages/i, { rows: [], affectedRows: 1, insertId: 9 });
+  await installedPackages.upsert(db, {
+    name: 'pkg-d',
+    version: '1.0.0',
+    type: 'gauge',
+    manifest: { name: 'pkg-d' },
+    enabled: true,
+    params: null,
+    source: 'local',
+    intervalOverrideSec: 600
+  });
+  assert.equal(db._calls[0].params[6], 600);
+});
+
+test('installedPackages.upsert: intervalOverrideSec coerces to integer', async () => {
+  const db = makeMockDb();
+  db._addScript(/INSERT\s+INTO\s+installed_packages/i, { rows: [], affectedRows: 1, insertId: 9 });
+  await installedPackages.upsert(db, {
+    name: 'pkg-e',
+    version: '1.0.0',
+    type: 'gauge',
+    manifest: { name: 'pkg-e' },
+    enabled: true,
+    params: null,
+    source: 'local',
+    intervalOverrideSec: '300'  // string-coerced
+  });
+  assert.equal(db._calls[0].params[6], 300);
 });
 
 // ---- helper function: get ----
@@ -171,6 +210,51 @@ test('installedPackages.get: returns hydrated row (manifest parsed, enabled bool
   assert.equal(row.enabled, true);
   assert.deepEqual(row.manifest, { name: 'pkg-a', version: '1.0.0' });
   assert.deepEqual(row.params, { intervalSec: 30 });
+});
+
+test('installedPackages.get: interval_override_sec hydrates to camelCase intervalOverrideSec', async () => {
+  const db = makeMockDb();
+  db._addScript(/SELECT \* FROM installed_packages WHERE name = \?/i, {
+    rows: [{
+      id: 11,
+      name: 'pkg-f',
+      version: '1.0.0',
+      type: 'gauge',
+      manifest_json: JSON.stringify({ name: 'pkg-f' }),
+      enabled: 1,
+      params_json: null,
+      // mysql2 path — integer column as JS number
+      interval_override_sec: 600,
+      installed_at: new Date(),
+      updated_at: new Date(),
+      source: 'local'
+    }],
+    affectedRows: 0
+  });
+  const row = await installedPackages.get(db, 'pkg-f');
+  assert.equal(row.intervalOverrideSec, 600);
+});
+
+test('installedPackages.get: NULL interval_override_sec hydrates to null', async () => {
+  const db = makeMockDb();
+  db._addScript(/SELECT \* FROM installed_packages WHERE name = \?/i, {
+    rows: [{
+      id: 12,
+      name: 'pkg-g',
+      version: '1.0.0',
+      type: 'gauge',
+      manifest_json: JSON.stringify({ name: 'pkg-g' }),
+      enabled: 1,
+      params_json: null,
+      interval_override_sec: null,
+      installed_at: new Date(),
+      updated_at: new Date(),
+      source: 'local'
+    }],
+    affectedRows: 0
+  });
+  const row = await installedPackages.get(db, 'pkg-g');
+  assert.equal(row.intervalOverrideSec, null);
 });
 
 test('installedPackages.get: returns null when missing', async () => {
@@ -253,4 +337,30 @@ test('installedPackages.delete: issues DELETE with the package name', async () =
   assert.equal(db._calls.length, 1);
   assert.match(db._calls[0].sql, /DELETE FROM installed_packages WHERE name = \?/);
   assert.deepEqual(db._calls[0].params, ['pkg-x']);
+});
+
+// ---- helper function: setIntervalOverride ----
+
+test('installedPackages.setIntervalOverride: writes UPDATE with [intervalSec, updatedAt, name]', async () => {
+  const db = makeMockDb();
+  db._addScript(/UPDATE\s+installed_packages\s+SET\s+interval_override_sec/i, { rows: [], affectedRows: 1 });
+  await installedPackages.setIntervalOverride(db, { name: 'pkg-h', intervalSec: 300 });
+  assert.equal(db._calls.length, 1);
+  assert.match(db._calls[0].sql, /UPDATE installed_packages SET interval_override_sec = \?/);
+  assert.equal(db._calls[0].params.length, 3);
+  assert.equal(db._calls[0].params[0], 300);
+  assert.ok(db._calls[0].params[1] instanceof Date);
+  assert.equal(db._calls[0].params[2], 'pkg-h');
+});
+
+test('installedPackages.setIntervalOverride: null clears the override', async () => {
+  const db = makeMockDb();
+  db._addScript(/UPDATE\s+installed_packages\s+SET\s+interval_override_sec/i, { rows: [], affectedRows: 1 });
+  await installedPackages.setIntervalOverride(db, { name: 'pkg-i', intervalSec: null });
+  assert.equal(db._calls[0].params[0], null);
+});
+
+test('installedPackagesSql: setIntervalOverride exists for both dialects', () => {
+  assert.match(installedPackagesSql.setIntervalOverride.mysql, /UPDATE installed_packages/i);
+  assert.match(installedPackagesSql.setIntervalOverride.mssql, /UPDATE installed_packages/i);
 });

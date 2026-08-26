@@ -291,6 +291,16 @@ export const installer = {
       `UPDATE installed_packages SET params_json = ?, updated_at = ? WHERE name = ?`,
       [JSON.stringify(params), new Date(), name]
     );
+  },
+
+  /**
+   * 2026-08-26: per-package operator interval override. `intervalSec`
+   * may be null to clear the override (fall back to manifest default).
+   * Range check (5..86400) is enforced by the route handler — installer
+   * trusts the caller (matches setEnabled / updateParams pattern).
+   */
+  async setIntervalOverride(db, { name, intervalSec }) {
+    await installedPackages.setIntervalOverride(db, { name, intervalSec });
   }
 };
 
