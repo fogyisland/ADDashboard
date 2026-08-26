@@ -32,6 +32,7 @@ function fakeHeartbeatRow(overrides = {}) {
     last_report_at: new Date('2026-08-07T15:00:00Z'),
     last_report_status: 'ok',
     pending_queue_size: 0,
+    report_requested_at: null,
     ...overrides
   };
 }
@@ -151,6 +152,75 @@ test('agents list: agent with no reports -> lastReportAt null, reportSummary nul
   assert.equal(res.body.agents[0].agentId, 'dc-never');
   assert.equal(res.body.agents[0].lastReportAt, null);
   assert.equal(res.body.agents[0].reportSummary, null);
+});
+
+// 2026-08-26 round-18 follow-up: the agentsList SQL selects
+// h.report_requested_at but the service must map it to JSON so the 回报
+// button can flip to "已请求回报" / "回报(待清理)" after click. Before the
+// fix, the field was undefined → the frontend always saw no pending
+// request, so the badge never appeared and "未更新为最新时间" was reported.
+test('agents list: reportRequestedAt is exposed (round-18 follow-up)', async () => {
+  const requestedAt = new Date('2026-08-26T11:42:00Z');
+  const db = buildMockDb([
+    {
+      match: /SELECT\s+h\.agent_id[\s\S]*?FROM\s+ad_agent_heartbeat\s+h[\s\S]*?ad_replication_status[\s\S]*?WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'/i,
+      rows: [{
+        agent_id: 'dc-pending',
+        agent_version: '0.1.0',
+        last_heartbeat_at: new Date('2026-08-26T11:42:00Z'),
+        last_report_at: new Date('2026-08-26T11:41:00Z'),
+        last_report_status: 'success',
+        success_count: 1,
+        fail_count: 0,
+        total_count: 1,
+        pending_queue_size: 0,
+        report_requested_at: requestedAt
+      }]
+    },
+    {
+      match: /SELECT\s+config_key\s*,\s*config_value\s+FROM\s+system_config/i,
+      rows: [{ config_key: 'heartbeat_stale_seconds', config_value: '15' }]
+    }
+  ]).standard();
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .get('/api/admin/heartbeat-report/agents')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.agents.length, 1);
+  assert.equal(res.body.agents[0].reportRequestedAt, '2026-08-26T11:42:00.000Z');
+});
+
+test('agents list: reportRequestedAt is null when no pending request', async () => {
+  const db = buildMockDb([
+    {
+      match: /SELECT\s+h\.agent_id[\s\S]*?FROM\s+ad_agent_heartbeat\s+h[\s\S]*?ad_replication_status[\s\S]*?WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'/i,
+      rows: [{
+        agent_id: 'dc-idle',
+        agent_version: '0.1.0',
+        last_heartbeat_at: new Date('2026-08-26T11:42:00Z'),
+        last_report_at: new Date('2026-08-26T11:41:00Z'),
+        last_report_status: 'success',
+        success_count: 1,
+        fail_count: 0,
+        total_count: 1,
+        pending_queue_size: 0,
+        report_requested_at: null
+      }]
+    },
+    {
+      match: /SELECT\s+config_key\s*,\s*config_value\s+FROM\s+system_config/i,
+      rows: [{ config_key: 'heartbeat_stale_seconds', config_value: '15' }]
+    }
+  ]).standard();
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .get('/api/admin/heartbeat-report/agents')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.agents[0].reportRequestedAt, null);
 });
 
 test('report-detail: returns entries for the most recent collected_at (capped at 100)', async () => {

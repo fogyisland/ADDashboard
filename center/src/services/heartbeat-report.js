@@ -42,6 +42,11 @@ export const heartbeatReportService = {
         lastReportAt: toIsoOrNull(row.last_report_at),
         lastReportStatus: row.last_report_status,
         pendingQueueSize: Number(row.pending_queue_size) || 0,
+        // 2026-08-26 round-18 follow-up: surface report_requested_at so the
+        // 回报 button can flip to "已请求回报" / "回报(待清理)" after click.
+        // Previously the SQL selected it but the service never mapped it to
+        // the JSON, so the frontend always saw undefined → "回报" stuck.
+        reportRequestedAt: toIsoOrNull(row.report_requested_at),
         // 2026-08-26 round-15: counts are aggregated in SQL over the
         // 1-hour lookback. reportSummary is null only when the agent has
         // NEVER produced a replication row — anything else (stale but
@@ -76,6 +81,8 @@ export const heartbeatReportService = {
         ipAddress: row.ip_address ?? null,
         osVersion: row.os_version ?? null,
         isPdc: !!row.is_pdc,
+        // 2026-08-26 round-18 follow-up: see listAgents comment.
+        reportRequestedAt: toIsoOrNull(row.report_requested_at),
         reportSummary: row.last_report_at === null
           ? null
           : await this._summaryFor(conn, row.agent_id,
