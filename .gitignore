@@ -33,6 +33,10 @@ scripts/cdp-redirect.js
 # Dev-only JWT minter for local smoke tests (hardcoded dev secret; see scripts/sign-token.mjs)
 scripts/sign-token.mjs
 
+# Dev-only mock-agent scratch (ad-hoc end-to-end checks against a live center)
+mock-agent/
+agent/data/
+
 # Runtime dev data (SQLite databases, plugin test fixtures).
 # Narrow from `data/` to `center/data/` so bundled built-in package sources
 # under publish/center/data/packages/<name>/<version>/ remain tracked (their
