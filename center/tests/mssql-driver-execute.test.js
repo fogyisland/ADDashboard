@@ -243,16 +243,36 @@ test('tx.execute: MERGE inside transaction reports affectedRows=1', async () => 
 });
 
 test('INSERT INTO with no IDENTITY column still appends SCOPE_IDENTITY probe (probe failure is OK)', async () => {
-  // The brief notes: SCOPE_IDENTITY() on a table without IDENTITY returns NULL
-  // and the driver throws. This is the EXISTING behavior for INSERT INTO
-  // ad_agent_port_status (no IDENTITY). The test pins that the regex still
-  // appends the probe — the FIX is to NOT classify MERGE as insert, not to
-  // change INSERT behavior. If someone later wants INSERT INTO
-  // ad_agent_port_status to be supported, that's a separate concern.
+  // Round-14 fix: previously this threw unconditionally when SCOPE_IDENTITY()
+  // returned NULL (target table has no IDENTITY column, e.g.
+  // ad_agent_port_status). Distinguish:
+  //   - affectedRows > 0 + id NULL → INSERT succeeded, no auto-id available.
+  //     Return undefined insertId. Tables without IDENTITY (schema_migrations,
+  //     ad_agent_port_status) now work.
+  //   - affectedRows == 0 + id NULL → INSERT failed entirely. Still throw
+  //     so the failure surfaces.
+  // Pins the "INSERT succeeded with no IDENTITY" branch — ddl-apply.js
+  // relies on this for the schema_migrations row INSERT.
   const mock = makeMssqlMock();
   mock.state.nextResult = {
     recordsets: [[], [{ id: null }]],  // SCOPE_IDENTITY returns NULL
-    rowsAffected: [1, 1]
+    rowsAffected: [1, 1]                // INSERT itself affected 1 row
+  };
+  const createMssqlDriver = await loadDriverWithMock(mock);
+  const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });
+  const out = await drv.execute('INSERT INTO ad_agent_port_status (agent_id, port) VALUES (?, ?)', ['a1', 135]);
+  assert.equal(out.affectedRows, 1);
+  assert.equal(out.insertId, undefined);
+});
+
+test('INSERT INTO with no IDENTITY column AND affectedRows=0 still throws (real failure)', async () => {
+  // Round-14 companion: if the INSERT itself fails (affectedRows=0) AND
+  // SCOPE_IDENTITY is NULL (no IDENTITY column), the driver still throws —
+  // surfaces the failure instead of silently returning undefined insertId.
+  const mock = makeMssqlMock();
+  mock.state.nextResult = {
+    recordsets: [[], [{ id: null }]],
+    rowsAffected: [0, 1]                // INSERT itself affected 0 rows
   };
   const createMssqlDriver = await loadDriverWithMock(mock);
   const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });

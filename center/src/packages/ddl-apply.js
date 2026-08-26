@@ -6,6 +6,18 @@
 import { scanSql } from './ddl-sandbox.js';
 import { PkgError } from './errors.js';
 
+// Quote a SQL identifier per dialect. MySQL uses backticks; MSSQL uses
+// brackets. The schema_migrations table is referenced from multiple sites
+// (list / apply INSERT / mark UPDATE) and previously used MySQL-only
+// backticks in all three — which MSSQL rejects with "Incorrect syntax
+// near '`'" (round-14 finding from live MSSQL end-to-end verification,
+// Task #428). Centralizing the quote style here keeps the three sites
+// in lockstep.
+function quoteIdent(name, dialect) {
+  if (dialect === 'mssql') return `[${name}]`;
+  return `\`${name}\``;
+}
+
 // MySQL treats "schema" and "database" as the same concept. We use
 // `CREATE DATABASE` everywhere for MySQL and `CREATE SCHEMA` for MSSQL
 // to keep the SQL faithful to each dialect.
@@ -93,7 +105,7 @@ export async function applyMigrations(db, { schemaName, dialect, files, skipSand
       throw new PkgError('PKG_DDL_INVALID_SQL', `${file.filename}: ${e.message}`);
     }
     await db.execute(
-      `INSERT INTO \`${schemaName}\`.schema_migrations (filename, version, applied_at) VALUES (?, ?, ?)`,
+      `INSERT INTO ${quoteIdent(schemaName, dialect)}.schema_migrations (filename, version, applied_at) VALUES (?, ?, ?)`,
       [file.filename, '__pending__', new Date()]
     );
   }
@@ -102,19 +114,26 @@ export async function applyMigrations(db, { schemaName, dialect, files, skipSand
   // the installer overwrites it with the actual version via UPDATE.
 }
 
-export async function markMigrationsApplied(db, { schemaName, version, filenames }) {
+export async function markMigrationsApplied(db, { schemaName, version, filenames, dialect }) {
   if (!filenames.length) return;
+  const d = dialect ?? db.dialect ?? 'mysql';
   for (const filename of filenames) {
     await db.execute(
-      `UPDATE \`${schemaName}\`.schema_migrations SET version = ? WHERE filename = ?`,
+      `UPDATE ${quoteIdent(schemaName, d)}.schema_migrations SET version = ? WHERE filename = ?`,
       [version, filename]
     );
   }
 }
 
-export async function listAppliedMigrations(db, schemaName) {
+export async function listAppliedMigrations(db, schemaName, dialect) {
+  // dialect is optional — defaults to db.dialect for production code paths.
+  // Round-14 fix: previously used MySQL-only backticks around the schema
+  // name; MSSQL rejects them. seedBuiltinPackages and installer.upgradePackage
+  // both have db.dialect available, so callers should pass it. The default
+  // fallback here keeps older callers (none in tree today) working on MySQL.
+  const d = dialect ?? db.dialect ?? 'mysql';
   const { rows } = await db.execute(
-    `SELECT filename, version, applied_at FROM \`${schemaName}\`.schema_migrations ORDER BY filename`
+    `SELECT filename, version, applied_at FROM ${quoteIdent(schemaName, d)}.schema_migrations ORDER BY filename`
   );
   return rows;
 }

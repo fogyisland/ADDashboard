@@ -204,18 +204,23 @@ export async function seedBuiltinPackages({ dataDir, sourceDir, writeAudit, db }
       }
       // Skip already-applied filenames so a restart is a true no-op for
       // the migration block (parallel to installer.upgradePackage).
-      const applied = await listAppliedMigrations(db, schemaName);
-      const appliedSet = new Set(applied.map(r => r.filename));
-      const toApply = files.filter(f => !appliedSet.has(f.filename));
-      // Idempotent: if the schema doesn't exist yet, create it + the
-      // schema_migrations table. Both DDLs are themselves idempotent
-      // (CREATE DATABASE/SCHEMA IF NOT EXISTS / CREATE TABLE IF NOT
-      // EXISTS), so re-running is harmless even when no migrations need
-      // to apply.
+      // Pass dialect through so MSSQL gets bracketed identifiers (round-14).
+      //
+      // Round-14 fix: previously listAppliedMigrations ran BEFORE
+      // ensureSchema/createSchemaMigrationsTable, which on a fresh DB
+      // crashed with "Invalid object name 'pkg_<name>.schema_migrations'"
+      // (MSSQL) or "Table doesn't exist" (MySQL). The table we need to
+      // query must exist before we query it. Both ensureSchema and
+      // createSchemaMigrationsTable are themselves idempotent, so re-running
+      // them here is a no-op on restart and the only-order-that-works on
+      // first boot.
       if (!(await schemaExists(db, schemaName, db.dialect))) {
         await ensureSchema(db, schemaName, db.dialect);
       }
       await createSchemaMigrationsTable(db, schemaName, db.dialect);
+      const applied = await listAppliedMigrations(db, schemaName, db.dialect);
+      const appliedSet = new Set(applied.map(r => r.filename));
+      const toApply = files.filter(f => !appliedSet.has(f.filename));
       if (toApply.length) {
         // skipSandbox: built-in packages are reviewed in-tree, never
         // uploaded by an external author. The sandbox's current rules
