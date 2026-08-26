@@ -27,6 +27,7 @@
 
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildSnapshot } from './mock-snapshot.mjs';
+import { toCamelEntry } from '../agent/src/reporter.js';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -216,15 +217,19 @@ async function runAgent(spec, { stopFlag }) {
       // real agent's collect-replication.ps1 output.
       if (reportRequested || (now - lastReplicationAt) >= replicationTickMs) {
         // 2026-08-27 round-24: buildSnapshot produces the same PascalCase
-        // shape collect-replication.ps1 emits. The centre's reporter
-        // (reporter.toCamelEntry) handles field-name conversion; mock no
-        // longer has to mirror the wire format by hand.
+        // shape collect-replication.ps1 emits. The agent's reporter
+        // (reporter.toCamelEntry) is what converts to the wire shape —
+        // not the centre. Run it here before posting, the same way
+        // collect-replication.ps1 → reporter.postReport does on the real
+        // agent. Without this, rowParams in services/replication.js reads
+        // row.sourceDc (undefined) → SQL bind error ("must not contain
+        // undefined"), every report 500s.
         const snapshot = buildReplicationSnapshot(agentId, peers, failRate, spec.siteHint ?? 'MOCK-SITE');
         const rep = await postJson(`${REPORT_URL}${REPORT_PATH}`, {
           source: 'collect-replication-mock-daemon',
           agentId,
           collectedAt: snapshot.CollectedAt,
-          data: snapshot.Entries
+          data: snapshot.Entries.map(toCamelEntry)
         });
         if (rep.ok) {
           lastReplicationAt = now;
