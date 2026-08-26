@@ -38,6 +38,7 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? '';
 
 const HEARTBEAT_PATH = '/api/agent/heartbeat';
 const REPORT_PATH = '/api/agent/report';
+const DISCOVER_PATH = '/api/agent/discover';
 const AGENTS_LIST_PATH = '/api/admin/heartbeat-report/agents';
 
 // ----- time helpers -----
@@ -115,6 +116,32 @@ async function postReplication({ agentId, collectedAt, source = 'collect-replica
   return { status: res.status, text: await res.text() };
 }
 
+// 2026-08-26 round-15: post-discovery so the mock agent claims its DC row
+// in ad_dcs. Without this, only heartbeats + replication land — the
+// operator's DC list shows nothing for the mock, even though the agent
+// is alive and reporting. The real agent's collect-discovery.ps1 makes
+// this call; the mock mirrors that flow so the dashboard renders the
+// DC the same way it does for a real DC.
+//
+// IMPORTANT: /api/agent/discover lives on the REPORT port (8082), not
+// the heartbeat port (8081). server.js mounts the agentRouter three
+// times — once per role — with `mount: 'report'` enabling /discover,
+// `mount: 'heartbeat'` only enabling /heartbeat, and `mount: 'web'`
+// enabling /config.json. The discover endpoint deliberately avoids the
+// heartbeat port because discovery is heavy (it logs every call) and
+// would drown the cheap /heartbeat path.
+async function postDiscover({ agentId, dc, source = 'collect-discovery-mock' }) {
+  const collectedAt = new Date().toISOString();
+  const body = { source, agentId, collectedAt, dc };
+  const res = await fetch(`${REPORT_URL}${DISCOVER_PATH}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN, 'X-Agent-Id': agentId },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(5000)
+  });
+  return { status: res.status, text: await res.text() };
+}
+
 // ----- default scenario -----
 
 function defaultScenario() {
@@ -129,11 +156,28 @@ function defaultScenario() {
   // that. localState=null means "no local-state report was ever emitted";
   // localState.withinHour or .twoHoursAgo lets the operator exercise each
   // signal independently.
+  // 2026-08-26 round-15: each scenario now declares a `discovery` block
+  // so the mock agent claims its row in ad_dcs. Without discovery, the
+  // operator's DC list shows nothing for the mock — only heartbeats and
+  // replication land. Real agents run collect-discovery.ps1 on a
+  // schedule; the mock mirrors that.
+  const dc = (agentId, opts = {}) => ({
+    name: agentId,
+    hostname: `${agentId.toLowerCase()}.mock.local`,
+    ipAddress: opts.ip ?? '10.99.0.10',
+    osVersion: 'Windows Server 2022 (mock)',
+    site: 'MOCK-SITE',
+    isPdc: !!opts.isPdc,
+    roles: opts.isPdc
+      ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
+      : ['DomainController']
+  });
   return [
     {
       label: 'recent success (within 1h, all links OK)',
       agentId: 'MOCK-DC-FRESH',
       heartbeat: { when: 'now' },
+      discovery: { dc: dc('MOCK-DC-FRESH', { isPdc: true }) },
       replication: {
         when: withinHour,
         links: [
@@ -147,6 +191,7 @@ function defaultScenario() {
       label: 'recent partial_failure (within 1h, one link failing)',
       agentId: 'MOCK-DC-PARTIAL',
       heartbeat: { when: 'now' },
+      discovery: { dc: dc('MOCK-DC-PARTIAL', { ip: '10.99.0.11' }) },
       replication: {
         when: withinHour,
         links: [
@@ -161,6 +206,7 @@ function defaultScenario() {
       label: 'stale (replication 2h old, heartbeat fresh)',
       agentId: 'MOCK-DC-STALE',
       heartbeat: { when: 'now' },
+      discovery: { dc: dc('MOCK-DC-STALE', { ip: '10.99.0.12' }) },
       replication: {
         when: twoHoursAgo,
         links: [
@@ -176,6 +222,7 @@ function defaultScenario() {
       label: 'never-uploaded (heartbeat only, no replication rows)',
       agentId: 'MOCK-DC-QUIET',
       heartbeat: { when: 'now' },
+      discovery: { dc: dc('MOCK-DC-QUIET', { ip: '10.99.0.13' }) },
       replication: null,
       // No localState — agent has NEVER produced any replication row, so
       // last_report_at stays NULL and the dashboard shows ⏸ 未上传.
@@ -216,11 +263,20 @@ function buildReplicationData(agentId, collectedAt, links) {
 }
 
 async function runOne(scenario) {
-  const { label, agentId, heartbeat, replication, localState } = scenario;
+  const { label, agentId, heartbeat, discovery, replication, localState } = scenario;
   console.log(`\n--- ${label} (agent=${agentId}) ---`);
   if (heartbeat) {
     const hb = await postHeartbeat({ agentId });
     console.log(`  heartbeat  → HTTP ${hb.status}`);
+  }
+  // 2026-08-26 round-15: post-discovery so the agent claims its DC row
+  // in ad_dcs. The real agent's collect-discovery.ps1 calls this on a
+  // schedule; the mock mirrors that call.
+  if (discovery?.dc) {
+    const dc = await postDiscover({ agentId, dc: discovery.dc });
+    console.log(`  discovery  → HTTP ${dc.status} (dc=${discovery.dc.name})`);
+  } else {
+    console.log(`  discovery  → SKIP (no dc block)`);
   }
   if (replication) {
     const collectedAt = floorSec(parseWhen(replication.when));

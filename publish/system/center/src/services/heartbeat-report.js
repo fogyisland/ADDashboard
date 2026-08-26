@@ -33,7 +33,6 @@ export const heartbeatReportService = {
   async listAgents(db = null) {
     const conn = db ?? getDb();
     const { rows: agents } = await conn.query(conn.sql.heartbeat.agentsList);
-    const since = new Date(Date.now() - REPORT_SUMMARY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
     const heartbeatStaleSeconds = await this._staleSeconds();
     return {
       agents: await Promise.all(agents.map(async (row) => ({
@@ -43,7 +42,18 @@ export const heartbeatReportService = {
         lastReportAt: toIsoOrNull(row.last_report_at),
         lastReportStatus: row.last_report_status,
         pendingQueueSize: Number(row.pending_queue_size) || 0,
-        reportSummary: await this._summaryFor(conn, row.agent_id, row.last_report_at, since)
+        // 2026-08-26 round-15: counts are aggregated in SQL over the
+        // 1-hour lookback. reportSummary is null only when the agent has
+        // NEVER produced a replication row — anything else (stale but
+        // historical, or recent) returns a summary so the UI can decide
+        // between ✅ / ⚠️ / 数据陈旧 / 未上传 without us duplicating that
+        // logic here.
+        reportSummary: row.last_report_at === null
+          ? null
+          : await this._summaryFor(conn, row.agent_id,
+              Number(row.success_count) || 0,
+              Number(row.fail_count) || 0,
+              Number(row.total_count) || 0)
       }))),
       heartbeatStaleSeconds
     };
@@ -52,7 +62,6 @@ export const heartbeatReportService = {
   async listDcs(db = null) {
     const conn = db ?? getDb();
     const { rows: dcs } = await conn.query(conn.sql.heartbeat.dcsList);
-    const since = new Date(Date.now() - REPORT_SUMMARY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
     const heartbeatStaleSeconds = await this._staleSeconds();
     return {
       agents: await Promise.all(dcs.map(async (row) => ({
@@ -67,7 +76,12 @@ export const heartbeatReportService = {
         ipAddress: row.ip_address ?? null,
         osVersion: row.os_version ?? null,
         isPdc: !!row.is_pdc,
-        reportSummary: await this._summaryFor(conn, row.agent_id, row.last_report_at, since)
+        reportSummary: row.last_report_at === null
+          ? null
+          : await this._summaryFor(conn, row.agent_id,
+              Number(row.success_count) || 0,
+              Number(row.fail_count) || 0,
+              Number(row.total_count) || 0)
       }))),
       heartbeatStaleSeconds
     };
@@ -134,27 +148,29 @@ export const heartbeatReportService = {
     return { agentId, requestedAt, alreadyPending };
   },
 
-  async _summaryFor(conn, agentId, lastReportAt, since) {
-    if (!lastReportAt) return null;
-    const { rows } = await conn.query(conn.sql.heartbeat.reportSummaryFor(agentId, since));
-    if (!rows.length) return null;
-    let successCount = 0;
-    let failCount = 0;
+  // 2026-08-26 round-15: counts are pre-computed in SQL (1-hour window).
+  // _summaryFor only does the latest-failure lookup, and only when the
+  // 1-hour window saw at least one failure — otherwise the dashboard's
+  // "错误摘要" column shows '—'. The earlier implementation iterated a
+  // full snapshot and accumulated counts inline; that's now redundant.
+  async _summaryFor(conn, agentId, successCount, failCount, totalCount) {
+    if (totalCount === 0) {
+      // Agent has a historical report (last_report_at non-null) but no
+      // rows in the 1-hour window — surface empty summary so the UI can
+      // still render a row.
+      return { totalLinks: 0, successCount: 0, failCount: 0, latestErrorMessage: null, latestFailedLink: null };
+    }
     let latestErrorMessage = null;
     let latestFailedLink = null;
-    for (const row of rows) {
-      if (Number(row.status_code) === 0) {
-        successCount++;
-      } else {
-        failCount++;
-        if (!latestErrorMessage && row.error_message) {
-          latestErrorMessage = row.error_message;
-          latestFailedLink = `${row.source_dc}→${row.dest_dc}`;
-        }
+    if (failCount > 0) {
+      const { rows } = await conn.query(conn.sql.heartbeat.latestFailureFor(agentId), [agentId]);
+      if (rows.length > 0) {
+        latestErrorMessage = rows[0].error_message ?? null;
+        latestFailedLink = `${rows[0].source_dc}→${rows[0].dest_dc}`;
       }
     }
     return {
-      totalLinks: rows.length,
+      totalLinks: totalCount,
       successCount,
       failCount,
       latestErrorMessage,
