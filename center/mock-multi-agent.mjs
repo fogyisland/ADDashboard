@@ -166,7 +166,11 @@ function defaultScenario() {
     hostname: `${agentId.toLowerCase()}.mock.local`,
     ipAddress: opts.ip ?? '10.99.0.10',
     osVersion: 'Windows Server 2022 (mock)',
-    site: 'MOCK-SITE',
+    // 2026-08-26 round-15 follow-up: discovery.js reads dc.siteHint
+    // (NOT dc.site). The real collect-discovery.ps1 emits siteHint in
+    // camelCase; the mock must do the same so ad_dcs.site_hint lands
+    // populated and the operator's DC list can JOIN ad_sites on it.
+    siteHint: 'MOCK-SITE',
     isPdc: !!opts.isPdc,
     roles: opts.isPdc
       ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
