@@ -40,7 +40,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // postHeartbeat) so the log line shows which collector emitted the
       // heartbeat — old agents that don't stamp source are logged as
       // 'unknown' for backward compat.
-      req.log.info({
+      logger.info({
         event: 'agent.heartbeat',
         source: req.body?.source ?? 'unknown',
         agentId,
@@ -225,7 +225,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // 'unknown'. partnerPortEntries/lockoutEvent counts let the operator
       // spot the Bug Z/W class of silent drops at a glance (e.g. count=0
       // when the PS1 emits them is a smoking gun).
-      req.log.info({
+      logger.info({
         event: 'agent.report',
         source: req.body?.source ?? 'unknown',
         agentId,
@@ -267,7 +267,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
                 ev.callerComputerName != null ? String(ev.callerComputerName) : null
               ]);
             } catch (e) {
-              req.log?.warn?.({ err: e.message, agentId, eventRecordId: ev.eventRecordId }, 'lockout event persist failed');
+              logger.warn?.({ err: e.message, agentId, eventRecordId: ev.eventRecordId }, 'lockout event persist failed');
             }
           }
         }
@@ -289,7 +289,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // the operator can verify whether collect-discovery.ps1 is firing
       // and what shape (dc.name, dc.site, dc.rolesCount) it's emitting.
       // source='collect-discovery' is stamped by agent/src/discovery.js.
-      req.log.info({
+      logger.info({
         event: 'agent.discover',
         source: req.body?.source ?? 'unknown',
         agentId,

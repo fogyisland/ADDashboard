@@ -116,10 +116,15 @@ export function packageRunner({ db, getLogger, config }) {
     // with the run list and per-run exit code so the operator can see
     // whether the agent is actually executing the package scripts and
     // which ones are landing vs erroring. source='package-manager' is
-    // stamped by agent/src/package-manager.js flushReportQueue. Uses
-    // req.log (set by app.js middleware) for parity with the rest of
-    // the agent endpoints.
-    req.log.info({
+    // stamped by agent/src/package-manager.js flushReportQueue.
+    // round-13 fix: use the route's logger (matches the `getLogger ? getLogger() : null`
+    // idiom used by the other handlers in this file) instead of `req.log`,
+    // which is only populated when pino-http middleware is wired — but
+    // server.js does not wire it, so every agent request was throwing
+    // "Cannot read properties of undefined (reading 'info')" before this
+    // line could return.
+    const log = getLogger ? getLogger() : null;
+    if (log) log.info({
       event: 'agent.packages.report',
       source: req.body?.source ?? 'unknown',
       agentId,
