@@ -138,7 +138,43 @@ const VARIANTS = {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
       agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
-      topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
+      // 2026-08-26 round-21: /topology used to return every row in
+      // ad_replication_status, including stale round-19 leftovers and
+      // test/junk rows (*, __tz_test, DC01→"") — operators saw 42 links
+      // instead of the 19 the round-20 topology actually emits. The fix:
+      // (a) derive site + dc nodes from ad_sites / ad_dcs (catalog is
+      // source of truth — agent-reported source_site is a free-text hint
+      // and does not match catalog site_name), (b) for links, take the
+      // latest row per (source_dc, dest_dc) pair where both are known
+      // DCs and source_dc != dest_dc, and (c) drop rows older than 30
+      // minutes (UTC) so pairs the daemon stopped emitting — e.g. the
+      // round-19 topology pairs that were renamed in round-20 — fall
+      // out of the graph. UTC clock is essential: collected_at is in
+      // UTC but MySQL NOW() returns session-tz (round-15 UTC cleanup).
+      topologyNodes: `
+        SELECT s.site_id   AS site_id,
+               s.site_name AS site_name,
+               d.dc_name   AS dc_name
+        FROM ad_sites s
+        LEFT JOIN ad_dcs d ON d.site_id = s.site_id
+        ORDER BY s.site_name, d.dc_name
+      `,
+      topologyLinks: `
+        SELECT t1.source_dc, t1.dest_dc, t1.status_code, t1.last_success_time
+        FROM ad_replication_status t1
+        INNER JOIN ad_dcs sd ON sd.dc_name = t1.source_dc
+        INNER JOIN ad_dcs dd ON dd.dc_name = t1.dest_dc
+        WHERE t1.source_dc <> t1.dest_dc
+          AND t1.naming_context NOT IN ('__dc_summary__', 'META')
+          AND t1.collected_at = (
+            SELECT MAX(t2.collected_at) FROM ad_replication_status t2
+            WHERE t2.source_dc = t1.source_dc
+              AND t2.dest_dc   = t1.dest_dc
+              AND t2.naming_context NOT IN ('__dc_summary__', 'META')
+          )
+          AND t1.collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE
+        ORDER BY t1.source_dc, t1.dest_dc
+      `,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
       agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
@@ -743,7 +779,43 @@ const VARIANTS = {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
       agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
-      topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
+      // 2026-08-26 round-21: /topology used to return every row in
+      // ad_replication_status, including stale round-19 leftovers and
+      // test/junk rows (*, __tz_test, DC01→"") — operators saw 42 links
+      // instead of the 19 the round-20 topology actually emits. The fix:
+      // (a) derive site + dc nodes from ad_sites / ad_dcs (catalog is
+      // source of truth — agent-reported source_site is a free-text hint
+      // and does not match catalog site_name), (b) for links, take the
+      // latest row per (source_dc, dest_dc) pair where both are known
+      // DCs and source_dc != dest_dc, and (c) drop rows older than 30
+      // minutes (UTC) so pairs the daemon stopped emitting — e.g. the
+      // round-19 topology pairs that were renamed in round-20 — fall
+      // out of the graph. UTC clock is essential: collected_at is in
+      // UTC but MySQL NOW() returns session-tz (round-15 UTC cleanup).
+      topologyNodes: `
+        SELECT s.site_id   AS site_id,
+               s.site_name AS site_name,
+               d.dc_name   AS dc_name
+        FROM ad_sites s
+        LEFT JOIN ad_dcs d ON d.site_id = s.site_id
+        ORDER BY s.site_name, d.dc_name
+      `,
+      topologyLinks: `
+        SELECT t1.source_dc, t1.dest_dc, t1.status_code, t1.last_success_time
+        FROM ad_replication_status t1
+        INNER JOIN ad_dcs sd ON sd.dc_name = t1.source_dc
+        INNER JOIN ad_dcs dd ON dd.dc_name = t1.dest_dc
+        WHERE t1.source_dc <> t1.dest_dc
+          AND t1.naming_context NOT IN ('__dc_summary__', 'META')
+          AND t1.collected_at = (
+            SELECT MAX(t2.collected_at) FROM ad_replication_status t2
+            WHERE t2.source_dc = t1.source_dc
+              AND t2.dest_dc   = t1.dest_dc
+              AND t2.naming_context NOT IN ('__dc_summary__', 'META')
+          )
+          AND t1.collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME())
+        ORDER BY t1.source_dc, t1.dest_dc
+      `,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, CASE WHEN last_success_time IS NULL OR last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_success_time, last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
       agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, CASE WHEN last_heartbeat_at IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_heartbeat_at, SYSUTCDATETIME()) AS float) END AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,

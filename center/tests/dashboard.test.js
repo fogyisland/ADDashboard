@@ -117,16 +117,25 @@ test('site-matrix: returns camelCase keys sourceSite/destSite/errorCount/warning
 
 test('topology: returns nodes (site + dc) and links with source/target/statusCode/lastSuccessTime', async () => {
   const last = new Date('2026-07-10T12:34:56Z');
+  // 2026-08-26 round-21: topologyNodes derives from ad_sites + ad_dcs;
+  // topologyLinks picks the latest per (source_dc, dest_dc) pair from
+  // ad_replication_status joined against ad_dcs (skips self-loops,
+  // junk rows, and stale round-19 leftovers).
   const db = buildMockDb([
     {
-      match: /FROM\s+ad_replication_status/i,
+      match: /FROM\s+ad_sites/i,
       rows: [
-        { source_site: 'SITE-A', dest_site: 'SITE-B',
-          source_dc: 'DC-A1', dest_dc: 'DC-B1',
-          status_code: 0, last_success_time: last },
-        { source_site: 'SITE-A', dest_site: 'SITE-B',
-          source_dc: 'DC-A1', dest_dc: 'DC-B2',
-          status_code: 2, last_success_time: last }
+        { site_id: 1, site_name: 'SITE-A', dc_name: 'DC-A1' },
+        { site_id: 1, site_name: 'SITE-A', dc_name: 'DC-A2' },
+        { site_id: 2, site_name: 'SITE-B', dc_name: 'DC-B1' },
+        { site_id: 2, site_name: 'SITE-B', dc_name: 'DC-B2' }
+      ]
+    },
+    {
+      match: /INNER\s+JOIN\s+ad_dcs\s+sd\s+ON\s+sd\.dc_name\s+=\s+t1\.source_dc/i,
+      rows: [
+        { source_dc: 'DC-A1', dest_dc: 'DC-B1', status_code: 0, last_success_time: last },
+        { source_dc: 'DC-A1', dest_dc: 'DC-B2', status_code: 2, last_success_time: last }
       ]
     }
   ]).standard();
@@ -141,14 +150,14 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
 
   // Site nodes: only `name`
   const siteNodes = r.body.nodes.filter(n => n.type === 'site');
-  assert.ok(siteNodes.length >= 2, 'expect at least 2 site nodes');
+  assert.equal(siteNodes.length, 2, 'expect 2 site nodes (SITE-A + SITE-B)');
   for (const n of siteNodes) {
     assert.ok(typeof n.name === 'string');
     assert.equal(n.site, undefined);
   }
   // DC nodes: name + site
   const dcNodes = r.body.nodes.filter(n => n.type === 'dc');
-  assert.ok(dcNodes.length >= 3, 'expect at least 3 distinct dc nodes');
+  assert.equal(dcNodes.length, 4, 'expect 4 DC nodes (DC-A1, DC-A2, DC-B1, DC-B2)');
   for (const n of dcNodes) {
     assert.ok(typeof n.name === 'string');
     assert.ok(typeof n.site === 'string');
