@@ -331,16 +331,21 @@ await ((async () => {
   // on first normal-mode start. Runs after listenPort seed (same normal-mode
   // gate `!needsInit && db`) and BEFORE buildServerApps so the agent package
   // runner can read the cached collect.ps1 from the same path it uses for
-  // downloaded packages. Idempotent: skips if <dataDir>/<name>/<version>/manifest.json
-  // already exists. Source is bundled at publish/center/data/packages/ — that
-  // mirror is maintained by the mirror script (publish/build) so this seeder
-  // stays consistent with what gets shipped in publish.zip.
+  // downloaded packages. Idempotent: skips file copy if <dataDir>/<name>/<version>/manifest.json
+  // already exists, but re-runs the installed_packages DB upsert on every
+  // normal-mode restart — that's the round-12 fix for runAllNow count:0
+  // (the upsert recovers installs where files were seeded pre-DB-registration
+  // and the agent therefore saw zero packages).
+  // Source is bundled at publish/center/data/packages/ — that mirror is
+  // maintained by the mirror script (publish/build) so this seeder stays
+  // consistent with what gets shipped in publish.zip.
   if (!needsInit && db) {
     try {
       await seedBuiltinPackages({
         dataDir: process.cwd() + '/data/packages',
         sourceDir: resolveBuiltinSourceDir(),
-        writeAudit
+        writeAudit,
+        db
       });
     } catch (err) {
       logger.warn({ err: err.message }, 'built-in package seed failed; non-AD package runner will skip until next restart');

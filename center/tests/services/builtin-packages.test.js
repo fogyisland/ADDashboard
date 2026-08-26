@@ -223,3 +223,147 @@ test('seedBuiltinPackages: partial state re-seeds only the missing built-ins', a
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// --- Round-12 runAllNow count:0 fix: seedBuiltinPackages must also register
+// each built-in in the installed_packages DB table so the agent's
+// /api/agent/packages endpoint serves them. Pre-fix installs seeded files
+// but never wrote the DB row → agent saw [] → runAllNow logged count:0. ---
+
+// Build a mock db that captures every INSERT INTO installed_packages call.
+// We don't exercise the real driver — we only assert that seedBuiltinPackages
+// passes the right (name, version, type, manifest, enabled, params, source)
+// tuple to the upsert helper, and that it does so once per built-in.
+function makeMockDb() {
+  const upserts = [];
+  const mock = {
+    dialect: 'mysql',
+    async execute(sql, params) {
+      if (typeof sql === 'string' && sql.includes('INSERT INTO installed_packages')) {
+        upserts.push({ sql, params });
+      }
+      return { rows: [] };
+    }
+  };
+  return { mock, upserts };
+}
+
+test('seedBuiltinPackages: upserts installed_packages row for every built-in when db is provided', async () => {
+  const tmp = makeTmpDir();
+  try {
+    const { mock, upserts } = makeMockDb();
+    await seedBuiltinPackages({
+      dataDir: tmp,
+      sourceDir: SOURCE_DIR,
+      db: mock
+    });
+
+    assert.strictEqual(upserts.length, BUILTIN_PACKAGES.length,
+      `expected one upsert per built-in (${BUILTIN_PACKAGES.length}), got ${upserts.length}`);
+
+    const upsertedNames = upserts.map(u => u.params[0]).sort();
+    const expectedNames = BUILTIN_PACKAGES.map(p => p.name).sort();
+    assert.deepStrictEqual(upsertedNames, expectedNames,
+      'every built-in should appear in the upsert list');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('seedBuiltinPackages: upserted row carries correct (name, version, type, enabled, source) shape', async () => {
+  const tmp = makeTmpDir();
+  try {
+    const { mock, upserts } = makeMockDb();
+    await seedBuiltinPackages({
+      dataDir: tmp,
+      sourceDir: SOURCE_DIR,
+      db: mock
+    });
+
+    // Find the row for ad_os_baseline — its manifest has type=gauge and a
+    // known intervalSec; use it as the shape anchor.
+    const baseline = upserts.find(u => u.params[0] === 'ad_os_baseline');
+    assert.ok(baseline, 'ad_os_baseline should be upserted');
+
+    // Params order per UPSERT_MYSQL: name, version, type, manifest_json,
+    // enabled, params_json, installed_at, updated_at, source.
+    assert.strictEqual(baseline.params[0], 'ad_os_baseline');
+    assert.strictEqual(baseline.params[1], '1.0.0');
+    assert.strictEqual(baseline.params[2], 'gauge', 'type should come from manifest.type');
+    const manifest = JSON.parse(baseline.params[3]);
+    assert.strictEqual(manifest.name, 'ad-os-baseline', 'manifest_json should round-trip');
+    assert.strictEqual(manifest.version, '1.0.0');
+    assert.strictEqual(baseline.params[4], 1, 'enabled should be 1 (built-ins auto-enable)');
+    assert.strictEqual(baseline.params[5], null, 'params_json should be null for built-ins');
+    assert.strictEqual(baseline.params[8], 'builtin-seed', 'source should mark the upsert provenance');
+    // installed_at / updated_at (params[6,7]) are Date objects — just verify
+    // they're recent (within the last minute) to confirm they're stamped now.
+    const installedAt = new Date(baseline.params[6]).getTime();
+    const updatedAt = new Date(baseline.params[7]).getTime();
+    const now = Date.now();
+    assert.ok(Math.abs(now - installedAt) < 60_000, 'installed_at should be ~now');
+    assert.ok(Math.abs(now - updatedAt) < 60_000, 'updated_at should be ~now');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('seedBuiltinPackages: idempotent restart upserts all 3 again (recovers DB-empty installs)', async () => {
+  // The bug we're fixing: pre-fix installs left files on disk but no
+  // installed_packages row. On first restart after this fix ships, the
+  // seeder must upsert every built-in even though the files were copied
+  // in a previous run. The upsert is idempotent at the DB layer (INSERT
+  // ... ON DUPLICATE KEY UPDATE), so a second pass is safe.
+  const tmp = makeTmpDir();
+  try {
+    const { mock, upserts } = makeMockDb();
+
+    // First run: files copy + DB upsert.
+    await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, db: mock });
+    assert.strictEqual(upserts.length, BUILTIN_PACKAGES.length);
+
+    // Second run: file copy skipped (manifest.json exists), but DB upsert
+    // still runs for every built-in. Simulates the recovery case where
+    // files were seeded by an old binary that didn't touch the DB.
+    await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, db: mock });
+    assert.strictEqual(upserts.length, BUILTIN_PACKAGES.length * 2,
+      'DB upsert must run on every restart to recover installs where files were seeded without a DB row');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('seedBuiltinPackages: without db, no upsert is attempted (no DB import path)', async () => {
+  // Backward compatibility: existing callers (and the partial-state test
+  // above) that don't pass db must not be forced to mock one. The seeder
+  // must keep working with no DB by skipping the upsert entirely.
+  const tmp = makeTmpDir();
+  try {
+    // No db — must not throw, must not even attempt to import installedPackages.
+    await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR });
+    assert.ok(fs.existsSync(path.join(tmp, 'ad_os_baseline', '1.0.0', 'manifest.json')));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('seedBuiltinPackages: DB upsert failures bubble (no silent skip — caller logs warn)', async () => {
+  // If the DB upsert throws, the whole seed must throw too — server.js
+  // wraps this in try/catch and logs warn. Silently swallowing would
+  // leave the bug unfixed on the next restart and the operator with no
+  // signal that something is wrong.
+  const tmp = makeTmpDir();
+  try {
+    const mockDb = {
+      dialect: 'mysql',
+      async execute() {
+        throw new Error('simulated DB outage');
+      }
+    };
+    await assert.rejects(
+      () => seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, db: mockDb }),
+      /simulated DB outage/
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
