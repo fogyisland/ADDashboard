@@ -175,46 +175,65 @@ function defaultScenario() {
       ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
       : ['DomainController']
   });
+  // 2026-08-26 round-19: agent IDs switched from generic MOCK-DC-{STATE}
+  // to the operator's real DC names — the dashboard view is what they look
+  // at during testing, so the labels should mirror production. The operator
+  // described the topology as "hubsite 多个数据来源复制到这台机器，其他站点
+  // 服务器都是从hubsite复制过来", i.e. hubadsrv1 sits in the hubsite and
+  // every spoke site (nc/fz/xm) replicates FROM it — spokes report inbound
+  // links with destDc=hubadsrv1, hub reports outbound links with destDc=
+  // each spoke. The four scenarios cover each state with this hub-spoke
+  // shape:
+  //   ncadserv1   (recent success)        — spoke: link from hub is OK
+  //   fzadsrv1    (recent partial_failure) — spoke: link from hub is FAILING
+  //   xmadsrv1    (stale, 2h old)          — spoke: link from hub is 2h old
+  //   hubadsrv1   (never uploaded)         — hub: no outbound replication
+  //                                          row has ever landed
+  const HUB = 'hubadsrv1';
   return [
     {
-      label: 'recent success (within 1h, all links OK)',
-      agentId: 'MOCK-DC-FRESH',
+      label: 'recent success (within 1h, inbound link from hub OK)',
+      agentId: 'ncadserv1',
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('MOCK-DC-FRESH', { isPdc: true }) },
+      discovery: { dc: dc('ncadserv1', { isPdc: true }) },
       replication: {
         when: withinHour,
         links: [
-          { destDc: 'PEER-DC-01', statusCode: 0 },
-          { destDc: 'PEER-DC-02', statusCode: 0 }
+          // 1 inbound link from the hub — spoke sees hub as its source.
+          { destDc: HUB, statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'recent partial_failure (within 1h, one link failing)',
-      agentId: 'MOCK-DC-PARTIAL',
+      label: 'recent partial_failure (within 1h, inbound link from hub failing)',
+      agentId: 'fzadsrv1',
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('MOCK-DC-PARTIAL', { ip: '10.99.0.11' }) },
+      discovery: { dc: dc('fzadsrv1', { ip: '10.99.0.11' }) },
       replication: {
         when: withinHour,
         links: [
-          { destDc: 'PEER-DC-01', statusCode: 0 },
-          { destDc: 'PEER-DC-02', statusCode: 2, errorMessage: 'RPC server unavailable (round-trip > 30s)' },
-          { destDc: 'PEER-DC-03', statusCode: 0 }
+          // 1 inbound link from the hub, status_code 2 = RPC error. The
+          // spoke's "partial" surface in the dashboard is this single
+          // failing inbound; it's still "partial" rather than "all-fail"
+          // because the link exists at all (1/1 failing).
+          { destDc: HUB, statusCode: 2, errorMessage: 'RPC server unavailable (round-trip > 30s)' }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'stale (replication 2h old, heartbeat fresh)',
-      agentId: 'MOCK-DC-STALE',
+      label: 'stale (inbound link from hub is 2h old, heartbeat fresh)',
+      agentId: 'xmadsrv1',
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('MOCK-DC-STALE', { ip: '10.99.0.12' }) },
+      discovery: { dc: dc('xmadsrv1', { ip: '10.99.0.12' }) },
       replication: {
         when: twoHoursAgo,
         links: [
-          { destDc: 'PEER-DC-01', statusCode: 0 },
-          { destDc: 'PEER-DC-02', statusCode: 0 }
+          // Last successful inbound replication from hub was 2h ago. The
+          // status_code stays 0 (last attempt that succeeded); staleness
+          // is computed from collected_at, not from status_code.
+          { destDc: HUB, statusCode: 0 }
         ]
       },
       // No localState — agent only has the 2h-old replication row, so the
@@ -222,13 +241,16 @@ function defaultScenario() {
       localState: null
     },
     {
-      label: 'never-uploaded (heartbeat only, no replication rows)',
-      agentId: 'MOCK-DC-QUIET',
+      label: 'never-uploaded (hub — heartbeat only, no outbound replication rows)',
+      agentId: 'hubadsrv1',
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('MOCK-DC-QUIET', { ip: '10.99.0.13' }) },
+      discovery: { dc: dc('hubadsrv1', { ip: '10.99.0.13' }) },
       replication: null,
-      // No localState — agent has NEVER produced any replication row, so
-      // last_report_at stays NULL and the dashboard shows ⏸ 未上传.
+      // No localState — hub has NEVER produced an outbound replication row,
+      // so last_report_at stays NULL and the dashboard shows ⏸ 未上传 for
+      // the hub. (In production the hub WOULD have outbound rows; this
+      // scenario deliberately leaves it empty so the operator can verify
+      // the "未上传" UI state without standing up a 5th DC.)
       localState: null
     }
   ];
@@ -372,10 +394,10 @@ async function main() {
   console.log(summarizeView(view));
 
   console.log(`\ndone. open the heartbeat view in the admin UI to verify the four states:`);
-  console.log(`  MOCK-DC-FRESH   → success         (within 1h, all OK)`);
-  console.log(`  MOCK-DC-PARTIAL → partial_failure (within 1h, one link failing)`);
-  console.log(`  MOCK-DC-STALE   → stale           (replication 2h old)`);
-  console.log(`  MOCK-DC-QUIET   → null / 未上传    (no replication ever)`);
+  console.log(`  ncadserv1   → success         (within 1h, all OK)`);
+  console.log(`  fzadsrv1    → partial_failure (within 1h, one link failing)`);
+  console.log(`  xmadsrv1    → stale           (replication 2h old)`);
+  console.log(`  hubadsrv1   → null / 未上传    (no replication ever)`);
 }
 
 main().catch((e) => { console.error('fatal:', e); process.exit(1); });

@@ -5,6 +5,7 @@ import { findByUsername, listUsers, createUser, updateUser, deleteUser, bumpToke
 import { getConfig, setConfig, getConfigMap, restartRequired, putConfig, putConfigWithin } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
+import { getReplicationPortList } from '../services/replication-port-config.js';
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
 import * as email from '../services/email.js';
@@ -534,7 +535,7 @@ export function adminRouter({ config, logger, db }) {
           result = { error: 'cannot rollback a masked smtp_password audit row' };
           return;
         }
-        await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [audit.old_value, audit.config_key]);
+        await tx.execute('UPDATE system_config SET config_value = ?, updated_at = UTC_TIMESTAMP() WHERE config_key = ?', [audit.old_value, audit.config_key]);
         // Redact the password on the audit-trail write too — the rollback
         // row would otherwise carry cleartext if the source row's new_value
         // was the real password (rows written before T12 fix1).
@@ -1307,6 +1308,60 @@ export function adminRouter({ config, logger, db }) {
       res.json({ ok: true, affected: affectedRows });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups bulkDisable failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-26 round-17 replication-port probe config + aggregator.
+  //
+  //   GET /api/admin/replication-port-status   → per (source_dc, dest_dc)
+  //                                              port-status matrix; also
+  //                                              returns the operator-managed
+  //                                              port list that backs the
+  //                                              probe (`system_ports`,
+  //                                              edited via /admin/ports).
+  //
+  // The legacy dedicated editor (`/api/admin/replication-ports/config`,
+  // round-16) is gone: the probe-port list is sourced from `system_ports` so
+  // operators have a single place to manage the list. See
+  // services/replication-port-config.js header for the full rationale.
+
+  r.get('/api/admin/replication-port-status', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      // Pull operator-config first so the response always carries the
+      // authoritative port list (in case the JS caller adds/removes ports
+      // before the next probe cycle).
+      const ports = await getReplicationPortList();
+      const { rows } = await db.query(db.sql.replication.latestPartnerPortPerPair);
+      // Each row carries partner_port_status as a JSON string (the rowParams
+      // helper in services/replication.js emits a string when the wire payload
+      // is already JSON, an object when it's a JS object). MySQL sometimes
+      // returns it as a JS object when the column type is JSON; MSSQL
+      // returns NVARCHAR(MAX) as a string. Normalize to object.
+      const parsedRows = rows.map((r) => {
+        let perPort = {};
+        const raw = r.partner_port_status;
+        if (raw != null) {
+          if (typeof raw === 'object') perPort = raw;
+          else {
+            try { perPort = JSON.parse(String(raw)); }
+            catch { perPort = {}; }
+          }
+        }
+        return {
+          sourceDc: r.source_dc,
+          destDc: r.dest_dc,
+          sourceSite: r.source_site ?? null,
+          destSite: r.dest_site ?? null,
+          perPort,                    // { '135': { reachable, latencyMs, error }, ... }
+          lastAttemptTime: r.last_attempt_time ?? null,
+          collectedAt: r.collected_at ?? null
+        };
+      });
+      res.json({ ports, rows: parsedRows });
+    } catch (e) {
+      logger.error({ err: e }, 'admin replication-port-status get failed');
       res.status(500).json({ error: 'internal' });
     }
   });

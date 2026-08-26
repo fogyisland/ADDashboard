@@ -182,11 +182,11 @@ export function transitionState(s, hit, now, rule) {
 // functional, the loop is the I/O boundary.
 
 const STATE_UPSERT_MYSQL = `INSERT INTO alert_rule_state (rule_id, state, first_hit_at, last_evaluated_at, last_fired_at, last_recovered_at, suppressed_until)
-                            VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+                            VALUES (?, ?, ?, UTC_TIMESTAMP(), ?, ?, ?)
                             ON DUPLICATE KEY UPDATE
                               state = VALUES(state),
                               first_hit_at = VALUES(first_hit_at),
-                              last_evaluated_at = CURRENT_TIMESTAMP,
+                              last_evaluated_at = UTC_TIMESTAMP(),
                               last_fired_at = VALUES(last_fired_at),
                               last_recovered_at = VALUES(last_recovered_at),
                               suppressed_until = VALUES(suppressed_until)`;

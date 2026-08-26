@@ -12,15 +12,15 @@ test('alertOutbox: enqueue (MySQL) has 7 placeholders (alert_event_id, to, cc, s
   assert.strictEqual((alertOutbox.mysql.enqueue.match(/\?/g) || []).length, 7);
 });
 
-test('alertOutbox: listPending (MySQL) scans sent_at IS NULL and next_attempt_at <= NOW(), ordered by next_attempt_at ASC,id ASC with LIMIT ?', () => {
+test('alertOutbox: listPending (MySQL) scans sent_at IS NULL and next_attempt_at <= UTC_TIMESTAMP(), ordered by next_attempt_at ASC,id ASC with LIMIT ?', () => {
   assert.match(alertOutbox.mysql.listPending, /WHERE sent_at IS NULL/i);
-  assert.match(alertOutbox.mysql.listPending, /next_attempt_at <= NOW\(\)/i);
+  assert.match(alertOutbox.mysql.listPending, /next_attempt_at <= UTC_TIMESTAMP\(\)/i);
   assert.match(alertOutbox.mysql.listPending, /ORDER BY next_attempt_at ASC, id ASC/);
   assert.match(alertOutbox.mysql.listPending, /LIMIT \?/);
 });
 
-test('alertOutbox: markSent (MySQL) sets sent_at=NOW(), bumps attempt_count, clears last_error', () => {
-  assert.match(alertOutbox.mysql.markSent, /SET sent_at = NOW\(\)/i);
+test('alertOutbox: markSent (MySQL) sets sent_at=UTC_TIMESTAMP(), bumps attempt_count, clears last_error', () => {
+  assert.match(alertOutbox.mysql.markSent, /SET sent_at = UTC_TIMESTAMP\(\)/i);
   assert.match(alertOutbox.mysql.markSent, /attempt_count = attempt_count \+ 1/);
   // markSent uses a placeholder for last_error (=NULL at call time) so the
   // loop's passing [null, rowId] keeps params[1] bound to rowId (matches the
@@ -34,7 +34,7 @@ test('alertOutbox: markFailed (MySQL) bumps attempt_count, sets last_error; sche
   // markFailed has [last_error, id] (2 params); scheduleRetry is a separate
   // helper that applies the backoff next_attempt_at.
   assert.strictEqual((alertOutbox.mysql.markFailed.match(/\?/g) || []).length, 2);
-  assert.match(alertOutbox.mysql.scheduleRetry, /DATE_ADD\(NOW\(\), INTERVAL \? SECOND\)/);
+  assert.match(alertOutbox.mysql.scheduleRetry, /DATE_ADD\(UTC_TIMESTAMP\(\), INTERVAL \? SECOND\)/);
   assert.strictEqual((alertOutbox.mysql.scheduleRetry.match(/\?/g) || []).length, 2);
 });
 

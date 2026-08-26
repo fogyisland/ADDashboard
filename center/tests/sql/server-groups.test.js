@@ -56,7 +56,7 @@ test('serverGroups: package upsert (MySQL) keyed on (hostname, package_name) dou
   assert.match(serverGroups.mysql.upsertPackage, /INSERT INTO ad_member_server_packages/i);
   assert.match(serverGroups.mysql.upsertPackage, /ON DUPLICATE KEY UPDATE/i);
   assert.strictEqual((serverGroups.mysql.upsertPackage.match(/\?/g) || []).length, 3);
-  assert.match(serverGroups.mysql.touchPackageRun, /SET last_run_at = NOW\(\)/i);
+  assert.match(serverGroups.mysql.touchPackageRun, /SET last_run_at = UTC_TIMESTAMP\(\)/i);
   assert.match(serverGroups.mysql.removePackage, /DELETE FROM ad_member_server_packages WHERE hostname = \? AND package_name = \?/i);
   assert.match(serverGroups.mysql.listPackagesForHost, /WHERE msp\.hostname = \?/i);
   assert.match(serverGroups.mysql.listPackagesForHost, /LEFT JOIN installed_packages/i);

@@ -27,7 +27,7 @@ const UPSERT_MYSQL = `INSERT INTO ad_member_servers
     site_id = VALUES(site_id),
     ip_address = VALUES(ip_address),
     os_version = VALUES(os_version),
-    updated_at = NOW()`;
+    updated_at = UTC_TIMESTAMP()`;
 
 const UPSERT_MSSQL = `MERGE INTO ad_member_servers AS t
   USING (SELECT
@@ -61,10 +61,10 @@ const LIST_MSSQL = `SELECT ms.*, s.site_name
 const DELETE_MYSQL = `DELETE FROM ad_member_servers WHERE hostname = ?`;
 const DELETE_MSSQL = `DELETE FROM ad_member_servers WHERE hostname = CAST(? AS VARCHAR(128))`;
 
-const TOUCH_LAST_SEEN_MYSQL = `UPDATE ad_member_servers SET last_seen_at = NOW() WHERE hostname = ?`;
+const TOUCH_LAST_SEEN_MYSQL = `UPDATE ad_member_servers SET last_seen_at = UTC_TIMESTAMP() WHERE hostname = ?`;
 const TOUCH_LAST_SEEN_MSSQL = `UPDATE ad_member_servers SET last_seen_at = SYSUTCDATETIME() WHERE hostname = CAST(? AS VARCHAR(128))`;
 
-const TOUCH_LAST_REPORT_MYSQL = `UPDATE ad_member_servers SET last_report_at = NOW() WHERE hostname = ?`;
+const TOUCH_LAST_REPORT_MYSQL = `UPDATE ad_member_servers SET last_report_at = UTC_TIMESTAMP() WHERE hostname = ?`;
 const TOUCH_LAST_REPORT_MSSQL = `UPDATE ad_member_servers SET last_report_at = SYSUTCDATETIME() WHERE hostname = CAST(? AS VARCHAR(128))`;
 
 export const memberServers = {

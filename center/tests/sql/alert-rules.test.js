@@ -34,19 +34,19 @@ test('alertRules: insert (MSSQL) uses bracketed [condition] identifier', () => {
 
 // ---- alert_rule_state ----
 
-test('alertRules: upsertState (MySQL) ON DUPLICATE KEY UPDATE; sets last_evaluated_at=NOW()', () => {
+test('alertRules: upsertState (MySQL) ON DUPLICATE KEY UPDATE; sets last_evaluated_at=UTC_TIMESTAMP()', () => {
   assert.match(alertRules.mysql.upsertState, /INSERT INTO alert_rule_state/i);
   assert.match(alertRules.mysql.upsertState, /ON DUPLICATE KEY UPDATE/i);
-  // 7 params: rule_id, state, first_hit_at, last_evaluated_at (literal NOW in
-  // MySQL), last_fired_at, last_recovered_at, suppressed_until — but in MySQL
-  // we count only the placeholders, not the NOW() literal.
+  // 6 placeholders + 2 literal UTC_TIMESTAMP() calls (first_hit_at in
+  // VALUES, last_evaluated_at in ON DUPLICATE KEY UPDATE); placeholder count
+  // is the only assertion that distinguishes MySQL from MSSQL shape.
   const placeholderCount = (alertRules.mysql.upsertState.match(/\?/g) || []).length;
   assert.strictEqual(placeholderCount, 6);
-  assert.match(alertRules.mysql.upsertState, /last_evaluated_at = NOW\(\)/);
+  assert.match(alertRules.mysql.upsertState, /last_evaluated_at = UTC_TIMESTAMP\(\)/);
   assert.match(alertRules.mysql.getState, /FROM alert_rule_state WHERE rule_id = \?/i);
   assert.match(alertRules.mysql.listStatesForEval, /INNER JOIN alert_rules r/i);
   assert.match(alertRules.mysql.listStatesForEval, /WHERE r\.enabled = 1/);
-  assert.match(alertRules.mysql.touchEvaluated, /SET last_evaluated_at = NOW\(\)/i);
+  assert.match(alertRules.mysql.touchEvaluated, /SET last_evaluated_at = UTC_TIMESTAMP\(\)/i);
 });
 
 test('alertRules: upsertState (MSSQL) MERGE keyed on rule_id', () => {

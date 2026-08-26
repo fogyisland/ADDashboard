@@ -73,6 +73,9 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   // an agent to send an immediate heartbeat report. Classified as 'changes'
   // because it mutates ad_agent_heartbeat.report_requested_at.
   ['request_agent_report',            'changes']
+  // 2026-08-26 round-17: update_replication_port_config was retired with the
+  // probe-port rewrite — operators now edit ports via the standard
+  // create_port / update_port / delete_port audit actions on system_ports.
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -143,6 +146,7 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   // round-12: heartbeat "report now" — low severity (operator action,
   // not destructive; only sets a flag the next heartbeat will clear).
   ['request_agent_report',            'low']
+  // 2026-08-26 round-17: update_replication_port_config retired (see above).
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -209,6 +213,11 @@ const ACTION_LABEL = Object.freeze(new Map([
   // request_agent_report action (operator clicks "立即回报" on the agent
   // list to ask that agent to send a heartbeat immediately).
   ['request_agent_report',            '请求 Agent 立即回报']
+  // 2026-08-26 round-17: update_replication_port_config was removed when the
+  // probe-port list moved into the system_ports table (same source as the
+  // port-health-check page). Operators now edit ports via the existing
+  // create_port / update_port / delete_port audit actions; no separate
+  // action needed.
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([

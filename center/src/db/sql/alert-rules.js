@@ -41,11 +41,11 @@ export const alertRules = {
 
     // ---- alert_rule_state ----
     upsertState: `INSERT INTO alert_rule_state (rule_id, state, first_hit_at, last_evaluated_at, last_fired_at, last_recovered_at, suppressed_until)
-                  VALUES (?, ?, ?, NOW(), ?, ?, ?)
+                  VALUES (?, ?, ?, UTC_TIMESTAMP(), ?, ?, ?)
                   ON DUPLICATE KEY UPDATE
                     state = VALUES(state),
                     first_hit_at = VALUES(first_hit_at),
-                    last_evaluated_at = NOW(),
+                    last_evaluated_at = UTC_TIMESTAMP(),
                     last_fired_at = VALUES(last_fired_at),
                     last_recovered_at = VALUES(last_recovered_at),
                     suppressed_until = VALUES(suppressed_until)`,
@@ -56,7 +56,7 @@ export const alertRules = {
                         FROM alert_rule_state s
                         INNER JOIN alert_rules r ON r.rule_id = s.rule_id
                         WHERE r.enabled = 1`,
-    touchEvaluated: `UPDATE alert_rule_state SET last_evaluated_at = NOW() WHERE rule_id = ?`,
+    touchEvaluated: `UPDATE alert_rule_state SET last_evaluated_at = UTC_TIMESTAMP() WHERE rule_id = ?`,
     clearSuppression: `UPDATE alert_rule_state SET suppressed_until = NULL WHERE rule_id = ?`
   },
   mssql: {

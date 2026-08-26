@@ -40,7 +40,15 @@ const DISCOVER_PATH  = '/api/agent/discover';
 // ----- scenario -----
 
 function defaultScenario() {
-  const peers = ['PEER-DC-01', 'PEER-DC-02', 'PEER-DC-03'];
+  // 2026-08-26 round-19: hub-spoke topology (operator-confirmed). The hub
+  // (hubadsrv1) sits in the hubsite and all spoke sites (nc/fz/xm) replicate
+  // FROM it. Each spoke reports 1 inbound link from the hub; the hub itself
+  // has no outbound replication rows in this mock (kept empty so the
+  // dashboard can exercise the "未上传" state for the hub role).
+  const HUB = 'hubadsrv1';
+  // peers[] here is the set of partner DCs the agent REPORTS (its sources).
+  // For a spoke that's [hubadsrv1]; for the hub it's [ncadserv1, fzadsrv1,
+  // xmadsrv1] (it replicates to all 3 spokes).
   const dc = (agentId, opts = {}) => ({
     name: agentId,
     hostname: `${agentId.toLowerCase()}.mock.local`,
@@ -53,10 +61,15 @@ function defaultScenario() {
       : ['DomainController']
   });
   return [
-    { agentId: 'MOCK-DC-FRESH',   isPdc: true,  peers, failRate: 0.0 },
-    { agentId: 'MOCK-DC-PARTIAL', isPdc: false, peers, failRate: 0.34 },
-    { agentId: 'MOCK-DC-QUIET',   isPdc: false, peers: [], failRate: 0.0 },
-    { agentId: 'MOCK-DC-STALE',   isPdc: false, peers, failRate: 0.0, replicationTickMs: REPLICATION_TICK_MS * 4 }
+    // Spoke sites — each reports 1 inbound link from the hub.
+    { agentId: 'ncadserv1',   isPdc: true,  peers: [HUB],                 failRate: 0.0,  ip: '10.99.0.10' },
+    { agentId: 'fzadsrv1',    isPdc: false, peers: [HUB],                 failRate: 0.34, ip: '10.99.0.11' },
+    { agentId: 'xmadsrv1',    isPdc: false, peers: [HUB],                 failRate: 0.0,  ip: '10.99.0.12', replicationTickMs: REPLICATION_TICK_MS * 4 },
+    // Hub — reports outbound links to every spoke. In the operator's
+    // production env the hub would have outbound rows; we keep its
+    // peers list non-empty so the steady-state daemon ticks outbound
+    // replication, mirroring what a real hub DC would post.
+    { agentId: 'hubadsrv1',   isPdc: false, peers: ['ncadserv1', 'fzadsrv1', 'xmadsrv1'], failRate: 0.0, ip: '10.99.0.13' }
   ];
 }
 

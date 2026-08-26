@@ -1,7 +1,10 @@
-// MySQL connection pool (mysql2/promise). Session-level timezone is set
-// to '+08:00' (Asia/Shanghai) so DATETIME columns are stored in local time
-// matching the AD DC host time zone. The pool lazily creates itself on
-// first initPool() and reuses the same pool across the process.
+// MySQL connection pool (mysql2/promise). The session-level timezone is set
+// to 'Z' (UTC) so DATETIME columns round-trip with the UTC-naive strings
+// written by toMysqlDatetime() (which uses getUTC*()). The previous '+08:00'
+// caused mysql2 to interpret stored UTC values as CST, returning JS Dates
+// that were 8h earlier than the real UTC instant — see round-15 follow-up
+// notes for the probe_state "all offline" symptom. The pool lazily creates
+// itself on first initPool() and reuses the same pool across the process.
 
 import mysql from 'mysql2/promise';
 
@@ -19,7 +22,7 @@ export function initPool(config) {
     waitForConnections: true,
     connectionLimit: c.connectionLimit ?? 10,
     namedPlaceholders: false,
-    timezone: '+08:00',
+    timezone: 'Z',
     dateStrings: false,
     multipleStatements: false,
     charset: 'utf8mb4'

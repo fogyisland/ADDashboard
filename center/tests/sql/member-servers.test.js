@@ -67,11 +67,11 @@ test('memberServers: findByHostname, list, delete, touch* are simple SELECT/UPDA
   // delete uses hostname = ?
   assert.match(memberServers.mysql.delete, /DELETE FROM ad_member_servers WHERE hostname\s*=\s*\?/i);
   assert.match(memberServers.mssql.delete, /DELETE FROM ad_member_servers WHERE hostname\s*=\s*CAST\(\?\s+AS\s+VARCHAR\(128\)\)/i);
-  // touchLastSeen / touchLastReport use NOW() vs SYSUTCDATETIME()
-  assert.match(memberServers.mysql.touchLastSeen, /SET last_seen_at = NOW\(\)/i);
+  // touchLastSeen / touchLastReport use UTC_TIMESTAMP() vs SYSUTCDATETIME()
+  assert.match(memberServers.mysql.touchLastSeen, /SET last_seen_at = UTC_TIMESTAMP\(\)/i);
   // R2 T3: mssql hostname WHERE clause is wrapped in CAST(? AS VARCHAR(128)).
   assert.match(memberServers.mssql.touchLastSeen, /SET last_seen_at = SYSUTCDATETIME\(\)\s+WHERE hostname\s*=\s*CAST\(\?\s+AS\s+VARCHAR\(128\)\)/i);
-  assert.match(memberServers.mysql.touchLastReport, /SET last_report_at = NOW\(\)/i);
+  assert.match(memberServers.mysql.touchLastReport, /SET last_report_at = UTC_TIMESTAMP\(\)/i);
   assert.match(memberServers.mssql.touchLastReport, /SET last_report_at = SYSUTCDATETIME\(\)\s+WHERE hostname\s*=\s*CAST\(\?\s+AS\s+VARCHAR\(128\)\)/i);
 });
 

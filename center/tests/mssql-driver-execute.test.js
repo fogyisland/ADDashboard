@@ -300,10 +300,10 @@ CREATE INDEX idx_changed_at ON sys_config_audit (changed_at DESC)`;
   assert.equal(out.affectedRows, 0);
   assert.equal(out.insertId, undefined);
   // The IF-prefixed statement MUST have hit .batch(), not .query().
-  // ensureConnected() issues a one-shot SET batch on first connect, so total
-  // calls = 2 (SET + user SQL). Filter out the SET call when asserting on
-  // the user SQL's method.
-  assert.equal(mock.calls.length, 2, `expected exactly 2 driver calls (SET + user SQL), got ${mock.calls.length}`);
+  // Round-14 fix: ensureConnected() no longer issues a one-shot SET batch
+  // (NOCOUNT ON was removed; XACT_ABORT/QUOTED_IDENTIFIER SETs were dropped
+  // as redundant with mssql pool defaults), so total calls = 1 (user SQL only).
+  assert.equal(mock.calls.length, 1, `expected exactly 1 driver call (user SQL), got ${mock.calls.length}`);
   const userCall = mock.calls.find(c => c.sql.includes('CREATE INDEX'));
   assert.ok(userCall, 'expected the IF/CREATE INDEX statement to appear in mock.calls');
   assert.equal(userCall.method, 'batch',
@@ -323,9 +323,8 @@ test('CREATE TABLE (no IF) still uses request.query() — control-flow routing i
   const createMssqlDriver = await loadDriverWithMock(mock);
   const drv = createMssqlDriver({ server: 'x', database: 'd', user: 'u', password: 'p' });
   await drv.execute('CREATE TABLE foo (id INT PRIMARY KEY)', []);
-  // ensureConnected() issues a one-shot SET batch on first connect, so total
-  // calls = 2 (SET + user SQL).
-  assert.equal(mock.calls.length, 2);
+  // Round-14: only the user SQL hits the driver — no SET batch.
+  assert.equal(mock.calls.length, 1);
   const userCall = mock.calls.find(c => c.sql.includes('CREATE TABLE'));
   assert.equal(userCall.method, 'query',
     `non-IF DDL must stay on request.query(); got ${userCall.method}`);
