@@ -155,6 +155,59 @@ export const heartbeatReportService = {
     return { agentId, requestedAt, alreadyPending };
   },
 
+  // 2026-08-26 round-19+: cascade-delete every row that references the
+  // given agent. Used by the heartbeat-table 删除 button when a host
+  // is decommissioned. Returns per-table affectedRow counts so the
+  // audit log can record what was removed. Throws AgentNotFoundError
+  // when the heartbeat row itself is missing — the route layer
+  // translates that to a 404. The four DELETEs are independent (no
+  // transaction) so a partial failure on one table doesn't poison the
+  // rest: the operator's intent is "remove this agent from view" and a
+  // stray replication row still visible would be misleading.
+  async deleteAgent(agentId, db = null) {
+    const conn = db ?? getDb();
+    const exists = await conn.execute(
+      'SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    const existsRows = exists?.rows ?? exists?.[0] ?? [];
+    if (existsRows.length === 0) {
+      throw new AgentNotFoundError(agentId);
+    }
+
+    const heartbeatResult = await conn.execute(conn.sql.heartbeat.deleteHeartbeatRow(agentId), [agentId]);
+    const sourceResult    = await conn.execute(conn.sql.heartbeat.deleteReplicationBySource(agentId), [agentId]);
+    const destResult      = await conn.execute(conn.sql.heartbeat.deleteReplicationByDest(agentId), [agentId]);
+    const runsResult      = await conn.execute(conn.sql.heartbeat.deletePackageRuns(agentId), [agentId]);
+
+    const num = (r) => Number(r?.affectedRows ?? 0);
+    return {
+      agentId,
+      deleted: {
+        heartbeat:    num(heartbeatResult),
+        replication:  num(sourceResult) + num(destResult),
+        package_runs: num(runsResult)
+      }
+    };
+  },
+
+  // 2026-08-26 round-19+: remove the ad_dcs row only. The DC tab is a
+  // separate surface — removing a DC entry does NOT touch the heartbeat
+  // row (a host may still be reporting even after we stop tracking it as
+  // a DC). Throws DcNotFoundError on miss.
+  async deleteDc(dcName, db = null) {
+    const conn = db ?? getDb();
+    const result = await conn.execute(conn.sql.heartbeat.deleteDcRow(dcName), [dcName]);
+    const affected = Number(result?.affectedRows ?? 0);
+    if (affected === 0) {
+      const e = new Error(`dc not found: ${dcName}`);
+      e.code = 'DC_NOT_FOUND';
+      e.dcName = dcName;
+      throw e;
+    }
+    return { dcName, deleted: { dcs: affected } };
+  },
+
   // 2026-08-26 round-15: counts are pre-computed in SQL (1-hour window).
   // _summaryFor only does the latest-failure lookup, and only when the
   // 1-hour window saw at least one failure — otherwise the dashboard's

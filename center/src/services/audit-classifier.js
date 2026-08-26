@@ -72,7 +72,14 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   // round-12: heartbeat "report now" — operator-initiated request to ask
   // an agent to send an immediate heartbeat report. Classified as 'changes'
   // because it mutates ad_agent_heartbeat.report_requested_at.
-  ['request_agent_report',            'changes']
+  ['request_agent_report',            'changes'],
+  // 2026-08-26 round-19+: heartbeat-table + report-table delete buttons.
+  // When a host is decommissioned the operator needs a way to clean its
+  // stale rows out of the dashboard view. Both are 'changes' (mutate
+  // ad_agent_heartbeat / ad_replication_status / ad_dcs / package_runs);
+  // severity is 'medium' because a wrong click wipes real history.
+  ['delete_agent_heartbeat',          'changes'],
+  ['delete_dc',                       'changes']
   // 2026-08-26 round-17: update_replication_port_config was retired with the
   // probe-port rewrite — operators now edit ports via the standard
   // create_port / update_port / delete_port audit actions on system_ports.
@@ -145,7 +152,12 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['revoke_user_tokens',              'high'],
   // round-12: heartbeat "report now" — low severity (operator action,
   // not destructive; only sets a flag the next heartbeat will clear).
-  ['request_agent_report',            'low']
+  ['request_agent_report',            'low'],
+  // 2026-08-26 round-19+: heartbeat/report-table delete buttons. medium
+  // because a mis-click drops real replication history; same shape as
+  // delete_server_group.
+  ['delete_agent_heartbeat',          'medium'],
+  ['delete_dc',                       'medium']
   // 2026-08-26 round-17: update_replication_port_config retired (see above).
 ]));
 
@@ -212,7 +224,12 @@ const ACTION_LABEL = Object.freeze(new Map([
   // round-12: heartbeat "report now" — Chinese label for the new
   // request_agent_report action (operator clicks "立即回报" on the agent
   // list to ask that agent to send a heartbeat immediately).
-  ['request_agent_report',            '请求 Agent 立即回报']
+  ['request_agent_report',            '请求 Agent 立即回报'],
+  // 2026-08-26 round-19+: heartbeat/report-table delete buttons. The
+  // 中文 label names the operator's mental model — "删除 Agent 记录"
+  // captures both tables because they share row identity.
+  ['delete_agent_heartbeat',          '删除 Agent 心跳记录'],
+  ['delete_dc',                       '删除 DC 记录']
   // 2026-08-26 round-17: update_replication_port_config was removed when the
   // probe-port list moved into the system_ports table (same source as the
   // port-health-check page). Operators now edit ports via the existing

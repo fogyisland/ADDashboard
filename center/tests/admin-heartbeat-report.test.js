@@ -263,3 +263,164 @@ test('GET /api/admin/heartbeat-report/agents: 401 without token', async () => {
     .get('/api/admin/heartbeat-report/agents');
   assert.equal(res.status, 401);
 });
+
+// ============================================================================
+// 2026-08-26 round-19+ — heartbeat-table + DC-tab 删除 buttons.
+// DELETE /api/admin/heartbeat-report/agents/:agentId cascades through
+// ad_agent_heartbeat + ad_replication_status (source + dest) + package_runs.
+// DELETE /api/admin/heartbeat-report/dcs/:dcName removes only ad_dcs.
+// ============================================================================
+
+// 2026-08-26 round-19+ — admin DELETE returns cascade counts. Each
+// DELETE statement reports affectedRows=1 in the mock (mock-db forces
+// affectedRows=1 for all mutations; see db-mock.js:131-134), so the
+// service aggregates source+dest to compute the replication total. We
+// capture the SQL fired via the mock's records[] array to assert that
+// all four statements ran in order.
+test('DELETE /agents/:agentId: cascades 4 DELETEs and returns per-table counts', async () => {
+  const records = [];
+  const db = buildMockDb([
+    // Existence check (SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ?)
+    // — return one row so the service proceeds past the existence guard.
+    {
+      match: /SELECT\s+1\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/i,
+      rows: [{ '1': 1 }]
+    }
+  ]).withRecording(records);
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .delete('/api/admin/heartbeat-report/agents/dc01')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.agentId, 'dc01');
+  // mock forces affectedRows=1 per mutation; service sums source+dest.
+  assert.equal(res.body.deleted.heartbeat, 1);
+  assert.equal(res.body.deleted.replication, 2);
+  assert.equal(res.body.deleted.package_runs, 1);
+  // Filter to just the mutation statements — SELECT 1 (existence) and the
+  // userAuth's getAuthStatus SELECT both precede them.
+  const deletes = records.filter(r => /^\s*DELETE\b/i.test(r.sql));
+  assert.equal(deletes.length, 4, 'four DELETE statements must fire');
+  assert.match(deletes[0].sql, /ad_agent_heartbeat/);
+  assert.match(deletes[1].sql, /source_dc/);
+  assert.match(deletes[2].sql, /dest_dc/);
+  assert.match(deletes[3].sql, /package_runs/);
+  // Each DELETE binds [agentId] as the single param.
+  for (const d of deletes) {
+    assert.deepEqual(d.params, ['dc01']);
+  }
+});
+
+// 2026-08-26 round-19+ — DELETE on a missing agent returns 404 (existence
+// guard). No DELETE statements should fire — the service throws before any
+// write so the dashboard never sees a partially-cascaded delete.
+test('DELETE /agents/:agentId: 404 when agent missing', async () => {
+  const records = [];
+  // Default mock returns empty rows for unmatched queries → SELECT 1 returns
+  // empty → service throws AgentNotFoundError before any DELETE runs.
+  const db = buildMockDb([]).withRecording(records);
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .delete('/api/admin/heartbeat-report/agents/ghost')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error, 'agent_not_found');
+  const deletes = records.filter(r => /^\s*DELETE\b/i.test(r.sql));
+  assert.equal(deletes.length, 0, 'no DELETE statements should run');
+});
+
+// 2026-08-26 round-19+ — DELETE without admin token returns 401. Same
+// contract as the other GETs in this router.
+test('DELETE /agents/:agentId: 401 without token', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const res = await supertest(buildApp())
+    .delete('/api/admin/heartbeat-report/agents/dc01');
+  assert.equal(res.status, 401);
+});
+
+// 2026-08-26 round-19+ — DC-tab delete only touches ad_dcs. The route
+// calls a single DELETE on ad_dcs.dc_name; no heartbeat / replication /
+// package_runs writes — that's the whole point of the DC-tab being a
+// separate surface.
+test('DELETE /dcs/:dcName: returns ok with single DELETE on ad_dcs', async () => {
+  const records = [];
+  const db = buildMockDb([]).withRecording(records);
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .delete('/api/admin/heartbeat-report/dcs/ncadsrv1')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.dcName, 'ncadsrv1');
+  assert.equal(res.body.deleted.dcs, 1);
+  const deletes = records.filter(r => /^\s*DELETE\b/i.test(r.sql));
+  assert.equal(deletes.length, 1, 'only ad_dcs DELETE must fire');
+  assert.match(deletes[0].sql, /ad_dcs/);
+  assert.deepEqual(deletes[0].params, ['ncadsrv1']);
+});
+
+// 2026-08-26 round-19+ — DC DELETE on a missing dc returns 404. The
+// service throws when affectedRows=0 so a typo doesn't silently no-op.
+// Mock has no matching DELETE script → default affectedRows=1, so we
+// install an explicit script that flips the behavior.
+test('DELETE /dcs/:dcName: 404 when dc missing', async () => {
+  // The mock's makeExec returns affectedRows=1 unconditionally for any
+  // matched DELETE (db-mock.js:131-134). We need affectedRows=0 to
+  // trigger DC_NOT_FOUND, so use a throwOnExecute to simulate a 404
+  // path indirectly — easier route is to provide NO matching script for
+  // ad_dcs AND rely on the default-mock behavior: scripts that don't
+  // match fall through to lookup() which returns []. Then makeExec
+  // detects a mutation and sets affectedRows=1 anyway. That gives us
+  // affectedRows=1 from the default mock, NOT 0. So to test the 404
+  // path we instead pre-fill the mock with a script that matches and
+  // returns affectedRows=0 via throwOnExecute-on-no-match? The cleanest
+  // approach: monkey-patch db.execute for this test only via onExecute
+  // override. Since db-mock.js exposes onExecute but not a way to set
+  // affectedRows=0, we instead inject a script whose match DOES catch
+  // the DELETE and whose result includes affectedRows — but makeExec
+  // overrides that. So we use a different strategy: use onExecute to
+  // throw a DC_NOT_FOUND error directly, mimicking what affectedRows=0
+  // would produce in the service.
+  const db = buildMockDb([
+    {
+      match: /DELETE\s+FROM\s+ad_dcs/i,
+      // onExecute fires before makeExec's response-build, but the
+      // service inspects result.affectedRows — which makeExec overrides
+      // to 1. So we can't observe 0 via the mock without a custom
+      // execute. The simpler approach is to use an onExecute that throws,
+      // but then the test would observe a 500, not 404. Best compromise:
+      // we don't have a perfect mock for affectedRows=0, so write the
+      // test as "DELETE on a dc whose lookup returns no rows" via a
+      // direct mock override of execute() — bypasses makeExec entirely.
+      execute: async () => ({ rows: [], affectedRows: 0 })
+    }
+  ]).standard();
+  // Override execute() to simulate "no row affected" — this is what the
+  // service consumes to decide between ok (200) and DC_NOT_FOUND (404).
+  const origExecute = db.execute;
+  db.execute = async (sql, params = []) => {
+    if (/DELETE\s+FROM\s+ad_dcs/i.test(sql)) {
+      return { rows: [], affectedRows: 0, insertId: undefined };
+    }
+    return origExecute(sql, params);
+  };
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .delete('/api/admin/heartbeat-report/dcs/ghost-dc')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 404);
+  assert.equal(res.body.error, 'dc_not_found');
+});
+
+// 2026-08-26 round-19+ — DELETE without admin token returns 401.
+test('DELETE /dcs/:dcName: 401 without token', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const res = await supertest(buildApp())
+    .delete('/api/admin/heartbeat-report/dcs/ncadsrv1');
+  assert.equal(res.status, 401);
+});

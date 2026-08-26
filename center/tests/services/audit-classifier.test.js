@@ -1,4 +1,4 @@
-// Unit tests for audit-classifier.js — round-12 T4.
+// Unit tests for audit-classifier.js — round-12 T4, round-19+ delete buttons.
 //
 // classifyAction(action) must map every audit action used by the app to a
 // category / severity / label triple. When a new action is introduced, a
@@ -6,12 +6,16 @@
 // defaults to the fallback ('ops' / 'low' / action-as-label) and the
 // changes filter / Chinese label silently break).
 //
-// This file currently covers the round-12 `request_agent_report` action —
-// an operator-initiated "ask this agent to send a heartbeat report now".
-// Classified as:
-//   - category = 'changes' (it mutates ad_agent_heartbeat.report_requested_at)
-//   - severity = 'low'      (operator action, not destructive)
-//   - label    = '请求 Agent 立即回报'
+// Covered actions:
+//   - request_agent_report — round-12 T4. Operator-initiated "ask this agent
+//     to send a heartbeat report now". Category=changes, severity=low,
+//     label=请求 Agent 立即回报.
+//   - delete_agent_heartbeat — round-19+ delete buttons on the heartbeat
+//     table. Cascades ad_agent_heartbeat + ad_replication_status +
+//     package_runs. Category=changes, severity=medium, label=删除 Agent 心跳记录.
+//   - delete_dc — round-19+ delete buttons on the DC tab. Removes the row
+//     from ad_dcs only (other tab keeps heartbeat visibility). Category=
+//     changes, severity=medium, label=删除 DC 记录.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,4 +26,18 @@ test('classifyAction: request_agent_report is classified as changes/low/请求 A
   assert.equal(c.category, 'changes');
   assert.equal(c.severity, 'low');
   assert.equal(c.label, '请求 Agent 立即回报');
+});
+
+test('classifyAction: delete_agent_heartbeat is classified as changes/medium/删除 Agent 心跳记录', () => {
+  const c = classifyAction('delete_agent_heartbeat');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'medium');
+  assert.equal(c.label, '删除 Agent 心跳记录');
+});
+
+test('classifyAction: delete_dc is classified as changes/medium/删除 DC 记录', () => {
+  const c = classifyAction('delete_dc');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'medium');
+  assert.equal(c.label, '删除 DC 记录');
 });

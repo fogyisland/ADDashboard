@@ -93,5 +93,54 @@ export function heartbeatReportRouter({ requireAuth, requirePerm }) {
     }
   });
 
+  // 2026-08-26 round-19+: heartbeat-table 删除 button. Cascades through
+  // ad_agent_heartbeat + ad_replication_status (both directions) +
+  // package_runs so the dashboard view doesn't keep orphans pointing
+  // at a decommissioned agent. Audit-logged as `delete_agent_heartbeat`
+  // (changes/medium/删除 Agent 心跳记录).
+  r.delete('/api/admin/heartbeat-report/agents/:agentId', ...auth, async (req, res) => {
+    const { agentId } = req.params;
+    try {
+      const out = await heartbeatReportService.deleteAgent(agentId);
+      await writeAudit({
+        action: 'delete_agent_heartbeat',
+        target: `agent:${agentId}`,
+        payload: { deleted: out.deleted },
+        userId: req.user?.sub ?? null
+      }, req.log);
+      res.json({ ok: true, agentId, deleted: out.deleted });
+    } catch (e) {
+      if (e.code === 'AGENT_NOT_FOUND') {
+        return res.status(404).json({ error: 'agent_not_found' });
+      }
+      req.log?.error?.({ err: e.message, agentId }, 'delete-agent failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-26 round-19+: DC-tab 删除 button. Removes only the ad_dcs row;
+  // the agent's heartbeat row stays put so the operator can still see
+  // its presence on the Agent tab. Audit-logged as `delete_dc`
+  // (changes/medium/删除 DC 记录).
+  r.delete('/api/admin/heartbeat-report/dcs/:dcName', ...auth, async (req, res) => {
+    const { dcName } = req.params;
+    try {
+      const out = await heartbeatReportService.deleteDc(dcName);
+      await writeAudit({
+        action: 'delete_dc',
+        target: `dc:${dcName}`,
+        payload: { deleted: out.deleted },
+        userId: req.user?.sub ?? null
+      }, req.log);
+      res.json({ ok: true, dcName, deleted: out.deleted });
+    } catch (e) {
+      if (e.code === 'DC_NOT_FOUND') {
+        return res.status(404).json({ error: 'dc_not_found' });
+      }
+      req.log?.error?.({ err: e.message, dcName }, 'delete-dc failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }

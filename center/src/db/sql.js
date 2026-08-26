@@ -314,7 +314,27 @@ const VARIANTS = {
              WHERE agent_id = ? AND collected_at >= ?
            )
          ORDER BY source_dc, dest_dc
-         LIMIT ${Number(limit)}`
+         LIMIT ${Number(limit)}`,
+      // 2026-08-26 round-19+: heartbeat-table delete buttons. The operator
+      // removes a row when a host is decommissioned; cascades through
+      // ad_replication_status (both source_dc and dest_dc matches) so the
+      // report table doesn't keep orphans referencing the deleted agent.
+      // Each DELETE is a single statement with one bind so affectedRows
+      // reflects exactly that table's contribution.
+      deleteHeartbeatRow: (agentId) =>
+        `DELETE FROM ad_agent_heartbeat WHERE agent_id = ?`,
+      deleteReplicationBySource: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE source_dc = ?`,
+      deleteReplicationByDest: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE dest_dc = ?`,
+      deletePackageRuns: (agentId) =>
+        `DELETE FROM package_runs WHERE agent_id = ?`,
+      // DC-tab delete — remove the ad_dcs row only. The DC list is a
+      // separate surface from the heartbeat table; deleting a DC leaves
+      // the heartbeat row intact (a host can stay in the heartbeat view
+      // even if it's no longer classified as a DC).
+      deleteDcRow: (dcName) =>
+        `DELETE FROM ad_dcs WHERE dc_name = ?`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
@@ -893,7 +913,22 @@ const VARIANTS = {
              WHERE agent_id = CAST(? AS NVARCHAR(64)) AND collected_at >= CAST(? AS DATETIME2)
              ORDER BY collected_at DESC
            )
-         ORDER BY source_dc, dest_dc`
+         ORDER BY source_dc, dest_dc`,
+      // 2026-08-26 round-19+: heartbeat-table delete buttons — MSSQL
+      // variant. Each DELETE binds the agent_id with CAST(? AS NVARCHAR(64))
+      // to match the row's column type (agent_id is NVARCHAR(64)) — without
+      // the cast the driver sends NVARCHAR(MAX) which silently mismatches
+      // the index and the WHERE never matches. Identical shape to MySQL.
+      deleteHeartbeatRow: (agentId) =>
+        `DELETE FROM ad_agent_heartbeat WHERE agent_id = CAST(? AS NVARCHAR(64))`,
+      deleteReplicationBySource: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE source_dc = CAST(? AS NVARCHAR(64))`,
+      deleteReplicationByDest: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE dest_dc = CAST(? AS NVARCHAR(64))`,
+      deletePackageRuns: (agentId) =>
+        `DELETE FROM package_runs WHERE agent_id = CAST(? AS NVARCHAR(64))`,
+      deleteDcRow: (dcName) =>
+        `DELETE FROM ad_dcs WHERE dc_name = CAST(? AS NVARCHAR(128))`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
