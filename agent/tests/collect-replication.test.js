@@ -16,7 +16,8 @@ test('collect-replication.ps1 declares a Get-DcCounters function', () => {
 test('collect-replication.ps1 emits a __dc_summary__ entry inside Get-ReplicationSnapshot', () => {
   const src = readFileSync(psPath, 'utf8');
   // The summary entry must be inside the snapshot build (not a stand-alone block)
-  // and use the four canonical AD cmdlets.
+  // and use the three remaining AD cmdlets (LockedCount moved to its own
+  // ad_lockout_summary package in round-18).
   assert.match(src, /NamingContext\s*=\s*'__dc_summary__'/,
     "expected NamingContext = '__dc_summary__'");
   // NB: the brief's step-1 regexes said `-Server $dc`, but the step-3
@@ -31,73 +32,33 @@ test('collect-replication.ps1 emits a __dc_summary__ entry inside Get-Replicatio
     'expected Get-ADGroup -Filter * -Server $ComputerName call');
   assert.match(src, /Get-GPO\b/,
     'expected Get-GPO call');
-  assert.match(src, /Search-ADAccount\s+-LockedOut\s+-Server\s+\$ComputerName/,
-    'expected Search-ADAccount -LockedOut -Server $ComputerName call');
+  // 2026-08-26 round-18: Search-ADAccount -LockedOut left the replication
+  // snapshot. The summary's LockedCount column moved to the new
+  // ad_lockout_summary package (see tests/lockout-summary-collect.test.js).
+  assert.ok(!/Search-ADAccount\s+-LockedOut/.test(src),
+    'Search-ADAccount -LockedOut must NOT be called from collect-replication.ps1 — moved to ad_lockout_summary package');
 });
 
 test('collect-replication.ps1 wraps each counter query in try/catch', () => {
   const src = readFileSync(psPath, 'utf8');
-  // Count the Get-AD* / Search-ADAccount / Get-GPO invocations and the
-  // try/catch blocks around them — must be at least 4 of each.
-  const counterCalls = (src.match(/(Get-ADUser|Get-ADGroup|Get-GPO|Search-ADAccount)/g) || []).length;
+  // 3 AD counters now (round-18 dropped Search-ADAccount -LockedOut).
+  const counterCalls = (src.match(/(Get-ADUser|Get-ADGroup|Get-GPO)/g) || []).length;
   const tryBlocks = (src.match(/^\s*try\s*\{/gm) || []).length;
-  assert.ok(counterCalls >= 4, `expected >=4 counter cmdlet calls, got ${counterCalls}`);
-  assert.ok(tryBlocks >= 4, `expected >=4 try blocks for fault isolation, got ${tryBlocks}`);
+  assert.ok(counterCalls >= 3, `expected >=3 counter cmdlet calls, got ${counterCalls}`);
+  assert.ok(tryBlocks >= 3, `expected >=3 try blocks for fault isolation, got ${tryBlocks}`);
 });
 
-test('collect-replication.ps1 declares a Get-LockoutEvents function', () => {
+test('collect-replication.ps1 no longer carries LockoutEvents or Get-LockoutEvents (round-18)', () => {
+  // 2026-08-26 round-18: lockout data ships via the ad_lockout_list package
+  // on a 15-minute cadence. The replication snapshot must NOT carry
+  // LockoutEvents anymore — keep this script focused on replication.
   const src = readFileSync(psPath, 'utf8');
-  assert.match(src, /function\s+Get-LockoutEvents\b/,
-    'expected Get-LockoutEvents function definition');
-});
-
-test('Get-LockoutEvents uses Get-WinEvent -FilterHashtable Security Id=4740 with 15-min StartTime', () => {
-  const src = readFileSync(psPath, 'utf8');
-  // Must use FilterHashtable form (not -ComputerName form, which PS 5.1
-  // Get-WinEvent rejects for -FilterHashtable).
-  assert.match(src, /Get-WinEvent\s+-FilterHashtable\s+@\{/,
-    'expected Get-WinEvent -FilterHashtable @{...}');
-  assert.match(src, /LogName\s*=\s*'Security'/);
-  assert.match(src, /Id\s*=\s*4740/);
-  // The lookback window equals the polling interval (15 min default).
-  // Accept either the inline form or assignment to $start — both are fine.
-  // The contract is that SOME reference to AddMinutes(-15) exists, paired
-  // with a StartTime= line in the hashtable.
-  assert.match(src, /\(Get-Date\)\.AddMinutes\(-15\)/,
-    'expected (Get-Date).AddMinutes(-15) somewhere — the lookback MUST match the polling interval');
-  assert.match(src, /StartTime\s*=/);
-});
-
-test('Get-LockoutEvents block is wrapped in try/catch (per-block fault isolation)', () => {
-  const src = readFileSync(psPath, 'utf8');
-  // Find the Get-LockoutEvents function body and confirm it has a try/catch
-  const fnMatch = src.match(/function\s+Get-LockoutEvents[\s\S]+?\n\}/);
-  assert.ok(fnMatch, 'expected to find the Get-LockoutEvents function body');
-  const body = fnMatch[0];
-  assert.match(body, /\btry\s*\{/, 'expected a try block inside Get-LockoutEvents');
-  assert.match(body, /\}\s*catch\s*\{/, 'expected a catch block');
-  // The catch handler must write to stderr (matches Get-DcCounters pattern)
-  assert.match(body, /\[Console\]::Error\.WriteLine/);
-});
-
-test('Get-ReplicationSnapshot adds a LockoutEvents NoteProperty before returning', () => {
-  const src = readFileSync(psPath, 'utf8');
-  // Inside Get-ReplicationSnapshot, must use Add-Member to attach LockoutEvents.
-  assert.match(src, /Add-Member\s+-NotePropertyName\s+LockoutEvents/,
-    'expected $snapshot | Add-Member -NotePropertyName LockoutEvents ...');
-  assert.match(src, /LockoutEvents\s*=\s*\(?Get-LockoutEvents/,
-    'expected LockoutEvents to be assigned from Get-LockoutEvents call');
-});
-
-test('each lockout event carries EventRecordId, OccurredAt, and the 4 user/computer fields', () => {
-  const src = readFileSync(psPath, 'utf8');
-  // Inside Get-LockoutEvents, the PSCustomObject hash must include all 6 fields.
-  assert.match(src, /EventRecordId\s*=/);
-  assert.match(src, /OccurredAt\s*=/);
-  assert.match(src, /TargetUserName\s*=/);
-  assert.match(src, /SubjectUserName\s*=/);
-  assert.match(src, /SubjectDomain\s*=/);
-  assert.match(src, /CallerComputerName\s*=/);
+  assert.ok(!/function\s+Get-LockoutEvents\b/.test(src),
+    'Get-LockoutEvents function must be removed from collect-replication.ps1');
+  assert.ok(!/Add-Member\s+-NotePropertyName\s+LockoutEvents/.test(src),
+    'LockoutEvents NoteProperty must not be added to the snapshot');
+  assert.ok(!/LockoutEvents\s*=\s*\(?Get-LockoutEvents/.test(src),
+    'LockoutEvents must not be sourced from Get-LockoutEvents in this script');
 });
 
 // ---------- Task 3: per-partner TCP port probes ----------
@@ -180,12 +141,17 @@ test('Get-PartnerPortSnapshot caps the partner list at MaxPartners via Select-Ob
     'expected Partners | Select-Object -First $MaxPartners cap');
 });
 
-test('Get-PartnerPortSnapshot emits a per-partner row with the 16-column INSERT shape', () => {
+test('Get-PartnerPortSnapshot emits a per-partner row with the 15-column INSERT shape (round-18: no LockedCount)', () => {
   const src = readFileSync(psPath, 'utf8');
   const fnMatch = src.match(/function\s+Get-PartnerPortSnapshot[\s\S]+?\n\}/);
   assert.ok(fnMatch, 'expected to find the Get-PartnerPortSnapshot function body');
   const body = fnMatch[0];
-  // All 16 keys required by the row shape (see R1 in the SDD ledger).
+  // 2026-08-26 round-18: LockedCount dropped from the per-partner row.
+  // Lockout data ships on its own 15-minute cadence via the
+  // ad_lockout_summary package. Replication rows are now 15 columns:
+  // (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site,
+  //  naming_context, last_success_time, last_attempt_time, status_code,
+  //  error_message, users_count, groups_count, gpos_count, partner_port_status)
   const required = [
     'CollectedAt',
     'AgentId',
@@ -201,13 +167,16 @@ test('Get-PartnerPortSnapshot emits a per-partner row with the 16-column INSERT 
     'UsersCount',
     'GroupsCount',
     'GposCount',
-    'LockedCount',
     'PartnerPortStatus'
   ];
   for (const k of required) {
     assert.match(body, new RegExp(`${k}\\s*=`),
       `expected ${k} field in the per-partner row hash`);
   }
+  // Defense against round-18 regression: LockedCount must NOT be in the
+  // per-partner row any more — it belongs to ad_lockout_summary.
+  assert.ok(!/\bLockedCount\s*=/.test(body),
+    'LockedCount must be removed from Get-PartnerPortSnapshot (round-18 split)');
 });
 
 test('Get-PartnerPortSnapshot naming context embeds the partner host (R2)', () => {

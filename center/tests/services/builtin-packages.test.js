@@ -113,11 +113,17 @@ test('seedBuiltinPackages: works without writeAudit (optional dep)', async () =>
 
 // --- Task 6: the two new built-ins auto-seed alongside ad_os_baseline ---
 
-test('BUILTIN_PACKAGES: registers all three built-ins at 1.0.0', () => {
+test('BUILTIN_PACKAGES: registers all five built-ins at 1.0.0', () => {
+  // 2026-08-26 round-18: ad_lockout_summary and ad_lockout_list join the
+  // built-in roster alongside the round-12 trio. The lockout packages
+  // ship at 15-minute cadence (intervalSec=900) so a DC with broken
+  // replication still surfaces its lockout trend + event list.
   assert.deepStrictEqual(BUILTIN_PACKAGES, [
     { name: 'ad_os_baseline', version: '1.0.0' },
     { name: 'ad_domain_consistency', version: '1.0.0' },
-    { name: 'ad_local_port_check', version: '1.0.0' }
+    { name: 'ad_local_port_check', version: '1.0.0' },
+    { name: 'ad_lockout_summary', version: '1.0.0' },
+    { name: 'ad_lockout_list', version: '1.0.0' }
   ]);
 });
 
@@ -136,7 +142,7 @@ test('BUILTIN_PACKAGES: every registered entry has a real source dir with a matc
   }
 });
 
-for (const name of ['ad_domain_consistency', 'ad_local_port_check']) {
+for (const name of ['ad_domain_consistency', 'ad_local_port_check', 'ad_lockout_summary', 'ad_lockout_list']) {
   test(`seedBuiltinPackages: seeds ${name} with manifest + collect.ps1 + migrations`, async () => {
     const tmp = makeTmpDir();
     try {
@@ -175,7 +181,7 @@ for (const name of ['ad_domain_consistency', 'ad_local_port_check']) {
   });
 }
 
-test('seedBuiltinPackages: a single pass seeds all three built-ins (production first-start flow)', async () => {
+test('seedBuiltinPackages: a single pass seeds all five built-ins (production first-start flow)', async () => {
   const tmp = makeTmpDir();
   try {
     const actions = [];
@@ -196,7 +202,9 @@ test('seedBuiltinPackages: a single pass seeds all three built-ins (production f
     assert.deepStrictEqual(actions, [
       'seed_builtin_ad_os_baseline',
       'seed_builtin_ad_domain_consistency',
-      'seed_builtin_ad_local_port_check'
+      'seed_builtin_ad_local_port_check',
+      'seed_builtin_ad_lockout_summary',
+      'seed_builtin_ad_lockout_list'
     ]);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -210,15 +218,15 @@ test('seedBuiltinPackages: partial state re-seeds only the missing built-ins', a
     await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR });
 
     // Operator deletes one package to force a targeted re-seed.
-    fs.rmSync(path.join(tmp, 'ad_local_port_check'), { recursive: true, force: true });
+    fs.rmSync(path.join(tmp, 'ad_lockout_list'), { recursive: true, force: true });
 
     const actions = [];
     const writeAudit = async (entry) => { actions.push(entry.action); };
     await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, writeAudit });
 
-    assert.deepStrictEqual(actions, ['seed_builtin_ad_local_port_check'],
+    assert.deepStrictEqual(actions, ['seed_builtin_ad_lockout_list'],
       'only the deleted package should be re-seeded');
-    assert.ok(fs.existsSync(path.join(tmp, 'ad_local_port_check', '1.0.0', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(tmp, 'ad_lockout_list', '1.0.0', 'manifest.json')));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -100,7 +100,7 @@ test('consistency: all-success case round-trips a single INSERT into pkg_ad_doma
 
   const inserts = db._calls.filter(c => /INSERT\s+INTO/i.test(c.sql));
   assert.strictEqual(inserts.length, 1, 'expected one INSERT');
-  assert.match(inserts[0].sql, /`pkg_ad_domain_consistency`\.metrics/);
+  assert.match(inserts[0].sql, /`pkg_ad_domain_consistency`\.`metrics`/);
   // Column list in manifest declaration order.
   assert.match(inserts[0].sql, /\(agent_id,\s*ts,\s*user_count,\s*user_hash,\s*group_count,\s*group_hash,\s*gpo_count,\s*gpo_hash,\s*error_code\)/);
 

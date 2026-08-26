@@ -70,23 +70,16 @@ const data = [
     usersCount: 1248,
     groupsCount: 312,
     gposCount: 47,
-    lockedCount: 1,
     partnerPortStatus: null
   }
 ];
 
-const lockoutEvents = [
-  {
-    occurredAt: new Date(Date.now() - 60_000).toISOString(),
-    eventRecordId: 9001,
-    targetUserName: 'alice',
-    subjectUserName: 'admin01',
-    subjectDomain: 'FAKE',
-    callerComputerName: 'workstation-7'
-  }
-];
+// 2026-08-26 round-18: lockout data moved to its own packages
+// (ad_lockout_summary + ad_lockout_list). The replication snapshot no
+// longer carries lockoutEvents or LockedCount — those arrive via the
+// package ingest path on a 15-minute cadence.
 
-const body = { source: SOURCE, agentId: AGENT_ID, collectedAt, data, lockoutEvents };
+const body = { source: SOURCE, agentId: AGENT_ID, collectedAt, data };
 
 const res = await fetch(`${CENTER_URL}/api/agent/report`, {
   method: 'POST',

@@ -104,8 +104,7 @@ async function postReplication({ agentId, collectedAt, source = 'collect-replica
     source,
     agentId,
     collectedAt: collectedAt.toISOString(),
-    data,
-    lockoutEvents: []
+    data
   };
   const res = await fetch(`${REPORT_URL}${REPORT_PATH}`, {
     method: 'POST',
@@ -259,7 +258,6 @@ function buildReplicationData(agentId, collectedAt, links) {
       usersCount: null,
       groupsCount: null,
       gposCount: null,
-      lockedCount: null,
       partnerPortStatus: null
     });
   }

@@ -127,7 +127,10 @@ test('heartbeat: missing source field falls back to "unknown" (backward compat)'
   assert.equal(entry.args[0].source, 'unknown');
 });
 
-test('report: emits info log with entries/lockoutEvents counts + source on entry', async () => {
+test('report: emits info log with entries/summaryEntries counts + source on entry', async () => {
+  // 2026-08-26 round-18: lockoutEvents removed from the report payload
+  // and the per-route log; lockout data ships via the ad_lockout_list
+  // package on a 15-minute cadence instead.
   const { logger, entries } = captureLogger();
   const app = buildApp({
     agentTokenValue: 'tok',
@@ -153,9 +156,6 @@ test('report: emits info log with entries/lockoutEvents counts + source on entry
       data: [
         { sourceDc: 'DC-A', destDc: 'DC-B', namingContext: '__dc_summary__' },
         { sourceDc: 'DC-A', destDc: 'DC-B', namingContext: '__partner_ports__:DC-B' }
-      ],
-      lockoutEvents: [
-        { occurredAt: '2026-07-11T00:00:00Z', eventRecordId: 1, targetUserName: 'u' }
       ]
     });
   assert.equal(res.status, 200);
@@ -167,13 +167,14 @@ test('report: emits info log with entries/lockoutEvents counts + source on entry
   assert.equal(data.entries, 2);
   assert.equal(data.partnerPortEntries, 1);
   assert.equal(data.summaryEntries, 1);
-  assert.equal(data.lockoutEvents, 1);
   assert.equal(entry.args[1], 'agent report received');
 });
 
-test('report: counts surface silent drops (Bug Z surface area)', async () => {
-  // If the agent forgets to forward lockoutEvents, the data shape shows
-  // lockoutEvents:0 — the operator can spot this without reading PS1 code.
+test('report: summaryEntries surfaces __dc_summary__ rows independently', async () => {
+  // 2026-08-26 round-18: this replaces the previous Bug Z surface-area
+  // test that asserted on a lockoutEvents=0 default. The lockoutEvents
+  // field no longer exists; the operator now reads lockout trends from
+  // the ad_lockout_summary / ad_lockout_list packages instead.
   const { logger, entries } = captureLogger();
   const app = buildApp({
     agentTokenValue: 'tok',
@@ -197,11 +198,11 @@ test('report: counts surface silent drops (Bug Z surface area)', async () => {
       agentId: 'agent-1',
       collectedAt: '2026-07-11T00:00:00Z',
       data: [{ sourceDc: 'DC-A', destDc: 'DC-B', namingContext: '__dc_summary__' }]
-      // NOTE: lockoutEvents deliberately omitted
     });
   const entry = findEntry(entries, 'agent.report');
   assert.ok(entry);
-  assert.equal(entry.args[0].lockoutEvents, 0, 'omitted lockoutEvents must log as 0');
+  assert.equal(entry.args[0].summaryEntries, 1, '__dc_summary__ row must count');
+  assert.equal(entry.args[0].partnerPortEntries, 0);
 });
 
 test('discover: emits info log with dcName/dcSite/rolesCount on entry', async () => {

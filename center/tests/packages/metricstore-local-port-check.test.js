@@ -93,7 +93,7 @@ test('local-port-check: all ports reachable round-trips a single INSERT into pkg
   // Exactly one INSERT was issued against the package schema.
   const inserts = db._calls.filter(c => /INSERT\s+INTO/i.test(c.sql));
   assert.strictEqual(inserts.length, 1, 'expected one INSERT');
-  assert.match(inserts[0].sql, /`pkg_ad_local_port_check`\.metrics/);
+  assert.match(inserts[0].sql, /`pkg_ad_local_port_check`\.`metrics`/);
   // Column list (commas with optional spaces).
   assert.match(inserts[0].sql, /\(agent_id,\s*ts,\s*port_135,\s*port_445,\s*port_50001,\s*port_50002,\s*port_50003\)/);
 

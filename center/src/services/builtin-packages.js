@@ -70,7 +70,16 @@ import {
 export const BUILTIN_PACKAGES = [
   { name: 'ad_os_baseline', version: '1.0.0' },
   { name: 'ad_domain_consistency', version: '1.0.0' },
-  { name: 'ad_local_port_check', version: '1.0.0' }
+  { name: 'ad_local_port_check', version: '1.0.0' },
+  // 2026-08-26 round-18: split lockout out of collect-replication.ps1
+  // (which used to include LockedCount in __dc_summary__ and a
+  // LockoutEvents field on the snapshot). The user wants lockout data
+  // on its own 15-minute cadence, independent of the replication cycle,
+  // so a DC with broken replication still surfaces its lockout trend
+  // and lockout events. Two packages: a count gauge + an event-detail
+  // JSON column. Both ship as built-ins.
+  { name: 'ad_lockout_summary', version: '1.0.0' },
+  { name: 'ad_lockout_list', version: '1.0.0' }
 ];
 
 // Returns the list of migration files to apply for a given package +

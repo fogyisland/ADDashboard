@@ -54,12 +54,16 @@ function Get-DcCounters {
     UsersCount  = $null
     GroupsCount = $null
     GposCount   = $null
-    LockedCount = $null
   }
 
   # Each counter is isolated: a failure here must not break replication
   # collection or other counters. $ErrorActionPreference stays 'Continue'
   # so unexpected throwables are still caught below.
+
+  # 2026-08-26 round-18: LockedCount is no longer part of the replication
+  # snapshot. It moved to its own ad_lockout_summary package so the
+  # cadence is independent of the replication cycle (user wants every
+  # 15 minutes, regardless of replication activity).
 
   try {
     if (-not (Get-Module -Name ActiveDirectory -ListAvailable)) {
@@ -88,66 +92,101 @@ function Get-DcCounters {
     [Console]::Error.WriteLine("gposCount failed: $($_.Exception.Message)")
   }
 
-  try {
-    if (-not (Get-Module -Name ActiveDirectory)) {
-      Import-Module ActiveDirectory -ErrorAction Stop
-    }
-    $counters.LockedCount = (Search-ADAccount -LockedOut -Server $ComputerName | Measure-Object).Count
-  } catch {
-    [Console]::Error.WriteLine("lockedCount failed: $($_.Exception.Message)")
-  }
-
   return [PSCustomObject]$counters
 }
 
-function Get-LockoutEvents {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$ComputerName
-  )
-
-  # ComputerName is accepted for symmetry with Get-DcCounters but is
-  # intentionally unused inside the function body: PS 5.1's
-  # Get-WinEvent -FilterHashtable form does not accept -ComputerName
-  # (only the non-Hashtable form does). The agent runs locally on each
-  # DC, so reading the local Security log is sufficient. If remote
-  # collection is added later, switch to
-  # Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{...}
-  # on pwsh 7+ only.
-  $events = @()
-  try {
-    $start = (Get-Date).AddMinutes(-15)
-    $raw = Get-WinEvent -FilterHashtable @{
-      LogName   = 'Security'
-      Id        = 4740
-      StartTime = $start
-    } -ErrorAction Stop
-    foreach ($e in $raw) {
-      $xml = [xml]$e.ToXml()
-      $ed  = $xml.Event.EventData
-      $events += [PSCustomObject]@{
-        EventRecordId      = [int64]$e.RecordId
-        OccurredAt         = (ConvertTo-UtcIso -Value $e.TimeCreated)
-        TargetUserName     = [string]$ed.Data[0].'#text'
-        SubjectUserName    = [string]$ed.Data[1].'#text'
-        SubjectDomain      = [string]$ed.Data[2].'#text'
-        CallerComputerName = [string]$ed.Data[3].'#text'
-      }
-    }
-  } catch {
-    [Console]::Error.WriteLine("lockoutEvents failed: $($_.Exception.Message)")
-  }
-  # The comma operator forces PowerShell to emit the array even when empty
-  # — without it, an empty $events collapses to $null on return.
-  return ,$events
-}
+# 2026-08-26 round-18: Get-LockoutEvents was removed. Lockout events now
+# ship via the ad_lockout_list package on a 15-minute cadence, independent
+# of the replication cycle. The function body lives in
+# center/data/packages/ad_lockout_list/1.0.0/collect.ps1 if you need to
+# trace it.
 
 # Default 5 ports to probe against every replication partner. The same set
 # appears in ad_local_port_check/collect.ps1 (Task 2). String keys
 # ("135" / "445" / ...) are used in the emitted JSON so the centre can
 # index by port without parsing dotted notation.
 $script:DefaultPartnerPortSet = @(135, 445, 50001, 50002, 50003)
+
+# 2026-08-26 round-16 replication-port probe config: fetch the operator-
+# defined port list from the centre on every run so changes in the admin UI
+# reach the agent without reinstalling. Falls back to the hardcoded default
+# set on any failure (no network, missing appsettings.json, bad token, JSON
+# parse error, non-array response, etc.) — the agent must NEVER abort a
+# replication cycle just because the port-config fetch hiccupped.
+function Get-PartnerPortConfig {
+  [CmdletBinding()]
+  param()
+
+  # Default first — overwritten on success.
+  $resolved = $script:DefaultPartnerPortSet
+
+  # Locate appsettings.json. The script lives at <install>/Agent/scripts/
+  # collect-replication.ps1; appsettings.json is at <install>/Agent/
+  # appsettings.json. $PSScriptRoot gives us a stable relative path; do not
+  # use $PWD (the agent child process inherits the NSSM service's working
+  # directory which is unrelated to the install root).
+  $cfgPath = Join-Path -Path $PSScriptRoot -ChildPath '..\appsettings.json'
+  $cfgPath = [System.IO.Path]::GetFullPath($cfgPath)
+  if (-not (Test-Path -LiteralPath $cfgPath)) {
+    return ,$resolved
+  }
+
+  # Read + parse JSON. PowerShell 5.1's ConvertFrom-Json handles PS1's own
+  # UTF-8-with-BOM (appsettings.json was historically saved that way by the
+  # agent installer — see round-8 BOM-strip story in agent/src/config.js
+  # for context).
+  $cfg = $null
+  try {
+    $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    return ,$resolved
+  }
+  if ($null -eq $cfg) { return ,$resolved }
+
+  $centerUrl = [string]$cfg.centerUrl
+  $token     = [string]$cfg.agentToken
+  if ([string]::IsNullOrEmpty($centerUrl) -or [string]::IsNullOrEmpty($token)) {
+    return ,$resolved
+  }
+
+  # The endpoint is auth-free on the server side (operator-defined read
+  # endpoint, see center/src/routes/agent.js GET /api/agent/partner-ports).
+  # We send X-Agent-Token anyway — server logs use it to attribute the
+  # request, and the server tolerates both presence and absence.
+  $url = ($centerUrl.TrimEnd('/')) + '/api/agent/partner-ports'
+  try {
+    # .NET WebClient is the lowest-common-denominator HTTP client available
+    # on PS 5.1 without Import-Module. Sync request with a 3 s timeout —
+    # the centre is on the LAN; longer than that means something is wrong
+    # and we'd rather probe the default ports than block the script.
+    Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromSeconds(3)
+    $req = New-Object System.Net.Http.HttpRequestMessage -ArgumentList 'GET', $url
+    $req.Headers.Add('X-Agent-Token', $token)
+    $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+    if (-not $resp.IsSuccessStatusCode) {
+      return ,$resolved
+    }
+    $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    $parsed = $body | ConvertFrom-Json -ErrorAction Stop
+    if ($null -eq $parsed -or $null -eq $parsed.ports) { return ,$resolved }
+    # Defensive: filter to integers in [1, 65535] — refuse anything weird.
+    $clean = @()
+    foreach ($p in @($parsed.ports)) {
+      $n = 0
+      if ([int]::TryParse([string]$p, [ref]$n) -and $n -ge 1 -and $n -le 65535) {
+        $clean += $n
+      }
+    }
+    if ($clean.Count -gt 0) {
+      $resolved = @($clean | Sort-Object)
+    }
+    return ,$resolved
+  } catch {
+    return ,$resolved
+  }
+}
 
 # Build the naming_context value for a partner-port row.
 # Column is `ad_replication_status.naming_context VARCHAR(256)` (see
@@ -301,13 +340,11 @@ function Get-PartnerPortSnapshot {
       UsersCount        = $null
       GroupsCount       = $null
       GposCount         = $null
-      LockedCount       = $null
       PartnerPortStatus = $payload
     }
   }
 
-  # Comma operator forces the array to survive even when $rows is empty,
-  # mirroring Get-LockoutEvents's documented contract.
+  # Comma operator forces the array to survive even when $rows is empty.
   return ,$rows
 }
 
@@ -409,12 +446,21 @@ function Get-ReplicationSnapshot {
   # '__partner_ports__:<host>' keeps each partner's row UNIQUE). Function
   # is fault-isolated: a probe failure on one partner cannot abort the
   # others, and an empty partner list produces no rows (no error).
+  #
+  # 2026-08-26 round-16 replication-port probe config: fetch the operator-
+  # defined port list from the centre on every run. Get-PartnerPortConfig
+  # already swallows every failure mode (no appsettings.json / no token /
+  # network unreachable / bad JSON / non-2xx / out-of-range port) and falls
+  # back to $script:DefaultPartnerPortSet — so this call site stays simple:
+  # resolve the list once, hand it to Get-PartnerPortSnapshot via -Ports.
   if ($null -ne $partners -and @($partners).Count -gt 0) {
+    $portsToProbe = Get-PartnerPortConfig
     $portEntries = Get-PartnerPortSnapshot `
       -ComputerName $ComputerName `
       -Partners $partners `
       -Site $snapshot.Site `
-      -CollectedAt $snapshot.CollectedAt
+      -CollectedAt $snapshot.CollectedAt `
+      -Ports $portsToProbe
     if ($null -ne $portEntries -and @($portEntries).Count -gt 0) {
       foreach ($pe in @($portEntries)) { $entries += $pe }
     }
@@ -438,18 +484,14 @@ function Get-ReplicationSnapshot {
     UsersCount      = $counters.UsersCount
     GroupsCount     = $counters.GroupsCount
     GposCount       = $counters.GposCount
-    LockedCount     = $counters.LockedCount
   }
   $entries += $summaryEntry
 
-  # Lockout troubleshooting — append the last 15 min of Security event 4740
-  # (user account locked out) from the local Security log. Travels as a
-  # top-level snapshot field (not as an Entry, because these aren't
-  # replication rows). The center's UNIQUE(dc_name, event_record_id) gives
-  # us idempotent ingest — the agent is stateless across cycles.
-  $LockoutEvents = Get-LockoutEvents -ComputerName $ComputerName
-  $snapshot | Add-Member -NotePropertyName LockoutEvents `
-                        -NotePropertyValue $LockoutEvents
+  # 2026-08-26 round-18: LockoutEvents and LockedCount moved out of the
+  # replication snapshot. They now ship via the ad_lockout_list and
+  # ad_lockout_summary packages on a 15-minute cadence, independent of
+  # the replication cycle. The center's /api/agent/report no longer
+  # reads req.body.lockoutEvents.
 
   $snapshot.Entries = $entries
   return $snapshot

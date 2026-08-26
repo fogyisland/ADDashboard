@@ -5,6 +5,7 @@ import { getConfig, getAgentConfig } from '../services/config.js';
 import { upsertDiscoveredDc } from '../services/discovery.js';
 import { listPorts } from '../services/ports.js';
 import { upsertPortStatuses } from '../services/port-status.js';
+import { getReplicationPortList } from '../services/replication-port-config.js';
 import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 import { getAgentTokenState } from '../services/agent-token.js';
@@ -40,7 +41,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // postHeartbeat) so the log line shows which collector emitted the
       // heartbeat — old agents that don't stamp source are logged as
       // 'unknown' for backward compat.
-      req.log.info({
+      logger.info({
         event: 'agent.heartbeat',
         source: req.body?.source ?? 'unknown',
         agentId,
@@ -225,15 +226,14 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // 'unknown'. partnerPortEntries/lockoutEvent counts let the operator
       // spot the Bug Z/W class of silent drops at a glance (e.g. count=0
       // when the PS1 emits them is a smoking gun).
-      req.log.info({
+      logger.info({
         event: 'agent.report',
         source: req.body?.source ?? 'unknown',
         agentId,
         collectedAt,
         entries: data.length,
         partnerPortEntries: data.filter(r => r?.namingContext?.startsWith?.('__partner_ports__') || r?.naming_context?.startsWith?.('__partner_ports__')).length,
-        summaryEntries: data.filter(r => r?.namingContext === '__dc_summary__' || r?.naming_context === '__dc_summary__').length,
-        lockoutEvents: Array.isArray(req.body?.lockoutEvents) ? req.body.lockoutEvents.length : 0
+        summaryEntries: data.filter(r => r?.namingContext === '__dc_summary__' || r?.naming_context === '__dc_summary__').length
       }, 'agent report received');
       try {
         const db = getDb();
@@ -244,33 +244,11 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           { appendHistory: historyEnabled }
         );
 
-        // Lockout troubleshooting — persist Security event 4740 records from the
-        // last 15 minutes on each DC. Server-side UNIQUE(dc_name, event_record_id)
-        // gives us idempotent ingest; per-event failures are logged but don't fail
-        // the whole snapshot.
-        const lockoutEvents = Array.isArray(req.body?.lockoutEvents) ? req.body.lockoutEvents : [];
-        if (lockoutEvents.length > 0) {
-          // Reuse the `db` already declared at the top of this try-block.
-          const dbc = toMysqlDatetime(collectedAt);
-          const dcName = String(agentId);
-          for (const ev of lockoutEvents) {
-            try {
-              await db.execute(db.sql.lockout.upsertEvent, [
-                toMysqlDatetime(ev.occurredAt),
-                dbc,
-                String(agentId),
-                dcName,
-                Number(ev.eventRecordId),
-                String(ev.targetUserName ?? ''),
-                ev.subjectUserName != null ? String(ev.subjectUserName) : null,
-                ev.subjectDomain != null ? String(ev.subjectDomain) : null,
-                ev.callerComputerName != null ? String(ev.callerComputerName) : null
-              ]);
-            } catch (e) {
-              req.log?.warn?.({ err: e.message, agentId, eventRecordId: ev.eventRecordId }, 'lockout event persist failed');
-            }
-          }
-        }
+        // 2026-08-26 round-18: lockout event ingest removed from this
+        // path. The agent no longer carries LockoutEvents on the
+        // replication snapshot; lockout data ships via the
+        // ad_lockout_list package on a 15-minute cadence (POST
+        // /api/agent/packages/report → metricstore v2 → pkg_ad_lockout_list.metrics).
 
         const { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds } = await getAgentConfig();
         res.json({ ok: true, config: { pollingIntervalMinutes, latencyThresholdMinutes, heartbeatIntervalSeconds } });
@@ -289,7 +267,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // the operator can verify whether collect-discovery.ps1 is firing
       // and what shape (dc.name, dc.site, dc.rolesCount) it's emitting.
       // source='collect-discovery' is stamped by agent/src/discovery.js.
-      req.log.info({
+      logger.info({
         event: 'agent.discover',
         source: req.body?.source ?? 'unknown',
         agentId,
@@ -314,6 +292,25 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       } catch (e) {
         logger.error({ err: e }, 'agent config fetch failed');
         res.status(500).json({ error: 'internal' });
+      }
+    });
+
+    // 2026-08-26 round-16 replication-port probe config: returns the
+    // operator-defined list of TCP ports collect-replication.ps1 probes for
+    // each replication partner. Auth-free so a freshly-installed agent
+    // (whose appsettings.json carries the agent token) can fetch this on
+    // the first cycle. The route NEVER throws — it falls back to the
+    // hardcoded default if system_config is unreadable.
+    r.get('/api/agent/partner-ports', async (_req, res) => {
+      try {
+        const ports = await getReplicationPortList();
+        res.json({ ports });
+      } catch (e) {
+        logger.error({ err: e }, 'agent partner-ports fetch failed');
+        // Mirror getReplicationPortList()'s defensive default — even on a
+        // catastrophic DB hiccup the agent should still probe the legacy
+        // [135, 445, 50001-50003] ports.
+        res.json({ ports: [135, 445, 50001, 50002, 50003] });
       }
     });
   }
