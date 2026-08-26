@@ -92,29 +92,39 @@ export function dashboardRouter({ config, logger, db }) {
   r.get('/api/dashboard/topology', auth, async (_req, res) => {
     try {
       const db = getDb();
-      const { rows } = await db.query(db.sql.dashboard.topology);
-      const siteSet = new Set();
-      const dcSet = new Map();
-      const links = [];
-      for (const row of rows) {
-        const ss = row.source_site, ds = row.dest_site;
-        const sd = row.source_dc,   dd = row.dest_dc;
-        if (ss) siteSet.add(ss);
-        if (ds) siteSet.add(ds);
-        if (sd) dcSet.set(sd, ss ?? null);
-        if (dd) dcSet.set(dd, ds ?? null);
-        links.push({
-          source:           sd,
-          target:           dd,
-          statusCode:       row.status_code,
-          lastSuccessTime:  toIso(row.last_success_time)
-        });
-      }
+      // 2026-08-26 round-21: derive nodes from the catalog (ad_sites +
+      // ad_dcs) — the catalog is the operator-facing truth, and the
+      // earlier approach of pulling site labels from
+      // ad_replication_status.source_site leaked the agent's free-text
+      // site hint (MOCK-NC) into the graph instead of the canonical
+      // 南昌站点 / 核心站点 / etc. Links now come from a filtered /
+      // deduped query so the graph shows the current topology rather
+      // than every row ever written to ad_replication_status.
+      const [nodesRes, linksRes] = await Promise.all([
+        db.query(db.sql.dashboard.topologyNodes),
+        db.query(db.sql.dashboard.topologyLinks)
+      ]);
+      // First row per site carries the site node; subsequent rows for
+      // the same site contribute DC children only.
       const nodes = [];
-      for (const name of siteSet) nodes.push({ name, type: 'site' });
-      for (const [name, site] of dcSet) {
-        nodes.push(site ? { name, site, type: 'dc' } : { name, type: 'dc' });
+      const seenSites = new Set();
+      for (const row of nodesRes.rows) {
+        if (row.site_name && !seenSites.has(row.site_name)) {
+          nodes.push({ name: row.site_name, type: 'site' });
+          seenSites.add(row.site_name);
+        }
+        if (row.dc_name) {
+          nodes.push(row.site_name
+            ? { name: row.dc_name, site: row.site_name, type: 'dc' }
+            : { name: row.dc_name, type: 'dc' });
+        }
       }
+      const links = linksRes.rows.map(r => ({
+        source:          r.source_dc,
+        target:          r.dest_dc,
+        statusCode:      r.status_code,
+        lastSuccessTime: toIso(r.last_success_time)
+      }));
       res.json({ nodes, links });
     } catch (e) {
       logger.error({ err: e }, 'dashboard topology failed');

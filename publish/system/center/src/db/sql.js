@@ -25,7 +25,28 @@ const VARIANTS = {
       listRecent: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC LIMIT ?`,
       listBySite: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC LIMIT ?`,
       latestSummaryPerDc: `SELECT t1.source_dc, t1.users_count, t1.groups_count, t1.gpos_count, t1.locked_count, t1.collected_at FROM ad_replication_status t1 WHERE t1.naming_context = '__dc_summary__' AND t1.collected_at = (SELECT MAX(t2.collected_at) FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.naming_context = '__dc_summary__') ORDER BY t1.source_dc`,
-      partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN ? - INTERVAL ? MINUTE AND ? + INTERVAL ? MINUTE`
+      partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN ? - INTERVAL ? MINUTE AND ? + INTERVAL ? MINUTE`,
+      // 2026-08-26 round-16 replication-port probe aggregator: pull the latest
+      // partnerPortStatus JSON per (source_dc, dest_dc) pair. Naming-context
+      // scope is "partner_port" — every collect-replication.ps1 cycle writes
+      // one row per partner with the per-port probe map inside the JSON
+      // column. We join ad_dcs for site names so the operator sees a site-
+      // to-site pivot in the new admin view. last_attempt_time carries the
+      // freshness marker (collected_at is also the freshness indicator but
+      // last_attempt_time is the more reliable signal for "did this probe
+      // cycle run recently?" — it gets touched even on a partial failure).
+      latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.source_site, t1.dest_site,
+        t1.partner_port_status, t1.last_attempt_time, t1.collected_at
+        FROM ad_replication_status t1
+        WHERE t1.naming_context = 'partner_port'
+          AND t1.partner_port_status IS NOT NULL
+          AND t1.collected_at = (
+            SELECT MAX(t2.collected_at) FROM ad_replication_status t2
+            WHERE t2.source_dc = t1.source_dc
+              AND t2.dest_dc = t1.dest_dc
+              AND t2.naming_context = 'partner_port'
+          )
+        ORDER BY t1.source_dc, t1.dest_dc`
     },
     discovery: {
       upsertDc: `INSERT INTO ad_dcs (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE site_hint = VALUES(site_hint), os_version = VALUES(os_version), when_created = VALUES(when_created), is_pdc = VALUES(is_pdc), is_gc = VALUES(is_gc), is_rid_master = VALUES(is_rid_master), is_schema_master = VALUES(is_schema_master), is_domain_naming_master = VALUES(is_domain_naming_master), is_infrastructure_master = VALUES(is_infrastructure_master), discovered_at = UTC_TIMESTAMP(), discovered_by_agent_id = VALUES(discovered_by_agent_id)`
@@ -117,7 +138,43 @@ const VARIANTS = {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
       agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
-      topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
+      // 2026-08-26 round-21: /topology used to return every row in
+      // ad_replication_status, including stale round-19 leftovers and
+      // test/junk rows (*, __tz_test, DC01→"") — operators saw 42 links
+      // instead of the 19 the round-20 topology actually emits. The fix:
+      // (a) derive site + dc nodes from ad_sites / ad_dcs (catalog is
+      // source of truth — agent-reported source_site is a free-text hint
+      // and does not match catalog site_name), (b) for links, take the
+      // latest row per (source_dc, dest_dc) pair where both are known
+      // DCs and source_dc != dest_dc, and (c) drop rows older than 30
+      // minutes (UTC) so pairs the daemon stopped emitting — e.g. the
+      // round-19 topology pairs that were renamed in round-20 — fall
+      // out of the graph. UTC clock is essential: collected_at is in
+      // UTC but MySQL NOW() returns session-tz (round-15 UTC cleanup).
+      topologyNodes: `
+        SELECT s.site_id   AS site_id,
+               s.site_name AS site_name,
+               d.dc_name   AS dc_name
+        FROM ad_sites s
+        LEFT JOIN ad_dcs d ON d.site_id = s.site_id
+        ORDER BY s.site_name, d.dc_name
+      `,
+      topologyLinks: `
+        SELECT t1.source_dc, t1.dest_dc, t1.status_code, t1.last_success_time
+        FROM ad_replication_status t1
+        INNER JOIN ad_dcs sd ON sd.dc_name = t1.source_dc
+        INNER JOIN ad_dcs dd ON dd.dc_name = t1.dest_dc
+        WHERE t1.source_dc <> t1.dest_dc
+          AND t1.naming_context NOT IN ('__dc_summary__', 'META')
+          AND t1.collected_at = (
+            SELECT MAX(t2.collected_at) FROM ad_replication_status t2
+            WHERE t2.source_dc = t1.source_dc
+              AND t2.dest_dc   = t1.dest_dc
+              AND t2.naming_context NOT IN ('__dc_summary__', 'META')
+          )
+          AND t1.collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE
+        ORDER BY t1.source_dc, t1.dest_dc
+      `,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
       agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
@@ -293,7 +350,27 @@ const VARIANTS = {
              WHERE agent_id = ? AND collected_at >= ?
            )
          ORDER BY source_dc, dest_dc
-         LIMIT ${Number(limit)}`
+         LIMIT ${Number(limit)}`,
+      // 2026-08-26 round-19+: heartbeat-table delete buttons. The operator
+      // removes a row when a host is decommissioned; cascades through
+      // ad_replication_status (both source_dc and dest_dc matches) so the
+      // report table doesn't keep orphans referencing the deleted agent.
+      // Each DELETE is a single statement with one bind so affectedRows
+      // reflects exactly that table's contribution.
+      deleteHeartbeatRow: (agentId) =>
+        `DELETE FROM ad_agent_heartbeat WHERE agent_id = ?`,
+      deleteReplicationBySource: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE source_dc = ?`,
+      deleteReplicationByDest: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE dest_dc = ?`,
+      deletePackageRuns: (agentId) =>
+        `DELETE FROM package_runs WHERE agent_id = ?`,
+      // DC-tab delete — remove the ad_dcs row only. The DC list is a
+      // separate surface from the heartbeat table; deleting a DC leaves
+      // the heartbeat row intact (a host can stay in the heartbeat view
+      // even if it's no longer classified as a DC).
+      deleteDcRow: (dcName) =>
+        `DELETE FROM ad_dcs WHERE dc_name = ?`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
@@ -540,7 +617,28 @@ const VARIANTS = {
       listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
       listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
       latestSummaryPerDc: `SELECT t.source_dc, t.users_count, t.groups_count, t.gpos_count, t.locked_count, t.collected_at FROM ad_replication_status t OUTER APPLY (SELECT TOP 1 collected_at, users_count, groups_count, gpos_count, locked_count FROM ad_replication_status WHERE source_dc = t.source_dc AND naming_context = '__dc_summary__' ORDER BY collected_at DESC) s WHERE t.naming_context = '__dc_summary__' GROUP BY t.source_dc, t.users_count, t.groups_count, t.gpos_count, t.locked_count, t.collected_at ORDER BY t.source_dc`,
-      partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN DATEADD(MINUTE, -?, ?) AND DATEADD(MINUTE, ?, ?)`
+      partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN DATEADD(MINUTE, -?, ?) AND DATEADD(MINUTE, ?, ?)`,
+      // 2026-08-26 round-16 replication-port probe aggregator. Mirrors the
+      // MySQL helper above but written with OUTER APPLY for the per-pair
+      // max-collected_at lookup (SQL Server idiom; subquery in SELECT works
+      // too but OUTER APPLY reads cleaner and matches the latestSummaryPerDc
+      // helper directly above). naming_context scope is 'partner_port' — the
+      // collect-replication.ps1 cycle emits one row per partner with the
+      // per-port probe map inside the JSON column.
+      latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.source_site, t1.dest_site,
+        t1.partner_port_status, t1.last_attempt_time, t1.collected_at
+        FROM ad_replication_status t1
+        OUTER APPLY (
+          SELECT TOP 1 t2.collected_at AS max_collected_at FROM ad_replication_status t2
+          WHERE t2.source_dc = t1.source_dc
+            AND t2.dest_dc = t1.dest_dc
+            AND t2.naming_context = 'partner_port'
+          ORDER BY t2.collected_at DESC
+        ) m
+        WHERE t1.naming_context = 'partner_port'
+          AND t1.partner_port_status IS NOT NULL
+          AND t1.collected_at = m.max_collected_at
+        ORDER BY t1.source_dc, t1.dest_dc`
     },
     discovery: {
       // 2026-08-25 Bug C: tedious driver rejects row-constructor params
@@ -681,7 +779,43 @@ const VARIANTS = {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
       agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
-      topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
+      // 2026-08-26 round-21: /topology used to return every row in
+      // ad_replication_status, including stale round-19 leftovers and
+      // test/junk rows (*, __tz_test, DC01→"") — operators saw 42 links
+      // instead of the 19 the round-20 topology actually emits. The fix:
+      // (a) derive site + dc nodes from ad_sites / ad_dcs (catalog is
+      // source of truth — agent-reported source_site is a free-text hint
+      // and does not match catalog site_name), (b) for links, take the
+      // latest row per (source_dc, dest_dc) pair where both are known
+      // DCs and source_dc != dest_dc, and (c) drop rows older than 30
+      // minutes (UTC) so pairs the daemon stopped emitting — e.g. the
+      // round-19 topology pairs that were renamed in round-20 — fall
+      // out of the graph. UTC clock is essential: collected_at is in
+      // UTC but MySQL NOW() returns session-tz (round-15 UTC cleanup).
+      topologyNodes: `
+        SELECT s.site_id   AS site_id,
+               s.site_name AS site_name,
+               d.dc_name   AS dc_name
+        FROM ad_sites s
+        LEFT JOIN ad_dcs d ON d.site_id = s.site_id
+        ORDER BY s.site_name, d.dc_name
+      `,
+      topologyLinks: `
+        SELECT t1.source_dc, t1.dest_dc, t1.status_code, t1.last_success_time
+        FROM ad_replication_status t1
+        INNER JOIN ad_dcs sd ON sd.dc_name = t1.source_dc
+        INNER JOIN ad_dcs dd ON dd.dc_name = t1.dest_dc
+        WHERE t1.source_dc <> t1.dest_dc
+          AND t1.naming_context NOT IN ('__dc_summary__', 'META')
+          AND t1.collected_at = (
+            SELECT MAX(t2.collected_at) FROM ad_replication_status t2
+            WHERE t2.source_dc = t1.source_dc
+              AND t2.dest_dc   = t1.dest_dc
+              AND t2.naming_context NOT IN ('__dc_summary__', 'META')
+          )
+          AND t1.collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME())
+        ORDER BY t1.source_dc, t1.dest_dc
+      `,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, CASE WHEN last_success_time IS NULL OR last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_success_time, last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
       agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, CASE WHEN last_heartbeat_at IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_heartbeat_at, SYSUTCDATETIME()) AS float) END AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
@@ -851,7 +985,22 @@ const VARIANTS = {
              WHERE agent_id = CAST(? AS NVARCHAR(64)) AND collected_at >= CAST(? AS DATETIME2)
              ORDER BY collected_at DESC
            )
-         ORDER BY source_dc, dest_dc`
+         ORDER BY source_dc, dest_dc`,
+      // 2026-08-26 round-19+: heartbeat-table delete buttons — MSSQL
+      // variant. Each DELETE binds the agent_id with CAST(? AS NVARCHAR(64))
+      // to match the row's column type (agent_id is NVARCHAR(64)) — without
+      // the cast the driver sends NVARCHAR(MAX) which silently mismatches
+      // the index and the WHERE never matches. Identical shape to MySQL.
+      deleteHeartbeatRow: (agentId) =>
+        `DELETE FROM ad_agent_heartbeat WHERE agent_id = CAST(? AS NVARCHAR(64))`,
+      deleteReplicationBySource: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE source_dc = CAST(? AS NVARCHAR(64))`,
+      deleteReplicationByDest: (agentId) =>
+        `DELETE FROM ad_replication_status WHERE dest_dc = CAST(? AS NVARCHAR(64))`,
+      deletePackageRuns: (agentId) =>
+        `DELETE FROM package_runs WHERE agent_id = CAST(? AS NVARCHAR(64))`,
+      deleteDcRow: (dcName) =>
+        `DELETE FROM ad_dcs WHERE dc_name = CAST(? AS NVARCHAR(128))`
     },
     ports: {
       list: 'SELECT id, port, label, sort_order AS sortOrder FROM system_ports ORDER BY sort_order, port',
