@@ -169,89 +169,157 @@ function defaultScenario() {
     // (NOT dc.site). The real collect-discovery.ps1 emits siteHint in
     // camelCase; the mock must do the same so ad_dcs.site_hint lands
     // populated and the operator's DC list can JOIN ad_sites on it.
-    siteHint: 'MOCK-SITE',
+    siteHint: opts.siteHint ?? 'MOCK-SITE',
     isPdc: !!opts.isPdc,
     roles: opts.isPdc
       ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
       : ['DomainController']
   });
-  // 2026-08-26 round-19: agent IDs switched from generic MOCK-DC-{STATE}
-  // to the operator's real DC names — the dashboard view is what they look
-  // at during testing, so the labels should mirror production. The operator
-  // described the topology as "hubsite 多个数据来源复制到这台机器，其他站点
-  // 服务器都是从hubsite复制过来", i.e. hubadsrv1 sits in the hubsite and
-  // every spoke site (nc/fz/xm) replicates FROM it — spokes report inbound
-  // links with destDc=hubadsrv1, hub reports outbound links with destDc=
-  // each spoke. The four scenarios cover each state with this hub-spoke
-  // shape:
-  //   ncadserv1   (recent success)        — spoke: link from hub is OK
-  //   fzadsrv1    (recent partial_failure) — spoke: link from hub is FAILING
-  //   xmadsrv1    (stale, 2h old)          — spoke: link from hub is 2h old
-  //   hubadsrv1   (never uploaded)         — hub: no outbound replication
-  //                                          row has ever landed
-  const HUB = 'hubadsrv1';
+  // 2026-08-26 follow-up: agent IDs now use MOCK- prefix to avoid
+  // collision with REAL production DCs at the same names. The operator's
+  // ncadserv1 / fzadsrv1 / hubadsrv1 / xmadsrv1 are real DCs in their
+  // environment; without the prefix a real DC at ncadserv1 would silently
+  // overwrite the mock row in ad_agent_heartbeat. MOCK-<NAME> preserves
+  // the topology narrative (the labels still mirror production naming) while
+  // making the mock rows unambiguously fake.
+  //
+  // 2026-08-26 round-19+: operator-defined hub-spoke topology. Each non-HUB
+  // site's PDC reports [intra-site sibling, HUBADSRV1]; siblings mirror the
+  // PDC. The hub replicates to every spoke PDCs (HUB1) or hub1+spokes (HUB2).
+  //
+  // The operator also added a "+2" variant per site — second DC at each
+  // site. 8 mocks total cover the hub-spoke topology with 2 DCs per site.
+  const HUB1 = 'MOCK-HUBADSRV1';
+  const HUB2 = 'MOCK-HUBADSRV2';
+  const NC1 = 'MOCK-NCADSRV1';
+  const NC2 = 'MOCK-NCADSRV2';
+  const FZ1 = 'MOCK-FZADSRV1';
+  const FZ2 = 'MOCK-FZADSRV2';
+  const XM1 = 'MOCK-XMADSRV1';
+  const XM2 = 'MOCK-XMADSRV2';
   return [
     {
-      label: 'recent success (within 1h, inbound link from hub OK)',
-      agentId: 'ncadserv1',
+      label: 'NC site DC1 — recent success (within 1h, sibling NC2 + HUB1 OK)',
+      agentId: NC1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('ncadserv1', { isPdc: true }) },
+      discovery: { dc: dc(NC1, { isPdc: true, ip: '10.99.0.10', siteHint: 'MOCK-NC' }) },
       replication: {
         when: withinHour,
+        // Pattern: NC1 -> [NC2, HUB1]
         links: [
-          // 1 inbound link from the hub — spoke sees hub as its source.
-          { destDc: HUB, statusCode: 0 }
+          { destDc: NC2,  statusCode: 0 },
+          { destDc: HUB1, statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'recent partial_failure (within 1h, inbound link from hub failing)',
-      agentId: 'fzadsrv1',
+      label: 'FZ site DC1 — recent partial_failure (1 of 2 links failing)',
+      agentId: FZ1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('fzadsrv1', { ip: '10.99.0.11' }) },
+      discovery: { dc: dc(FZ1, { ip: '10.99.0.11', siteHint: 'MOCK-FZ' }) },
       replication: {
         when: withinHour,
+        // Pattern: FZ1 -> [FZ2, HUB1]; FZ2 fails to inject variability.
         links: [
-          // 1 inbound link from the hub, status_code 2 = RPC error. The
-          // spoke's "partial" surface in the dashboard is this single
-          // failing inbound; it's still "partial" rather than "all-fail"
-          // because the link exists at all (1/1 failing).
-          { destDc: HUB, statusCode: 2, errorMessage: 'RPC server unavailable (round-trip > 30s)' }
+          { destDc: FZ2,  statusCode: 0 },
+          { destDc: HUB1, statusCode: 2, errorMessage: 'RPC server unavailable (round-trip > 30s)' }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'stale (inbound link from hub is 2h old, heartbeat fresh)',
-      agentId: 'xmadsrv1',
+      label: 'XM site DC1 — stale (replication 2h old)',
+      agentId: XM1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('xmadsrv1', { ip: '10.99.0.12' }) },
+      discovery: { dc: dc(XM1, { ip: '10.99.0.12', siteHint: 'MOCK-XM' }) },
       replication: {
         when: twoHoursAgo,
+        // Pattern: XM1 -> [XM2, HUB1]
         links: [
-          // Last successful inbound replication from hub was 2h ago. The
-          // status_code stays 0 (last attempt that succeeded); staleness
-          // is computed from collected_at, not from status_code.
-          { destDc: HUB, statusCode: 0 }
+          { destDc: XM2,  statusCode: 0 },
+          { destDc: HUB1, statusCode: 0 }
         ]
       },
-      // No localState — agent only has the 2h-old replication row, so the
-      // 1-hour window is empty and the dashboard shows 'stale'.
       localState: null
     },
     {
-      label: 'never-uploaded (hub — heartbeat only, no outbound replication rows)',
-      agentId: 'hubadsrv1',
+      label: 'Hub DC1 — outbound links to all 3 spoke PDCs',
+      agentId: HUB1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc('hubadsrv1', { ip: '10.99.0.13' }) },
-      replication: null,
-      // No localState — hub has NEVER produced an outbound replication row,
-      // so last_report_at stays NULL and the dashboard shows ⏸ 未上传 for
-      // the hub. (In production the hub WOULD have outbound rows; this
-      // scenario deliberately leaves it empty so the operator can verify
-      // the "未上传" UI state without standing up a 5th DC.)
-      localState: null
+      discovery: { dc: dc(HUB1, { ip: '10.99.0.13', siteHint: 'MOCK-HUB' }) },
+      replication: {
+        when: withinHour,
+        // Pattern: HUB1 -> [NC1, FZ1, XM1]
+        links: [
+          { destDc: NC1, statusCode: 0 },
+          { destDc: FZ1, statusCode: 0 },
+          { destDc: XM1, statusCode: 0 }
+        ]
+      },
+      localState: { when: withinHour }
+    },
+    {
+      label: 'NC site DC2 — recent success (within 1h, sibling NC1 + HUB1 OK)',
+      agentId: NC2,
+      heartbeat: { when: 'now' },
+      discovery: { dc: dc(NC2, { ip: '10.99.0.14', siteHint: 'MOCK-NC' }) },
+      replication: {
+        when: withinHour,
+        // Sibling mirrors PDC: NC2 -> [NC1, HUB1]
+        links: [
+          { destDc: NC1,  statusCode: 0 },
+          { destDc: HUB1, statusCode: 0 }
+        ]
+      },
+      localState: { when: withinHour }
+    },
+    {
+      label: 'FZ site DC2 — recent success (within 1h, sibling FZ1 + HUB1 OK)',
+      agentId: FZ2,
+      heartbeat: { when: 'now' },
+      discovery: { dc: dc(FZ2, { ip: '10.99.0.15', siteHint: 'MOCK-FZ' }) },
+      replication: {
+        when: withinHour,
+        // Sibling mirrors PDC: FZ2 -> [FZ1, HUB1]
+        links: [
+          { destDc: FZ1,  statusCode: 0 },
+          { destDc: HUB1, statusCode: 0 }
+        ]
+      },
+      localState: { when: withinHour }
+    },
+    {
+      label: 'XM site DC2 — recent success (within 1h, sibling XM1 + HUB1 OK)',
+      agentId: XM2,
+      heartbeat: { when: 'now' },
+      discovery: { dc: dc(XM2, { ip: '10.99.0.16', siteHint: 'MOCK-XM' }) },
+      replication: {
+        when: withinHour,
+        // Sibling mirrors PDC: XM2 -> [XM1, HUB1]
+        links: [
+          { destDc: XM1,  statusCode: 0 },
+          { destDc: HUB1, statusCode: 0 }
+        ]
+      },
+      localState: { when: withinHour }
+    },
+    {
+      label: 'Hub DC2 — outbound to HUB1 + 3 spoke PDCs',
+      agentId: HUB2,
+      heartbeat: { when: 'now' },
+      discovery: { dc: dc(HUB2, { ip: '10.99.0.17', siteHint: 'MOCK-HUB' }) },
+      replication: {
+        when: withinHour,
+        // Pattern: HUB2 -> [HUB1, NC1, FZ1, XM1]
+        links: [
+          { destDc: HUB1, statusCode: 0 },
+          { destDc: NC1,  statusCode: 0 },
+          { destDc: FZ1,  statusCode: 0 },
+          { destDc: XM1,  statusCode: 0 }
+        ]
+      },
+      localState: { when: withinHour }
     }
   ];
 }

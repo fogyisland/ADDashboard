@@ -4,13 +4,13 @@
 //
 // Run: node scripts/cleanup-stale-mocks.js
 //
-// 2026-08-26 round-19: mock agent IDs switched from generic MOCK-DC-* to the
-// operator's real DC names (ncadserv1 / fzadsrv1 / hubadsrv1 / xmadsrv1) so
-// the dashboard view mirrors production. The MOCK-% catch-all is kept for
-// legacy rows from earlier sessions, and the four real-name rows are added
-// as an explicit list so the script also catches a hung mock daemon that
-// stopped mid-cycle. Without the explicit list, the LIKE filter would NOT
-// match ncadserv1 and a hung daemon would leak rows until manual cleanup.
+// 2026-08-26 round-19 follow-up: mock agent IDs use MOCK-<NAME> prefix to
+// avoid collision with REAL production DCs sharing the same hostname. The
+// MOCK-% catch-all is kept for legacy rows from earlier sessions, and the
+// eight current mock names are listed explicitly so a hung daemon that
+// stopped mid-cycle doesn't leak rows. Each site now has 2 DC variants
+// ("<site>adsrv1" and "<site>adsrv2") to exercise the multi-DC-per-site
+// dashboard view.
 import { init, getDb } from '../src/db/index.js';
 import fs from 'node:fs/promises';
 
@@ -18,7 +18,12 @@ const cfg = JSON.parse(await fs.readFile('appsettings.json', 'utf8'));
 await init(cfg);
 const db = getDb();
 
-const MOCK_AGENT_IDS = ['ncadserv1', 'fzadsrv1', 'hubadsrv1', 'xmadsrv1'];
+const MOCK_AGENT_IDS = [
+  'MOCK-NCADSRV1', 'MOCK-NCADSRV2',
+  'MOCK-FZADSRV1', 'MOCK-FZADSRV2',
+  'MOCK-XMADSRV1', 'MOCK-XMADSRV2',
+  'MOCK-HUBADSRV1', 'MOCK-HUBADSRV2'
+];
 const MOCK_PLACEHOLDERS = MOCK_AGENT_IDS.map(() => '?').join(', ');
 
 // First, show what we're about to touch.

@@ -40,36 +40,54 @@ const DISCOVER_PATH  = '/api/agent/discover';
 // ----- scenario -----
 
 function defaultScenario() {
-  // 2026-08-26 round-19: hub-spoke topology (operator-confirmed). The hub
-  // (hubadsrv1) sits in the hubsite and all spoke sites (nc/fz/xm) replicate
-  // FROM it. Each spoke reports 1 inbound link from the hub; the hub itself
-  // has no outbound replication rows in this mock (kept empty so the
-  // dashboard can exercise the "未上传" state for the hub role).
-  const HUB = 'hubadsrv1';
+  // 2026-08-26 round-19+: operator-defined topology. Each non-HUB site's
+  // PDC reports its replication partners as [intra-site sibling, HUBADSRV1].
+  // Sibling DCs mirror the PDC (their intra-site PDC + HUBADSRV1). The hub
+  // site has 2 DCs: HUBADSRV1 reports links to every spoke PDC; HUBADSRV2
+  // mirrors HUBADSRV1 plus reports its intra-site sibling.
+  //
+  // 2026-08-26 follow-up: MOCK- prefix added to every agent id so the mock
+  // data cannot collide with REAL production DCs sharing those names. The
+  // operator's ncadserv1 / fzadsrv1 / hubadsrv1 / xmadsrv1 are real DC
+  // hostnames in their environment; without the prefix, a real DC at
+  // ncadserv1 heartbeating would silently overwrite the mock's heartbeat
+  // row (and vice versa). MOCK-<NAME> keeps the topology narrative (the
+  // operator still sees the topology they're modeling) while making the
+  // mock rows unambiguously fake.
+  const HUB1 = 'MOCK-HUBADSRV1';
+  const HUB2 = 'MOCK-HUBADSRV2';
+  const NC1 = 'MOCK-NCADSRV1';
+  const NC2 = 'MOCK-NCADSRV2';
+  const FZ1 = 'MOCK-FZADSRV1';
+  const FZ2 = 'MOCK-FZADSRV2';
+  const XM1 = 'MOCK-XMADSRV1';
+  const XM2 = 'MOCK-XMADSRV2';
   // peers[] here is the set of partner DCs the agent REPORTS (its sources).
-  // For a spoke that's [hubadsrv1]; for the hub it's [ncadserv1, fzadsrv1,
-  // xmadsrv1] (it replicates to all 3 spokes).
   const dc = (agentId, opts = {}) => ({
     name: agentId,
     hostname: `${agentId.toLowerCase()}.mock.local`,
     ipAddress: opts.ip ?? '10.99.0.10',
     osVersion: 'Windows Server 2022 (mock)',
-    siteHint: 'MOCK-SITE',
+    siteHint: opts.siteHint ?? 'MOCK-SITE',
     isPdc: !!opts.isPdc,
     roles: opts.isPdc
       ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
       : ['DomainController']
   });
   return [
-    // Spoke sites — each reports 1 inbound link from the hub.
-    { agentId: 'ncadserv1',   isPdc: true,  peers: [HUB],                 failRate: 0.0,  ip: '10.99.0.10' },
-    { agentId: 'fzadsrv1',    isPdc: false, peers: [HUB],                 failRate: 0.34, ip: '10.99.0.11' },
-    { agentId: 'xmadsrv1',    isPdc: false, peers: [HUB],                 failRate: 0.0,  ip: '10.99.0.12', replicationTickMs: REPLICATION_TICK_MS * 4 },
-    // Hub — reports outbound links to every spoke. In the operator's
-    // production env the hub would have outbound rows; we keep its
-    // peers list non-empty so the steady-state daemon ticks outbound
-    // replication, mirroring what a real hub DC would post.
-    { agentId: 'hubadsrv1',   isPdc: false, peers: ['ncadserv1', 'fzadsrv1', 'xmadsrv1'], failRate: 0.0, ip: '10.99.0.13' }
+    // NC site — 2 DCs (NC1 is PDC). Per operator: NC1 -> [NC2, HUB1].
+    { agentId: NC1, isPdc: true,  peers: [NC2, HUB1], failRate: 0.0,  ip: '10.99.0.10', siteHint: 'MOCK-NC' },
+    { agentId: NC2, isPdc: false, peers: [NC1, HUB1], failRate: 0.05, ip: '10.99.0.14', siteHint: 'MOCK-NC' },
+    // FZ site — 2 DCs (FZ1 occasionally failing). Pattern: FZ1 -> [FZ2, HUB1].
+    { agentId: FZ1, isPdc: false, peers: [FZ2, HUB1], failRate: 0.34, ip: '10.99.0.11', siteHint: 'MOCK-FZ' },
+    { agentId: FZ2, isPdc: false, peers: [FZ1, HUB1], failRate: 0.0,  ip: '10.99.0.15', siteHint: 'MOCK-FZ' },
+    // XM site — 2 DCs (XM1 stale). Pattern: XM1 -> [XM2, HUB1].
+    { agentId: XM1, isPdc: false, peers: [XM2, HUB1], failRate: 0.0,  ip: '10.99.0.12', siteHint: 'MOCK-XM', replicationTickMs: REPLICATION_TICK_MS * 4 },
+    { agentId: XM2, isPdc: false, peers: [XM1, HUB1], failRate: 0.0,  ip: '10.99.0.16', siteHint: 'MOCK-XM' },
+    // Hub site — 2 DCs. HUB1 reports outbound to all 3 spoke PDCs; HUB2
+    // mirrors with HUB1 added (sibling link).
+    { agentId: HUB1, isPdc: false, peers: [NC1, FZ1, XM1],                failRate: 0.0, ip: '10.99.0.13', siteHint: 'MOCK-HUB' },
+    { agentId: HUB2, isPdc: false, peers: [HUB1, NC1, FZ1, XM1],          failRate: 0.0, ip: '10.99.0.17', siteHint: 'MOCK-HUB' }
   ];
 }
 
@@ -158,13 +176,16 @@ function buildReplicationData(agentId, peers, failRate) {
   return { collectedAt, rows };
 }
 
-function buildDiscovery(agentId, isPdc) {
+function buildDiscovery(agentId, isPdc, opts = {}) {
   return {
     name: agentId,
     hostname: `${agentId.toLowerCase()}.mock.local`,
-    ipAddress: '10.99.0.10',
+    ipAddress: opts.ip ?? '10.99.0.10',
     osVersion: 'Windows Server 2022 (mock)',
-    siteHint: 'MOCK-SITE',
+    // Round-19 follow-up #2: pass per-site hint through from the scenario
+    // spec so the operator sees MOCK-NC / MOCK-FZ / MOCK-XM / MOCK-HUB in
+    // the dashboard's site grouping, instead of the generic MOCK-SITE.
+    siteHint: opts.siteHint ?? 'MOCK-SITE',
     isPdc: !!isPdc,
     roles: isPdc
       ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
@@ -186,7 +207,7 @@ async function runAgent(spec, { stopFlag }) {
     source: 'collect-discovery-mock-daemon',
     agentId,
     collectedAt: new Date().toISOString(),
-    dc: buildDiscovery(agentId, isPdc)
+    dc: buildDiscovery(agentId, isPdc, { ip: spec.ip, siteHint: spec.siteHint })
   });
   if (disc.ok) {
     lastDiscoveryAt = Date.now();
@@ -237,7 +258,7 @@ async function runAgent(spec, { stopFlag }) {
           source: 'collect-discovery-mock-daemon',
           agentId,
           collectedAt: new Date().toISOString(),
-          dc: buildDiscovery(agentId, isPdc)
+          dc: buildDiscovery(agentId, isPdc, { ip: spec.ip, siteHint: spec.siteHint })
         });
         if (d.ok) lastDiscoveryAt = now;
       }
