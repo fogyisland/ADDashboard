@@ -28,7 +28,14 @@ function asNullableString(v) {
 function rowParams(row) {
   // The 4 counter fields are populated only for the __dc_summary__ self-loop
   // entry emitted by collect-replication.ps1; all other entries pass NULL.
-  const isSummary = row.naming_context === '__dc_summary__';
+  // 2026-08-27 round-25 fix: read row.namingContext (camelCase) — the route
+  // layer at routes/agent.js forwards the agent payload straight from
+  // reporter.toCamelEntry, which produces camelCase keys. The previous
+  // snake_case read (`row.naming_context`) was always undefined, so
+  // isSummary was always false and the 4 counters were silently bound as
+  // NULL on every __dc_summary__ row. That left Server Overview showing
+  // — / 0 / — / — for every DC that reported through this path.
+  const isSummary = row.namingContext === '__dc_summary__';
   // partnerPortStatus on the wire (agent → centre) is already a JSON string
   // emitted by collect-replication.ps1's ConvertTo-Json -Compress + toCamelEntry
   // forwarding it verbatim. Other in-process callers (tests, services that

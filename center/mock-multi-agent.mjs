@@ -30,6 +30,8 @@
 // Each agent's timing is configurable through the JSON config so the
 // operator can re-stage the scenario without touching code.
 
+import { buildSnapshot, postSnapshot } from './mock-snapshot.mjs';
+
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
 const AGENT_TOKEN = process.env.AGENT_TOKEN ?? '973d8e916d1e6ee3e08e43751515c2e71abac9f4ee3abc6e295a5a154894f5ecd12742a837a22b7ac43fbf0a34c5a1c6';
@@ -99,21 +101,9 @@ async function postHeartbeat({ agentId, source = 'collect-heartbeat-mock' }) {
   return { status: res.status, text: await res.text() };
 }
 
-async function postReplication({ agentId, collectedAt, source = 'collect-replication-mock', data }) {
-  const body = {
-    source,
-    agentId,
-    collectedAt: collectedAt.toISOString(),
-    data
-  };
-  const res = await fetch(`${REPORT_URL}${REPORT_PATH}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN, 'X-Agent-Id': agentId },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000)
-  });
-  return { status: res.status, text: await res.text() };
-}
+// 2026-08-27 round-24: postReplication is replaced by postSnapshot (from
+// mock-snapshot.mjs) which routes through the real agent/src/reporter.js
+// postReport path. See "scenario execution" below.
 
 // 2026-08-26 round-15: post-discovery so the mock agent claims its DC row
 // in ad_dcs. Without this, only heartbeats + replication land — the
@@ -326,32 +316,21 @@ function defaultScenario() {
 
 // ----- scenario execution -----
 
-function buildReplicationData(agentId, collectedAt, links) {
-  // Each link becomes a row in ad_replication_status. Mirror the round-13
-  // INSERT shape (16 cols + partner_port_status) so the rows land without
-  // shape errors; partnerPortStatus is null because we're not probing
-  // partner ports in this scenario.
-  const rows = [];
-  for (const link of links) {
-    rows.push({
-      sourceDc: agentId,
-      destDc: link.destDc,
-      sourceSite: null,
-      destSite: null,
-      namingContext: link.namingContext ?? `CN=${agentId},CN=Partition`,
-      lastSuccessTime: link.statusCode === 0 ? collectedAt.toISOString() : null,
-      lastAttemptTime: collectedAt.toISOString(),
-      lastFailureReason: link.statusCode === 0 ? null : (link.errorMessage ?? 'unknown'),
-      failureCount: link.statusCode === 0 ? 0 : 1,
-      statusCode: link.statusCode,
-      errorMessage: link.statusCode === 0 ? null : (link.errorMessage ?? null),
-      usersCount: null,
-      groupsCount: null,
-      gposCount: null,
-      partnerPortStatus: null
-    });
-  }
-  return rows;
+// Build a snapshot in the EXACT PascalCase shape that collect-replication.ps1
+// emits. mock-snapshot.mjs handles the toCamelEntry conversion via
+// reporter.postReport, so this mock automatically picks up any future
+// field additions in the agent's reporter (round-18 dropped LockedCount
+// here, round-13 added PartnerPortStatus — those were the round-17/18
+// drift points that bit us). buildSnapshot also appends a
+// __dc_summary__ entry with deterministic per-DC counters so the
+// Server Overview's DcCard never renders — / 0 for a healthy mock.
+function buildReplicationSnapshot(agentId, collectedAt, links, sourceSite) {
+  return buildSnapshot({
+    agentId,
+    collectedAt,
+    sourceSite,
+    links: links ?? []
+  });
 }
 
 async function runOne(scenario) {
@@ -375,9 +354,10 @@ async function runOne(scenario) {
     if (!collectedAt) {
       console.log(`  replication → SKIP (when=never)`);
     } else {
-      const data = buildReplicationData(agentId, collectedAt, replication.links ?? []);
-      const rep = await postReplication({ agentId, collectedAt, data });
-      console.log(`  replication → HTTP ${rep.status} (collected_at=${collectedAt.toISOString()}, rows=${data.length})`);
+      const sourceSite = discovery?.dc?.siteHint ?? null;
+      const snapshot = buildReplicationSnapshot(agentId, collectedAt, replication.links ?? [], sourceSite);
+      const rep = await postSnapshot({ centerUrl: REPORT_URL, agentToken: AGENT_TOKEN, snapshot });
+      console.log(`  replication → HTTP ${rep.status} (collected_at=${collectedAt.toISOString()}, entries=${snapshot.Entries.length})`);
     }
   } else {
     console.log(`  replication → SKIP (no block — agent has never reported)`);
@@ -397,10 +377,11 @@ async function runOne(scenario) {
   if (localState) {
     const localCollectedAt = floorSec(parseWhen(localState.when));
     if (localCollectedAt) {
-      const data = buildReplicationData(agentId, localCollectedAt, [
+      const sourceSite = discovery?.dc?.siteHint ?? null;
+      const snapshot = buildReplicationSnapshot(agentId, localCollectedAt, [
         { destDc: '__local_state__', namingContext: '__local_state__', statusCode: 0 }
-      ]);
-      const rep = await postReplication({ agentId, collectedAt: localCollectedAt, data, source: 'collect-local-state-mock' });
+      ], sourceSite);
+      const rep = await postSnapshot({ centerUrl: REPORT_URL, agentToken: AGENT_TOKEN, snapshot });
       console.log(`  localState → HTTP ${rep.status} (collected_at=${localCollectedAt.toISOString()})`);
     } else {
       console.log(`  localState → SKIP (when=never)`);

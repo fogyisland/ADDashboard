@@ -98,3 +98,61 @@ test('upsertStatus: non-string non-null sourceSite is coerced to string (defensi
   await upsertStatus([row2], { appendHistory: false });
   assert.equal(records[1].params[4], 'false', 'sourceSite=false must coerce to "false"');
 });
+
+// 2026-08-27 round-25 bug: rowParams() checked `row.naming_context` (snake_case)
+// to gate the per-DC counters, but the route layer passes the camelCase
+// payload straight from agent/src/reporter.js#toCamelEntry. So isSummary
+// was always false → usersCount/groupsCount/gposCount always NULL on
+// __dc_summary__ rows. The Server Overview consequently renders "—" for
+// every mock DC (and was probably doing the same for real DCs, masked by
+// the fact that some teams populate users/groups via package-side packages
+// instead). Fix: rowParams() must read row.namingContext (camelCase, matching
+// the postReport wire shape) and the new test pins that contract.
+test('upsertStatus: __dc_summary__ row carries usersCount/groupsCount/gposCount to SQL params', async () => {
+  const records = [];
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  const summaryRow = {
+    ...baseRow,
+    sourceDc: 'DC-SUMMARY',
+    destDc: 'DC-SUMMARY',
+    namingContext: '__dc_summary__',
+    usersCount: 1234,
+    groupsCount: 56,
+    gposCount: 7,
+    lockedCount: 1
+  };
+  await upsertStatus([summaryRow], { appendHistory: false });
+  const params = records[0].params;
+  // rowParams order: collectedAt(0), agentId(1), sourceDc(2), destDc(3),
+  // sourceSite(4), destSite(5), namingContext(6), lastSuccessTime(7),
+  // lastAttemptTime(8), statusCode(9), errorMessage(10), usersCount(11),
+  // groupsCount(12), gposCount(13), lockedCount(14), partnerPortStatus(15)
+  assert.equal(params[11], 1234, 'usersCount must be bound for __dc_summary__ row');
+  assert.equal(params[12], 56,   'groupsCount must be bound for __dc_summary__ row');
+  assert.equal(params[13], 7,    'gposCount must be bound for __dc_summary__ row');
+  assert.equal(params[14], 1,    'lockedCount must be bound for __dc_summary__ row');
+});
+
+test('upsertStatus: per-link entries keep usersCount/groupsCount/gposCount null', async () => {
+  // Even if a per-link entry somehow ships counter values (it shouldn't), the
+  // service must not propagate them — only __dc_summary__ rows are the
+  // counters' home. This guards against future PS1 drift.
+  const records = [];
+  const db = buildRecordingPool(records);
+  _setDbForTest(db);
+  const linkRow = {
+    ...baseRow,
+    namingContext: 'CN=link-A',
+    usersCount: 999, // noise that should be ignored
+    groupsCount: 999,
+    gposCount: 999,
+    lockedCount: 999
+  };
+  await upsertStatus([linkRow], { appendHistory: false });
+  const params = records[0].params;
+  assert.equal(params[11], null, 'usersCount must be null on non-summary rows');
+  assert.equal(params[12], null, 'groupsCount must be null on non-summary rows');
+  assert.equal(params[13], null, 'gposCount must be null on non-summary rows');
+  assert.equal(params[14], null, 'lockedCount must be null on non-summary rows');
+});

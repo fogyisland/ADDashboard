@@ -26,6 +26,7 @@
 // daemon runs until SIGINT/SIGTERM (Ctrl+C).
 
 import { setTimeout as delay } from 'node:timers/promises';
+import { buildSnapshot } from './mock-snapshot.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -141,39 +142,22 @@ function buildHeartbeatBody(agentId) {
   };
 }
 
-function buildReplicationData(agentId, peers, failRate) {
-  const collectedAt = new Date();
-  const rows = peers.map((destDc) => {
+// 2026-08-27 round-24: replaced by buildSnapshot (from mock-snapshot.mjs) so
+// the daemon drives the real agent/src/reporter.js postReport path.
+// buildSnapshot appends a __dc_summary__ entry with deterministic
+// per-DC counters (usersCount / groupsCount / gposCount) derived from the
+// agentId hash, instead of the previous hardcoded 0/0/0.
+function buildReplicationSnapshot(agentId, peers, failRate, sourceSite) {
+  const links = peers.map((destDc) => {
     const isFail = Math.random() < failRate;
     return {
-      sourceDc: agentId,
       destDc,
-      sourceSite: 'MOCK-SITE',
-      destSite:   'MOCK-SITE',
       namingContext: `${agentId}->${destDc}`,
       statusCode: isFail ? 2 : 0,
-      errorMessage: isFail ? 'RPC server unavailable (mock)' : null,
-      lastSuccessTime: isFail ? null : collectedAt.toISOString(),
-      lastAttemptTime: collectedAt.toISOString(),
-      usersCount: null, groupsCount: null, gposCount: null,
-      partnerPortStatus: null
+      errorMessage: isFail ? 'RPC server unavailable (mock)' : null
     };
   });
-  // Always include __dc_summary__ so the per-agent self-loop entry shows up.
-  rows.push({
-    sourceDc: agentId,
-    destDc: agentId,
-    sourceSite: 'MOCK-SITE',
-    destSite:   'MOCK-SITE',
-    namingContext: '__dc_summary__',
-    statusCode: 0,
-    errorMessage: null,
-    lastSuccessTime: collectedAt.toISOString(),
-    lastAttemptTime: collectedAt.toISOString(),
-    usersCount: 0, groupsCount: 0, gposCount: 0,
-    partnerPortStatus: null
-  });
-  return { collectedAt, rows };
+  return buildSnapshot({ agentId, collectedAt: new Date(), sourceSite, links });
 }
 
 function buildDiscovery(agentId, isPdc, opts = {}) {
@@ -231,20 +215,24 @@ async function runAgent(spec, { stopFlag }) {
       // same postReplication() so the wire shape stays identical to the
       // real agent's collect-replication.ps1 output.
       if (reportRequested || (now - lastReplicationAt) >= replicationTickMs) {
-        const { collectedAt, rows } = buildReplicationData(agentId, peers, failRate);
+        // 2026-08-27 round-24: buildSnapshot produces the same PascalCase
+        // shape collect-replication.ps1 emits. The centre's reporter
+        // (reporter.toCamelEntry) handles field-name conversion; mock no
+        // longer has to mirror the wire format by hand.
+        const snapshot = buildReplicationSnapshot(agentId, peers, failRate, spec.siteHint ?? 'MOCK-SITE');
         const rep = await postJson(`${REPORT_URL}${REPORT_PATH}`, {
           source: 'collect-replication-mock-daemon',
           agentId,
-          collectedAt: collectedAt.toISOString(),
-          data: rows
+          collectedAt: snapshot.CollectedAt,
+          data: snapshot.Entries
         });
         if (rep.ok) {
           lastReplicationAt = now;
           console.log(
             `[${agentId}] replication ok (HTTP ${rep.status}` +
-            `, rows=${rows.length}` +
+            `, rows=${snapshot.Entries.length}` +
             (reportRequested ? `, triggeredBy=report-now` : '') +
-            `, collectedAt=${collectedAt.toISOString()})`
+            `, collectedAt=${snapshot.CollectedAt})`
           );
         } else {
           console.warn(`[${agentId}] replication failed (HTTP ${rep.status} / ${rep.error || 'unknown'})`);
