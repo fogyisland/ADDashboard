@@ -36,7 +36,15 @@ export function createMysqlDriver(config) {
     waitForConnections: true,
     connectionLimit: config.connectionLimit ?? 10,
     namedPlaceholders: false,
-    timezone: '+08:00',
+    // 2026-08-26 round-15 follow-up: pin mysql2 to UTC for DATETIME round-trip.
+    // Writes go through toMysqlDatetime() which uses getUTC*() — storage is
+    // UTC-naive strings. The previous '+08:00' caused mysql2 to interpret the
+    // stored UTC value as CST, returning JS Dates that were 8h earlier than
+    // the real UTC instant. The UI's "Date.now() - parsed" then computed gaps
+    // of 8h+ and the operator's probe panel showed all 3 center ports as
+    // "offline" (gap > 60s). 'Z' matches the storage convention and the
+    // round-15 SQL UTC_TIMESTAMP() comparison.
+    timezone: 'Z',
     dateStrings: false,
     multipleStatements: false,
     charset: 'utf8mb4'

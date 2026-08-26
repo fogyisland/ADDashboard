@@ -13,7 +13,7 @@ export const serverGroups = {
     // ---- ad_server_groups ----
     create: `INSERT INTO ad_server_groups (group_name, description) VALUES (?, ?)`,
     upsert: `INSERT INTO ad_server_groups (group_name, description) VALUES (?, ?)
-      ON DUPLICATE KEY UPDATE description = VALUES(description), updated_at = CURRENT_TIMESTAMP`,
+      ON DUPLICATE KEY UPDATE description = VALUES(description), updated_at = UTC_TIMESTAMP()`,
     findByName: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_name = ?`,
     findById: `SELECT group_id, group_name, description FROM ad_server_groups WHERE group_id = ?`,
     list: `SELECT g.group_id, g.group_name, g.description,
@@ -55,7 +55,7 @@ export const serverGroups = {
                           FROM ad_member_server_packages msp
                           WHERE msp.package_name = ?
                           ORDER BY msp.hostname`,
-    touchPackageRun: `UPDATE ad_member_server_packages SET last_run_at = NOW()
+    touchPackageRun: `UPDATE ad_member_server_packages SET last_run_at = UTC_TIMESTAMP()
                       WHERE hostname = ? AND package_name = ?`,
     // Bulk operations for Task 7 (server-groups admin routes). Pattern:
     // resolve member hostnames via the join, then write. MySQL uses INSERT

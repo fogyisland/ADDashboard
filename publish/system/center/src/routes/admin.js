@@ -534,7 +534,7 @@ export function adminRouter({ config, logger, db }) {
           result = { error: 'cannot rollback a masked smtp_password audit row' };
           return;
         }
-        await tx.execute('UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?', [audit.old_value, audit.config_key]);
+        await tx.execute('UPDATE system_config SET config_value = ?, updated_at = UTC_TIMESTAMP() WHERE config_key = ?', [audit.old_value, audit.config_key]);
         // Redact the password on the audit-trail write too — the rollback
         // row would otherwise carry cleartext if the source row's new_value
         // was the real password (rows written before T12 fix1).

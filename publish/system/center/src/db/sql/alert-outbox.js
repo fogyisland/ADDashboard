@@ -22,13 +22,13 @@ export const alertOutbox = {
     listPending: `SELECT id, alert_event_id, to_addrs, cc_addrs, subject, body_text, body_html,
                          attempt_count, next_attempt_at, last_error, sent_at, created_at
                   FROM alert_email_outbox
-                  WHERE sent_at IS NULL AND next_attempt_at <= NOW()
+                  WHERE sent_at IS NULL AND next_attempt_at <= UTC_TIMESTAMP()
                   ORDER BY next_attempt_at ASC, id ASC
                   LIMIT ?`,
     // Param order is [last_error_placeholder, id] — last_error is set to NULL
     // on success so the caller passes [null, rowId]. The leading placeholder
     // keeps params[1] bound to the row id (matches unit-test expectations).
-    markSent: `UPDATE alert_email_outbox SET sent_at = NOW(), attempt_count = attempt_count + 1, last_error = ?
+    markSent: `UPDATE alert_email_outbox SET sent_at = UTC_TIMESTAMP(), attempt_count = attempt_count + 1, last_error = ?
                WHERE id = ?`,
     // Param order is [last_error, id]. attempt_count is bumped inline;
     // scheduleRetry SQL below sets next_attempt_at separately so the loop
@@ -37,7 +37,7 @@ export const alertOutbox = {
                  WHERE id = ?`,
     // Sets only next_attempt_at (the loop computes the backoff seconds and
     // passes them in). Used after markFailed to apply exponential backoff.
-    scheduleRetry: `UPDATE alert_email_outbox SET next_attempt_at = DATE_ADD(NOW(), INTERVAL ? SECOND)
+    scheduleRetry: `UPDATE alert_email_outbox SET next_attempt_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND)
                     WHERE id = ?`,
     deleteByEvent: `DELETE FROM alert_email_outbox WHERE alert_event_id = ?`
   },

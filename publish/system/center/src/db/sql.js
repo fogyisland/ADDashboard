@@ -28,7 +28,7 @@ const VARIANTS = {
       partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN ? - INTERVAL ? MINUTE AND ? + INTERVAL ? MINUTE`
     },
     discovery: {
-      upsertDc: `INSERT INTO ad_dcs (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE site_hint = VALUES(site_hint), os_version = VALUES(os_version), when_created = VALUES(when_created), is_pdc = VALUES(is_pdc), is_gc = VALUES(is_gc), is_rid_master = VALUES(is_rid_master), is_schema_master = VALUES(is_schema_master), is_domain_naming_master = VALUES(is_domain_naming_master), is_infrastructure_master = VALUES(is_infrastructure_master), discovered_at = NOW(), discovered_by_agent_id = VALUES(discovered_by_agent_id)`
+      upsertDc: `INSERT INTO ad_dcs (dc_name, site_hint, os_version, when_created, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE site_hint = VALUES(site_hint), os_version = VALUES(os_version), when_created = VALUES(when_created), is_pdc = VALUES(is_pdc), is_gc = VALUES(is_gc), is_rid_master = VALUES(is_rid_master), is_schema_master = VALUES(is_schema_master), is_domain_naming_master = VALUES(is_domain_naming_master), is_infrastructure_master = VALUES(is_infrastructure_master), discovered_at = UTC_TIMESTAMP(), discovered_by_agent_id = VALUES(discovered_by_agent_id)`
     },
     users: {
       findByUsername: `SELECT u.id, u.username, u.password_hash, u.role_id, u.status, u.token_version, r.role_name, GROUP_CONCAT(rp.permission) AS permissions FROM sys_users u LEFT JOIN sys_roles r ON u.role_id = r.id LEFT JOIN role_permissions rp ON rp.role_id = r.id WHERE u.username = ? GROUP BY u.id, u.username, u.password_hash, u.role_id, u.status, u.token_version, r.role_name LIMIT 1`,
@@ -36,7 +36,7 @@ const VARIANTS = {
       create: 'INSERT INTO sys_users (username, password_hash, role_id, status) VALUES (?, ?, ?, ?)',
       update: 'UPDATE sys_users SET password_hash = COALESCE(?, password_hash), role_id = COALESCE(?, role_id), status = COALESCE(?, status) WHERE id = ?',
       delete: 'DELETE FROM sys_users WHERE id = ?',
-      recordLogin: 'UPDATE sys_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?',
+      recordLogin: 'UPDATE sys_users SET last_login_at = UTC_TIMESTAMP() WHERE id = ?',
       bumpTokenVersion: 'UPDATE sys_users SET token_version = token_version + 1 WHERE id = ?',
       getTokenVersion: 'SELECT token_version FROM sys_users WHERE id = ?',
       getAuthStatus: 'SELECT token_version, status FROM sys_users WHERE id = ?',
@@ -49,8 +49,8 @@ const VARIANTS = {
     },
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
-      upsert: `INSERT INTO system_config (config_key, config_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP`,
-      setAgentToken: `INSERT INTO system_config (config_key, config_value) VALUES ('agent_token', ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP`,
+      upsert: `INSERT INTO system_config (config_key, config_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = UTC_TIMESTAMP()`,
+      setAgentToken: `INSERT INTO system_config (config_key, config_value) VALUES ('agent_token', ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = UTC_TIMESTAMP()`,
       getAgentTokenBundle: `SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_version')`,
       getJwtSecretBundle: `SELECT config_key, config_value FROM system_config WHERE config_key IN ('jwt_secret_current', 'jwt_secret_previous', 'jwt_secret_rotated_at', 'jwt_secret_previous_ttl_days')`,
       audit: {
@@ -119,7 +119,7 @@ const VARIANTS = {
       siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
       topology: `SELECT source_site, dest_site, source_dc, dest_dc, status_code, last_success_time FROM ad_replication_status`,
       errors: `SELECT source_dc, dest_dc, source_site, dest_site, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE status_code <> 0 ORDER BY last_attempt_time DESC`,
-      agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
+      agents: `SELECT agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS seconds_since_heartbeat FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
       dcsBySite: `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
       dcReplicationLinks: (placeholders) => `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders}) ORDER BY source_dc, dest_dc, naming_context`,
@@ -130,7 +130,7 @@ const VARIANTS = {
       // migration `AFTER agent_token_version`). COALESCE on UPDATE means
       // a `null` param preserves the existing column — agents pre-T6 that
       // don't forward the field will not wipe the "report now" request.
-      upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version, report_requested_at) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = CURRENT_TIMESTAMP, agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size), agent_token_version = VALUES(agent_token_version), report_requested_at = COALESCE(VALUES(report_requested_at), report_requested_at)`,
+      upsert: `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, agent_version, last_report_at, last_report_status, pending_queue_size, agent_token_version, report_requested_at) VALUES (?, UTC_TIMESTAMP(), ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE last_heartbeat_at = UTC_TIMESTAMP(), agent_version = VALUES(agent_version), last_report_at = VALUES(last_report_at), last_report_status = VALUES(last_report_status), pending_queue_size = VALUES(pending_queue_size), agent_token_version = VALUES(agent_token_version), report_requested_at = COALESCE(VALUES(report_requested_at), report_requested_at)`,
       // 2026-08-21 UX redesign (auto-delivery): list every agent's last
       // reported agent_token_version so the modal can render the
       // "已推送到 X / N 台 Agent" counter. agent_id is the source-of-truth
@@ -232,7 +232,7 @@ const VARIANTS = {
       // has. Caller binds [agentId, requestedAt] (Date or ISO string).
       requestReport: (agentId, requestedAtIso) =>
         `INSERT INTO ad_agent_heartbeat (agent_id, last_heartbeat_at, report_requested_at)
-         VALUES (?, CURRENT_TIMESTAMP, ?)
+         VALUES (?, UTC_TIMESTAMP(), ?)
          ON DUPLICATE KEY UPDATE report_requested_at = VALUES(report_requested_at)`,
       // 2026-08-24 round-12 T-fix: clearReportRequest — direct UPDATE that
       // actually sets `report_requested_at = NULL`. The heartbeat UPSERT's

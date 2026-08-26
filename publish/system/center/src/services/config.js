@@ -68,7 +68,7 @@ export async function setConfig(key, value) {
   const db = getDb();
   // Per-key UPDATE kept inline (config table has only a few rows; one round-trip per key is fine).
   await db.execute(
-    'UPDATE system_config SET config_value = ?, updated_at = CURRENT_TIMESTAMP WHERE config_key = ?',
+    'UPDATE system_config SET config_value = ?, updated_at = UTC_TIMESTAMP() WHERE config_key = ?',
     [value == null ? null : String(value), key]
   );
 }
