@@ -108,6 +108,24 @@ test('updateParams puts to /api/admin/packages/:name/params and refetches', asyn
   expect(api.put).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/params', { params: { threshold: 80 } });
 });
 
+// 2026-08-26 T4: interval-override action
+test('setIntervalOverride puts to /api/admin/packages/:name/interval with numeric value and refetches', async () => {
+  api.put.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
+  const store = usePackagesStore();
+  await store.setIntervalOverride('cpu-monitor', 300);
+  expect(api.put).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/interval', { intervalSec: 300 });
+  expect(api.get).toHaveBeenCalledWith('/api/admin/packages');
+});
+
+test('setIntervalOverride forwards null to clear override (fall back to manifest default)', async () => {
+  api.put.mockResolvedValueOnce({ data: { ok: true } });
+  api.get.mockResolvedValueOnce({ data: { packages: [] } });
+  const store = usePackagesStore();
+  await store.setIntervalOverride('cpu-monitor', null);
+  expect(api.put).toHaveBeenCalledWith('/api/admin/packages/cpu-monitor/interval', { intervalSec: null });
+});
+
 test('fetchRegistryIndex returns data from /api/admin/packages/registry/list', async () => {
   api.get.mockResolvedValueOnce({
     data: { url: 'http://x', packages: [{ name: 'cpu' }], updatedAt: '2026-08-02T00:00:00Z' }

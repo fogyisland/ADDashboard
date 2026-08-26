@@ -11,8 +11,8 @@ import { usePackagesStore } from '../src/stores/packages.js';
 
 function makeInstalled() {
   return [
-    { name: 'cpu-monitor', version: '1.0.0', type: 'gauge', enabled: 1, source: 'registry', installed_at: '2026-08-01T00:00:00Z' },
-    { name: 'mem-monitor', version: '1.2.0', type: 'gauge', enabled: 0, source: 'local', installed_at: '2026-08-02T00:00:00Z' }
+    { name: 'cpu-monitor', version: '1.0.0', type: 'gauge', enabled: 1, source: 'registry', installed_at: '2026-08-01T00:00:00Z', intervalOverrideSec: null, manifest: { agent: { intervalSec: 300 } } },
+    { name: 'mem-monitor', version: '1.2.0', type: 'gauge', enabled: 0, source: 'local', installed_at: '2026-08-02T00:00:00Z', intervalOverrideSec: 600, manifest: { agent: { intervalSec: 300 } } }
   ];
 }
 
@@ -25,6 +25,7 @@ function makeStore(overrides = {}) {
   const upgrade = vi.fn().mockResolvedValue({ ok: true });
   const refreshRegistry = vi.fn().mockResolvedValue({ ok: true });
   const updateParams = vi.fn().mockResolvedValue(undefined);
+  const setIntervalOverride = vi.fn().mockResolvedValue(undefined);
   const fetchRegistryIndex = vi.fn().mockResolvedValue({ url: '', packages: [] });
   const store = {
     installed: makeInstalled(),
@@ -39,6 +40,7 @@ function makeStore(overrides = {}) {
     upgrade,
     refreshRegistry,
     updateParams,
+    setIntervalOverride,
     fetchRegistryIndex,
     ...overrides
   };
@@ -201,4 +203,82 @@ test('PackagesView upload triggers store.install with source=local and base64 bu
   expect(call.source).toBe('local');
   expect(call.packageRef).toBe('cpu-monitor-1.0.0.zip');
   expect(call.buffer).toBeTruthy();
+});
+
+// 2026-08-26 T4: interval override editor
+
+test('PackagesView renders interval column with manifest default + current override', async () => {
+  const store = makeStore();
+  const wrapper = mount(PackagesView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  const text = wrapper.text();
+  // cpu-monitor has no override → shows "—" + "默认 300 秒"
+  // mem-monitor has override=600 → shows "600 秒" + "默认 300 秒"
+  expect(text).toContain('—');
+  expect(text).toContain('默认 300 秒');
+  expect(text).toContain('600 秒');
+});
+
+test('PackagesView interval editor: typing + 保存 calls store.setIntervalOverride with parsed int', async () => {
+  const store = makeStore();
+  const wrapper = mount(PackagesView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  const inputs = wrapper.findAll('[data-testid="interval-input"]');
+  expect(inputs).toHaveLength(2);
+  // cpu-monitor: no override → draft starts empty
+  const cpuInput = inputs[0];
+  await cpuInput.setValue(120);
+  const saveBtns = wrapper.findAll('[data-testid="interval-save"]');
+  // After setValue, save becomes enabled (dirty); click it
+  await saveBtns[0].trigger('click');
+  await flushPromises();
+  expect(store.setIntervalOverride).toHaveBeenCalledWith('cpu-monitor', 120);
+});
+
+test('PackagesView interval editor: 清除覆盖 button calls store.setIntervalOverride with null', async () => {
+  const store = makeStore();
+  const wrapper = mount(PackagesView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  const clearBtns = wrapper.findAll('[data-testid="interval-clear"]');
+  // cpu-monitor: no override → clear button disabled
+  expect(clearBtns[0].element.disabled).toBe(true);
+  // mem-monitor: override=600 → clear button enabled
+  expect(clearBtns[1].element.disabled).toBe(false);
+  await clearBtns[1].trigger('click');
+  await flushPromises();
+  expect(store.setIntervalOverride).toHaveBeenCalledWith('mem-monitor', null);
+});
+
+test('PackagesView interval editor: out-of-range value shows error and does NOT call store', async () => {
+  const store = makeStore();
+  const wrapper = mount(PackagesView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  const inputs = wrapper.findAll('[data-testid="interval-input"]');
+  await inputs[0].setValue(3);  // below minimum 5
+  const saveBtns = wrapper.findAll('[data-testid="interval-save"]');
+  await saveBtns[0].trigger('click');
+  await flushPromises();
+  expect(store.setIntervalOverride).not.toHaveBeenCalled();
+  expect(wrapper.text()).toContain('intervalSec 必须是 5..86400 的整数');
+});
+
+test('PackagesView interval editor: Save disabled when draft matches current override (no dirty)', async () => {
+  const store = makeStore();
+  const wrapper = mount(PackagesView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  // mem-monitor has intervalOverrideSec=600; type 600 → not dirty
+  const inputs = wrapper.findAll('[data-testid="interval-input"]');
+  await inputs[1].setValue(600);
+  const saveBtns = wrapper.findAll('[data-testid="interval-save"]');
+  expect(saveBtns[1].element.disabled).toBe(true);
 });

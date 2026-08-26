@@ -74,6 +74,18 @@ export const usePackagesStore = defineStore('packages', {
       await this.fetchInstalled();
     },
 
+    // Operator interval override (round-19 follow-up, T4). Body shape:
+    //   intervalSec: <integer 5..86400> | null   (null = clear, fall back to manifest)
+    // The backend route (PUT /api/admin/packages/:name/interval) owns the
+    // 5..86400 validation; we just forward the value as-is and refetch so
+    // the table re-renders with the persisted override.
+    async setIntervalOverride(name, intervalSec) {
+      await api.put(`/api/admin/packages/${encodeURIComponent(name)}/interval`, {
+        intervalSec: intervalSec == null ? null : Number(intervalSec)
+      });
+      await this.fetchInstalled();
+    },
+
     async refreshRegistry() {
       const r = await api.get('/api/admin/packages/registry/refresh');
       this.registryCache.fetchedAt = new Date().toISOString();
