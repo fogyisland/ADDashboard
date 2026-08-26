@@ -137,20 +137,94 @@ const VARIANTS = {
       // identifier; for AD it's the configured agentId (e.g. DC name),
       // for non-AD it's the hostname (matches the heartbeat payload).
       tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
-      // 2026-08-24 round-12: SELECT exposes report_requested_at so callers
-      // can detect "already pending" without a separate read. WHERE filter
-      // is round-11's `__healthcheck__` exclusion — preserved.
-      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size, h.report_requested_at
+      // 2026-08-26 round-15: source-of-truth switch for the report-status
+      // signal. The previous SELECT exposed h.last_report_at /
+      // h.last_report_status, which is a self-declared timestamp the agent
+      // writes in its heartbeat body. It drifted from reality (a successful
+      // replication report could land without the heartbeat column ever
+      // being updated, so the operator view showed "未上传" while data was
+      // in the DB). We now derive both fields from ad_replication_status:
+      //   - rep.last_report_at = MAX(collected_at) over ALL history
+      //     (null = agent has NEVER produced a replication row)
+      //   - rep.success_count / fail_count / total_count = aggregate over the
+      //     1-hour lookback window (matches the operator rule "last
+      //     uploaded data must not exceed one hour")
+      //   - last_report_status is a CASE derived from the 1-hour threshold
+      //     + the failure count: null / success / partial_failure / stale
+      // The new fields keep the same column names so the service layer can
+      // keep reading row.last_report_at without renaming. report_requested_at
+      // stays from the heartbeat row (it's the admin "report now" flag).
+      //
+      // 2026-08-26 round-15 hot-fix: NOW() → UTC_TIMESTAMP(). The stored
+      // values for collected_at are written via toMysqlDatetime() which
+      // produces UTC-naive strings (`YYYY-MM-DD HH:MM:SS` derived from
+      // the JS Date's UTC components). MySQL's session timezone on the
+      // dev box is SYSTEM (CST = UTC+8), so NOW() returns a CST value —
+      // comparing that against UTC-stored rows makes every recent row
+      // look 8 hours old. UTC_TIMESTAMP() returns the actual UTC clock,
+      // matching the storage convention. Same fix on the MSSQL branch
+      // (SYSUTCDATETIME is already UTC). The 1-hour rule was meant to
+      // be a wall-clock comparison, not a session-timezone comparison.
+      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at,
+                          rep.last_report_at,
+                          CASE
+                            WHEN rep.last_report_at IS NULL THEN NULL
+                            WHEN rep.last_report_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR THEN
+                              CASE WHEN COALESCE(recent.fail_count, 0) > 0 THEN 'partial_failure' ELSE 'success' END
+                            ELSE 'stale'
+                          END AS last_report_status,
+                          COALESCE(recent.success_count, 0) AS success_count,
+                          COALESCE(recent.fail_count, 0) AS fail_count,
+                          COALESCE(recent.total_count, 0) AS total_count,
+                          h.pending_queue_size, h.report_requested_at
              FROM ad_agent_heartbeat h
+             LEFT JOIN (
+               SELECT agent_id, MAX(collected_at) AS last_report_at
+               FROM ad_replication_status
+               GROUP BY agent_id
+             ) rep ON rep.agent_id = h.agent_id
+             LEFT JOIN (
+               SELECT agent_id,
+                      SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS success_count,
+                      SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
+                      COUNT(*) AS total_count
+               FROM ad_replication_status
+               WHERE collected_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR
+               GROUP BY agent_id
+             ) recent ON recent.agent_id = h.agent_id
              WHERE h.agent_id <> '__healthcheck__'
              ORDER BY h.agent_id`,
-      dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
-                 h.report_requested_at,
-                 d.dc_name, d.ip_address, d.os_version, d.is_pdc,
-                 s.site_name, s.region_code
+      dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at,
+                       rep.last_report_at,
+                       CASE
+                         WHEN rep.last_report_at IS NULL THEN NULL
+                         WHEN rep.last_report_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR THEN
+                           CASE WHEN COALESCE(recent.fail_count, 0) > 0 THEN 'partial_failure' ELSE 'success' END
+                         ELSE 'stale'
+                       END AS last_report_status,
+                       COALESCE(recent.success_count, 0) AS success_count,
+                       COALESCE(recent.fail_count, 0) AS fail_count,
+                       COALESCE(recent.total_count, 0) AS total_count,
+                       h.pending_queue_size, h.report_requested_at,
+                       d.dc_name, d.ip_address, d.os_version, d.is_pdc,
+                       s.site_name, s.region_code
           FROM ad_agent_heartbeat h
           LEFT JOIN ad_dcs d ON d.dc_name = h.agent_id
           LEFT JOIN ad_sites s ON s.site_id = d.site_id
+          LEFT JOIN (
+            SELECT agent_id, MAX(collected_at) AS last_report_at
+            FROM ad_replication_status
+            GROUP BY agent_id
+          ) rep ON rep.agent_id = h.agent_id
+          LEFT JOIN (
+            SELECT agent_id,
+                   SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
+                   COUNT(*) AS total_count
+            FROM ad_replication_status
+            WHERE collected_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR
+            GROUP BY agent_id
+          ) recent ON recent.agent_id = h.agent_id
           WHERE h.agent_id <> '__healthcheck__'
           ORDER BY h.agent_id`,
       // 2026-08-24 round-12: requestReport UPSERT — insert a stub heartbeat
@@ -192,6 +266,23 @@ const VARIANTS = {
            WHERE agent_id = ? AND collected_at >= ?
          ) m ON s.collected_at = m.max_collected AND s.agent_id = ?
          ORDER BY s.source_dc, s.dest_dc`,
+      // 2026-08-26 round-15: latest-failed-row lookup for the dashboard's
+      // "错误摘要" column. Scoped to the same 1-hour lookback the dashboard
+      // already uses for status, so the operator sees the most recent
+      // failure within the window that drove `fail_count > 0`. Single
+      // row, no params for the timestamp (UTC_TIMESTAMP() is fine here —
+      // the service calls this only when fail_count > 0 in the 1-hour
+      // window, so the row that comes back is guaranteed to be in that
+      // window). Uses UTC_TIMESTAMP() to match the storage convention
+      // (collected_at rows are written via toMysqlDatetime with UTC
+      // components — see agentsList/dcsList hot-fix comment for details).
+      latestFailureFor: (agentId) =>
+        `SELECT source_dc, dest_dc, error_message, collected_at
+         FROM ad_replication_status
+         WHERE agent_id = ? AND status_code <> 0
+           AND collected_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR
+         ORDER BY collected_at DESC, source_dc, dest_dc
+         LIMIT 1`,
       latestReportEntries: (agentId, sinceIso, limit) =>
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                 status_code, error_message, last_success_time, last_attempt_time
@@ -623,20 +714,71 @@ const VARIANTS = {
       // 2026-08-21 UX redesign (auto-delivery): same shape as the MySQL
       // variant — see the comment above.
       tokenDeliveryList: `SELECT agent_id, agent_token_version, last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id <> '__healthcheck__' ORDER BY agent_id`,
-      // 2026-08-24 round-12: SELECT exposes report_requested_at so callers
-      // can detect "already pending" without a separate read. WHERE filter
-      // is round-11's `__healthcheck__` exclusion — preserved.
-      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size, h.report_requested_at
+      // 2026-08-26 round-15: source-of-truth switch for the report-status
+      // signal. Mirrors the MySQL branch — derive last_report_at /
+// last_report_status from ad_replication_status instead of the
+// self-declared heartbeat columns. MSSQL uses DATEADD/SYSUTCDATETIME()
+// instead of NOW()/INTERVAL.
+      agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at,
+                          rep.last_report_at,
+                          CASE
+                            WHEN rep.last_report_at IS NULL THEN NULL
+                            WHEN rep.last_report_at >= DATEADD(HOUR, -1, SYSUTCDATETIME()) THEN
+                              CASE WHEN COALESCE(recent.fail_count, 0) > 0 THEN CAST('partial_failure' AS VARCHAR(32)) ELSE CAST('success' AS VARCHAR(32)) END
+                            ELSE CAST('stale' AS VARCHAR(32))
+                          END AS last_report_status,
+                          COALESCE(recent.success_count, 0) AS success_count,
+                          COALESCE(recent.fail_count, 0) AS fail_count,
+                          COALESCE(recent.total_count, 0) AS total_count,
+                          h.pending_queue_size, h.report_requested_at
              FROM ad_agent_heartbeat h
+             LEFT JOIN (
+               SELECT agent_id, MAX(collected_at) AS last_report_at
+               FROM ad_replication_status
+               GROUP BY agent_id
+             ) rep ON rep.agent_id = h.agent_id
+             LEFT JOIN (
+               SELECT agent_id,
+                      SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS success_count,
+                      SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
+                      COUNT(*) AS total_count
+               FROM ad_replication_status
+               WHERE collected_at >= DATEADD(HOUR, -1, SYSUTCDATETIME())
+               GROUP BY agent_id
+             ) recent ON recent.agent_id = h.agent_id
              WHERE h.agent_id <> '__healthcheck__'
              ORDER BY h.agent_id`,
-      dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at, h.last_report_at, h.last_report_status, h.pending_queue_size,
-                 h.report_requested_at,
-                 d.dc_name, d.ip_address, d.os_version, d.is_pdc,
-                 s.site_name, s.region_code
+      dcsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at,
+                       rep.last_report_at,
+                       CASE
+                         WHEN rep.last_report_at IS NULL THEN NULL
+                         WHEN rep.last_report_at >= DATEADD(HOUR, -1, SYSUTCDATETIME()) THEN
+                           CASE WHEN COALESCE(recent.fail_count, 0) > 0 THEN CAST('partial_failure' AS VARCHAR(32)) ELSE CAST('success' AS VARCHAR(32)) END
+                         ELSE CAST('stale' AS VARCHAR(32))
+                       END AS last_report_status,
+                       COALESCE(recent.success_count, 0) AS success_count,
+                       COALESCE(recent.fail_count, 0) AS fail_count,
+                       COALESCE(recent.total_count, 0) AS total_count,
+                       h.pending_queue_size, h.report_requested_at,
+                       d.dc_name, d.ip_address, d.os_version, d.is_pdc,
+                       s.site_name, s.region_code
           FROM ad_agent_heartbeat h
           LEFT JOIN ad_dcs d ON d.dc_name = h.agent_id
           LEFT JOIN ad_sites s ON s.site_id = d.site_id
+          LEFT JOIN (
+            SELECT agent_id, MAX(collected_at) AS last_report_at
+            FROM ad_replication_status
+            GROUP BY agent_id
+          ) rep ON rep.agent_id = h.agent_id
+          LEFT JOIN (
+            SELECT agent_id,
+                   SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
+                   COUNT(*) AS total_count
+            FROM ad_replication_status
+            WHERE collected_at >= DATEADD(HOUR, -1, SYSUTCDATETIME())
+            GROUP BY agent_id
+          ) recent ON recent.agent_id = h.agent_id
           WHERE h.agent_id <> '__healthcheck__'
           ORDER BY h.agent_id`,
       // 2026-08-24 round-12: requestReport MERGE — insert a stub heartbeat
@@ -690,6 +832,15 @@ const VARIANTS = {
            ORDER BY collected_at DESC
          ) m ON s.collected_at = m.max_collected AND s.agent_id = CAST(? AS NVARCHAR(64))
          ORDER BY s.source_dc, s.dest_dc`,
+      // 2026-08-26 round-15: latest-failed-row lookup. Mirrors the MySQL
+      // variant — scoped to the 1-hour window, single row, ordered by
+      // collected_at DESC. MSSQL uses TOP 1 + DATEADD/SYSUTCDATETIME().
+      latestFailureFor: (agentId) =>
+        `SELECT TOP 1 source_dc, dest_dc, error_message, collected_at
+         FROM ad_replication_status
+         WHERE agent_id = CAST(? AS NVARCHAR(64)) AND status_code <> 0
+           AND collected_at >= DATEADD(HOUR, -1, SYSUTCDATETIME())
+         ORDER BY collected_at DESC, source_dc, dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                  status_code, error_message, last_success_time, last_attempt_time

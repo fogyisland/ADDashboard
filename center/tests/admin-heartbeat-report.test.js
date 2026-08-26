@@ -52,18 +52,39 @@ function fakeReplicationRow(overrides = {}) {
   };
 }
 
-test('agents list: returns rows from ad_agent_heartbeat with reportSummary aggregation', async () => {
+// 2026-08-26 round-15: the agentsList / dcsList SQL now LEFT JOINs
+// ad_replication_status subqueries to derive last_report_at,
+// last_report_status, success_count / fail_count / total_count from the
+// 1-hour window. The mock-DB regex must match the new SQL shape (which
+// starts the same way but adds subqueries); the rows returned must carry
+// the new aggregate fields so the service can populate reportSummary
+// without a second DB roundtrip.
+test('agents list: derives last_report_at and reportSummary from replication aggregation', async () => {
+  const recent = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago — within 1h
   const db = buildMockDb([
     {
-      match: /SELECT\s+h\.agent_id\s*,\s*h\.agent_version\s*,\s*h\.last_heartbeat_at\s*,\s*h\.last_report_at\s*,\s*h\.last_report_status\s*,\s*h\.pending_queue_size(?:\s*,\s*h\.report_requested_at)?\s+FROM\s+ad_agent_heartbeat\s+h\s+(?:WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'\s+)?ORDER\s+BY\s+h\.agent_id/is,
-      rows: [fakeHeartbeatRow()]
+      match: /SELECT\s+h\.agent_id[\s\S]*?FROM\s+ad_agent_heartbeat\s+h[\s\S]*?ad_replication_status[\s\S]*?WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'/i,
+      rows: [{
+        agent_id: 'dc01',
+        agent_version: '0.1.0',
+        last_heartbeat_at: new Date('2026-08-07T15:30:00Z'),
+        // round-15: last_report_at now comes from MAX(collected_at), not
+        // the heartbeat self-declared column.
+        last_report_at: recent,
+        last_report_status: 'success',
+        success_count: 1,
+        fail_count: 1,
+        total_count: 2,
+        pending_queue_size: 0,
+        report_requested_at: null
+      }]
     },
+    // When fail_count > 0 the service runs latestFailureFor to populate
+    // latestErrorMessage / latestFailedLink. Mock it to return the
+    // failure row that matches the agent's recent snapshot.
     {
-      match: /FROM\s+ad_replication_status\s+s\s+INNER\s+JOIN\s*\(/is,
-      rows: [
-        fakeReplicationRow({ status_code: 0, error_message: null }),
-        fakeReplicationRow({ dest_dc: 'dc03', status_code: 1, error_message: '延迟高' })
-      ]
+      match: /FROM\s+ad_replication_status[\s\S]*?status_code\s*<>\s*0[\s\S]*?ORDER\s+BY\s+collected_at[\s\S]*?LIMIT\s+1|SELECT\s+TOP\s+1[\s\S]*?status_code\s*<>\s*0/is,
+      rows: [fakeReplicationRow({ dest_dc: 'dc03', status_code: 1, error_message: '延迟高' })]
     },
     {
       match: /SELECT\s+config_key\s*,\s*config_value\s+FROM\s+system_config/i,
@@ -91,19 +112,28 @@ test('agents list: returns rows from ad_agent_heartbeat with reportSummary aggre
 test('agents list: agent with no reports -> lastReportAt null, reportSummary null', async () => {
   const db = buildMockDb([
     {
-      match: /SELECT\s+h\.agent_id\s*,\s*h\.agent_version\s*,\s*h\.last_heartbeat_at\s*,\s*h\.last_report_at\s*,\s*h\.last_report_status\s*,\s*h\.pending_queue_size(?:\s*,\s*h\.report_requested_at)?\s+FROM\s+ad_agent_heartbeat\s+h\s+(?:WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'\s+)?ORDER\s+BY\s+h\.agent_id/is,
-      rows: [
-        fakeHeartbeatRow({
-          agent_id: 'dc-never',
-          last_report_at: null,
-          last_report_status: null,
-          pending_queue_size: 0
-        })
-      ]
+      match: /SELECT\s+h\.agent_id[\s\S]*?FROM\s+ad_agent_heartbeat\s+h[\s\S]*?ad_replication_status[\s\S]*?WHERE\s+h\.agent_id\s*<>\s*'__healthcheck__'/i,
+      rows: [{
+        agent_id: 'dc-never',
+        agent_version: '0.1.0',
+        last_heartbeat_at: new Date('2026-08-07T15:30:00Z'),
+        // round-15: NULL last_report_at signals "agent has NEVER produced
+        // a replication row" — derived from the LEFT JOIN to rep.*  being
+        // empty. Service must surface this as lastReportAt: null +
+        // reportSummary: null so the UI renders ⏸ 未上传.
+        last_report_at: null,
+        last_report_status: null,
+        success_count: 0,
+        fail_count: 0,
+        total_count: 0,
+        pending_queue_size: 0,
+        report_requested_at: null
+      }]
     },
-    // The summary query should NOT fire when last_report_at is null.
+    // The latestFailureFor query must NOT fire when total_count is 0;
+    // the service short-circuits before calling it.
     {
-      match: /FROM\s+ad_replication_status\s+s\s+INNER\s+JOIN\s*\(/is,
+      match: /FROM\s+ad_replication_status[\s\S]*?status_code\s*<>\s*0[\s\S]*?ORDER\s+BY\s+collected_at[\s\S]*?LIMIT\s+1|SELECT\s+TOP\s+1[\s\S]*?status_code\s*<>\s*0/is,
       rows: []
     },
     {
