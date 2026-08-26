@@ -10,11 +10,17 @@
 --   4 = gpos class failed
 -- so error_code = 0 means all three classes succeeded; 7 means all three failed.
 --
+-- Schema-qualified so it lands in pkg_ad_domain_consistency when
+-- applyMigrations runs against the connection's current default DB
+-- (Task 430 fix: pre-fix CREATE TABLE IF NOT EXISTS metrics was
+-- unqualified, so the table landed in addashboard.metrics instead of
+-- pkg_ad_domain_consistency.metrics and the metricstore v2 INSERT failed
+-- with "Table 'pkg_ad_domain_consistency.metrics' doesn't exist").
 -- Idempotent on rerun via CREATE TABLE IF NOT EXISTS.
 -- DATETIME(3) matches other package tables for ms-precision timestamps.
 -- Primary key on (agent_id, ts) is the unique-source row identity (Task 1 R2).
 
-CREATE TABLE IF NOT EXISTS metrics (
+CREATE TABLE IF NOT EXISTS pkg_ad_domain_consistency.metrics (
   agent_id    VARCHAR(64) NOT NULL,
   ts          DATETIME(3) NOT NULL,
   user_count  INT         NULL,
