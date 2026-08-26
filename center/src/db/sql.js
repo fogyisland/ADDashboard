@@ -28,23 +28,26 @@ const VARIANTS = {
       partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN ? - INTERVAL ? MINUTE AND ? + INTERVAL ? MINUTE`,
       // 2026-08-26 round-16 replication-port probe aggregator: pull the latest
       // partnerPortStatus JSON per (source_dc, dest_dc) pair. Naming-context
-      // scope is "partner_port" — every collect-replication.ps1 cycle writes
-      // one row per partner with the per-port probe map inside the JSON
-      // column. We join ad_dcs for site names so the operator sees a site-
-      // to-site pivot in the new admin view. last_attempt_time carries the
-      // freshness marker (collected_at is also the freshness indicator but
+      // scope is "__partner_ports__:<host>_<hash>" (set by
+      // agent/scripts/collect-replication.ps1::Get-PartnerNamingContext at
+      // line 212 — round-23 fixed the earlier "partner_port" string-literal
+      // mismatch that was leaving this query empty in production). One row
+      // per partner with the per-port probe map inside the JSON column. We
+      // join ad_dcs for site names so the operator sees a site-to-site pivot
+      // in the new admin view. last_attempt_time carries the freshness
+      // marker (collected_at is also the freshness indicator but
       // last_attempt_time is the more reliable signal for "did this probe
       // cycle run recently?" — it gets touched even on a partial failure).
       latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.source_site, t1.dest_site,
         t1.partner_port_status, t1.last_attempt_time, t1.collected_at
         FROM ad_replication_status t1
-        WHERE t1.naming_context = 'partner_port'
+        WHERE t1.naming_context LIKE '__partner_ports__:%'
           AND t1.partner_port_status IS NOT NULL
           AND t1.collected_at = (
             SELECT MAX(t2.collected_at) FROM ad_replication_status t2
             WHERE t2.source_dc = t1.source_dc
               AND t2.dest_dc = t1.dest_dc
-              AND t2.naming_context = 'partner_port'
+              AND t2.naming_context LIKE '__partner_ports__:%'
           )
         ORDER BY t1.source_dc, t1.dest_dc`
     },
@@ -622,7 +625,9 @@ const VARIANTS = {
       // MySQL helper above but written with OUTER APPLY for the per-pair
       // max-collected_at lookup (SQL Server idiom; subquery in SELECT works
       // too but OUTER APPLY reads cleaner and matches the latestSummaryPerDc
-      // helper directly above). naming_context scope is 'partner_port' — the
+      // helper directly above). naming_context scope is
+      // '__partner_ports__:<host>_<hash>' (round-23 fix — the prior literal
+      // 'partner_port' never matched what the agent actually emitted).
       // collect-replication.ps1 cycle emits one row per partner with the
       // per-port probe map inside the JSON column.
       latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.source_site, t1.dest_site,
@@ -632,10 +637,10 @@ const VARIANTS = {
           SELECT TOP 1 t2.collected_at AS max_collected_at FROM ad_replication_status t2
           WHERE t2.source_dc = t1.source_dc
             AND t2.dest_dc = t1.dest_dc
-            AND t2.naming_context = 'partner_port'
+            AND t2.naming_context LIKE '__partner_ports__:%'
           ORDER BY t2.collected_at DESC
         ) m
-        WHERE t1.naming_context = 'partner_port'
+        WHERE t1.naming_context LIKE '__partner_ports__:%'
           AND t1.partner_port_status IS NOT NULL
           AND t1.collected_at = m.max_collected_at
         ORDER BY t1.source_dc, t1.dest_dc`

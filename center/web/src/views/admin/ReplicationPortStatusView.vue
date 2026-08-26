@@ -1,7 +1,7 @@
 <template>
   <AdminLayout>
     <div class="header">
-      <h2>复制目标端口可达性</h2>
+      <h2>复制目标可达性</h2>
       <div class="controls">
         <span class="refresh-indicator">
           <span :class="['dot', polling ? 'on' : 'off']"></span>
@@ -23,6 +23,24 @@
 
     <div v-if="error" class="error-banner">{{ error }}</div>
 
+    <!-- 2026-08-27 round-23: site + server filter bar driven by the loaded
+         rows themselves (no separate sites/DCs catalog fetch). -->
+    <div class="filters" data-test="filters-bar">
+      <label>站点
+        <select v-model="filterSite" data-test="filter-site">
+          <option value="">全部</option>
+          <option v-for="s in availableSites" :key="s" :value="s">{{ s }}</option>
+        </select>
+      </label>
+      <label>服务器
+        <select v-model="filterServer" data-test="filter-server">
+          <option value="">全部</option>
+          <option v-for="s in availableServers" :key="s" :value="s">{{ s }}</option>
+        </select>
+      </label>
+      <button class="reset-btn" @click="resetFilters" data-test="filter-reset">清除筛选</button>
+    </div>
+
     <h3>当前探测端口 ({{ ports.length }})</h3>
     <div class="port-chips">
       <span v-for="p in ports" :key="p" class="chip" :data-port="p">{{ p }}</span>
@@ -31,33 +49,24 @@
 
     <h3>复制链路探测结果</h3>
     <div v-if="!rows.length" class="empty">暂无数据 — Agent 上报后将在此显示</div>
+    <div v-else-if="!filteredRows.length" class="empty" data-test="filter-empty">无匹配筛选条件的链路</div>
     <table v-else class="t" data-test="replication-port-table">
       <thead>
         <tr>
-          <th>状态</th>
-          <th>源 DC</th>
-          <th>源站点</th>
-          <th>目标 DC</th>
-          <th>目标站点</th>
+          <th>站点</th>
+          <th>源服务器</th>
+          <th>目标服务器</th>
           <th v-for="p in ports" :key="p" :data-test="'port-col'" :data-port="p">:{{ p }}</th>
           <th>最近探测</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="rowKey(row)" :data-test="'pair-row'" :data-source="row.sourceDc" :data-dest="row.destDc">
-          <td>
-            <span :class="['dot', pairStatus(row)]"></span>
-            {{ pairLabel(row) }}
-          </td>
+        <tr v-for="row in filteredRows" :key="rowKey(row)" :data-test="'pair-row'" :data-source="row.sourceDc" :data-dest="row.destDc">
+          <td>{{ row.sourceSite || row.destSite || '—' }}</td>
           <td>{{ row.sourceDc }}</td>
-          <td>{{ row.sourceSite || '—' }}</td>
           <td>{{ row.destDc }}</td>
-          <td>{{ row.destSite || '—' }}</td>
           <td v-for="p in ports" :key="p" :class="cellClass(row, p)" :data-test="'port-cell'" :data-port="p">
-            <span v-if="portCellIcon(row, p) === 'ok'">●</span>
-            <span v-else-if="portCellIcon(row, p) === 'err'">✕</span>
-            <span v-else-if="portCellIcon(row, p) === 'warn'">▲</span>
-            <span v-else>·</span>
+            <span :class="['port-icon', portCellIcon(row, p)]">{{ portCellGlyph(row, p) }}</span>
             <small v-if="portLatency(row, p) != null" class="latency">{{ portLatency(row, p) }}ms</small>
           </td>
           <td>{{ fmt(row.lastAttemptTime || row.collectedAt) }}</td>
@@ -68,7 +77,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 
@@ -78,6 +87,11 @@ const error = ref('');
 const lastLoadedAt = ref(null);
 const refreshSeconds = ref(30);
 const polling = ref(false);
+
+// 2026-08-27 round-23: site + server filters. Bound to selects above the
+// table; `filteredRows` is the live projection the table renders.
+const filterSite = ref('');
+const filterServer = ref('');
 
 let timerHandle = null;
 
@@ -100,6 +114,47 @@ async function load() {
   }
 }
 
+// Distinct sites seen across either source or dest side of any row. Used
+// to populate the 站点 filter dropdown.
+const availableSites = computed(() => {
+  const set = new Set();
+  for (const r of rows.value) {
+    if (r.sourceSite) set.add(r.sourceSite);
+    if (r.destSite) set.add(r.destSite);
+  }
+  return Array.from(set).sort();
+});
+
+// Distinct DC names across either side. Used for the 服务器 dropdown.
+const availableServers = computed(() => {
+  const set = new Set();
+  for (const r of rows.value) {
+    if (r.sourceDc) set.add(r.sourceDc);
+    if (r.destDc) set.add(r.destDc);
+  }
+  return Array.from(set).sort();
+});
+
+// Apply filters. Site matches when sourceSite OR destSite equals the chosen
+// value (a link crosses both sites; filtering by the row's "primary" site
+// would hide cross-site pairs). Server matches when EITHER endpoint equals
+// the chosen DC so operators can see all links touching a given DC.
+const filteredRows = computed(() => {
+  return rows.value.filter((r) => {
+    if (filterSite.value && r.sourceSite !== filterSite.value && r.destSite !== filterSite.value) return false;
+    if (filterServer.value && r.sourceDc !== filterServer.value && r.destDc !== filterServer.value) return false;
+    return true;
+  });
+});
+
+function resetFilters() {
+  filterSite.value = '';
+  filterServer.value = '';
+}
+
+// 2026-08-27 round-23: per-port glyph + class now drives a green/red cell
+// BACKGROUND (not just icon color) so a wide table is readable at a glance.
+// 'ok' → green background, 'err' → red background, 'warn'/'none' → muted.
 function portCellIcon(row, port) {
   const entry = row.perPort?.[String(port)];
   if (!entry) return 'none';
@@ -108,32 +163,30 @@ function portCellIcon(row, port) {
   return 'warn';
 }
 
+function portCellGlyph(row, port) {
+  const s = portCellIcon(row, port);
+  if (s === 'ok') return '✓';
+  if (s === 'err') return '✕';
+  if (s === 'warn') return '▲';
+  return '·';
+}
+
 function portLatency(row, port) {
   const entry = row.perPort?.[String(port)];
   return entry?.latencyMs ?? null;
 }
 
 function cellClass(_row, port) {
-  return ['cell', `cell-${port}`];
-}
-
-function pairStatus(row) {
-  // Pair-level status = worst across configured ports. All unreached = 'err'.
-  // Reachable set non-empty but at least one unreachable = 'warn'.
-  if (!ports.value.length) return 'none';
-  const entries = ports.value.map((p) => row.perPort?.[String(p)]).filter(Boolean);
-  if (!entries.length) return 'none';
-  if (entries.every((e) => e.reachable === true)) return 'ok';
-  if (entries.every((e) => e.reachable === false)) return 'err';
-  return 'warn';
-}
-
-function pairLabel(row) {
-  const s = pairStatus(row);
-  if (s === 'ok') return '全通';
-  if (s === 'warn') return '部分通';
-  if (s === 'err') return '不通';
-  return '—';
+  // We have to look up the row's status to bind it here; pass the row so
+  // portCellIcon can be re-evaluated cheaply.
+  const entry = _row.perPort?.[String(port)];
+  let status = 'none';
+  if (entry) {
+    if (entry.reachable === true) status = 'ok';
+    else if (entry.reachable === false) status = 'err';
+    else status = 'warn';
+  }
+  return ['cell', `cell-${port}`, `cell-${status}`];
 }
 
 function fmt(s) {
@@ -177,19 +230,34 @@ onUnmounted(() => {
 .last-loaded { margin-left: 12px; color: var(--muted); font-size: 12px; }
 .error-banner { background: #7f1d1d; color: #fef2f2; padding: 10px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 13px; }
 
+/* 2026-08-27 round-23: filter bar matches SiteReplicationMatrixView /
+   MemberServersView conventions — bare selects styled by global theme. */
+.filters { display: flex; gap: 16px; align-items: center; margin: 8px 0 16px; font-size: 13px; color: var(--muted); }
+.filters select { padding: 4px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px; margin-left: 6px; }
+.reset-btn { padding: 4px 10px; font-size: 12px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px; cursor: pointer; }
+.reset-btn:hover { border-color: var(--accent); }
+
 h3 { margin-top: 24px; }
 .port-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .chip { display: inline-block; padding: 3px 10px; background: #1e293b; border-radius: 999px; font-family: ui-monospace, monospace; font-size: 12px; color: var(--text); }
 
 .t { width: 100%; border-collapse: collapse; background: var(--panel); }
-.t th, .t td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 13px; }
+.t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 13px; }
 .t th { background: #0b1220; color: var(--muted); font-size: 12px; }
-.cell { text-align: center; white-space: nowrap; }
-.latency { display: block; font-size: 10px; color: var(--muted); }
-.cell :is(.ok, .warn, .err, .none) { font-size: 14px; }
-.cell-ok    { color: #22c55e; }
-.cell-warn  { color: #f59e0b; }
-.cell-err   { color: #ef4444; font-weight: 600; }
+
+/* 2026-08-27 round-23: green = filled cell background, red = red cell,
+   warn = amber, none = muted gray. The icon glyph centers vertically. */
+.cell { text-align: center; white-space: nowrap; transition: background-color .15s; }
+.cell-ok    { background-color: var(--green-bg); }
+.cell-err   { background-color: var(--red-bg); }
+.cell-warn  { background-color: rgba(234,179,8,0.12); }
 .cell-none  { color: #475569; }
+.port-icon { display: inline-block; width: 18px; font-weight: 600; font-size: 14px; }
+.port-icon.ok { color: var(--green); }
+.port-icon.err { color: var(--red); }
+.port-icon.warn { color: var(--yellow); }
+.port-icon.none { color: #475569; }
+.latency { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }
+
 .empty { text-align: center; color: var(--muted); padding: 24px; }
 </style>
