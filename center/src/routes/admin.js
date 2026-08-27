@@ -856,11 +856,14 @@ export function adminRouter({ config, logger, db }) {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.dcs.listCatalog);
+      // 2026-08-27 round-28.5 / round-29: surface isBridgehead too so the
+      // operator UI's bridgehead toggle reflects current DB state on load.
       res.json(rows.map(r => ({
         ...r,
         isPdc: !!r.isPdc, isGc: !!r.isGc, isRidMaster: !!r.isRidMaster,
         isSchemaMaster: !!r.isSchemaMaster, isDomainNamingMaster: !!r.isDomainNamingMaster,
-        isInfrastructureMaster: !!r.isInfrastructureMaster
+        isInfrastructureMaster: !!r.isInfrastructureMaster,
+        isBridgehead: !!r.isBridgehead
       })));
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog list failed');
@@ -891,6 +894,82 @@ export function adminRouter({ config, logger, db }) {
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog site assign failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-27 round-29: PUT /api/admin/dcs-catalog/:dc_name/flags
+  //   Body: any subset of { isPdc, isGc, isRidMaster, isSchemaMaster,
+  //          isDomainNamingMaster, isInfrastructureMaster, isBridgehead }
+  //          (camelCase). Values must be booleans — coerced to 0/1.
+  //   Behavior: builds a partial UPDATE so toggling one flag doesn't
+  //             reset the other six. Returns 200 + { ok, updated }.
+  //   Errors:  400 if no flag keys supplied, or any value isn't boolean
+  //            404 if dc_name doesn't exist in ad_dcs.
+  //   Audit:   writes update_dc_flags with the full new-state diff so
+  //            operators can trace who marked a DC bridgehead / PDC / etc.
+  //   Why:     the DcsCatalogView lets operators mark 5 FSMO roles and
+  //            the bridgehead directly from the UI — no direct DB write
+  //            needed. Bridgehead drives the all-sites replication matrix
+  //            primary selection; PDC is a FSMO role, NOT a primary marker.
+  r.put('/api/admin/dcs-catalog/:dc_name/flags', auth, async (req, res) => {
+    const dcName = req.params.dc_name;
+    const body = req.body || {};
+    // Whitelist of toggleable columns — anything else 400s to avoid SQL
+    // injection via the dynamic SET clause. camelCase keys map to the
+    // snake_case column names we write.
+    const FLAGS = [
+      { key: 'isPdc',                   col: 'is_pdc' },
+      { key: 'isGc',                    col: 'is_gc' },
+      { key: 'isRidMaster',             col: 'is_rid_master' },
+      { key: 'isSchemaMaster',          col: 'is_schema_master' },
+      { key: 'isDomainNamingMaster',    col: 'is_domain_naming_master' },
+      { key: 'isInfrastructureMaster',  col: 'is_infrastructure_master' },
+      { key: 'isBridgehead',            col: 'is_bridgehead' }
+    ];
+    const supplied = Object.keys(body);
+    if (supplied.length === 0) {
+      return res.status(400).json({ error: 'no flags supplied' });
+    }
+    // Reject unknown keys so a typo doesn't silently get dropped.
+    const unknown = supplied.filter(k => !FLAGS.some(f => f.key === k));
+    if (unknown.length > 0) {
+      return res.status(400).json({ error: `unknown flag(s): ${unknown.join(', ')}` });
+    }
+    // Strict boolean check — anything truthy/falsy other than true/false
+    // (e.g. strings, numbers) is rejected so the audit trail and the DB
+    // don't drift. The UI sends strict booleans from toggle click handlers.
+    const fields = [];
+    const params = [];
+    const updates = {}; // { col: 0|1 } for the audit payload
+    for (const f of FLAGS) {
+      if (!Object.prototype.hasOwnProperty.call(body, f.key)) continue;
+      const v = body[f.key];
+      if (typeof v !== 'boolean') {
+        return res.status(400).json({ error: `${f.key} must be boolean` });
+      }
+      fields.push(`${f.col} = ?`);
+      params.push(v ? 1 : 0);
+      updates[f.col] = v ? 1 : 0;
+    }
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'no flags supplied' });
+    }
+    params.push(dcName);
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(db.sql.dcs.updateFlags(fields), params);
+      if (affectedRows === 0) return res.status(404).json({ error: 'dc not found' });
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'update_dc_flags',
+        target: dcName,
+        payload: { dcName, updates },
+        logger
+      });
+      res.json({ ok: true, updated: Object.keys(updates) });
+    } catch (e) {
+      logger.error({ err: e, dcName, updates }, 'dcs-catalog flags update failed');
       res.status(500).json({ error: 'internal' });
     }
   });

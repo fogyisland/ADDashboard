@@ -44,6 +44,12 @@ export const adminApi = {
   deleteSite: (id) => api.delete(`/api/admin/sites-catalog/${id}`),
   listDcsCatalog: () => api.get('/api/admin/dcs-catalog'),
   assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId }),
+  // 2026-08-27 round-29: toggle 5 FSMO roles + bridgehead directly from
+  // the DcsCatalogView. body = any subset of { isPdc, isGc, isRidMaster,
+  // isSchemaMaster, isDomainNamingMaster, isInfrastructureMaster,
+  // isBridgehead } with strict booleans. Drives the bridgehead selection
+  // used by the all-sites replication matrix view.
+  updateDcFlags: (dcName, body) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/flags`, body),
   bulkImportSites: (rows) => api.post('/api/admin/sites-catalog/bulk', { rows }),
   bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows }),
   getDdlPreview: (name) => api.get(`/api/admin/packages/${name}/ddl-preview`),

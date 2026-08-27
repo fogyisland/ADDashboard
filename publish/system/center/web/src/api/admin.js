@@ -44,6 +44,12 @@ export const adminApi = {
   deleteSite: (id) => api.delete(`/api/admin/sites-catalog/${id}`),
   listDcsCatalog: () => api.get('/api/admin/dcs-catalog'),
   assignDcSite: (dcName, siteId) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/site`, { siteId }),
+  // 2026-08-27 round-29: toggle 5 FSMO roles + bridgehead directly from
+  // the DcsCatalogView. body = any subset of { isPdc, isGc, isRidMaster,
+  // isSchemaMaster, isDomainNamingMaster, isInfrastructureMaster,
+  // isBridgehead } with strict booleans. Drives the bridgehead selection
+  // used by the all-sites replication matrix view.
+  updateDcFlags: (dcName, body) => api.put(`/api/admin/dcs-catalog/${encodeURIComponent(dcName)}/flags`, body),
   bulkImportSites: (rows) => api.post('/api/admin/sites-catalog/bulk', { rows }),
   bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows }),
   getDdlPreview: (name) => api.get(`/api/admin/packages/${name}/ddl-preview`),
@@ -112,5 +118,13 @@ export const adminApi = {
   // every 2s to render "已推送到 X / N 台 Agent" progress. An agent with
   // reportedVersion == serverVersion has picked up the new token; lower
   // means still on the old token (heartbeat hasn't fired, or offline).
-  getAgentTokenDelivery: () => api.get('/api/admin/agent-token/delivery')
+  getAgentTokenDelivery: () => api.get('/api/admin/agent-token/delivery'),
+
+  // ---- 2026-08-26 round-17 replication-port probe status ----
+  // Aggregator: per (source_dc, dest_dc) pair, returns the latest row's
+  // per-port reachability JSON plus the operator-managed port list (the same
+  // list rendered at /admin/ports — round-17 unified the source so there's
+  // no separate editor here). Endpoint is read-only and refreshes every
+  // poll interval.
+  getReplicationPortStatus: () => api.get('/api/admin/replication-port-status')
 };

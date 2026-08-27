@@ -119,9 +119,18 @@ const VARIANTS = {
       unbindDcs: 'UPDATE ad_dcs SET site_id = NULL WHERE site_id = ?'
     },
     dcs: {
-      listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
+      // 2026-08-27 round-28.5: surface is_bridgehead so the admin 域控清单
+      // can show the bridgehead toggle next to the FSMO role toggles. The
+      // bridgehead is an operator-chosen designation (NOT a FSMO role) used
+      // by the all-sites replication matrix view to pick a primary DC per
+      // site; sites without a marked bridgehead fall back to lex-first dc_name.
+      // 2026-08-27 round-29: added dcs.updateFlags helper — same partial-update
+      // shape as sites.updatePartial / systemPorts.updatePartial so the route
+      // can build the SET list from whatever body keys the operator toggled.
+      listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.is_bridgehead AS isBridgehead, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
       assignSite: 'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
-      assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?'
+      assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?',
+      updateFlags: (fields) => `UPDATE ad_dcs SET ${fields.join(', ')} WHERE dc_name = ?`
     },
     // Cross-DC consistency scoring (Task 5). Reads the latest row per agent
     // from pkg_ad_domain_consistency.metrics (Task 4 ingest path) and feeds
@@ -772,9 +781,18 @@ const VARIANTS = {
       unbindDcs: 'UPDATE ad_dcs SET site_id = NULL WHERE site_id = ?'
     },
     dcs: {
-      listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
+      // 2026-08-27 round-28.5: surface is_bridgehead so the admin 域控清单
+      // can show the bridgehead toggle next to the FSMO role toggles. The
+      // bridgehead is an operator-chosen designation (NOT a FSMO role) used
+      // by the all-sites replication matrix view to pick a primary DC per
+      // site; sites without a marked bridgehead fall back to lex-first dc_name.
+      // 2026-08-27 round-29: added dcs.updateFlags helper — same partial-update
+      // shape as sites.updatePartial / systemPorts.updatePartial so the route
+      // can build the SET list from whatever body keys the operator toggled.
+      listCatalog: `SELECT d.dc_name AS dcName, d.site_id AS siteId, s.site_name AS siteName, d.site_hint AS siteHint, d.os_version AS osVersion, d.when_created AS whenCreated, d.is_pdc AS isPdc, d.is_gc AS isGc, d.is_rid_master AS isRidMaster, d.is_schema_master AS isSchemaMaster, d.is_domain_naming_master AS isDomainNamingMaster, d.is_infrastructure_master AS isInfrastructureMaster, d.is_bridgehead AS isBridgehead, d.discovered_at AS discoveredAt, d.discovered_by_agent_id AS discoveredByAgentId FROM ad_dcs d LEFT JOIN ad_sites s ON d.site_id = s.site_id ORDER BY d.dc_name`,
       assignSite: 'UPDATE ad_dcs SET site_id = ? WHERE dc_name = ?',
-      assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?'
+      assignSiteUnbind: 'UPDATE ad_dcs SET site_id = NULL WHERE dc_name = ?',
+      updateFlags: (fields) => `UPDATE ad_dcs SET ${fields.join(', ')} WHERE dc_name = ?`
     },
     // Cross-DC consistency scoring (Task 5). Reads the latest row per agent
     // from pkg_ad_domain_consistency.metrics (Task 4 ingest path) and feeds

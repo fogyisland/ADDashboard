@@ -5,6 +5,7 @@ import { findByUsername, listUsers, createUser, updateUser, deleteUser, bumpToke
 import { getConfig, setConfig, getConfigMap, restartRequired, putConfig, putConfigWithin } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
+import { getReplicationPortList } from '../services/replication-port-config.js';
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
 import * as email from '../services/email.js';
@@ -855,11 +856,14 @@ export function adminRouter({ config, logger, db }) {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.dcs.listCatalog);
+      // 2026-08-27 round-28.5 / round-29: surface isBridgehead too so the
+      // operator UI's bridgehead toggle reflects current DB state on load.
       res.json(rows.map(r => ({
         ...r,
         isPdc: !!r.isPdc, isGc: !!r.isGc, isRidMaster: !!r.isRidMaster,
         isSchemaMaster: !!r.isSchemaMaster, isDomainNamingMaster: !!r.isDomainNamingMaster,
-        isInfrastructureMaster: !!r.isInfrastructureMaster
+        isInfrastructureMaster: !!r.isInfrastructureMaster,
+        isBridgehead: !!r.isBridgehead
       })));
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog list failed');
@@ -890,6 +894,82 @@ export function adminRouter({ config, logger, db }) {
       res.json({ ok: true });
     } catch (e) {
       logger.error({ err: e }, 'dcs-catalog site assign failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-27 round-29: PUT /api/admin/dcs-catalog/:dc_name/flags
+  //   Body: any subset of { isPdc, isGc, isRidMaster, isSchemaMaster,
+  //          isDomainNamingMaster, isInfrastructureMaster, isBridgehead }
+  //          (camelCase). Values must be booleans — coerced to 0/1.
+  //   Behavior: builds a partial UPDATE so toggling one flag doesn't
+  //             reset the other six. Returns 200 + { ok, updated }.
+  //   Errors:  400 if no flag keys supplied, or any value isn't boolean
+  //            404 if dc_name doesn't exist in ad_dcs.
+  //   Audit:   writes update_dc_flags with the full new-state diff so
+  //            operators can trace who marked a DC bridgehead / PDC / etc.
+  //   Why:     the DcsCatalogView lets operators mark 5 FSMO roles and
+  //            the bridgehead directly from the UI — no direct DB write
+  //            needed. Bridgehead drives the all-sites replication matrix
+  //            primary selection; PDC is a FSMO role, NOT a primary marker.
+  r.put('/api/admin/dcs-catalog/:dc_name/flags', auth, async (req, res) => {
+    const dcName = req.params.dc_name;
+    const body = req.body || {};
+    // Whitelist of toggleable columns — anything else 400s to avoid SQL
+    // injection via the dynamic SET clause. camelCase keys map to the
+    // snake_case column names we write.
+    const FLAGS = [
+      { key: 'isPdc',                   col: 'is_pdc' },
+      { key: 'isGc',                    col: 'is_gc' },
+      { key: 'isRidMaster',             col: 'is_rid_master' },
+      { key: 'isSchemaMaster',          col: 'is_schema_master' },
+      { key: 'isDomainNamingMaster',    col: 'is_domain_naming_master' },
+      { key: 'isInfrastructureMaster',  col: 'is_infrastructure_master' },
+      { key: 'isBridgehead',            col: 'is_bridgehead' }
+    ];
+    const supplied = Object.keys(body);
+    if (supplied.length === 0) {
+      return res.status(400).json({ error: 'no flags supplied' });
+    }
+    // Reject unknown keys so a typo doesn't silently get dropped.
+    const unknown = supplied.filter(k => !FLAGS.some(f => f.key === k));
+    if (unknown.length > 0) {
+      return res.status(400).json({ error: `unknown flag(s): ${unknown.join(', ')}` });
+    }
+    // Strict boolean check — anything truthy/falsy other than true/false
+    // (e.g. strings, numbers) is rejected so the audit trail and the DB
+    // don't drift. The UI sends strict booleans from toggle click handlers.
+    const fields = [];
+    const params = [];
+    const updates = {}; // { col: 0|1 } for the audit payload
+    for (const f of FLAGS) {
+      if (!Object.prototype.hasOwnProperty.call(body, f.key)) continue;
+      const v = body[f.key];
+      if (typeof v !== 'boolean') {
+        return res.status(400).json({ error: `${f.key} must be boolean` });
+      }
+      fields.push(`${f.col} = ?`);
+      params.push(v ? 1 : 0);
+      updates[f.col] = v ? 1 : 0;
+    }
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'no flags supplied' });
+    }
+    params.push(dcName);
+    try {
+      const db = getDb();
+      const { affectedRows } = await db.execute(db.sql.dcs.updateFlags(fields), params);
+      if (affectedRows === 0) return res.status(404).json({ error: 'dc not found' });
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'update_dc_flags',
+        target: dcName,
+        payload: { dcName, updates },
+        logger
+      });
+      res.json({ ok: true, updated: Object.keys(updates) });
+    } catch (e) {
+      logger.error({ err: e, dcName, updates }, 'dcs-catalog flags update failed');
       res.status(500).json({ error: 'internal' });
     }
   });
@@ -1307,6 +1387,60 @@ export function adminRouter({ config, logger, db }) {
       res.json({ ok: true, affected: affectedRows });
     } catch (e) {
       logger.error({ err: e }, 'admin server-groups bulkDisable failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-26 round-17 replication-port probe config + aggregator.
+  //
+  //   GET /api/admin/replication-port-status   → per (source_dc, dest_dc)
+  //                                              port-status matrix; also
+  //                                              returns the operator-managed
+  //                                              port list that backs the
+  //                                              probe (`system_ports`,
+  //                                              edited via /admin/ports).
+  //
+  // The legacy dedicated editor (`/api/admin/replication-ports/config`,
+  // round-16) is gone: the probe-port list is sourced from `system_ports` so
+  // operators have a single place to manage the list. See
+  // services/replication-port-config.js header for the full rationale.
+
+  r.get('/api/admin/replication-port-status', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      // Pull operator-config first so the response always carries the
+      // authoritative port list (in case the JS caller adds/removes ports
+      // before the next probe cycle).
+      const ports = await getReplicationPortList();
+      const { rows } = await db.query(db.sql.replication.latestPartnerPortPerPair);
+      // Each row carries partner_port_status as a JSON string (the rowParams
+      // helper in services/replication.js emits a string when the wire payload
+      // is already JSON, an object when it's a JS object). MySQL sometimes
+      // returns it as a JS object when the column type is JSON; MSSQL
+      // returns NVARCHAR(MAX) as a string. Normalize to object.
+      const parsedRows = rows.map((r) => {
+        let perPort = {};
+        const raw = r.partner_port_status;
+        if (raw != null) {
+          if (typeof raw === 'object') perPort = raw;
+          else {
+            try { perPort = JSON.parse(String(raw)); }
+            catch { perPort = {}; }
+          }
+        }
+        return {
+          sourceDc: r.source_dc,
+          destDc: r.dest_dc,
+          sourceSite: r.source_site ?? null,
+          destSite: r.dest_site ?? null,
+          perPort,                    // { '135': { reachable, latencyMs, error }, ... }
+          lastAttemptTime: r.last_attempt_time ?? null,
+          collectedAt: r.collected_at ?? null
+        };
+      });
+      res.json({ ports, rows: parsedRows });
+    } catch (e) {
+      logger.error({ err: e }, 'admin replication-port-status get failed');
       res.status(500).json({ error: 'internal' });
     }
   });
