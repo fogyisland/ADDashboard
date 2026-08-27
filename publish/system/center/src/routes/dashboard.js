@@ -562,59 +562,67 @@ export function dashboardRouter({ config, logger, db }) {
 
         for (const l of linkRows) {
           if (l.source_dc === l.dest_dc) continue;
-          if (!partnerMapByDc.has(l.dest_dc)) continue; // dest not in this site
-          const peerDc = l.source_dc;
-          if (!allowedPeers.has(peerDc)) continue;
-          const peer = dcByName.get(peerDc);
-          if (!peer) continue;
-          const peerSite = siteById.get(peer.site_id);
-          if (!peerSite) continue;
 
-          const targetMap = partnerMapByDc.get(l.dest_dc);
-          // 2026-08-27 round-42 (复制日志监控): dedup key is (source_dc ||
-          // naming_context) NOT (source_dc alone). The same (source, dest)
-          // pair can have multiple naming_contexts (e.g. DC=contoso,DC=com
-          // vs CN=Configuration,DC=contoso,DC=com); each one carries its
-          // own history rows and must surface as a distinct partner entry
-          // in the response. The earlier "peerDc only" dedup silently
-          // dropped all but the latest, so the test "two distinct NCs
-          // produce two partner rows" was failing with 1 === 2.
-          const k = `${peerDc}${sep}${l.naming_context}`;
-          const existing = targetMap.get(k);
-          // Sibling-priority sort + keep the latest link per pair.
-          if (existing) {
-            const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
-            const newTime = l.last_attempt_time ? new Date(l.last_attempt_time).getTime() : 0;
-            if (newTime <= exTime) continue;
+          // 2026-08-28 round-43: a link has TWO sides, both must surface in
+          // the partner views so operators see real AD topology (hub-spoke)
+          // rather than "every DC replicates to every other DC".
+          //   - side IN:  peerDc replicates TO this site DC  →  direction='in'
+          //   - side OUT: this site DC replicates TO peerDc  →  direction='out'
+          // Both sides can fire when the link is within-site (e.g. NC1↔NC2).
+          // For each side, the "peer" is the OTHER end of the link.
+          const sides = [];
+          if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
+            sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
           }
-          targetMap.set(k, {
-            peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
-            peerDc,
-            namingContext: l.naming_context,
-            peerSite: peerSite.siteName,
-            peerSiteIsHub: peerSite.isHub,
-            statusCode: l.status_code,
-            lastSuccessTime: toIso(l.last_success_time),
-            lastAttemptTime: toIso(l.last_attempt_time),
-            durationMinutes: l.duration_minutes,
-            // Round-42: slice last 10 attempts. Naming context is the row's
-            // naming_context from ad_replication_status — but the agent
-            // emits a separate per-attempt row per naming_context? No:
-            // naming_context is the partition key for the link itself
-            // (DC=contoso,DC=com vs CN=Configuration,DC=contoso,DC=com
-            // vs ...). Each (source, dest, naming_context) gets its own
-            // attempts list. SQL groups by all 3 keys.
-            attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
-              .slice(0, 10)
-              .map(h => ({
-                attemptAt:        toIso(h.collected_at),
-                statusCode:       h.status_code,
-                durationMs:       h.attempt_duration_ms,
-                objectsTransferred: h.objects_transferred,
-                lastSuccessTime:  toIso(h.last_success_time),
-                errorMessage:     h.error_message
-              }))
-          });
+          if (partnerMapByDc.has(l.source_dc)) {
+            sides.push({ dcName: l.source_dc, peerDc: l.dest_dc, direction: 'out' });
+          }
+          if (sides.length === 0) continue;
+
+          for (const side of sides) {
+            const peerDc = side.peerDc;
+            const peer = dcByName.get(peerDc);
+            if (!peer) continue;
+            const peerSite = siteById.get(peer.site_id);
+            if (!peerSite) continue;
+            const targetMap = partnerMapByDc.get(side.dcName);
+            // 2026-08-27 round-42 (复制日志监控): dedup key includes naming_context
+            // (same source/dest pair can have multiple NCs — each gets its own
+            // partner row). 2026-08-28 round-43: direction is part of the dedup
+            // key so an 'in' and an 'out' for the same (peerDc, NC) stay
+            // distinct. The view merges them client-side into a single 双向 row.
+            const k = `${peerDc}${sep}${l.naming_context}${sep}${side.direction}`;
+            const existing = targetMap.get(k);
+            if (existing) {
+              const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
+              const newTime = l.last_attempt_time ? new Date(l.last_attempt_time).getTime() : 0;
+              if (newTime <= exTime) continue;
+            }
+            targetMap.set(k, {
+              peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
+              peerDc,
+              namingContext: l.naming_context,
+              // Round-43: emit direction so the view can render 进/出/双向.
+              direction: side.direction,
+              peerSite: peerSite.siteName,
+              peerSiteIsHub: peerSite.isHub,
+              statusCode: l.status_code,
+              lastSuccessTime: toIso(l.last_success_time),
+              lastAttemptTime: toIso(l.last_attempt_time),
+              durationMinutes: l.duration_minutes,
+              // Round-42: slice last 10 attempts.
+              attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
+                .slice(0, 10)
+                .map(h => ({
+                  attemptAt:        toIso(h.collected_at),
+                  statusCode:       h.status_code,
+                  durationMs:       h.attempt_duration_ms,
+                  objectsTransferred: h.objects_transferred,
+                  lastSuccessTime:  toIso(h.last_success_time),
+                  errorMessage:     h.error_message
+                }))
+            });
+          }
         }
 
         const dcs = dcList.map(d => {

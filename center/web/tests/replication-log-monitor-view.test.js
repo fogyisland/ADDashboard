@@ -35,6 +35,8 @@ function basePayload() {
               {
                 peerType: 'within', peerDc: 'DC-BJ-01', peerSite: '核心站点',
                 peerSiteIsHub: true, statusCode: 0,
+                namingContext: 'DC=contoso,DC=com',
+                direction: 'in',
                 lastSuccessTime: '2026-08-27T10:00:00Z',
                 lastAttemptTime:  '2026-08-27T10:00:30Z',
                 durationMinutes: 1,
@@ -59,6 +61,8 @@ function basePayload() {
               {
                 peerType: 'bridgehead', peerDc: 'DC-BJ-01', peerSite: '核心站点',
                 peerSiteIsHub: true, statusCode: 0,
+                namingContext: 'DC=contoso,DC=com',
+                direction: 'in',
                 lastSuccessTime: '2026-08-27T10:00:00Z',
                 lastAttemptTime:  '2026-08-27T10:00:30Z',
                 durationMinutes: 12,
@@ -174,4 +178,80 @@ test('empty sites list renders the empty-state hint', async () => {
   await flushPromises();
   expect(w.findAll('section.site-block').length).toBe(0);
   expect(w.text()).toContain('暂无站点');
+});
+
+// 2026-08-28 round-43: 方向 column (进 / 出 / 双向). The route emits a
+// separate partner row per direction; the view merges same-(peerDc, NC)
+// entries into a single 双向 row when both directions exist.
+test('renders 方向 column with 进 badge for inbound partner', async () => {
+  dashboardApi.getReplicationLogAll.mockResolvedValue({ data: basePayload() });
+  const w = mountView();
+  await flushPromises();
+  // Header should include 方向 column
+  const headers = w.findAll('th').map(th => th.text());
+  expect(headers).toContain('方向');
+  // DC-SH-01 → DC-BJ-01 has direction: 'in'
+  const partnerRow = w.find('[data-test="partner-DC-SH-01-DC-BJ-01"]');
+  expect(partnerRow.exists()).toBe(true);
+  expect(partnerRow.attributes('data-test-direction')).toBe('in');
+  // 进 tag rendered
+  const dirTag = partnerRow.find('.dir-tag');
+  expect(dirTag.text()).toBe('进');
+  expect(dirTag.classes()).toContain('dir-tag-in');
+});
+
+test('renders 出 badge when partner direction is out', async () => {
+  const payload = basePayload();
+  // Mark DC-BJ-02 → DC-BJ-01 as out
+  payload.sites[0].dcs[1].partners[0].direction = 'out';
+  dashboardApi.getReplicationLogAll.mockResolvedValue({ data: payload });
+  const w = mountView();
+  await flushPromises();
+  const partnerRow = w.find('[data-test="partner-DC-BJ-02-DC-BJ-01"]');
+  expect(partnerRow.exists()).toBe(true);
+  expect(partnerRow.attributes('data-test-direction')).toBe('out');
+  const dirTag = partnerRow.find('.dir-tag');
+  expect(dirTag.text()).toBe('出');
+  expect(dirTag.classes()).toContain('dir-tag-out');
+});
+
+test('merges same-(peerDc, NC) in + out entries into a single 双向 row', async () => {
+  // Round-43: when the same peerDc+NC appears twice with different
+  // directions (one inbound, one outbound), the view must dedup into a
+  // single row with 双向 label, NOT show two rows.
+  const payload = basePayload();
+  // DC-BJ-02 has peer DC-BJ-01 direction='in'; add the 'out' twin
+  payload.sites[0].dcs[1].partners.push({
+    peerType: 'within', peerDc: 'DC-BJ-01', peerSite: '核心站点',
+    peerSiteIsHub: true, statusCode: 0,
+    namingContext: 'DC=contoso,DC=com',
+    direction: 'out',
+    lastSuccessTime: '2026-08-27T10:00:00Z',
+    lastAttemptTime:  '2026-08-27T10:00:30Z',
+    durationMinutes: 1,
+    attempts: []
+  });
+  dashboardApi.getReplicationLogAll.mockResolvedValue({ data: payload });
+  const w = mountView();
+  await flushPromises();
+  // Only ONE partner row for DC-BJ-02 → DC-BJ-01
+  const rows = w.findAll('[data-test="partner-DC-BJ-02-DC-BJ-01"]');
+  expect(rows).toHaveLength(1);
+  // That row carries direction='both'
+  expect(rows[0].attributes('data-test-direction')).toBe('both');
+  // Tag rendered as 双向
+  const dirTag = rows[0].find('.dir-tag');
+  expect(dirTag.text()).toBe('双向');
+  expect(dirTag.classes()).toContain('dir-tag-both');
+});
+
+test('legend shows all three direction swatches', async () => {
+  dashboardApi.getReplicationLogAll.mockResolvedValue({ data: basePayload() });
+  const w = mountView();
+  await flushPromises();
+  const legend = w.find('.legend');
+  expect(legend.exists()).toBe(true);
+  expect(legend.text()).toContain('进');
+  expect(legend.text()).toContain('出');
+  expect(legend.text()).toContain('双向');
 });

@@ -20,6 +20,9 @@
       <span class="legend-item"><span class="legend-swatch swatch-primary"></span>主控 DC</span>
       <span class="legend-item"><span class="legend-swatch swatch-bridgehead"></span>桥头 DC</span>
       <span class="legend-item"><span class="legend-swatch swatch-member"></span>成员 DC</span>
+      <span class="legend-item"><span class="dir-tag dir-tag-in">进</span>伙伴 → 本机 (入站)</span>
+      <span class="legend-item"><span class="dir-tag dir-tag-out">出</span>本机 → 伙伴 (出站)</span>
+      <span class="legend-item"><span class="dir-tag dir-tag-both">双向</span>双向复制</span>
     </p>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
@@ -56,6 +59,7 @@
           <thead>
             <tr>
               <th class="caret-col"></th>
+              <th>方向</th>
               <th>类型</th>
               <th>伙伴站点</th>
               <th>伙伴 DC</th>
@@ -65,9 +69,10 @@
             </tr>
           </thead>
           <tbody>
-            <template v-for="partner in dc.partners" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}`">
+            <template v-for="partner in mergedPartners(dc)" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}-${partner.namingContext}-${partner._mergeKey}`">
               <tr :class="rowClass(partner)"
-                  :data-test="`partner-${dc.dcName}-${partner.peerDc}`">
+                  :data-test="`partner-${dc.dcName}-${partner.peerDc}`"
+                  :data-test-direction="partner._direction">
                 <td class="caret-col">
                   <button type="button"
                           :class="['caret-btn', isExpanded(dc.dcName, partner.peerDc) ? 'open' : 'closed']"
@@ -75,6 +80,9 @@
                           @click="toggle(dc.dcName, partner.peerDc)">
                     <span class="caret-glyph">{{ isExpanded(dc.dcName, partner.peerDc) ? '▾' : '▸' }}</span>
                   </button>
+                </td>
+                <td class="direction" :title="directionTooltip(partner)">
+                  <span :class="['dir-tag', `dir-tag-${partner._direction}`]">{{ directionLabel(partner) }}</span>
                 </td>
                 <td class="peer-type">
                   <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
@@ -90,7 +98,7 @@
               </tr>
               <tr v-if="isExpanded(dc.dcName, partner.peerDc)" class="attempts-row"
                   :data-test="`attempts-${dc.dcName}-${partner.peerDc}`">
-                <td colspan="7" class="attempts-cell">
+                <td colspan="8" class="attempts-cell">
                   <div class="attempts-panel">
                     <div v-if="!partner.attempts || !partner.attempts.length" class="attempts-empty">
                       暂无历史记录 — 该伙伴没有 24h 内的连接尝试数据
@@ -210,6 +218,53 @@ function peerTypeLabel(p) {
   if (p.peerType === 'bridgehead') return '桥头';
   return '未知';
 }
+// 2026-08-28 round-43: dedup partner rows by (peerDc, namingContext). When
+// the same partner has both 'in' and 'out' links (e.g. a hub that both
+// replicates TO this DC AND receives from it), the route emits two partner
+// rows — merge them client-side into a single 双向 row so the operator
+// doesn't see duplicates.
+function mergedPartners(dc) {
+  const groups = new Map();
+  for (const p of (dc.partners || [])) {
+    const k = `${p.peerDc}${sep}${p.namingContext || ''}`;
+    const existing = groups.get(k);
+    if (!existing) {
+      groups.set(k, { ...p, _directions: [p.direction || 'in'] });
+    } else {
+      existing._directions.push(p.direction || 'in');
+      // Prefer the latest attemptTime across both directions
+      const exT = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
+      const neT = p.lastAttemptTime ? new Date(p.lastAttemptTime).getTime() : 0;
+      if (neT > exT) {
+        Object.assign(existing, { ...p, _directions: existing._directions });
+      } else {
+        existing._directions = Array.from(new Set(existing._directions));
+      }
+    }
+  }
+  // Stamp a derived direction field for rendering
+  const out = [];
+  for (const [k, g] of groups) {
+    const dirSet = new Set(g._directions);
+    let dir;
+    if (dirSet.has('in') && dirSet.has('out')) dir = 'both';
+    else if (dirSet.has('out')) dir = 'out';
+    else dir = 'in';
+    out.push({ ...g, _direction: dir, _mergeKey: k });
+  }
+  return out;
+}
+function directionLabel(p) {
+  if (p._direction === 'in') return '进';
+  if (p._direction === 'out') return '出';
+  return '双向';
+}
+function directionTooltip(p) {
+  const list = (p._directions || []).join(' + ');
+  if (p._direction === 'both') return `双向复制 (${list})`;
+  if (p._direction === 'out') return `本机复制到 ${p.peerDc} (出站)`;
+  return `${p.peerDc} 复制到本机 (入站)`;
+}
 function attemptGlyph(a) {
   if (a.statusCode === 0) return '●';
   if (a.statusCode === 1) return '▲';
@@ -300,6 +355,13 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .peer-tag-within     { background: #1e293b; color: var(--text); border: 1px solid #334155; }
 .peer-tag-bridgehead { background: #0e7490; color: #cffafe; }
 .peer-tag-unknown    { background: #1e293b; color: var(--muted); }
+.direction { white-space: nowrap; }
+.dir-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+           font-family: ui-monospace, monospace; font-weight: 600; letter-spacing: 0.04em;
+           min-width: 36px; text-align: center; }
+.dir-tag-in   { background: #1e3a8a; color: #bfdbfe; border: 1px solid #1d4ed8; }
+.dir-tag-out  { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
+.dir-tag-both { background: #0e7490; color: #cffafe; border: 1px solid #06b6d4; }
 .status { font-size: 12px; }
 .partner-row.status-ok .status { color: #22c55e; }
 .partner-row.status-warn .status { color: #f59e0b; }

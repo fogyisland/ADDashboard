@@ -853,12 +853,15 @@ test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to l
   assert.equal(r.status, 200);
   assert.equal(r.body.refreshSeconds, 12);
 
-  // Hub first; 核心站点 has 1 DC (BJ-01, no inbound), 上海 has 1 DC (SH-01,
-  // inbound from BJ-01).
+  // Hub first; 核心站点 has 1 DC (BJ-01, no inbound — but DOES have the
+  // outbound partner SH-01 with direction='out'), 上海 has 1 DC (SH-01,
+  // inbound from BJ-01 with direction='in').
   assert.equal(r.body.sites.length, 2);
   assert.equal(r.body.sites[0].siteName, "核心站点");
   assert.equal(r.body.sites[0].primaryDc, "DC-BJ-01");
-  assert.equal(r.body.sites[0].dcs[0].partners.length, 0, "BJ-01 has no inbound partners");
+  assert.equal(r.body.sites[0].dcs[0].partners.length, 1, "BJ-01 has 1 outbound partner (SH-01)");
+  assert.equal(r.body.sites[0].dcs[0].partners[0].peerDc, "DC-SH-01");
+  assert.equal(r.body.sites[0].dcs[0].partners[0].direction, "out");
   assert.equal(r.body.sites[1].siteName, "上海站点");
   assert.equal(r.body.sites[1].primaryDc, "DC-SH-01");
   const sh01 = r.body.sites[1].dcs[0];
@@ -869,6 +872,7 @@ test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to l
   assert.equal(partner.peerSite, "核心站点");
   assert.equal(partner.peerType, "bridgehead");
   assert.equal(partner.statusCode, 0);
+  assert.equal(partner.direction, "in");
 
   // attempts: only the 10 most recent by collected_at DESC survive the slice.
   assert.equal(partner.attempts.length, 10, "12 history rows → slice to 10");
@@ -972,8 +976,6 @@ test("GET /api/dashboard/replication-log/all: attempts grouped per naming_contex
   // links from DC-A1.
   const spoke = r.body.sites.find(s => s.siteName === "T");
   assert.equal(spoke.dcs[0].partners.length, 2, "two distinct NCs produce two partner rows");
-  // Verify each partner has its own attempts[] — neither leaks into the other.
-  const nc1 = spoke.dcs[0].partners.find(p => p.namingContext === undefined || true); // namingContext is on the row, not partner
   // partners don't carry namingContext in the response (it's implicit per
   // partner entry since dedup is by (source, dest, naming_context)).
   // But the attempts[] count must match each NC's history row count.
@@ -981,4 +983,97 @@ test("GET /api/dashboard/replication-log/all: attempts grouped per naming_contex
   const sorted = spoke.dcs[0].partners.slice().sort((a, b) => a.attempts.length - b.attempts.length);
   assert.equal(sorted[0].attempts.length, 1, "NC with 1 history row → 1 attempt");
   assert.equal(sorted[1].attempts.length, 2, "NC with 2 history rows → 2 attempts");
+});
+
+// 2026-08-28 round-43: route must emit BOTH directions for a link — dest
+// side sees the link as direction='in' (peer replicates TO this DC), source
+// side sees it as direction='out' (this DC replicates TO peer). Real AD is
+// hub-spoke, not full-mesh: spokes only replicate to/from hubs.
+test("GET /api/dashboard/replication-log/all: emits direction='in' for dest_dc, direction='out' for source_dc", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [
+        { site_id: 1, site_name: "核心站点", region_code: "BJ", is_hub: 1, description: null },
+        { site_id: 2, site_name: "上海站点", region_code: "SH", is_hub: 0, description: null }
+      ]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "DC-BJ-01", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-BJ-01" },
+        { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
+      ]
+    },
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        // BJ-01 → SH-01 (cross-site hub-to-spoke)
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
+      ]
+    },
+    { match: /FROM\s+ad_replication_history/i, rows: [] },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/replication-log/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  // Hub site (核心站点) sees BJ-01's outbound to SH-01 as direction='out'
+  const bj01 = r.body.sites.find(s => s.siteName === "核心站点").dcs[0];
+  assert.equal(bj01.dcName, "DC-BJ-01");
+  assert.equal(bj01.partners.length, 1);
+  assert.equal(bj01.partners[0].peerDc, "DC-SH-01");
+  assert.equal(bj01.partners[0].direction, "out", "BJ-01's outbound to SH-01 → direction='out'");
+  // Spoke site (上海站点) sees SH-01's inbound from BJ-01 as direction='in'
+  const sh01 = r.body.sites.find(s => s.siteName === "上海站点").dcs[0];
+  assert.equal(sh01.dcName, "DC-SH-01");
+  assert.equal(sh01.partners.length, 1);
+  assert.equal(sh01.partners[0].peerDc, "DC-BJ-01");
+  assert.equal(sh01.partners[0].direction, "in", "SH-01's inbound from BJ-01 → direction='in'");
+});
+
+test("GET /api/dashboard/replication-log/all: within-site link produces direction='in' on dest AND direction='out' on source (same link, both sides)", async () => {
+  // Within-site link NC1↔NC2: each DC's partner list shows the OTHER dc
+  // — NC1 sees NC2 with direction='out' (NC1 replicates TO NC2),
+  // NC2 sees NC1 with direction='in' (NC2 receives from NC1).
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [{ site_id: 1, site_name: "S", region_code: "BJ", is_hub: 1, description: null }]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
+        { dc_name: "DC-A2", site_id: 1, os_version: "Win2022", is_pdc: 0, is_gc: 0, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A2" }
+      ]
+    },
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        // A1 → A2 within-site
+        { source_dc: "DC-A1", dest_dc: "DC-A2", naming_context: "DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 }
+      ]
+    },
+    { match: /FROM\s+ad_replication_history/i, rows: [] },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/replication-log/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  const site = r.body.sites[0];
+  const a1 = site.dcs.find(d => d.dcName === "DC-A1");
+  const a2 = site.dcs.find(d => d.dcName === "DC-A2");
+  assert.equal(a1.partners.length, 1);
+  assert.equal(a1.partners[0].peerDc, "DC-A2");
+  assert.equal(a1.partners[0].direction, "out", "A1 source side: direction='out'");
+  assert.equal(a2.partners.length, 1);
+  assert.equal(a2.partners[0].peerDc, "DC-A1");
+  assert.equal(a2.partners[0].direction, "in", "A2 dest side: direction='in'");
 });;
