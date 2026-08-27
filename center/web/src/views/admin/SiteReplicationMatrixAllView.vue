@@ -329,12 +329,17 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .port-cell { font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; min-width: 48px; vertical-align: middle; }
 /* 2026-08-27 round-37: status color applies to the VALUE text only —
    port number stays neutral, no colored background on the cell. */
-.port-val-ok   { color: var(--green); font-weight: 600; }
-.port-val-err  { color: var(--red);   font-weight: 600; }
-.port-val-warn { color: var(--yellow); }
-.port-val-none { color: var(--muted); }
-.port-num { font-weight: 600; font-size: 12px; line-height: 1.2; color: var(--muted); }
-.port-detail { font-size: 10px; line-height: 1.2; }
+/* 2026-08-27 round-37.1: operator feedback "毫秒还是很小" — the latency
+   text was 10px and visually subordinate to the 12px port number, which
+   is the actionable info. Swap hierarchy: port number gets smaller +
+   muted, value text (3ms / 通 / 断) becomes the dominant element with
+   bold weight + larger font so it's actually scannable. */
+.port-val-ok   { color: var(--green); font-weight: 700; font-size: 13px; }
+.port-val-err  { color: var(--red);   font-weight: 700; font-size: 13px; }
+.port-val-warn { color: var(--yellow); font-weight: 700; font-size: 13px; }
+.port-val-none { color: var(--muted); font-size: 12px; }
+.port-num { font-size: 11px; line-height: 1.2; color: var(--muted); font-weight: 500; }
+.port-detail { font-size: 13px; line-height: 1.2; letter-spacing: -0.01em; }
 /* 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
    in round-32). Sits inside each .dc-block just above the matrix so
    operators see "X 通 / Y 不通 / 最新探测时间" for THIS DC. */
