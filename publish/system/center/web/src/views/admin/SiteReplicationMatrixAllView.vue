@@ -8,12 +8,17 @@
           <span>每 {{ refreshSeconds }}s 刷新</span>
         </span>
         <span class="last-loaded" v-if="lastLoadedAt">最近刷新: {{ fmt(lastLoadedAt) }}</span>
-        <router-link to="/admin/site-replication-matrix" class="alt-link">单站点视图 ↗</router-link>
       </div>
     </header>
 
+    <!-- 2026-08-27 round-35: matrix is inbound-only. The operator's directive
+         "出站的没有意义，出战对于其他机器就是入站" — a TCP probe shows once
+         from the destination's perspective, not twice. Each partner row is
+         another DC sending replication TO this primary. Outbound (primary →
+         other) is the same connection surfaced from the other site's
+         primary, so it is intentionally omitted to avoid duplication. -->
     <p class="hint">
-      每个站点的首台 DC (字母序;非 PDC 标记) 显示它与所有伙伴的复制连接 — 出站与入站双向。
+      每个站点的首台 DC (字母序;非 PDC 标记) 显示所有入站复制连接 — 即其他 DC 复制到本机的链路。
       端口列来自 partner-port 探针;未探测的行显示灰色徽章。
     </p>
     <p class="legend">
@@ -79,7 +84,6 @@
         <thead>
           <tr>
             <th>类型</th>
-            <th>方向</th>
             <th>伙伴站点</th>
             <th>伙伴 DC</th>
             <th>状态</th>
@@ -87,15 +91,11 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="partner in p.partners" :key="`${partner.peerType}-${partner.direction}-${partner.peerDc}`"
+          <tr v-for="partner in p.partners" :key="`${partner.peerType}-${partner.peerDc}`"
               :class="rowClass(partner)"
-              :data-test="`partner-${partner.peerType}-${partner.direction}-${p.dcName}-${partner.peerDc}`">
+              :data-test="`partner-${partner.peerType}-${p.dcName}-${partner.peerDc}`">
             <td class="peer-type">
               <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
-            </td>
-            <td class="dir">
-              <span v-if="partner.direction === 'out'" class="dir-out">→ 出</span>
-              <span v-else class="dir-in">← 入</span>
             </td>
             <td>
               <span class="peer-site">{{ partner.peerSite }}</span>
@@ -103,7 +103,7 @@
             </td>
             <td class="peer-dc">{{ partner.peerDc }}</td>
             <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
-            <td v-for="port in ports" :key="`${partner.peerType}-${partner.direction}-${p.dcName}-${partner.peerDc}-${port}`"
+            <td v-for="port in ports" :key="`${partner.peerType}-${p.dcName}-${partner.peerDc}-${port}`"
                 :class="['port-cell', `port-${portStatusClass(partner.perPort, port)}`]"
                 :title="portTooltip(partner.perPort, port)">
               <div class="port-num">{{ port }}</div>
@@ -111,7 +111,7 @@
             </td>
           </tr>
           <tr v-if="!p.partners.length">
-            <td :colspan="6 + ports.length" class="empty-row">无伙伴连接</td>
+            <td :colspan="5 + ports.length" class="empty-row">无伙伴连接</td>
           </tr>
         </tbody>
       </table>

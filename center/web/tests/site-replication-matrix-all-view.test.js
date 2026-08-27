@@ -30,6 +30,13 @@ import { dashboardApi } from '../src/api/dashboard.js';
 // (latency or error reason) in each port cell + a per-primary port-health
 // summary chip driven by the dynamic `ports` list (which the operator
 // adds/removes via /admin/ports).
+//
+// round-35: INBOUND ONLY. The operator's directive "出站的没有意义，出站
+// 对于其他机器就是入站" — each TCP probe shows once, from the destination's
+// perspective. The `direction` field is gone from the wire shape (every
+// entry is implicitly inbound). The hub primary (DC-BJ-01) shows only
+// inbound links FROM other DCs; the spoke primary (DC-SH-01) shows
+// inbound links FROM the hub DC.
 const basePayload = () => ({
   siteRefreshSeconds: 10,
   ports: [135, 445, 50001],
@@ -47,9 +54,10 @@ const basePayload = () => ({
           isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
       ],
+      // round-35: hub primary has 1 within-site INBOUND from DC-BJ-02
+      // (i.e. BJ-02 replicates TO BJ-01). No outbound (BJ-01 → BJ-02).
       partners: [
-        // round-32: within-site sibling → peerType="within"
-        { direction: 'out', peerDc: 'DC-BJ-02', peerSite: '核心站点', peerSiteIsHub: true,
+        { peerDc: 'DC-BJ-02', peerSite: '核心站点', peerSiteIsHub: true,
           peerType: 'within',
           statusCode: 0, perPort: null, lastProbeAt: null }
       ]
@@ -63,9 +71,9 @@ const basePayload = () => ({
           isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
       ],
+      // round-35: spoke primary has 1 cross-site INBOUND from DC-BJ-01.
       partners: [
-        // round-32: cross-site bridgehead peer → peerType="bridgehead"
-        { direction: 'in', peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
+        { peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
           peerType: 'bridgehead',
           statusCode: 1,
           perPort: { '135': { reachable: true, latencyMs: 3 }, '445': { reachable: false, error: 'timeout' } },
@@ -103,16 +111,19 @@ test('mounts and renders hub-first primary blocks with hub badge', async () => {
   expect(blocks[1].text()).toContain('→ DC-SH-01');
 });
 
-test('partner row renders with direction badge + colored port cells', async () => {
+test('partner row renders inbound peer + colored port cells (no direction column)', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
-  // 上海站点 (primary DC-SH-01) has 1 in-partner: DC-BJ-01 with probe data
-  const inRow = w.find('[data-test="partner-bridgehead-in-DC-SH-01-DC-BJ-01"]');
+  // round-35: 方向 column removed. Every partner row is inbound by
+  // definition; the direction badge (← 入) is gone.
+  // 上海站点 (primary DC-SH-01) has 1 inbound partner: DC-BJ-01 with probe data
+  const inRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
   expect(inRow.exists()).toBe(true);
-  expect(inRow.text()).toContain('← 入');
+  expect(inRow.text()).not.toContain('→ 出');
+  expect(inRow.text()).not.toContain('← 入');
   expect(inRow.text()).toContain('DC-BJ-01');
   expect(inRow.text()).toContain('核心站点');
   // 3 port cells rendered (135, 445, 50001)
@@ -122,28 +133,29 @@ test('partner row renders with direction badge + colored port cells', async () =
   expect(portCells[1].classes()).toContain('port-err');
   expect(portCells[2].classes()).toContain('port-none');
 
-  // 核心站点 (primary DC-BJ-01) has 1 out-partner: DC-BJ-02 (within)
-  const outRow = w.find('[data-test="partner-within-out-DC-BJ-01-DC-BJ-02"]');
-  expect(outRow.exists()).toBe(true);
-  expect(outRow.text()).toContain('→ 出');
+  // 核心站点 (primary DC-BJ-01) has 1 within-site INBOUND from DC-BJ-02
+  const withinRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
+  expect(withinRow.exists()).toBe(true);
+  expect(withinRow.text()).toContain('DC-BJ-02');
 });
 
-test('out rows precede in rows within the same primary block', async () => {
+test('round-35: matrix table headers omit 方向 (inbound-only view)', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
-  // Hub block: only out-partner here, but the table header should still
-  // appear first. Verify column header sequence: 类型 / 方向 / 伙伴站点 / 伙伴 DC / 状态
-  // (round-32 added 类型 as the first column).
+  // round-32 column order was: 类型 / 方向 / 伙伴站点 / 伙伴 DC / 状态
+  // round-35 drops 方向: 类型 / 伙伴站点 / 伙伴 DC / 状态
   const headers = w.findAll('section.primary-block table thead th');
-  expect(headers.length).toBeGreaterThanOrEqual(5);
+  expect(headers.length).toBeGreaterThanOrEqual(4);
   expect(headers[0].text()).toContain('类型');
-  expect(headers[1].text()).toContain('方向');
-  expect(headers[2].text()).toContain('伙伴站点');
-  expect(headers[3].text()).toContain('伙伴 DC');
-  expect(headers[4].text()).toContain('状态');
+  expect(headers[1].text()).toContain('伙伴站点');
+  expect(headers[2].text()).toContain('伙伴 DC');
+  expect(headers[3].text()).toContain('状态');
+  // round-35: no 方向 header
+  const headerTexts = headers.map(h => h.text());
+  expect(headerTexts.some(t => t.includes('方向'))).toBe(false);
 });
 
 test('polling: re-fetches every refreshSeconds * 1000 ms', async () => {
@@ -266,15 +278,17 @@ test('round-32: each partner row has a 类型 cell with within/bridgehead tag', 
   });
   await flushPromises();
 
-  // Within partner: DC-BJ-01 → DC-BJ-02 should show "本站" + within class
-  const withinRow = w.find('[data-test="partner-within-out-DC-BJ-01-DC-BJ-02"]');
+  // round-35: data-test attribute dropped the direction segment —
+  // every row is inbound. Within partner: DC-BJ-02 → DC-BJ-01 (BJ-02
+  // replicates to BJ-01) should show "本站" + within class.
+  const withinRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
   expect(withinRow.exists()).toBe(true);
   const withinTag = withinRow.find('.peer-tag-within');
   expect(withinTag.exists()).toBe(true);
   expect(withinTag.text()).toBe('本站');
 
   // Bridgehead partner: DC-SH-01 ← DC-BJ-01 should show "桥头" + bridgehead class
-  const bridgeheadRow = w.find('[data-test="partner-bridgehead-in-DC-SH-01-DC-BJ-01"]');
+  const bridgeheadRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
   expect(bridgeheadRow.exists()).toBe(true);
   const bridgeheadTag = bridgeheadRow.find('.peer-tag-bridgehead');
   expect(bridgeheadTag.exists()).toBe(true);
@@ -293,9 +307,10 @@ test('round-32: each port cell shows port number + latency/error inline', async 
   });
   await flushPromises();
 
-  // bridgehead partner row (DC-SH-01 ← DC-BJ-01) has perPort data:
+  // round-35: data-test dropped the direction segment. bridgehead
+  // partner row (DC-SH-01 ← DC-BJ-01) has perPort data:
   //   135 → reachable latencyMs=3, 445 → reachable=false error=timeout, 50001 → missing
-  const inRow = w.find('[data-test="partner-bridgehead-in-DC-SH-01-DC-BJ-01"]');
+  const inRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
   expect(inRow.exists()).toBe(true);
   const portCells = inRow.findAll('.port-cell');
   expect(portCells).toHaveLength(3);

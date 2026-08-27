@@ -13,6 +13,8 @@ import {
   buildDcCounters,
   buildSummaryEntry,
   buildLinkEntries,
+  buildPartnerPortEntries,
+  partnerPortNamingContext,
   buildSnapshot,
   dcSummaryRowOf
 } from '../mock-snapshot.mjs';
@@ -178,4 +180,326 @@ test('dcSummaryRowOf: pulls the __dc_summary__ entry out of a snapshot', () => {
 test('dcSummaryRowOf: returns null when no summary entry is present', () => {
   assert.equal(dcSummaryRowOf(null), null);
   assert.equal(dcSummaryRowOf({ Entries: [] }), null);
+});
+
+// ----- partnerPortNamingContext -----
+
+test('partnerPortNamingContext: emits __partner_ports__:<host>_<8hex> for short hostnames', () => {
+  // Shape mirrors collect-replication.ps1::Get-PartnerNamingContext:
+  //   <prefix>:<host_truncated_to_64>_<4-byte SHA-256 hex = 8 hex chars>
+  const nc = partnerPortNamingContext('MOCK-NCADSRV1');
+  assert.match(nc, /^__partner_ports__:MOCK-NCADSRV1_[0-9a-f]{8}$/);
+});
+
+test('partnerPortNamingContext: truncates host to 64 chars + keeps 8-hex suffix', () => {
+  // 80-char host → first 64 chars + 8 hex.
+  const longHost = 'a'.repeat(80);
+  const nc = partnerPortNamingContext(longHost);
+  assert.match(nc, /^__partner_ports__:a{64}_[0-9a-f]{8}$/);
+});
+
+test('partnerPortNamingContext: same host always yields the same suffix (deterministic)', () => {
+  // The naming_context must be stable across runs — operators correlate
+  // partner-port rows by this string, so hash drift would break that
+  // lookup. Hash is over the FULL host (not the truncated form), so a
+  // longer host produces the same suffix it always would.
+  const a = partnerPortNamingContext('MOCK-DC-EXAMPLE');
+  const b = partnerPortNamingContext('MOCK-DC-EXAMPLE');
+  assert.equal(a, b);
+});
+
+test('partnerPortNamingContext: returns null for empty/falsy host', () => {
+  assert.equal(partnerPortNamingContext(null), null);
+  assert.equal(partnerPortNamingContext(''), null);
+});
+
+// ----- buildPartnerPortEntries -----
+
+test('buildPartnerPortEntries: emits one entry per peer, no summary', () => {
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2', 'MOCK-DC3'],
+    sourceSite: 'MOCK-NC'
+  });
+  assert.equal(entries.length, 2);
+  // No __dc_summary__ here — that row is appended by buildSnapshot only.
+  for (const e of entries) {
+    assert.ok(e.NamingContext.startsWith('__partner_ports__:'));
+  }
+  assert.equal(entries[0].DestDc, 'MOCK-DC2');
+  assert.equal(entries[1].DestDc, 'MOCK-DC3');
+  // SourceDc is the agent doing the probing (NOT the partner).
+  for (const e of entries) assert.equal(e.SourceDc, 'MOCK-DC1');
+});
+
+test('buildPartnerPortEntries: PS1-shape keys are all present', () => {
+  const ts = '2026-08-27T12:00:00.000Z';
+  const [entry] = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2']
+  });
+  const expectedKeys = [
+    'SourceDc', 'DestDc', 'SourceSite', 'DestSite',
+    'NamingContext', 'LastSuccessTime', 'LastAttemptTime',
+    'StatusCode', 'ErrorMessage',
+    'UsersCount', 'GroupsCount', 'GposCount', 'LockedCount',
+    'PartnerPortStatus'
+  ];
+  for (const k of expectedKeys) {
+    assert.ok(Object.prototype.hasOwnProperty.call(entry, k), `missing key: ${k}`);
+  }
+});
+
+test('buildPartnerPortEntries: accepts a Date object and normalizes to ISO', () => {
+  // The mock daemon passes new Date() — the helper must coerce it to ISO
+  // the same way buildSummaryEntry / buildLinkEntries do. Otherwise the
+  // SQL driver binds a Date object, which MySQL handles fine but MSSQL
+  // rejects (tedious expects ISO strings).
+  const d = new Date('2026-08-27T12:00:00.000Z');
+  const [entry] = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: d,
+    peers: ['MOCK-DC2']
+  });
+  assert.equal(entry.LastSuccessTime, d.toISOString());
+  assert.equal(entry.LastAttemptTime, d.toISOString());
+});
+
+test('buildPartnerPortEntries: statusCode is 0 when every port reachable', () => {
+  // portOverrides force ALL ports reachable → StatusCode=0 (matches PS1:
+  // 0 when every probe succeeded).
+  const ts = '2026-08-27T12:00:00.000Z';
+  const [entry] = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2'],
+    portOverrides: [{
+      host: 'MOCK-DC2',
+      portResults: [
+        { port: 135, reachable: true, latencyMs: 3 },
+        { port: 445, reachable: true, latencyMs: 4 },
+        { port: 50001, reachable: true, latencyMs: 5 },
+        { port: 50002, reachable: true, latencyMs: 6 },
+        { port: 50003, reachable: true, latencyMs: 7 }
+      ]
+    }]
+  });
+  assert.equal(entry.StatusCode, 0);
+});
+
+test('buildPartnerPortEntries: statusCode equals count of unreachable ports', () => {
+  // 3 of 5 ports unreachable → StatusCode=3. Mirrors PS1 line 215+
+  // status_code = 0 if all reachable else count of unreachable.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const [entry] = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2'],
+    portOverrides: [{
+      host: 'MOCK-DC2',
+      portResults: [
+        { port: 135, reachable: true, latencyMs: 3 },
+        { port: 445, reachable: false, latencyMs: null, error: 'timeout' },
+        { port: 50001, reachable: false, latencyMs: null, error: 'timeout' },
+        { port: 50002, reachable: true, latencyMs: 6 },
+        { port: 50003, reachable: false, latencyMs: null, error: 'timeout' }
+      ]
+    }]
+  });
+  assert.equal(entry.StatusCode, 3);
+});
+
+test('buildPartnerPortEntries: PartnerPortStatus JSON shape — checked_at + ports map keyed by port string', () => {
+  const ts = '2026-08-27T12:00:00.000Z';
+  // Force ALL 5 ports via override so the assertion doesn't depend on
+  // the SHA-256 distribution. Override-only outcome: every port reflects
+  // exactly what the override specifies.
+  const [entry] = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2'],
+    portOverrides: [{
+      host: 'MOCK-DC2',
+      portResults: [
+        { port: 135,   reachable: true,  latencyMs: 3 },
+        { port: 445,   reachable: false, latencyMs: null, error: 'ConnectionRefused (FZ1 operator scenario)' },
+        { port: 50001, reachable: true,  latencyMs: 5 },
+        { port: 50002, reachable: true,  latencyMs: 6 },
+        { port: 50003, reachable: false, latencyMs: null, error: 'timeout' }
+      ]
+    }]
+  });
+  // String per spec — the agent's reporter.toCamelEntry passes it through
+  // verbatim; the centre's partnerPortStatus parser accepts both string
+  // (MSSQL) and object (MySQL) forms.
+  assert.equal(typeof entry.PartnerPortStatus, 'string');
+  const parsed = JSON.parse(entry.PartnerPortStatus);
+  assert.equal(parsed.checked_at, ts);
+  assert.deepEqual(Object.keys(parsed.ports).sort(), ['135', '445', '50001', '50002', '50003']);
+  assert.equal(parsed.ports['135'].reachable, true);
+  assert.equal(parsed.ports['135'].latencyMs, 3);
+  assert.equal(parsed.ports['445'].reachable, false);
+  assert.equal(parsed.ports['445'].latencyMs, null);
+  assert.equal(parsed.ports['445'].error, 'ConnectionRefused (FZ1 operator scenario)');
+  assert.equal(parsed.ports['50003'].reachable, false);
+  assert.equal(parsed.ports['50003'].error, 'timeout');
+});
+
+test('buildPartnerPortEntries: SHA-256-driven outcomes are deterministic per (agent, peer, port)', () => {
+  // The mock daemon calls buildPartnerPortEntries on every replication tick.
+  // If outcomes drift between calls, the matrix view's per-port badges
+  // flicker; pinning determinism here prevents a future refactor from
+  // regressing that.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const first  = buildPartnerPortEntries({ agentId: 'MOCK-DC1', collectedAt: ts, peers: ['MOCK-DC2'] });
+  const second = buildPartnerPortEntries({ agentId: 'MOCK-DC1', collectedAt: ts, peers: ['MOCK-DC2'] });
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 1);
+  assert.equal(first[0].StatusCode, second[0].StatusCode);
+  assert.equal(first[0].PartnerPortStatus, second[0].PartnerPortStatus);
+});
+
+test('buildPartnerPortEntries: override map does not affect other peers', () => {
+  // The override is keyed by hostname — overrides for one peer must NOT
+  // bleed into a different peer's entry. The matrix view shows each
+  // partner row independently; cross-contamination would hide real
+  // failures.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2', 'MOCK-DC3'],
+    portOverrides: [{
+      host: 'MOCK-DC2',
+      portResults: [
+        { port: 50001, reachable: false, latencyMs: null, error: 'timeout' }
+      ]
+    }]
+  });
+  // MOCK-DC2 → StatusCode reflects the forced failure (port 50001).
+  // Default port list has 5 ports; 1 override matches, the other 4 fall
+  // through to the SHA-256 helper. Total unreachable could be 1+0..4.
+  assert.ok(entries[0].StatusCode >= 1, `MOCK-DC2 should have at least 1 unreachable, got ${entries[0].StatusCode}`);
+  // MOCK-DC3 → purely SHA-256 derived.
+  const e3 = JSON.parse(entries[1].PartnerPortStatus);
+  assert.equal(Object.keys(e3.ports).length, 5);
+});
+
+test('buildPartnerPortEntries: empty peers → empty result', () => {
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: []
+  });
+  assert.deepEqual(entries, []);
+});
+
+test('buildPartnerPortEntries: peer entries with {host: ...} objects work (mock-multi-agent shape)', () => {
+  // mock-multi-agent.mjs uses {host} objects; the daemon uses raw strings.
+  // Both shapes must be accepted so neither caller has to reshape data.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: [{ host: 'MOCK-DC2' }, { host: 'MOCK-DC3' }]
+  });
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].DestDc, 'MOCK-DC2');
+  assert.equal(entries[1].DestDc, 'MOCK-DC3');
+});
+
+test('buildPartnerPortEntries: peer entries skip entries without a usable host', () => {
+  // Defensive: malformed peers (null/undefined host) are dropped, not
+  // thrown. The daemon constructs the peers list from a known-good
+  // scenario so this never happens in practice, but a future caller might
+  // pass sloppy data.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2', null, '', undefined, { host: 'MOCK-DC3' }, {}]
+  });
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].DestDc, 'MOCK-DC2');
+  assert.equal(entries[1].DestDc, 'MOCK-DC3');
+});
+
+test('buildPartnerPortEntries: rejects missing agentId', () => {
+  assert.throws(
+    () => buildPartnerPortEntries({ agentId: '', collectedAt: '2026-08-27T12:00:00.000Z', peers: ['x'] }),
+    /agentId/
+  );
+  assert.throws(
+    () => buildPartnerPortEntries({ collectedAt: '2026-08-27T12:00:00.000Z', peers: ['x'] }),
+    /agentId/
+  );
+});
+
+// ----- buildSnapshot with partnerPortEntries -----
+
+test('buildSnapshot: partnerPortEntries are interleaved between links and summary', () => {
+  // Order: links → partner-port entries → summary. The route doesn't
+  // care about ordering, but the operator reading the raw snapshot in
+  // debug output expects this canonical shape.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const partnerPortEntries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2']
+  });
+  const snap = buildSnapshot({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    sourceSite: 'MOCK-NC',
+    links: [{ destDc: 'MOCK-DC2', statusCode: 0 }],
+    partnerPortEntries
+  });
+  assert.equal(snap.Entries.length, 3);
+  assert.equal(snap.Entries[0].NamingContext, 'CN=MOCK-DC1->MOCK-DC2');
+  assert.ok(snap.Entries[1].NamingContext.startsWith('__partner_ports__:'));
+  assert.equal(snap.Entries[2].NamingContext, '__dc_summary__');
+});
+
+test('buildSnapshot: defaults partnerPortEntries to empty when omitted', () => {
+  // Backward compat: pre-round-35 callers buildSnapshot({ links: ... })
+  // without partnerPortEntries. Should still work, summary still appended.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const snap = buildSnapshot({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    links: [{ destDc: 'MOCK-DC2', statusCode: 0 }]
+  });
+  assert.equal(snap.Entries.length, 2);
+  assert.equal(snap.Entries[0].NamingContext, 'CN=MOCK-DC1->MOCK-DC2');
+  assert.equal(snap.Entries[1].NamingContext, '__dc_summary__');
+});
+
+test('buildSnapshot: matrix route lookup key — link.destDc === partner-port.DestDc', async () => {
+  // 2026-08-27 round-35: this is the integration invariant. The route
+  // builds perPortByPair keyed by `${source_dc}${sep}${dest_dc}` against
+  // latestPartnerPortPerPair rows. If a link entry has destDc='X' but
+  // the matching partner-port row has DestDc='X.mock.local', the lookup
+  // misses and the matrix view's perPort column is null.
+  //
+  // Mock-helper invariant: passing the same peers[] string to
+  // buildLinkEntries (via links[]) and buildPartnerPortEntries produces
+  // entries with identical DestDc values.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const peerIds = ['MOCK-DC2', 'MOCK-DC3'];
+  const links = peerIds.map((d) => ({ destDc: d, statusCode: 0 }));
+  const portEntries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: peerIds
+  });
+  const linkEntries = buildLinkEntries('MOCK-DC1', ts, links);
+  assert.equal(linkEntries.length, portEntries.length);
+  for (let i = 0; i < linkEntries.length; i++) {
+    assert.equal(linkEntries[i].DestDc, portEntries[i].DestDc);
+    assert.equal(linkEntries[i].SourceDc, portEntries[i].SourceDc);
+  }
 });

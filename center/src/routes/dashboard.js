@@ -185,15 +185,19 @@ export function dashboardRouter({ config, logger, db }) {
   // single-site view showed one site's DC×DC matrix at a time, but
   // operators now navigate via the hub-first overview.
 
-  // 2026-08-27 round-28 (matrix envelope) + round-28.5 (bridgehead
-  // primary): global all-sites replication matrix view, built around
-  // per-primary-DC partner tables. Operator intent: see "how is THIS
-  // server connecting with everyone else" — for each site's bridgehead
-  // DC (the "primary"; operator-marked via ad_dcs.is_bridgehead), walk
-  // every replication link where the primary is source (direction='out')
-  // or destination (direction='in'). Hub site primary comes first via
-  // the existing `is_hub DESC, region_code, site_name` SQL ORDER BY.
-  // Five round-tripped queries; same SQL helpers as round-27.
+  // 2026-08-27 round-35: matrix view is inbound-only. Operator ruling
+  // "我们只需要检查入站的就好了，出战的没有意义，出战对于其他机器就是
+  // 入站" — outbound for one machine is inbound for another, so a TCP
+  // probe shows twice when rendered from both ends. The route now keeps
+  // ONLY links where the primary is the destination (other DCs send
+  // replication TO this primary). Each (source, dest) probe surfaces
+  // exactly once, from the destination's perspective.
+  //
+  // History: round-28 added per-primary partner tables (out + in);
+  // round-28.5 added bridgehead selection; round-31 added per-site DC
+  // listing; round-32 added per-port probe data + peer-type tag;
+  // round-33 collapsed to a single 复制状态概览 entry (deleted the
+  // single-site matrix). round-35 narrows to inbound.
   //
   // Bridgehead selection (round-28.5): sort each site's DCs by
   // is_bridgehead DESC, dc_name ASC. The bridgehead marker is operator-set;
@@ -310,14 +314,12 @@ export function dashboardRouter({ config, logger, db }) {
 
         const partnerMap = new Map();
         for (const l of linkRows) {
-          let dir, peerDc;
-          if (l.source_dc === primaryDc && l.dest_dc !== primaryDc) {
-            dir = "out"; peerDc = l.dest_dc;
-          } else if (l.dest_dc === primaryDc && l.source_dc !== primaryDc) {
-            dir = "in"; peerDc = l.source_dc;
-          } else {
-            continue;
-          }
+          // round-35: inbound only — partner is the source DC sending
+          // replication TO our primary. Outbound (primary → other) is
+          // dropped because the same TCP probe is already covered from
+          // the other side's inbound list. Self-loops also dropped.
+          if (l.dest_dc !== primaryDc || l.source_dc === primaryDc) continue;
+          const peerDc = l.source_dc;
           if (!allowedPeers.has(peerDc)) continue; // round-32 filter
           const peer = dcByName.get(peerDc);
           if (!peer) continue; // orphan DC
@@ -326,7 +328,6 @@ export function dashboardRouter({ config, logger, db }) {
 
           const portEntry = perPortByPair.get(`${l.source_dc}${sep}${l.dest_dc}`);
           const entry = {
-            direction: dir,
             // round-32: peerType distinguishes within-site siblings from
             // cross-site bridgehead primaries. "within" = same-site sibling,
             // "bridgehead" = cross-site primary (operator-selected
@@ -342,7 +343,11 @@ export function dashboardRouter({ config, logger, db }) {
             perPort: portEntry?.perPort ?? null,
             lastProbeAt: portEntry?.lastProbeAt ?? null
           };
-          const k = `${dir}${sep}${peerDc}`;
+          // round-35: dedup key no longer needs the direction prefix —
+          // every entry is inbound. peerDc alone is sufficient because
+          // the same source DC can only have one latest link per
+          // (source_dc, dest_dc) pair after the latest-per-pair subquery.
+          const k = peerDc;
           const existing = partnerMap.get(k);
           if (!existing) {
             partnerMap.set(k, entry);
@@ -354,9 +359,8 @@ export function dashboardRouter({ config, logger, db }) {
         }
 
         const partners = [...partnerMap.values()].sort((a, b) => {
-          // within before bridgehead; out before in; then site; then DC.
+          // within before bridgehead; then site; then DC.
           if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
-          if (a.direction !== b.direction) return a.direction === "out" ? -1 : 1;
           if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
           return a.peerDc.localeCompare(b.peerDc);
         });

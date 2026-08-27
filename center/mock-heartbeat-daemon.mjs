@@ -26,7 +26,7 @@
 // daemon runs until SIGINT/SIGTERM (Ctrl+C).
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildSnapshot } from './mock-snapshot.mjs';
+import { buildSnapshot, buildPartnerPortEntries } from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
@@ -40,6 +40,31 @@ const REPORT_PATH    = '/api/agent/report';
 const DISCOVER_PATH  = '/api/agent/discover';
 
 // ----- scenario -----
+
+// 2026-08-27 round-35: peer-host probe overrides — keyed by partner
+// identifier (the same string used in link.destDc so the
+// ${source}${sep}${dest} lookup in the matrix route matches). Each
+// entry lists forced probe results for specific ports. The helper looks
+// up an override by peer identifier when assembling the partner-port
+// entry for a given peer; if the peer is listed, the forced result
+// replaces the SHA-256-derived one.
+//
+// Scenario: FZ1 (the operator's known problematic DC) reports port 50001
+// as unreachable when other agents probe it. From the matrix view's
+// inbound perspective, this is what surfaces in /admin/site-replication-
+// matrix/all for any primary DC that FZ1 replicates TO. Since FZ1
+// replicates to FZ2 and HUB1, those primaries' inbound probes will show
+// FZ1's port 50001 in red — matching the operator's "FZ1 partial failure"
+// observation from round-19.
+const FZ1_PARTNER_OVERRIDES = [
+  {
+    host: 'MOCK-FZADSRV1',
+    portResults: [
+      { port: 50001, reachable: false, latencyMs: null,
+        error: 'ConnectionRefused (FZ1 operator scenario)' }
+    ]
+  }
+];
 
 function defaultScenario() {
   // 2026-08-26 round-19+: operator-defined topology. Each non-HUB site's
@@ -81,6 +106,10 @@ function defaultScenario() {
     { agentId: NC1, isPdc: true,  peers: [NC2, HUB1], failRate: 0.0,  ip: '10.99.0.10', siteHint: 'MOCK-NC' },
     { agentId: NC2, isPdc: false, peers: [NC1, HUB1], failRate: 0.05, ip: '10.99.0.14', siteHint: 'MOCK-NC' },
     // FZ site — 2 DCs (FZ1 occasionally failing). Pattern: FZ1 -> [FZ2, HUB1].
+    // round-35: FZ1's port 50001 is wired to fail when OTHER agents probe
+    // it (FZ2 + HUB1 in their peer lists). The matrix view's inbound cell
+    // for any primary that FZ1 replicates TO will show 50001 in red —
+    // matching the operator's "FZ1 partial failure" observation.
     { agentId: FZ1, isPdc: false, peers: [FZ2, HUB1], failRate: 0.34, ip: '10.99.0.11', siteHint: 'MOCK-FZ' },
     { agentId: FZ2, isPdc: false, peers: [FZ1, HUB1], failRate: 0.0,  ip: '10.99.0.15', siteHint: 'MOCK-FZ' },
     // XM site — 2 DCs (XM1 stale). Pattern: XM1 -> [XM2, HUB1].
@@ -148,7 +177,21 @@ function buildHeartbeatBody(agentId) {
 // buildSnapshot appends a __dc_summary__ entry with deterministic
 // per-DC counters (usersCount / groupsCount / gposCount) derived from the
 // agentId hash, instead of the previous hardcoded 0/0/0.
-function buildReplicationSnapshot(agentId, peers, failRate, sourceSite) {
+//
+// 2026-08-27 round-35: also append partner-port entries
+// (__partner_ports__:% rows) — one per peer, covering the default probe
+// port set (135, 445, 50001, 50002, 50003). Without these rows the matrix
+// view's per-port badges render as "无探测" and operators see no port-level
+// signal at all. The helper produces deterministic per-(agent, peer, port)
+// outcomes via SHA-256; we don't add Math.random() here so test snapshots
+// stay stable across runs.
+//
+// FZ1 partial-failure override: matches the operator's known scenario from
+// round-19 ("FZ1 ports partially unreachable"). Forcing 50001 to fail
+// deterministically (rather than relying on the ~12.5% hash threshold)
+// gives the dashboard a visible failing-port badge they recognize from
+// the production env without the daemon needing external state.
+function buildReplicationSnapshot(agentId, peers, failRate, sourceSite, opts = {}) {
   const links = peers.map((destDc) => {
     const isFail = Math.random() < failRate;
     return {
@@ -158,7 +201,30 @@ function buildReplicationSnapshot(agentId, peers, failRate, sourceSite) {
       errorMessage: isFail ? 'RPC server unavailable (mock)' : null
     };
   });
-  return buildSnapshot({ agentId, collectedAt: new Date(), sourceSite, links });
+  // 2026-08-27 round-35: pass peers (raw agentIds) verbatim — they MUST
+  // match link.destDc exactly so the route's ${source}${sep}${dest}
+  // lookup against latestPartnerPortPerPair finds the partner-port row.
+  // In a real AD env, Get-PartnerPortSnapshot stores DestDc as the
+  // partner's FQDN and the per-link entry uses the same FQDN. The mock
+  // here uses the partner's agentId for both to keep the data shape
+  // internally consistent (the centre doesn't care which format the
+  // mock chose, only that source/dest match between the two row types).
+  const collectedAt = new Date();
+  const portOverrides = opts.portOverrides ?? FZ1_PARTNER_OVERRIDES;
+  const partnerPortEntries = buildPartnerPortEntries({
+    agentId,
+    collectedAt,
+    peers,
+    sourceSite,
+    portOverrides
+  });
+  return buildSnapshot({
+    agentId,
+    collectedAt,
+    sourceSite,
+    links,
+    partnerPortEntries
+  });
 }
 
 function buildDiscovery(agentId, isPdc, opts = {}) {

@@ -348,11 +348,13 @@ test("GET /api/dashboard/site-replication-matrix/all: 401 when no token", async 
   assert.equal(r.status, 401);
 });
 
-test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-primary partner tables (out + in + perPort)", async () => {
-  // Round-28 envelope: each site contributes one primary DC (lexically
+test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-primary partner tables (inbound only + perPort)", async () => {
+  // Round-35 envelope: each site contributes one primary DC (lexically
   // first dc_name; PDC marker NOT used). The primary surfaces every
-  // replication link it participates in, both as source (direction=out)
-  // and as destination (direction=in).
+  // INBOUND replication link (other DCs sending TO this primary).
+  // Outbound is intentionally dropped — a TCP probe shows once from the
+  // destination's perspective, not twice from both ends. The `direction`
+  // field is no longer present (every entry is inbound).
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
   const db = buildMockDb([
@@ -377,9 +379,12 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
     {
       match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
       rows: [
-        // within-link for 核心站点
+        // within-link for 核心站点 (BJ-01 → BJ-02): from BJ-02's perspective
+        // this is an inbound partner row. From BJ-01's perspective the row
+        // would be outbound — must be dropped.
         { source_dc: "DC-BJ-01", dest_dc: "DC-BJ-02", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 },
-        // cross-link 核心 → 上海 (status 1 = warn)
+        // cross-link 核心 → 上海 (BJ-01 → SH-01, status 1 = warn): outbound
+        // for BJ-01, inbound for SH-01. Only the SH-01 primary surfaces it.
         { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com", status_code: 1, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
       ]
     },
@@ -429,32 +434,22 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
   assert.equal(r.body.primaries[1].dcs.length, 1);
   assert.equal(r.body.primaries[1].dcs[0].dcName, "DC-SH-01");
 
-  // DC-BJ-01 primary:
-  //   - out: DC-BJ-02 (within-site, status 0)
-  //   - out: DC-SH-01 (cross-site, status 1, with partner-port probe)
+  // DC-BJ-01 primary (round-35: inbound only — BJ-01 is the bridgehead for
+  // both ends of every link in this scenario, so it has NO inbound
+  // partners; outbound links to BJ-02 + SH-01 are dropped).
   const hub = r.body.primaries[0];
-  assert.equal(hub.partners.length, 2);
-  const outWithin = hub.partners.find(p => p.direction === "out" && p.peerDc === "DC-BJ-02");
-  const outCross = hub.partners.find(p => p.direction === "out" && p.peerDc === "DC-SH-01");
-  assert.ok(outWithin, "BJ-01 → BJ-02 must surface as out-partner");
-  assert.ok(outCross, "BJ-01 → SH-01 must surface as out-partner");
-  assert.equal(outWithin.peerSite, "核心站点");
-  assert.equal(outCross.peerSite, "上海站点");
-  assert.deepEqual(outCross.perPort, {
-    "135": { reachable: true, latencyMs: 3 },
-    "445": { reachable: false, error: "timeout" }
-  });
-  // out rows come before in rows
-  assert.equal(hub.partners[0].direction, "out");
+  assert.equal(hub.partners.length, 0, "BJ-01 has no inbound partners in this scenario");
 
-  // DC-SH-01 primary:
+  // DC-SH-01 primary (round-35: inbound only):
   //   - in: DC-BJ-01 (cross-site, status 1, with partner-port probe)
   const spoke = r.body.primaries[1];
   assert.equal(spoke.partners.length, 1);
-  assert.equal(spoke.partners[0].direction, "in");
+  // round-35: direction field is gone — every entry is implicitly inbound.
+  assert.equal(spoke.partners[0].direction, undefined);
   assert.equal(spoke.partners[0].peerDc, "DC-BJ-01");
   assert.equal(spoke.partners[0].peerSite, "核心站点");
   assert.equal(spoke.partners[0].peerSiteIsHub, true);
+  assert.equal(spoke.partners[0].peerType, "bridgehead");
   assert.deepEqual(spoke.partners[0].perPort, {
     "135": { reachable: true, latencyMs: 3 },
     "445": { reachable: false, error: "timeout" }
@@ -544,8 +539,11 @@ test("GET /api/dashboard/site-replication-matrix/all: partner-port JSON STRING (
     .get("/api/dashboard/site-replication-matrix/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
-  const partner = r.body.primaries[0].partners.find(p => p.peerDc === "DC-B1");
-  assert.ok(partner, "DC-A1 primary must surface DC-B1 as out-partner");
+  // round-35 inbound-only: the link DC-A1 → DC-B1 surfaces at the
+  // destination (DC-B1 primary), not the source (DC-A1 primary).
+  assert.equal(r.body.primaries[0].partners.length, 0, "DC-A1 has no inbound partners");
+  const partner = r.body.primaries[1].partners.find(p => p.peerDc === "DC-A1");
+  assert.ok(partner, "DC-B1 primary must surface DC-A1 as inbound partner");
   assert.ok(partner.perPort && typeof partner.perPort === "object", "perPort must be parsed object, not string");
   assert.equal(partner.perPort["135"].reachable, true);
   assert.equal(partner.perPort["135"].latencyMs, 4);
@@ -580,7 +578,9 @@ test("GET /api/dashboard/site-replication-matrix/all: partner-port JSON OBJECT (
     .get("/api/dashboard/site-replication-matrix/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
-  const partner = r.body.primaries[0].partners.find(p => p.peerDc === "DC-B1");
+  // round-35 inbound-only: link surfaces at the destination primary.
+  const partner = r.body.primaries[1].partners.find(p => p.peerDc === "DC-A1");
+  assert.ok(partner, "DC-B1 primary must surface DC-A1 as inbound partner");
   assert.deepEqual(partner.perPort, {
     "135": { reachable: true, latencyMs: 4 }
   });
@@ -615,7 +615,9 @@ test("GET /api/dashboard/site-replication-matrix/all: malformed partner-port JSO
     .get("/api/dashboard/site-replication-matrix/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
-  const partner = r.body.primaries[0].partners.find(p => p.peerDc === "DC-B1");
+  // round-35 inbound-only: link surfaces at the destination primary.
+  const partner = r.body.primaries[1].partners.find(p => p.peerDc === "DC-A1");
+  assert.ok(partner, "DC-B1 primary must surface DC-A1 as inbound partner");
   assert.deepEqual(partner.perPort, {});
 });
 
@@ -700,4 +702,48 @@ test("GET /api/dashboard/site-replication-matrix/all: lex-first fallback when no
   assert.equal(r.body.primaries.length, 1);
   assert.equal(r.body.primaries[0].dcName, "DC-A1", "no bridgehead marked → lex-first");
   assert.equal(r.body.primaries[0].isBridgehead, false);
+});
+
+// 2026-08-27 round-35: inbound-only filter. When both DC-A1 and DC-B1
+// replicate to each other (bidirectional), each link surfaces ONCE at
+// the destination's primary, never at the source's. The `direction`
+// field is gone — every entry is implicitly inbound.
+test("GET /api/dashboard/site-replication-matrix/all: round-35 inbound-only filter drops outbound, surfaces inbound once", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i, rows: [
+      { site_id: 1, site_name: "SITE-A", region_code: "BJ", is_hub: 1, description: null },
+      { site_id: 2, site_name: "SITE-B", region_code: "SH", is_hub: 0, description: null }
+    ]},
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i, rows: [
+      { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
+      { dc_name: "DC-B1", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-B1" }
+    ]},
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i, rows: [
+      // bidirectional replication between the two primaries
+      { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 3 },
+      { source_dc: "DC-B1", dest_dc: "DC-A1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 4 }
+    ]},
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/site-replication-matrix/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  // DC-A1 (hub primary) has 1 inbound from DC-B1 (the B→A link)
+  const hub = r.body.primaries[0];
+  assert.equal(hub.dcName, "DC-A1");
+  assert.equal(hub.partners.length, 1, "DC-A1 has 1 inbound partner (DC-B1)");
+  assert.equal(hub.partners[0].peerDc, "DC-B1");
+  assert.equal(hub.partners[0].peerType, "bridgehead");
+  assert.equal(hub.partners[0].direction, undefined, "direction field is gone (round-35)");
+  // DC-B1 (spoke primary) has 1 inbound from DC-A1 (the A→B link)
+  const spoke = r.body.primaries[1];
+  assert.equal(spoke.dcName, "DC-B1");
+  assert.equal(spoke.partners.length, 1, "DC-B1 has 1 inbound partner (DC-A1)");
+  assert.equal(spoke.partners[0].peerDc, "DC-A1");
+  assert.equal(spoke.partners[0].direction, undefined);
 });;
