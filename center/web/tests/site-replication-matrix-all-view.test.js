@@ -88,7 +88,16 @@ const basePayload = () => ({
             { peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
               peerType: 'bridgehead',
               statusCode: 1,
-              perPort: { '135': { reachable: true, latencyMs: 3 }, '445': { reachable: false, error: 'timeout' } },
+              // round-36.1: perPort shape mirrors what
+              // collect-replication.ps1::Get-PartnerPortSnapshot writes to
+              // ad_replication_status.partner_port_status JSON column:
+              // `{ checked_at, ports: { '<port>': {reachable, latencyMs, error} } }`.
+              // The view reads `perPort.ports[port]` (not `perPort[port]`)
+              // — round-32 code read the wrong path and every badge
+              // silently fell through to "无探测".
+              perPort: { checked_at: '2026-08-27T10:00:00Z',
+                         ports: { '135':   { reachable: true,  latencyMs: 3 },
+                                  '445':   { reachable: false, latencyMs: null, error: 'timeout' } } },
               lastProbeAt: '2026-08-27T10:00:00Z' }
           ] }
       ],
@@ -96,7 +105,9 @@ const basePayload = () => ({
         { peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
           peerType: 'bridgehead',
           statusCode: 1,
-          perPort: { '135': { reachable: true, latencyMs: 3 }, '445': { reachable: false, error: 'timeout' } },
+          perPort: { checked_at: '2026-08-27T10:00:00Z',
+                     ports: { '135': { reachable: true,  latencyMs: 3 },
+                              '445': { reachable: false, latencyMs: null, error: 'timeout' } } },
           lastProbeAt: '2026-08-27T10:00:00Z' }
       ]
     }

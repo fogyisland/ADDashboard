@@ -172,8 +172,17 @@ function rowClass(p) {
     'status-err':  p.statusCode > 1
   };
 }
+function portEntry(perPort, port) {
+  // 2026-08-27 round-36.1: partner_port_status JSON shape is
+  // `{ checked_at, ports: { '<port>': { reachable, latencyMs, error } } }`.
+  // The earlier round-32 code read `perPort[port]` which always returned
+  // undefined — every badge fell through to 'none' / "未探测" and operators
+  // only saw TTL-style latency strings via the tooltip fallback. Read the
+  // inner `ports` map so per-port reachability + latency actually surface.
+  return perPort?.ports?.[String(port)] ?? null;
+}
 function portStatusClass(perPort, port) {
-  const e = perPort?.[String(port)];
+  const e = portEntry(perPort, port);
   if (!e) return 'none';
   if (e.reachable === true) return 'ok';
   if (e.reachable === false) return 'err';
@@ -190,7 +199,7 @@ function peerTypeLabel(p) {
   return '未知';
 }
 function portTooltip(perPort, port) {
-  const e = perPort?.[String(port)];
+  const e = portEntry(perPort, port);
   if (!e) return `${port}: 未探测`;
   const status = e.reachable === true ? '可达' : e.reachable === false ? '不可达' : '未知';
   const lat = e.latencyMs != null ? ` ${e.latencyMs}ms` : '';
@@ -203,7 +212,7 @@ function portTooltip(perPort, port) {
 // probed → "—". Compact 2-line cell keeps the matrix scannable while
 // exposing the latency/error data the PS collector emits.
 function portDetailLabel(perPort, port) {
-  const e = perPort?.[String(port)];
+  const e = portEntry(perPort, port);
   if (!e) return '—';
   if (e.reachable === true) {
     return e.latencyMs != null ? `${e.latencyMs}ms` : '通';
