@@ -20,6 +20,9 @@ import { dashboardApi } from '../src/api/dashboard.js';
 // (lexically first dc_name; PDC marker NOT used). Each primary surfaces
 // every replication link it participates in as a partner row with
 // direction ('out' | 'in') + perPort probe map.
+//
+// round-31: each primary also carries `dcs` — every DC in the site with
+// role flags + osVersion. Drives the "本站 DC 清单" panel.
 const basePayload = () => ({
   siteRefreshSeconds: 10,
   ports: [135, 445, 50001],
@@ -29,6 +32,14 @@ const basePayload = () => ({
       regionCode: 'BJ', isHub: true,
       // round-28.5: hub DC explicitly marked bridgehead by operator
       isBridgehead: true,
+      dcs: [
+        { dcName: 'DC-BJ-01', isBridgehead: true, isPdc: true, isGc: true,
+          isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
+          isInfrastructureMaster: false, osVersion: 'Win2022', discoveredAt: '2026-08-27T08:00:00Z' },
+        { dcName: 'DC-BJ-02', isBridgehead: false, isPdc: false, isGc: true,
+          isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: false,
+          isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
+      ],
       partners: [
         { direction: 'out', peerDc: 'DC-BJ-02', peerSite: '核心站点', peerSiteIsHub: true,
           statusCode: 0, perPort: null, lastProbeAt: null }
@@ -37,6 +48,12 @@ const basePayload = () => ({
     {
       dcName: 'DC-SH-01', siteId: 2, siteName: '上海站点',
       regionCode: 'SH', isHub: false,
+      isBridgehead: false,
+      dcs: [
+        { dcName: 'DC-SH-01', isBridgehead: false, isPdc: false, isGc: false,
+          isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
+          isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
+      ],
       partners: [
         { direction: 'in', peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
           statusCode: 1,
@@ -162,4 +179,64 @@ test('bridgehead badge: shows "桥头" when isBridgehead=true, "未指定" other
   expect(spokeBadge.exists()).toBe(true);
   expect(spokeBadge.classes()).toContain('none');
   expect(spokeBadge.text()).toContain('未指定');
+});
+
+test('round-31: each site block renders a "本站 DC 清单" panel listing every DC with role badges + OS', async () => {
+  // 核心站点 has 2 DCs: DC-BJ-01 (PDC+GC+bridgehead) + DC-BJ-02 (RID+Schema).
+  // 上海站点 has 1 DC: DC-SH-01 (no roles — 成员 badge).
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+
+  // 核心站点 panel: 2 DC cards, BJ-01 has PDC/GC/桥头, BJ-02 has RID/Schema
+  const hubList = w.find('[data-test-site-dcs="核心站点"]');
+  expect(hubList.exists()).toBe(true);
+  const hubCards = hubList.findAll('[data-test-dc]');
+  expect(hubCards).toHaveLength(2);
+  // BJ-01: PDC + GC + bridgehead visible
+  const bj01 = hubCards.find(c => c.attributes('data-test-dc') === 'DC-BJ-01');
+  expect(bj01.exists()).toBe(true);
+  expect(bj01.text()).toContain('DC-BJ-01');
+  expect(bj01.text()).toContain('PDC');
+  expect(bj01.text()).toContain('GC');
+  expect(bj01.text()).toContain('桥头');
+  expect(bj01.text()).toContain('Win2022');
+  // BJ-01 is the primary → has dc-card-primary class
+  expect(bj01.classes()).toContain('dc-card-primary');
+  // BJ-02: RID + Schema + Win2019
+  const bj02 = hubCards.find(c => c.attributes('data-test-dc') === 'DC-BJ-02');
+  expect(bj02.text()).toContain('RID');
+  expect(bj02.text()).toContain('Schema');
+  expect(bj02.text()).toContain('Win2019');
+
+  // 上海站点 panel: 1 DC card with 成员 badge (no FSMO roles)
+  const spokeList = w.find('[data-test-site-dcs="上海站点"]');
+  expect(spokeList.exists()).toBe(true);
+  const spokeCards = spokeList.findAll('[data-test-dc]');
+  expect(spokeCards).toHaveLength(1);
+  expect(spokeCards[0].text()).toContain('DC-SH-01');
+  expect(spokeCards[0].text()).toContain('成员');
+  expect(spokeCards[0].text()).toContain('Win2019');
+});
+
+test('round-31: empty dcs array renders "该站点暂无 DC" empty state', async () => {
+  const empty = {
+    siteRefreshSeconds: 10,
+    ports: [135, 445],
+    primaries: [{
+      dcName: 'DC-X', siteId: 9, siteName: '空站点',
+      regionCode: null, isHub: false, isBridgehead: false,
+      dcs: [], partners: []
+    }]
+  };
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: empty });
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  const list = w.find('[data-test-site-dcs="空站点"]');
+  expect(list.exists()).toBe(true);
+  expect(list.text()).toContain('暂无 DC');
 });

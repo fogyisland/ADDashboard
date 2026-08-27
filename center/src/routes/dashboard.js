@@ -288,12 +288,25 @@ export function dashboardRouter({ config, logger, db }) {
       // chosen by operator; PDC is an FSMO role, not a marker, so we do NOT
       // use is_pdc to choose primary. If no DC in a site is marked
       // bridgehead, the lexically-first dc_name wins — fallback is silent.)
+      //
+      // round-31: each entry in dcsBySite carries the full DC shape (role
+      // flags + osVersion) so the response can surface every DC in the
+      // site, not just the bridgehead. The view renders this as a "本站 DC"
+      // panel above the partner matrix.
       const dcsBySite = new Map();
       for (const d of dcRows) {
         if (!dcsBySite.has(d.site_id)) dcsBySite.set(d.site_id, []);
         dcsBySite.get(d.site_id).push({
           dcName: d.dc_name,
-          isBridgehead: !!d.is_bridgehead
+          isBridgehead: !!d.is_bridgehead,
+          isPdc: !!d.is_pdc,
+          isGc: !!d.is_gc,
+          isRidMaster: !!d.is_rid_master,
+          isSchemaMaster: !!d.is_schema_master,
+          isDomainNamingMaster: !!d.is_domain_naming_master,
+          isInfrastructureMaster: !!d.is_infrastructure_master,
+          osVersion: d.os_version,
+          discoveredAt: toIso(d.discovered_at)
         });
       }
       for (const arr of dcsBySite.values()) {
@@ -383,6 +396,21 @@ export function dashboardRouter({ config, logger, db }) {
           siteName: s.site_name,
           regionCode: s.region_code,
           isHub: !!s.is_hub,
+          // round-31: full DC list for the "本站 DC 清单" panel (every DC
+          // in the site, with role flags + osVersion). Order matches the
+          // bridgehead-priority sort above (bridgehead first, then lex).
+          dcs: dcList.map(d => ({
+            dcName: d.dcName,
+            isBridgehead: d.isBridgehead,
+            isPdc: d.isPdc,
+            isGc: d.isGc,
+            isRidMaster: d.isRidMaster,
+            isSchemaMaster: d.isSchemaMaster,
+            isDomainNamingMaster: d.isDomainNamingMaster,
+            isInfrastructureMaster: d.isInfrastructureMaster,
+            osVersion: d.osVersion,
+            discoveredAt: d.discoveredAt
+          })),
           partners
         });
       }

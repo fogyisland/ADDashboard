@@ -502,6 +502,18 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
   assert.equal(r.body.primaries[1].siteName, "上海站点");
   assert.equal(r.body.primaries[1].isHub, false);
 
+  // round-31: every primary surfaces its full DC list (all siblings in
+  // the site, with role flags + osVersion). 核心站点 has BJ-01 + BJ-02;
+  // 上海站点 has only SH-01.
+  assert.equal(r.body.primaries[0].dcs.length, 2);
+  assert.deepEqual(r.body.primaries[0].dcs.map(d => d.dcName), ["DC-BJ-01", "DC-BJ-02"]);
+  assert.equal(r.body.primaries[0].dcs[0].isPdc, true);
+  assert.equal(r.body.primaries[0].dcs[0].isGc, true);
+  assert.equal(r.body.primaries[0].dcs[0].osVersion, "Win2022");
+  assert.equal(r.body.primaries[0].dcs[0].isBridgehead, false);
+  assert.equal(r.body.primaries[1].dcs.length, 1);
+  assert.equal(r.body.primaries[1].dcs[0].dcName, "DC-SH-01");
+
   // DC-BJ-01 primary:
   //   - out: DC-BJ-02 (within-site, status 0)
   //   - out: DC-SH-01 (cross-site, status 1, with partner-port probe)

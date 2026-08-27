@@ -31,6 +31,33 @@
         <small class="partner-count">{{ p.partners.length }} 伙伴</small>
       </h3>
 
+      <!-- 2026-08-27 round-31: explicit DC list for this site. Shows every
+           DC server grouped by site, with role badges (PDC/GC/RID/Schema/
+           DNaming/Infrastructure/Bridgehead) + OS version. The bridgehead
+           row is visually emphasised (accent outline). -->
+      <div class="site-dc-list" :data-test-site-dcs="p.siteName">
+        <h4>本站 DC 清单 ({{ p.dcs.length }})</h4>
+        <div v-if="!p.dcs.length" class="empty">该站点暂无 DC</div>
+        <ul v-else class="dc-cards">
+            <li v-for="d in p.dcs" :key="d.dcName"
+                :class="['dc-card', { 'dc-card-primary': d.dcName === p.dcName, 'dc-card-bridgehead': d.isBridgehead && d.dcName !== p.dcName }]"
+                :data-test-dc="d.dcName">
+              <div class="dc-name">{{ d.dcName }}</div>
+              <div class="dc-roles">
+                <span v-if="d.isBridgehead" class="role-badge bridgehead" title="操作员指定的桥头 DC">桥头</span>
+                <span v-if="d.isPdc" class="role-badge fsmo">PDC</span>
+                <span v-if="d.isGc" class="role-badge fsmo">GC</span>
+                <span v-if="d.isRidMaster" class="role-badge fsmo">RID</span>
+                <span v-if="d.isSchemaMaster" class="role-badge fsmo">Schema</span>
+                <span v-if="d.isDomainNamingMaster" class="role-badge fsmo">DNaming</span>
+                <span v-if="d.isInfrastructureMaster" class="role-badge fsmo">Infra</span>
+                <span v-if="!d.isBridgehead && !d.isPdc && !d.isGc && !d.isRidMaster && !d.isSchemaMaster && !d.isDomainNamingMaster && !d.isInfrastructureMaster" class="role-badge none">成员</span>
+              </div>
+              <div class="dc-os">{{ d.osVersion || '—' }}</div>
+            </li>
+          </ul>
+      </div>
+
       <table class="matrix">
         <thead>
           <tr>
@@ -162,6 +189,26 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .region { color: var(--muted); font-size: 12px; }
 .partner-count { color: var(--muted); font-size: 12px; margin-left: auto; }
 .hub-mini { font-size: 10px; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: #14532d; color: #bbf7d0; }
+
+/* 2026-08-27 round-31: per-site DC list panel. Shows every DC in the
+   site with role badges (FSMO + Bridgehead) + OS version. The bridgehead
+   is visually emphasised with a cyan outline. */
+.site-dc-list { margin-bottom: 16px; padding: 10px 12px; background: rgba(255,255,255,0.02); border-radius: 3px; }
+.site-dc-list h4 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.dc-cards { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.dc-card { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px;
+           border: 1px solid #1e293b; border-radius: 4px; background: var(--panel);
+           min-width: 180px; font-size: 12px; }
+.dc-card-primary { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.dc-card-bridgehead { border-color: #0e7490; }
+.dc-name { font-family: ui-monospace, monospace; font-weight: 600; font-size: 13px; color: var(--text); }
+.dc-roles { display: flex; flex-wrap: wrap; gap: 3px; }
+.role-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px;
+              font-family: ui-monospace, monospace; letter-spacing: 0.04em; }
+.role-badge.fsmo { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
+.role-badge.bridgehead { background: #0e7490; color: #cffafe; font-weight: 600; }
+.role-badge.none { background: #1e293b; color: var(--muted); }
+.dc-os { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
 
 .matrix { border-collapse: collapse; background: var(--panel); width: 100%; }
 .matrix th, .matrix td { border: 1px solid #1e293b; padding: 6px 10px; text-align: center; font-size: 13px; }
