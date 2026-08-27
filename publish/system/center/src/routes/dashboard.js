@@ -180,70 +180,10 @@ export function dashboardRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/dashboard/site-replication-matrix', auth, async (req, res) => {
-    const siteName = req.query.site;
-    if (!siteName) return res.status(400).json({ error: 'missing site query param' });
-    try {
-      const db = getDb();
-
-      // 1) Site lookup
-      const { rows: siteRows } = await db.query(db.sql.dashboard.siteLookup, [siteName]);
-      if (siteRows.length === 0) return res.status(404).json({ error: 'site not found' });
-      const sr = siteRows[0];
-      const site = {
-        siteId: sr.site_id,
-        siteName: sr.site_name,
-        regionCode: sr.region_code,
-        isHub: !!sr.is_hub,
-        description: sr.description
-      };
-      const siteId = sr.site_id;
-
-      // 2) DCs in site
-      const { rows: dcRows } = await db.query(db.sql.dashboard.dcsBySite, [siteId]);
-      const dcs = dcRows.map(d => ({
-        dcName: d.dc_name,
-        osVersion: d.os_version,
-        isPdc: !!d.is_pdc,
-        isGc: !!d.is_gc,
-        isRidMaster: !!d.is_rid_master,
-        isSchemaMaster: !!d.is_schema_master,
-        isDomainNamingMaster: !!d.is_domain_naming_master,
-        isInfrastructureMaster: !!d.is_infrastructure_master,
-        discoveredAt: toIso(d.discovered_at),
-        discoveredByAgentId: d.discovered_by_agent_id
-      }));
-
-      // 3) Replication links between those DCs
-      let links = [];
-      if (dcs.length > 0) {
-        const placeholders = dcs.map(() => '?').join(',');
-        const dcNames = dcs.map(d => d.dcName);
-        const { rows: linkRows } = await db.query(
-          db.sql.dashboard.dcReplicationLinks(placeholders),
-          [...dcNames, ...dcNames]
-        );
-        links = linkRows.map(l => ({
-          source: l.source_dc,
-          target: l.dest_dc,
-          namingContext: l.naming_context,
-          statusCode: l.status_code,
-          lastSuccessTime: toIso(l.last_success_time),
-          lastAttemptTime: toIso(l.last_attempt_time),
-          durationMinutes: l.duration_minutes
-        }));
-      }
-
-      // 4) Refresh seconds
-      const { rows: cfgRows } = await db.query(db.sql.dashboard.refreshSeconds);
-      const siteRefreshSeconds = Number(cfgRows[0]?.config_value || 10);
-
-      res.json({ site, dcs, links, siteRefreshSeconds });
-    } catch (e) {
-      logger.error({ err: e }, 'site-replication-matrix failed');
-      res.status(500).json({ error: 'internal' });
-    }
-  });
+  // 2026-08-27 round-33: single-site /api/dashboard/site-replication-matrix
+  // endpoint removed — replaced by the unified /all view below. The
+  // single-site view showed one site's DC×DC matrix at a time, but
+  // operators now navigate via the hub-first overview.
 
   // 2026-08-27 round-28 (matrix envelope) + round-28.5 (bridgehead
   // primary): global all-sites replication matrix view, built around

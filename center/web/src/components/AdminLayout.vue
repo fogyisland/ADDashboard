@@ -53,8 +53,9 @@ const groups = [
     { label: 'AD 域控清单', path: '/admin/dcs-catalog' }
   ]},
   { title: '监控运维', items: [
-    { label: '站点复制矩阵', path: '/admin/site-replication-matrix' },
-    { label: '复制伙伴状态', path: '/admin/site-replication-matrix/all' },
+    // 2026-08-27 round-33: single-site 站点复制矩阵 removed — replaced by
+    // the unified 复制状态概览 view below (per-primary partner table).
+    { label: '复制状态概览', path: '/admin/site-replication-matrix/all' },
     { label: '端口健康检查', path: '/admin/ports' },
     { label: '心跳与报告', path: '/admin/heartbeat-report' },
     { label: '包管理',     path: '/admin/packages' }

@@ -13,7 +13,6 @@ import EmailConfigView from './views/admin/EmailConfigView.vue';
 import AuditView from './views/admin/AuditView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
-import SiteReplicationMatrixView from './views/admin/SiteReplicationMatrixView.vue';
 import SiteReplicationMatrixAllView from './views/admin/SiteReplicationMatrixAllView.vue';
 import PortsView from './views/admin/PortsView.vue';
 import PackagesView from './views/admin/PackagesView.vue';
@@ -43,7 +42,9 @@ const routes = [
   { path: '/admin/audit', component: AuditView, meta: { perm: 'admin:users' } },
   { path: '/admin/sites-catalog', component: SitesCatalogView, meta: { perm: 'admin:users' } },
   { path: '/admin/dcs-catalog', component: DcsCatalogView, meta: { perm: 'admin:users' } },
-  { path: '/admin/site-replication-matrix', component: SiteReplicationMatrixView, meta: { perm: 'admin:users' } },
+  // 2026-08-27 round-33: single-site /admin/site-replication-matrix removed.
+  // Replaced by /admin/site-replication-matrix/all (renamed 复制状态概览)
+  // which is the unified per-primary-DC replication overview.
   { path: '/admin/site-replication-matrix/all', component: SiteReplicationMatrixAllView, meta: { perm: 'admin:users' } },
   { path: '/admin/migrations', component: () => import('./views/admin/SchemaMigrationsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
