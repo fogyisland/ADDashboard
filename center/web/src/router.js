@@ -16,7 +16,6 @@ import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixView from './views/admin/SiteReplicationMatrixView.vue';
 import SiteReplicationMatrixAllView from './views/admin/SiteReplicationMatrixAllView.vue';
 import PortsView from './views/admin/PortsView.vue';
-import ReplicationPortStatusView from './views/admin/ReplicationPortStatusView.vue';
 import PackagesView from './views/admin/PackagesView.vue';
 import PackageEditView from './views/admin/PackageEditView.vue';
 import RegistryView from './views/admin/RegistryView.vue';
@@ -48,7 +47,6 @@ const routes = [
   { path: '/admin/site-replication-matrix/all', component: SiteReplicationMatrixAllView, meta: { perm: 'admin:users' } },
   { path: '/admin/migrations', component: () => import('./views/admin/SchemaMigrationsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
-  { path: '/admin/replication-port-status', component: ReplicationPortStatusView, meta: { perm: 'admin:users' } },
   { path: '/admin/heartbeat-report', component: () => import('./views/admin/HeartbeatReportMonitorView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/orphan-schemas', component: () => import('./views/admin/OrphanSchemasView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },

@@ -20,7 +20,7 @@ const EXPECTED_PATHS = [
   '/admin/member-servers', '/admin/server-groups',
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix', '/admin/site-replication-matrix/all',
-  '/admin/ports', '/admin/replication-port-status',
+  '/admin/ports',
   '/admin/heartbeat-report', '/admin/packages',
   '/admin/migrations', '/admin/orphan-schemas',
   '/admin/config', '/admin/email-config', '/admin/audit'
@@ -38,10 +38,10 @@ test('renders 6 nav groups', () => {
   expect(w.findAll('.nav-group').length).toBe(6);
 });
 
-test('renders all 17 nav-links with correct paths', () => {
+test('renders all 16 nav-links with correct paths', () => {
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
-  expect(links.length).toBe(17);
+  expect(links.length).toBe(16);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
 });
