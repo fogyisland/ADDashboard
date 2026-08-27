@@ -11,14 +11,13 @@
       </div>
     </header>
 
-    <!-- 2026-08-27 round-35: matrix is inbound-only. The operator's directive
-         "出站的没有意义，出战对于其他机器就是入站" — a TCP probe shows once
-         from the destination's perspective, not twice. Each partner row is
-         another DC sending replication TO this primary. Outbound (primary →
-         other) is the same connection surfaced from the other site's
-         primary, so it is intentionally omitted to avoid duplication. -->
+    <!-- 2026-08-27 round-36 per-DC partner tables: operator directive
+         "本地站点只显示了一台，另外一台没有显示出来" — every DC in the
+         site renders its own partner matrix. round-35 inbound-only still
+         applies: each row is another DC sending replication TO this DC.
+         round-35: "出战的没有意义" — drop outbound columns. -->
     <p class="hint">
-      每个站点的首台 DC (字母序;非 PDC 标记) 显示所有入站复制连接 — 即其他 DC 复制到本机的链路。
+      每个站点的每台 DC 各自显示自己的入站复制连接 — 即其他 DC 复制到本机的链路。
       端口列来自 partner-port 探针;未探测的行显示灰色徽章。
     </p>
     <p class="legend">
@@ -28,93 +27,89 @@
     </p>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
-    <div v-if="!primaries.length && !error" class="empty">暂无主控 DC — 请在 AD 站点/DC 清单添加</div>
+    <div v-if="!primaries.length && !error" class="empty">暂无站点 — 请在 AD 站点/DC 清单添加</div>
 
-    <section v-for="p in primaries" :key="p.dcName" class="primary-block" :data-test-primary="p.dcName">
+    <section v-for="p in primaries" :key="p.siteId ?? p.siteName" class="site-block" :data-test-site="p.siteName">
       <h3>
         <span :class="['hub-badge', p.isHub ? 'yes' : 'no']">{{ p.isHub ? '中心' : '分支' }}</span>
         {{ p.siteName }}
-        <span class="primary-dc">→ {{ p.dcName }}</span>
-        <span v-if="p.isBridgehead" class="bridgehead-badge" title="操作员指定的桥头 DC (inter-site replication bridgehead)">桥头</span>
-        <span v-else class="bridgehead-badge none" title="该站点尚未指定桥头 DC;按字母序首台兜底">未指定</span>
         <small class="region">{{ p.regionCode || '—' }}</small>
-        <small class="partner-count">{{ p.partners.length }} 伙伴</small>
+        <small class="dc-count">{{ (p.dcPartners || []).length }} DC / {{ p.dcs.length }} 成员</small>
       </h3>
 
-      <!-- 2026-08-27 round-31: explicit DC list for this site. Shows every
-           DC server grouped by site, with role badges (PDC/GC/RID/Schema/
-           DNaming/Infrastructure/Bridgehead) + OS version. The bridgehead
-           row is visually emphasised (accent outline). -->
-      <div class="site-dc-list" :data-test-site-dcs="p.siteName">
-        <h4>本站 DC 清单 ({{ p.dcs.length }})</h4>
-        <div v-if="!p.dcs.length" class="empty">该站点暂无 DC</div>
-        <ul v-else class="dc-cards">
-            <li v-for="d in p.dcs" :key="d.dcName"
-                :class="['dc-card', { 'dc-card-primary': d.dcName === p.dcName, 'dc-card-bridgehead': d.isBridgehead && d.dcName !== p.dcName }]"
-                :data-test-dc="d.dcName">
-              <div class="dc-name">{{ d.dcName }}</div>
-              <div class="dc-roles">
-                <span v-if="d.isBridgehead" class="role-badge bridgehead" title="操作员指定的桥头 DC">桥头</span>
-                <span v-if="d.isPdc" class="role-badge fsmo">PDC</span>
-                <span v-if="d.isGc" class="role-badge fsmo">GC</span>
-                <span v-if="d.isRidMaster" class="role-badge fsmo">RID</span>
-                <span v-if="d.isSchemaMaster" class="role-badge fsmo">Schema</span>
-                <span v-if="d.isDomainNamingMaster" class="role-badge fsmo">DNaming</span>
-                <span v-if="d.isInfrastructureMaster" class="role-badge fsmo">Infra</span>
-                <span v-if="!d.isBridgehead && !d.isPdc && !d.isGc && !d.isRidMaster && !d.isSchemaMaster && !d.isDomainNamingMaster && !d.isInfrastructureMaster" class="role-badge none">成员</span>
-              </div>
-              <div class="dc-os">{{ d.osVersion || '—' }}</div>
-            </li>
-          </ul>
-      </div>
+      <!-- 2026-08-27 round-36: per-DC partner tables. The operator directive
+           "本地站点只显示了一台" — only the bridgehead was visible because
+           round-28 rendered one partner matrix per site (the primary's).
+           Now every DC in the site renders its own matrix, with role
+           badges in the header. Self-loops excluded; outbound dropped per
+           round-35 inbound-only filter. -->
+      <div v-if="!p.dcPartners || !p.dcPartners.length" class="empty">该站点暂无 DC</div>
 
-      <div class="port-summary" :data-test-port-summary="p.dcName">
-        <span v-if="p.portHealth.unprobed" class="ps-chip ps-none">无探测</span>
-        <template v-else>
-          <span class="ps-chip ps-ok">● {{ p.portHealth.ok }} 通</span>
-          <span class="ps-chip ps-warn" v-if="p.portHealth.warn">▲ {{ p.portHealth.warn }} 慢</span>
-          <span class="ps-chip ps-err"  v-if="p.portHealth.err">✕ {{ p.portHealth.err }} 不通</span>
-        </template>
-        <span class="ps-probe-time" v-if="p.portHealth.latestProbeAt">
-          最近探测: {{ fmt(p.portHealth.latestProbeAt) }}
-        </span>
-      </div>
+      <div v-for="dc in p.dcPartners" :key="dc.dcName" class="dc-block" :data-test-dc-block="dc.dcName">
+        <h4>
+          <span class="dc-name">{{ dc.dcName }}</span>
+          <span class="dc-roles-inline">
+            <span v-if="dc.isBridgehead" class="role-badge bridgehead">桥头</span>
+            <span v-if="dc.isPdc" class="role-badge fsmo">PDC</span>
+            <span v-if="dc.isGc" class="role-badge fsmo">GC</span>
+            <span v-if="dc.isRidMaster" class="role-badge fsmo">RID</span>
+            <span v-if="dc.isSchemaMaster" class="role-badge fsmo">Schema</span>
+            <span v-if="dc.isDomainNamingMaster" class="role-badge fsmo">DNaming</span>
+            <span v-if="dc.isInfrastructureMaster" class="role-badge fsmo">Infra</span>
+            <span v-if="!dc.isBridgehead && !dc.isPdc && !dc.isGc && !dc.isRidMaster && !dc.isSchemaMaster && !dc.isDomainNamingMaster && !dc.isInfrastructureMaster" class="role-badge none">成员</span>
+          </span>
+          <small class="dc-os-inline">{{ dc.osVersion || '—' }}</small>
+          <small class="dc-partner-count">{{ dc.partners.length }} 伙伴</small>
+        </h4>
 
-      <table class="matrix">
-        <thead>
-          <tr>
-            <th>类型</th>
-            <th>伙伴站点</th>
-            <th>伙伴 DC</th>
-            <th>状态</th>
-            <th v-for="port in ports" :key="`hdr-${p.dcName}-${port}`" class="port-hdr">{{ port }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="partner in p.partners" :key="`${partner.peerType}-${partner.peerDc}`"
-              :class="rowClass(partner)"
-              :data-test="`partner-${partner.peerType}-${p.dcName}-${partner.peerDc}`">
-            <td class="peer-type">
-              <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
-            </td>
-            <td>
-              <span class="peer-site">{{ partner.peerSite }}</span>
-              <span v-if="partner.peerSiteIsHub" class="hub-mini">中心</span>
-            </td>
-            <td class="peer-dc">{{ partner.peerDc }}</td>
-            <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
-            <td v-for="port in ports" :key="`${partner.peerType}-${p.dcName}-${partner.peerDc}-${port}`"
-                :class="['port-cell', `port-${portStatusClass(partner.perPort, port)}`]"
-                :title="portTooltip(partner.perPort, port)">
-              <div class="port-num">{{ port }}</div>
-              <div class="port-detail">{{ portDetailLabel(partner.perPort, port) }}</div>
-            </td>
-          </tr>
-          <tr v-if="!p.partners.length">
-            <td :colspan="5 + ports.length" class="empty-row">无伙伴连接</td>
-          </tr>
-        </tbody>
-      </table>
+        <div class="port-summary" :data-test-port-summary="dc.dcName">
+          <span v-if="dc.portHealth.unprobed" class="ps-chip ps-none">无探测</span>
+          <template v-else>
+            <span class="ps-chip ps-ok">● {{ dc.portHealth.ok }} 通</span>
+            <span class="ps-chip ps-warn" v-if="dc.portHealth.warn">▲ {{ dc.portHealth.warn }} 慢</span>
+            <span class="ps-chip ps-err"  v-if="dc.portHealth.err">✕ {{ dc.portHealth.err }} 不通</span>
+          </template>
+          <span class="ps-probe-time" v-if="dc.portHealth.latestProbeAt">
+            最近探测: {{ fmt(dc.portHealth.latestProbeAt) }}
+          </span>
+        </div>
+
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>类型</th>
+              <th>伙伴站点</th>
+              <th>伙伴 DC</th>
+              <th>状态</th>
+              <th v-for="port in ports" :key="`hdr-${dc.dcName}-${port}`" class="port-hdr">{{ port }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="partner in dc.partners" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}`"
+                :class="rowClass(partner)"
+                :data-test="`partner-${partner.peerType}-${dc.dcName}-${partner.peerDc}`">
+              <td class="peer-type">
+                <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
+              </td>
+              <td>
+                <span class="peer-site">{{ partner.peerSite }}</span>
+                <span v-if="partner.peerSiteIsHub" class="hub-mini">中心</span>
+              </td>
+              <td class="peer-dc">{{ partner.peerDc }}</td>
+              <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
+              <td v-for="port in ports" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}-${port}`"
+                  :class="['port-cell', `port-${portStatusClass(partner.perPort, port)}`]"
+                  :title="portTooltip(partner.perPort, port)">
+                <div class="port-num">{{ port }}</div>
+                <div class="port-detail">{{ portDetailLabel(partner.perPort, port) }}</div>
+              </td>
+            </tr>
+            <tr v-if="!dc.partners.length">
+              <td :colspan="5 + ports.length" class="empty-row">无伙伴连接</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
   </AdminLayout>
 </template>
@@ -138,11 +133,18 @@ async function load() {
   try {
     const r = await dashboardApi.getSiteReplicationMatrixAll();
     ports.value = Array.isArray(r.data?.ports) ? r.data.ports : [];
-    // round-32: pre-compute the per-primary port-health rollup once per
-    // load so the chip in the template doesn't re-iterate partners × ports
-    // on every reactive tick. portHealth attaches to each primary entry.
-    primaries.value = (Array.isArray(r.data?.primaries) ? r.data.primaries : [])
-      .map(p => ({ ...p, portHealth: computePortHealth(p, ports.value) }));
+    // 2026-08-27 round-36: port-health is now per-DC, not per-site.
+    // The route emits `dcPartners[]` — one entry per DC in the site, each
+    // with its own partners[]. We attach portHealth to each dcPartner so
+    // the chip in the template doesn't re-iterate partners × ports on
+    // every reactive tick.
+    primaries.value = (Array.isArray(r.data?.primaries) ? r.data.primaries : []).map((p) => ({
+      ...p,
+      dcPartners: (Array.isArray(p.dcPartners) ? p.dcPartners : []).map((dc) => ({
+        ...dc,
+        portHealth: computePortHealth(dc, ports.value)
+      }))
+    }));
     refreshSeconds.value = Number(r.data?.siteRefreshSeconds) || 10;
     lastLoadedAt.value = new Date().toISOString();
   } catch (e) {
@@ -211,15 +213,15 @@ function portDetailLabel(perPort, port) {
   }
   return '?';
 }
-// 2026-08-27 round-32: per-primary port-health summary chip. Counts the
-// ok/warn/err buckets across every partner row + every port and shows the
-// latest probe time so operators see at a glance which primaries have
-// fresh, all-green probe data vs. stale or degraded. `unprobed` is true
-// when the primary has partners but none of them have any probe data —
-// the chip then shows "无探测" instead of "0 通 / 0 不通".
-function computePortHealth(primary, portList) {
+// 2026-08-27 round-36: per-DC port-health summary chip. Counts the
+// ok/warn/err buckets across every partner row + every port for THIS DC
+// and shows the latest probe time. Replaces the per-primary version from
+// round-32 — operator now sees per-DC freshness, not per-site.
+// `unprobed` is true when the DC has partners but none of them have any
+// probe data — the chip then shows "无探测" instead of "0 通 / 0 不通".
+function computePortHealth(dc, portList) {
   let ok = 0, warn = 0, err = 0, total = 0, latestProbeAt = null;
-  for (const partner of (primary.partners || [])) {
+  for (const partner of (dc.partners || [])) {
     for (const port of (portList || [])) {
       total++;
       const cls = portStatusClass(partner.perPort, port);
@@ -257,38 +259,32 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .error-banner { background: var(--red-bg); color: var(--red); padding: 8px 12px; border-radius: 3px; margin-bottom: 12px; }
 .empty { text-align: center; color: var(--muted); padding: 24px; }
 
-.primary-block { margin-bottom: 24px; padding: 16px; border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
-.primary-block h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; }
+.site-block { margin-bottom: 24px; padding: 16px; border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
+.site-block h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; }
 .hub-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; margin-right: 4px; }
 .hub-badge.yes { background: #14532d; color: #bbf7d0; }
 .hub-badge.no  { background: #1e293b; color: var(--muted); }
-.primary-dc { font-family: ui-monospace, monospace; font-weight: 600; }
-.bridgehead-badge { font-size: 10px; padding: 1px 8px; margin-left: 6px; border-radius: 999px;
-                    background: #0e7490; color: #cffafe; font-weight: 600; letter-spacing: 0.05em; }
-.bridgehead-badge.none { background: #1e293b; color: var(--muted); font-weight: 400; }
 .region { color: var(--muted); font-size: 12px; }
-.partner-count { color: var(--muted); font-size: 12px; margin-left: auto; }
+.dc-count { color: var(--muted); font-size: 12px; margin-left: auto; }
 .hub-mini { font-size: 10px; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: #14532d; color: #bbf7d0; }
 
-/* 2026-08-27 round-31: per-site DC list panel. Shows every DC in the
-   site with role badges (FSMO + Bridgehead) + OS version. The bridgehead
-   is visually emphasised with a cyan outline. */
-.site-dc-list { margin-bottom: 16px; padding: 10px 12px; background: rgba(255,255,255,0.02); border-radius: 3px; }
-.site-dc-list h4 { margin: 0 0 8px; font-size: 12px; color: var(--muted); font-weight: 600; }
-.dc-cards { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
-.dc-card { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px;
-           border: 1px solid #1e293b; border-radius: 4px; background: var(--panel);
-           min-width: 180px; font-size: 12px; }
-.dc-card-primary { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.dc-card-bridgehead { border-color: #0e7490; }
-.dc-name { font-family: ui-monospace, monospace; font-weight: 600; font-size: 13px; color: var(--text); }
-.dc-roles { display: flex; flex-wrap: wrap; gap: 3px; }
+/* 2026-08-27 round-36: per-DC partner block. Each DC in the site gets
+   its own matrix inside the site block. The role badges + osVersion
+   header replaces the round-31 redundant "本站 DC 清单" panel. */
+.dc-block { margin-bottom: 18px; padding: 10px 12px;
+            border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
+.dc-block:last-child { margin-bottom: 0; }
+.dc-block h4 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 8px;
+              font-size: 13px; color: var(--text); font-weight: 600; }
+.dc-name { font-family: ui-monospace, monospace; font-weight: 600; font-size: 14px; color: var(--text); }
+.dc-roles-inline { display: inline-flex; flex-wrap: wrap; gap: 3px; }
 .role-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px;
               font-family: ui-monospace, monospace; letter-spacing: 0.04em; }
 .role-badge.fsmo { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
 .role-badge.bridgehead { background: #0e7490; color: #cffafe; font-weight: 600; }
 .role-badge.none { background: #1e293b; color: var(--muted); }
-.dc-os { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
+.dc-os-inline { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
+.dc-partner-count { color: var(--muted); font-size: 11px; margin-left: auto; }
 .legend { display: flex; gap: 12px; margin: 0 0 16px; font-size: 12px; color: var(--muted); }
 .legend-item { display: inline-flex; gap: 6px; align-items: center; }
 .legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border); }
@@ -323,9 +319,9 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .port-none { background: #1e293b; color: #475569; }
 .port-num { font-weight: 600; font-size: 12px; line-height: 1.2; }
 .port-detail { font-size: 10px; line-height: 1.2; opacity: 0.92; }
-/* 2026-08-27 round-32: per-primary port-health summary chip. Surfaces
-   the partner-port PowerShell probe rollup inline above the matrix so
-   operators see "X 通 / Y 不通 / 最新探测时间" without scanning cells. */
+/* 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
+   in round-32). Sits inside each .dc-block just above the matrix so
+   operators see "X 通 / Y 不通 / 最新探测时间" for THIS DC. */
 .port-summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
                 margin: 0 0 8px; padding: 6px 10px; border-radius: 3px;
                 background: rgba(255,255,255,0.03); border: 1px solid #1e293b; }

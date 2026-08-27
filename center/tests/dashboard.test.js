@@ -440,6 +440,28 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
   const hub = r.body.primaries[0];
   assert.equal(hub.partners.length, 0, "BJ-01 has no inbound partners in this scenario");
 
+  // round-36: per-DC partner tables. The operator directive was
+  // "本地站点只显示了一台，另外一台没有显示出来" — every DC in the site
+  // must surface its own partners[]. The 核心站点 has BJ-01 (no inbound)
+  // and BJ-02 (BJ-01 → BJ-02 is inbound to BJ-02's perspective).
+  assert.ok(Array.isArray(hub.dcPartners), "primaries[0].dcPartners is an array");
+  assert.equal(hub.dcPartners.length, 2, "核心站点 has 2 DCs → 2 dcPartners entries");
+  const hubBJ01 = hub.dcPartners.find(d => d.dcName === "DC-BJ-01");
+  const hubBJ02 = hub.dcPartners.find(d => d.dcName === "DC-BJ-02");
+  assert.ok(hubBJ01, "DC-BJ-01 entry present");
+  assert.ok(hubBJ02, "DC-BJ-02 entry present");
+  assert.equal(hubBJ01.partners.length, 0, "BJ-01 has no inbound partners");
+  assert.equal(hubBJ01.isPdc, true);
+  assert.equal(hubBJ01.isGc, true);
+  assert.equal(hubBJ01.osVersion, "Win2022");
+  assert.equal(hubBJ02.partners.length, 1, "BJ-02 has 1 inbound partner (BJ-01 → BJ-02)");
+  assert.equal(hubBJ02.partners[0].peerDc, "DC-BJ-01");
+  assert.equal(hubBJ02.partners[0].peerSite, "核心站点");
+  assert.equal(hubBJ02.partners[0].peerType, "within");
+  // Outbound partner-port probe (BJ-01 → SH-01) is NOT attached to BJ-01;
+  // BJ-02 has no probe data because it's not in any partner-port row.
+  assert.equal(hubBJ02.partners[0].perPort, null);
+
   // DC-SH-01 primary (round-35: inbound only):
   //   - in: DC-BJ-01 (cross-site, status 1, with partner-port probe)
   const spoke = r.body.primaries[1];
@@ -451,6 +473,16 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
   assert.equal(spoke.partners[0].peerSiteIsHub, true);
   assert.equal(spoke.partners[0].peerType, "bridgehead");
   assert.deepEqual(spoke.partners[0].perPort, {
+    "135": { reachable: true, latencyMs: 3 },
+    "445": { reachable: false, error: "timeout" }
+  });
+
+  // round-36: 上海站点 has only SH-01, so its dcPartners[] has 1 entry.
+  assert.equal(spoke.dcPartners.length, 1);
+  assert.equal(spoke.dcPartners[0].dcName, "DC-SH-01");
+  assert.equal(spoke.dcPartners[0].partners.length, 1);
+  assert.equal(spoke.dcPartners[0].partners[0].peerDc, "DC-BJ-01");
+  assert.deepEqual(spoke.dcPartners[0].partners[0].perPort, {
     "135": { reachable: true, latencyMs: 3 },
     "445": { reachable: false, error: "timeout" }
   });

@@ -276,18 +276,20 @@ export function dashboardRouter({ config, logger, db }) {
         });
       }
 
-      // Walk sites in SQL order (hub-first). For each site primary, collect
-      // replication partners — but the partner set is FILTERED to keep
-      // only operator-relevant connections (round-32 directive):
+      // Walk sites in SQL order (hub-first). For each site, build a
+      // partner table PER DC in the site (round-36: operator directive
+      // "本地站点只显示了一台,另外一台没有显示出来,我们需要显示所有的"
+      // — every DC in the local site must surface its own inbound
+      // partner list, not only the bridgehead primary). The partner
+      // set per DC is FILTERED to keep only operator-relevant
+      // connections (round-32 directive):
       //   (a) within-site siblings — every other DC in the same site
       //   (b) cross-site bridgeheads — the primary DC of every other site
       //       (i.e. the chosen bridgehead, or the lex-first fallback if no
       //        bridgehead is marked)
       // Non-bridgehead cross-site DCs are intentionally excluded — the
       // 复制伙伴状态 view is a focused per-bridgehead signal, not a
-      // dump of every replication link. Cross-site links from non-primary
-      // DCs surface only via the per-link 复制矩阵 (单站点) view or the
-      // /api/dashboard/replication-reachability endpoint.
+      // dump of every replication link.
       const sep = String.fromCharCode(1);
       // Build the cross-site primary lookup: siteId → primaryDcName.
       const primaryBySiteId = new Map();
@@ -303,22 +305,32 @@ export function dashboardRouter({ config, logger, db }) {
         const primaryEntry = dcList[0];
         const primaryDc = primaryEntry.dcName;
 
-        // Partner allowlist: within-site siblings + cross-site primary DCs.
+        // Partner allowlist: all within-site DCs + cross-site primary DCs.
+        // round-36: the primary DC itself is a valid peer for sibling DCs
+        // (BJ-02's inbound partner list must include BJ-01, even though
+        // BJ-01 is the site's primary). The `d.dcName !== primaryDc`
+        // filter from round-32 dropped that case — only correct for the
+        // per-primary partner list, NOT the per-DC partner maps we now
+        // build. Self-loops are still blocked by the `source_dc ===
+        // dest_dc` guard at the top of the link loop.
         const allowedPeers = new Set();
-        for (const d of dcList) {
-          if (d.dcName !== primaryDc) allowedPeers.add(d.dcName);
-        }
+        for (const d of dcList) allowedPeers.add(d.dcName);
         for (const [siteId, primaryName] of primaryBySiteId) {
           if (siteId !== s.site_id) allowedPeers.add(primaryName);
         }
 
-        const partnerMap = new Map();
+        // round-36: build one partner map per DC in the site. Walk every
+        // link, find the receiving DC inside this site, attach the partner
+        // entry to that DC's map. Inbound-only: source-dc is the partner,
+        // dest-dc is the receiver (dropped when dest_dc === source_dc).
+        const partnerMapByDc = new Map();
+        for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
+
         for (const l of linkRows) {
-          // round-35: inbound only — partner is the source DC sending
-          // replication TO our primary. Outbound (primary → other) is
-          // dropped because the same TCP probe is already covered from
-          // the other side's inbound list. Self-loops also dropped.
-          if (l.dest_dc !== primaryDc || l.source_dc === primaryDc) continue;
+          // self-loop guard
+          if (l.source_dc === l.dest_dc) continue;
+          // inbound-only: dest_dc is the receiver
+          if (!partnerMapByDc.has(l.dest_dc)) continue; // dest not in this site
           const peerDc = l.source_dc;
           if (!allowedPeers.has(peerDc)) continue; // round-32 filter
           const peer = dcByName.get(peerDc);
@@ -347,23 +359,48 @@ export function dashboardRouter({ config, logger, db }) {
           // every entry is inbound. peerDc alone is sufficient because
           // the same source DC can only have one latest link per
           // (source_dc, dest_dc) pair after the latest-per-pair subquery.
+          const targetMap = partnerMapByDc.get(l.dest_dc);
           const k = peerDc;
-          const existing = partnerMap.get(k);
+          const existing = targetMap.get(k);
           if (!existing) {
-            partnerMap.set(k, entry);
+            targetMap.set(k, entry);
           } else {
             const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
             const newTime = entry.lastAttemptTime ? new Date(entry.lastAttemptTime).getTime() : 0;
-            if (newTime > exTime) partnerMap.set(k, entry);
+            if (newTime > exTime) targetMap.set(k, entry);
           }
         }
 
-        const partners = [...partnerMap.values()].sort((a, b) => {
-          // within before bridgehead; then site; then DC.
-          if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
-          if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
-          return a.peerDc.localeCompare(b.peerDc);
+        // round-36: per-DC partner tables. Each entry carries the full DC
+        // shape (role flags + osVersion) plus its own sorted partners[].
+        // Order matches the bridgehead-priority sort on dcList (bridgehead
+        // first, then lex). The view renders one section per entry.
+        const dcPartners = dcList.map((d) => {
+          const partners = [...partnerMapByDc.get(d.dcName).values()].sort((a, b) => {
+            if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
+            if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
+            return a.peerDc.localeCompare(b.peerDc);
+          });
+          return {
+            dcName: d.dcName,
+            isBridgehead: d.isBridgehead,
+            isPdc: d.isPdc,
+            isGc: d.isGc,
+            isRidMaster: d.isRidMaster,
+            isSchemaMaster: d.isSchemaMaster,
+            isDomainNamingMaster: d.isDomainNamingMaster,
+            isInfrastructureMaster: d.isInfrastructureMaster,
+            osVersion: d.osVersion,
+            discoveredAt: d.discoveredAt,
+            partners
+          };
         });
+
+        // Backwards compat: top-level partners/pcSummary mirror the bridgehead
+        // primary's entry. Operators who deep-link to dcName still get a
+        // usable payload without iterating dcPartners[].
+        const primaryDcPartners = dcPartners.find((d) => d.dcName === primaryDc);
+        const partners = primaryDcPartners ? primaryDcPartners.partners : [];
 
         primaries.push({
           dcName: primaryDc,
@@ -372,9 +409,9 @@ export function dashboardRouter({ config, logger, db }) {
           siteName: s.site_name,
           regionCode: s.region_code,
           isHub: !!s.is_hub,
-          // round-31: full DC list for the "本站 DC 清单" panel (every DC
-          // in the site, with role flags + osVersion). Order matches the
-          // bridgehead-priority sort above (bridgehead first, then lex).
+          // round-31: full DC list (kept for the "本站 DC 清单" panel).
+          // round-36: partner info moves into dcPartners[]; the dcs list
+          // remains the source of truth for site membership + role flags.
           dcs: dcList.map(d => ({
             dcName: d.dcName,
             isBridgehead: d.isBridgehead,
@@ -387,6 +424,12 @@ export function dashboardRouter({ config, logger, db }) {
             osVersion: d.osVersion,
             discoveredAt: d.discoveredAt
           })),
+          // round-36: per-DC partner tables (one entry per DC in the site).
+          // Each entry has full role flags + osVersion + its own partners[].
+          dcPartners,
+          // Backwards compat: bridgehead primary's partners mirrored to
+          // top-level `partners`. Tests + existing consumers can keep using
+          // p.partners without iterating dcPartners[].
           partners
         });
       }
