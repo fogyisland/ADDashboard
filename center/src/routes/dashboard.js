@@ -245,13 +245,22 @@ export function dashboardRouter({ config, logger, db }) {
     }
   });
 
-  // 2026-08-27 round-27: global all-sites replication matrix view. Returns
-  // every site hub-first, each as a self-contained block with its DCs,
-  // within-site links (both source and dest in same site), and cross-site
-  // in/out lists partitioned by direction. Per-link partner-port probe
-  // data (from `partner_port_status` JSON) is merged in so the operator
-  // sees per-port reachable/latency on every cross-site link. Returns 5
-  // queries' worth of data in one round-trip.
+  // 2026-08-27 round-28 (matrix envelope) + round-28.5 (bridgehead
+  // primary): global all-sites replication matrix view, built around
+  // per-primary-DC partner tables. Operator intent: see "how is THIS
+  // server connecting with everyone else" — for each site's bridgehead
+  // DC (the "primary"; operator-marked via ad_dcs.is_bridgehead), walk
+  // every replication link where the primary is source (direction='out')
+  // or destination (direction='in'). Hub site primary comes first via
+  // the existing `is_hub DESC, region_code, site_name` SQL ORDER BY.
+  // Five round-tripped queries; same SQL helpers as round-27.
+  //
+  // Bridgehead selection (round-28.5): sort each site's DCs by
+  // is_bridgehead DESC, dc_name ASC. The bridgehead marker is operator-set;
+  // PDC (FSMO role) is intentionally NOT used — see ruling: "PDC 不是
+  // 标记 是角色". If no DC in a site is marked bridgehead, the lex-first
+  // dc_name wins silently. The chosen primary's isBridgehead flag is
+  // surfaced in the response so the view can show a "桥头" badge.
   r.get('/api/dashboard/site-replication-matrix/all', auth, async (_req, res) => {
     try {
       const db = getDb();
@@ -266,34 +275,31 @@ export function dashboardRouter({ config, logger, db }) {
           db.query(db.sql.dashboard.refreshSeconds, [])
         ]);
 
-      // dcByName: source for classifying each link (source_dc -> {site_id, ...})
+      // dcByName: source for classifying each link
       const dcByName = new Map(dcRows.map(d => [d.dc_name, d]));
+      // siteById: source of truth for site membership / hub flag
+      const siteById = new Map(siteRows.map(s => [s.site_id, {
+        siteId: s.site_id, siteName: s.site_name,
+        regionCode: s.region_code, isHub: !!s.is_hub
+      }]));
 
-      // Build siteIndex keyed by site_id -> output block. SQL ORDER BY
-      // already returns rows hub-first (is_hub DESC, region_code, site_name),
-      // so Map preserves insertion order in modern JS.
-      const siteIndex = new Map();
-      for (const sr of siteRows) {
-        siteIndex.set(sr.site_id, {
-          siteId: sr.site_id, siteName: sr.site_name,
-          regionCode: sr.region_code, isHub: !!sr.is_hub,
-          description: sr.description,
-          dcs: [], withinLinks: [], crossOut: [], crossIn: []
+      // Group DCs by site, sorted by bridgehead-flag DESC then dc_name ASC.
+      // Primary = first row. (round-28.5 operator ruling: 桥头DC marker
+      // chosen by operator; PDC is an FSMO role, not a marker, so we do NOT
+      // use is_pdc to choose primary. If no DC in a site is marked
+      // bridgehead, the lexically-first dc_name wins — fallback is silent.)
+      const dcsBySite = new Map();
+      for (const d of dcRows) {
+        if (!dcsBySite.has(d.site_id)) dcsBySite.set(d.site_id, []);
+        dcsBySite.get(d.site_id).push({
+          dcName: d.dc_name,
+          isBridgehead: !!d.is_bridgehead
         });
       }
-
-      // Attach DCs to their site block
-      for (const d of dcRows) {
-        const site = siteIndex.get(d.site_id);
-        if (!site) continue;
-        site.dcs.push({
-          dcName: d.dc_name, osVersion: d.os_version,
-          isPdc: !!d.is_pdc, isGc: !!d.is_gc,
-          isRidMaster: !!d.is_rid_master, isSchemaMaster: !!d.is_schema_master,
-          isDomainNamingMaster: !!d.is_domain_naming_master,
-          isInfrastructureMaster: !!d.is_infrastructure_master,
-          discoveredAt: toIso(d.discovered_at),
-          discoveredByAgentId: d.discovered_by_agent_id
+      for (const arr of dcsBySite.values()) {
+        arr.sort((a, b) => {
+          if (a.isBridgehead !== b.isBridgehead) return a.isBridgehead ? -1 : 1;
+          return a.dcName.localeCompare(b.dcName);
         });
       }
 
@@ -313,38 +319,76 @@ export function dashboardRouter({ config, logger, db }) {
         });
       }
 
-      // Walk links, classify within vs cross, attach to source/dest sites
-      for (const l of linkRows) {
-        const srcDc = dcByName.get(l.source_dc);
-        const dstDc = dcByName.get(l.dest_dc);
-        if (!srcDc || !dstDc) continue; // orphan DC — drop
-        const srcSite = siteIndex.get(srcDc.site_id);
-        const dstSite = siteIndex.get(dstDc.site_id);
-        if (!srcSite || !dstSite) continue;
+      // Walk sites in SQL order (hub-first). For each site primary, collect
+      // every link where the primary is source or dest, deduped by
+      // (direction, peerDc) — multiple naming_context rows collapse to one
+      // entry, picking the most recent attempt.
+      const sep = String.fromCharCode(1);
+      const primaries = [];
+      for (const s of siteRows) {
+        const dcList = dcsBySite.get(s.site_id) || [];
+        if (dcList.length === 0) continue; // no DCs in this site — skip
+        const primaryEntry = dcList[0];
+        const primaryDc = primaryEntry.dcName;
 
-        const portEntry = perPortByPair.get(`${l.source_dc}${l.dest_dc}`);
-        const baseLink = {
-          source: l.source_dc, target: l.dest_dc,
-          namingContext: l.naming_context,
-          statusCode: l.status_code,
-          lastSuccessTime: toIso(l.last_success_time),
-          lastAttemptTime: toIso(l.last_attempt_time),
-          durationMinutes: l.duration_minutes,
-          perPort: portEntry?.perPort ?? null,
-          lastProbeAt: portEntry?.lastProbeAt ?? null
-        };
+        const partnerMap = new Map();
+        for (const l of linkRows) {
+          let dir, peerDc;
+          if (l.source_dc === primaryDc && l.dest_dc !== primaryDc) {
+            dir = "out"; peerDc = l.dest_dc;
+          } else if (l.dest_dc === primaryDc && l.source_dc !== primaryDc) {
+            dir = "in"; peerDc = l.source_dc;
+          } else {
+            continue;
+          }
+          const peer = dcByName.get(peerDc);
+          if (!peer) continue; // orphan DC
+          const peerSite = siteById.get(peer.site_id);
+          if (!peerSite) continue;
 
-        if (srcDc.site_id === dstDc.site_id) {
-          srcSite.withinLinks.push({ ...baseLink });
-        } else {
-          srcSite.crossOut.push({ ...baseLink, sourceSite: srcSite.siteName, targetSite: dstSite.siteName });
-          dstSite.crossIn.push({ ...baseLink, sourceSite: srcSite.siteName, targetSite: dstSite.siteName });
+          const portEntry = perPortByPair.get(`${l.source_dc}${sep}${l.dest_dc}`);
+          const entry = {
+            direction: dir,
+            peerDc,
+            peerSite: peerSite.siteName,
+            peerSiteIsHub: peerSite.isHub,
+            statusCode: l.status_code,
+            lastSuccessTime: toIso(l.last_success_time),
+            lastAttemptTime: toIso(l.last_attempt_time),
+            durationMinutes: l.duration_minutes,
+            perPort: portEntry?.perPort ?? null,
+            lastProbeAt: portEntry?.lastProbeAt ?? null
+          };
+          const k = `${dir}${sep}${peerDc}`;
+          const existing = partnerMap.get(k);
+          if (!existing) {
+            partnerMap.set(k, entry);
+          } else {
+            const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
+            const newTime = entry.lastAttemptTime ? new Date(entry.lastAttemptTime).getTime() : 0;
+            if (newTime > exTime) partnerMap.set(k, entry);
+          }
         }
+
+        const partners = [...partnerMap.values()].sort((a, b) => {
+          if (a.direction !== b.direction) return a.direction === "out" ? -1 : 1;
+          if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
+          return a.peerDc.localeCompare(b.peerDc);
+        });
+
+        primaries.push({
+          dcName: primaryDc,
+          isBridgehead: primaryEntry.isBridgehead,
+          siteId: s.site_id,
+          siteName: s.site_name,
+          regionCode: s.region_code,
+          isHub: !!s.is_hub,
+          partners
+        });
       }
 
-      const sites = [...siteIndex.values()]; // already hub-first from SQL ORDER BY
       const siteRefreshSeconds = Number(cfgRows[0]?.config_value || 10);
-      res.json({ siteRefreshSeconds, ports, sites });
+      res.json({ siteRefreshSeconds, ports, primaries });
     } catch (e) {
       logger.error({ err: e }, 'site-replication-matrix/all failed');
       res.status(500).json({ error: 'internal' });
