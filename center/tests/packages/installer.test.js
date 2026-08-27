@@ -119,12 +119,14 @@ describe('installer.installPackage', () => {
     assert.ok(upsertCall, 'expected an upsert into installed_packages');
     assert.match(upsertCall.sql, /installed_packages/);
     // Params order: name, version, type, manifest_json, enabled, params_json,
-    // installed_at, updated_at, source
+    // interval_override_sec, installed_at, updated_at, source
+    // (round-19 follow-up inserted interval_override_sec at [6], so source
+    // moved from [8] to [9].)
     assert.equal(upsertCall.params[0], 'test-mem');
     assert.equal(upsertCall.params[1], '1.0.0');
     assert.equal(upsertCall.params[2], 'gauge');
     assert.equal(upsertCall.params[4], 0); // enabled = 0 (tinyint for false)
-    assert.equal(upsertCall.params[8], 'local');
+    assert.equal(upsertCall.params[9], 'local');
   });
 
   test('rejects invalid manifest', async () => {

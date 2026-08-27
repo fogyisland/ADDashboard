@@ -21,7 +21,7 @@ const EXPECTED_PATHS = [
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix/all',
   '/admin/ports',
-  '/admin/heartbeat-report', '/admin/packages',
+  '/admin/heartbeat-report', '/admin/operations-log', '/admin/packages',
   '/admin/migrations', '/admin/orphan-schemas',
   '/admin/config', '/admin/email-config', '/admin/audit'
 ];
@@ -38,13 +38,11 @@ test('renders 6 nav groups', () => {
   expect(w.findAll('.nav-group').length).toBe(6);
 });
 
-test('renders all 15 nav-links with correct paths', () => {
-  // 2026-08-27 round-33: single-site 站点复制矩阵 removed → 16→15 nav-links.
-  // The unified 复制状态概览 at /admin/site-replication-matrix/all is the only
-  // replication surface in the sidebar now.
+test('renders all 16 nav-links with correct paths', () => {
+  // 2026-08-27 round-39: 操作日志 added to 监控运维 → 15→16 nav-links.
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
-  expect(links.length).toBe(15);
+  expect(links.length).toBe(16);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
 });

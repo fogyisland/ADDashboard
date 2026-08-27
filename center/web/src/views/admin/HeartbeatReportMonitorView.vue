@@ -73,7 +73,12 @@
           <td>{{ row.agentId }}</td>
           <td>{{ formatRelative(row.lastReportAt) }}</td>
           <td>{{ row.reportSummary?.latestErrorMessage || '—' }}</td>
-          <td v-if="row.reportSummary">{{ row.reportSummary.successCount }} / {{ row.reportSummary.totalLinks }}</td>
+          <!-- 2026-08-27 round-39: 成功率 = counts + 百分比. counts reset at midnight UTC
+               (today's window); percentage is success/total*100, rounded. -->
+          <td v-if="row.reportSummary" data-test="success-rate">
+            {{ row.reportSummary.successCount }} / {{ row.reportSummary.totalLinks }}
+            <span class="rate-pct">({{ row.reportSummary.successRate ?? '—' }}<span v-if="row.reportSummary.successRate != null">%</span>)</span>
+          </td>
           <td v-else>—</td>
           <td class="row-actions" @click.stop>
             <button
@@ -416,6 +421,10 @@ watch(refreshIntervalSeconds, startTimer);
 .probe-t th, .probe-t td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #1e293b; font-size: 13px; }
 .probe-t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .probe-stale-banner { margin-top: 8px; padding: 8px 12px; background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; border-radius: 3px; font-size: 12px; }
+
+/* 2026-08-27 round-39: 成功率百分比括号 — 跟 counts 并排显示, 颜色 muted,
+   font-family mono 跟 counts 一致. */
+.rate-pct { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; margin-left: 2px; }
 
 /* Task 8: 回报 button in heartbeat table */
 .t button[data-test="request-report"] {

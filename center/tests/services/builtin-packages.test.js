@@ -293,7 +293,9 @@ test('seedBuiltinPackages: upserted row carries correct (name, version, type, en
     assert.ok(baseline, 'ad_os_baseline should be upserted');
 
     // Params order per UPSERT_MYSQL: name, version, type, manifest_json,
-    // enabled, params_json, installed_at, updated_at, source.
+    // enabled, params_json, interval_override_sec, installed_at, updated_at, source.
+    // (round-19 follow-up: interval_override_sec inserted at params[6], so
+    // installed_at/updated_at/source shifted to [7,8,9].)
     assert.strictEqual(baseline.params[0], 'ad_os_baseline');
     assert.strictEqual(baseline.params[1], '1.0.0');
     assert.strictEqual(baseline.params[2], 'gauge', 'type should come from manifest.type');
@@ -302,11 +304,12 @@ test('seedBuiltinPackages: upserted row carries correct (name, version, type, en
     assert.strictEqual(manifest.version, '1.0.0');
     assert.strictEqual(baseline.params[4], 1, 'enabled should be 1 (built-ins auto-enable)');
     assert.strictEqual(baseline.params[5], null, 'params_json should be null for built-ins');
-    assert.strictEqual(baseline.params[8], 'builtin-seed', 'source should mark the upsert provenance');
-    // installed_at / updated_at (params[6,7]) are Date objects — just verify
+    assert.strictEqual(baseline.params[6], null, 'interval_override_sec should be null when not provided');
+    assert.strictEqual(baseline.params[9], 'builtin-seed', 'source should mark the upsert provenance');
+    // installed_at / updated_at (params[7,8]) are Date objects — just verify
     // they're recent (within the last minute) to confirm they're stamped now.
-    const installedAt = new Date(baseline.params[6]).getTime();
-    const updatedAt = new Date(baseline.params[7]).getTime();
+    const installedAt = new Date(baseline.params[7]).getTime();
+    const updatedAt = new Date(baseline.params[8]).getTime();
     const now = Date.now();
     assert.ok(Math.abs(now - installedAt) < 60_000, 'installed_at should be ~now');
     assert.ok(Math.abs(now - updatedAt) < 60_000, 'updated_at should be ~now');

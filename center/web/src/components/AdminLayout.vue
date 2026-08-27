@@ -58,6 +58,8 @@ const groups = [
     { label: '复制状态概览', path: '/admin/site-replication-matrix/all' },
     { label: '端口健康检查', path: '/admin/ports' },
     { label: '心跳与报告', path: '/admin/heartbeat-report' },
+    // 2026-08-27 round-39: 运维区统一日志 — 审计事件(changes/ops)+ 心跳数据 + 报告数据.
+    { label: '操作日志',   path: '/admin/operations-log' },
     { label: '包管理',     path: '/admin/packages' }
   ]},
   { title: '数据库运维', items: [

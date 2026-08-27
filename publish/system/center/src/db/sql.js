@@ -243,6 +243,16 @@ const VARIANTS = {
       // matching the storage convention. Same fix on the MSSQL branch
       // (SYSUTCDATETIME is already UTC). The 1-hour rule was meant to
       // be a wall-clock comparison, not a session-timezone comparison.
+      //
+      // 2026-08-27 round-39: operator directive "在心跳和报告中的报告是
+      // 每天 24点 重置成功率". The success-rate counts now reset at
+      // midnight UTC (DATE(UTC_TIMESTAMP()) = today 00:00:00). MySQL
+      // coerces the DATE to DATETIME 00:00:00 for comparison against
+      // collected_at. last_report_status (stale/fresh) keeps its
+      // 1-hour threshold because freshness is about "did the agent
+      // just report?" — that's a separate signal from "today's tally".
+      // latestFailureFor matches the count window so the error message
+      // shown is the one that contributed to today's fail_count.
       agentsList: `SELECT h.agent_id, h.agent_version, h.last_heartbeat_at,
                           rep.last_report_at,
                           CASE
@@ -267,7 +277,7 @@ const VARIANTS = {
                       SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
                       COUNT(*) AS total_count
                FROM ad_replication_status
-               WHERE collected_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR
+               WHERE collected_at >= DATE(UTC_TIMESTAMP())
                GROUP BY agent_id
              ) recent ON recent.agent_id = h.agent_id
              WHERE h.agent_id <> '__healthcheck__'
@@ -300,7 +310,7 @@ const VARIANTS = {
                    SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
                    COUNT(*) AS total_count
             FROM ad_replication_status
-            WHERE collected_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR
+            WHERE collected_at >= DATE(UTC_TIMESTAMP())
             GROUP BY agent_id
           ) recent ON recent.agent_id = h.agent_id
           WHERE h.agent_id <> '__healthcheck__'
@@ -355,10 +365,14 @@ const VARIANTS = {
       // (collected_at rows are written via toMysqlDatetime with UTC
       // components — see agentsList/dcsList hot-fix comment for details).
       latestFailureFor: (agentId) =>
+        // 2026-08-27 round-39: lookup window now matches the count window
+        // (today, since midnight UTC) so the error message shown is the
+        // one that contributed to today's fail_count — not a stale error
+        // from yesterday when today's count is 0.
         `SELECT source_dc, dest_dc, error_message, collected_at
          FROM ad_replication_status
          WHERE agent_id = ? AND status_code <> 0
-           AND collected_at >= UTC_TIMESTAMP() - INTERVAL 1 HOUR
+           AND collected_at >= DATE(UTC_TIMESTAMP())
          ORDER BY collected_at DESC, source_dc, dest_dc
          LIMIT 1`,
       latestReportEntries: (agentId, sinceIso, limit) =>
@@ -917,7 +931,7 @@ const VARIANTS = {
                       SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
                       COUNT(*) AS total_count
                FROM ad_replication_status
-               WHERE collected_at >= DATEADD(HOUR, -1, SYSUTCDATETIME())
+               WHERE collected_at >= CAST(SYSUTCDATETIME() AS DATE)
                GROUP BY agent_id
              ) recent ON recent.agent_id = h.agent_id
              WHERE h.agent_id <> '__healthcheck__'
@@ -950,7 +964,7 @@ const VARIANTS = {
                    SUM(CASE WHEN status_code <> 0 THEN 1 ELSE 0 END) AS fail_count,
                    COUNT(*) AS total_count
             FROM ad_replication_status
-            WHERE collected_at >= DATEADD(HOUR, -1, SYSUTCDATETIME())
+            WHERE collected_at >= CAST(SYSUTCDATETIME() AS DATE)
             GROUP BY agent_id
           ) recent ON recent.agent_id = h.agent_id
           WHERE h.agent_id <> '__healthcheck__'
@@ -1009,11 +1023,15 @@ const VARIANTS = {
       // 2026-08-26 round-15: latest-failed-row lookup. Mirrors the MySQL
       // variant — scoped to the 1-hour window, single row, ordered by
       // collected_at DESC. MSSQL uses TOP 1 + DATEADD/SYSUTCDATETIME().
+      //
+      // 2026-08-27 round-39: lookup window is "today" (since midnight UTC)
+      // to match the count window so the displayed error is one that
+      // contributed to today's fail_count.
       latestFailureFor: (agentId) =>
         `SELECT TOP 1 source_dc, dest_dc, error_message, collected_at
          FROM ad_replication_status
          WHERE agent_id = CAST(? AS NVARCHAR(64)) AND status_code <> 0
-           AND collected_at >= DATEADD(HOUR, -1, SYSUTCDATETIME())
+           AND collected_at >= CAST(SYSUTCDATETIME() AS DATE)
          ORDER BY collected_at DESC, source_dc, dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,

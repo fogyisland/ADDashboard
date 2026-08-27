@@ -229,10 +229,21 @@ export const heartbeatReportService = {
         latestFailedLink = `${rows[0].source_dc}→${rows[0].dest_dc}`;
       }
     }
+    // 2026-08-27 round-39: surface the success rate as a percentage so the
+    // operator sees both the raw counts and the human-friendly number. The
+    // counts reset at midnight UTC (SQL window) so the percentage is
+    // implicitly "today's success rate". Math.round matches what the
+    // operator would expect (e.g. 6/7 = 85.7% → 86%). When totalLinks is 0
+    // (no rows in the today's window), we expose null instead of "NaN%" or
+    // "100%" so the UI can render '—' or '0/0' unambiguously.
+    const successRate = totalCount === 0
+      ? null
+      : Math.round((successCount / totalCount) * 100);
     return {
       totalLinks: totalCount,
       successCount,
       failCount,
+      successRate,
       latestErrorMessage,
       latestFailedLink
     };

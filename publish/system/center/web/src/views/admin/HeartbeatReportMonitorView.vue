@@ -34,7 +34,7 @@
     <div v-if="error" class="error-banner" data-test="error-banner">{{ error }}</div>
     <h3>心跳表</h3>
     <table class="t">
-      <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th v-if="tab==='dc'">站点</th><th>最新心跳时间</th><th>延迟</th><th v-if="tab==='agent'">操作</th></tr></thead>
+      <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th v-if="tab==='dc'">站点</th><th>最新心跳时间</th><th>延迟</th><th>操作</th></tr></thead>
       <tbody>
         <tr v-for="row in rows" :key="row.agentId" :data-test="'heartbeat-row'" :data-agent="row.agentId" :data-status="statusOf(row)" @click="openDrawer(row)">
           <td><span :class="['dot', statusOf(row)]"></span> {{ statusLabel(row) }}</td>
@@ -42,14 +42,22 @@
           <td v-if="tab==='dc'">{{ row.siteName || '—' }}</td>
           <td>{{ formatRelative(row.lastHeartbeatAt) }}</td>
           <td>{{ formatLatency(row.lastHeartbeatAt) }}</td>
-          <td v-if="tab==='agent'" @click.stop>
+          <td class="row-actions" @click.stop>
             <button
+              v-if="tab==='agent'"
               :data-test="'request-report'"
               :data-agent="row.agentId"
               :disabled="isReportButtonDisabled(row) || requestingAgentId === row.agentId"
               :title="getReportButtonTooltip(row)"
               @click="onRequestReport(row)"
             >{{ requestingAgentId === row.agentId ? '请求中…' : getReportButtonLabel(row) }}</button>
+            <button
+              :data-test="tab==='agent' ? 'delete-heartbeat-agent' : 'delete-heartbeat-dc'"
+              :data-id="tab==='agent' ? row.agentId : row.dcName || row.agentId"
+              :disabled="deletingId === (tab==='agent' ? row.agentId : row.dcName || row.agentId)"
+              :title="tab==='agent' ? '清除该 agent 的心跳、复制状态和包执行历史' : '仅删除 ad_dcs 记录;心跳行保留'"
+              @click="onDeleteHeartbeatRow(row)"
+            >{{ deletingId === (tab==='agent' ? row.agentId : row.dcName || row.agentId) ? '删除中…' : '删除' }}</button>
           </td>
         </tr>
         <tr v-if="!rows.length"><td :colspan="tab === 'dc' ? 6 : 5" class="empty">暂无 Agent — 等待心跳上报</td></tr>
@@ -58,17 +66,31 @@
 
     <h3>报告表</h3>
     <table class="t">
-      <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th>最近报告</th><th>错误摘要</th><th>成功率</th></tr></thead>
+      <thead><tr><th>状态</th><th>{{ tab==='agent' ? 'Agent' : 'DC' }} 名称</th><th>最近报告</th><th>错误摘要</th><th>成功率</th><th>操作</th></tr></thead>
       <tbody>
         <tr v-for="row in rows" :key="row.agentId" :data-test="'report-row'" @click="openDrawer(row)">
           <td>{{ reportStatusLabel(row) }}</td>
           <td>{{ row.agentId }}</td>
           <td>{{ formatRelative(row.lastReportAt) }}</td>
           <td>{{ row.reportSummary?.latestErrorMessage || '—' }}</td>
-          <td v-if="row.reportSummary">{{ row.reportSummary.successCount }} / {{ row.reportSummary.totalLinks }}</td>
+          <!-- 2026-08-27 round-39: 成功率 = counts + 百分比. counts reset at midnight UTC
+               (today's window); percentage is success/total*100, rounded. -->
+          <td v-if="row.reportSummary" data-test="success-rate">
+            {{ row.reportSummary.successCount }} / {{ row.reportSummary.totalLinks }}
+            <span class="rate-pct">({{ row.reportSummary.successRate ?? '—' }}<span v-if="row.reportSummary.successRate != null">%</span>)</span>
+          </td>
           <td v-else>—</td>
+          <td class="row-actions" @click.stop>
+            <button
+              :data-test="tab==='agent' ? 'delete-report-agent' : 'delete-report-dc'"
+              :data-id="tab==='agent' ? row.agentId : row.dcName || row.agentId"
+              :disabled="deletingId === (tab==='agent' ? row.agentId : row.dcName || row.agentId)"
+              :title="tab==='agent' ? '清除该 agent 的心跳、复制状态和包执行历史' : '仅删除 ad_dcs 记录;心跳行保留'"
+              @click="onDeleteReportRow(row)"
+            >{{ deletingId === (tab==='agent' ? row.agentId : row.dcName || row.agentId) ? '删除中…' : '删除' }}</button>
+          </td>
         </tr>
-        <tr v-if="!rows.length"><td colspan="4" class="empty">暂无报告 — 等待心跳上报</td></tr>
+        <tr v-if="!rows.length"><td colspan="6" class="empty">暂无报告 — 等待心跳上报</td></tr>
       </tbody>
     </table>
 
@@ -87,6 +109,20 @@
       confirm-label="确认回报"
       @confirm="confirmRequestReport"
       @cancel="reportConfirmAgentId = null"
+    />
+
+    <ConfirmDialog
+      v-if="deleteConfirm"
+      :title="deleteConfirm.kind === 'agent'
+        ? `删除 agent ${deleteConfirm.id} 的所有记录?`
+        : `删除 DC ${deleteConfirm.id}?`"
+      :body="deleteConfirm.kind === 'agent'
+        ? `此操作将清除 ${deleteConfirm.id} 的心跳、复制状态(源 + 目标)和所有包执行历史;agent 下次心跳会重新注册。`
+        : `此操作仅删除 ad_dcs 中 ${deleteConfirm.id} 的记录;agent 心跳行保留在 Agent 标签页。`"
+      confirm-label="确认删除"
+      danger
+      @confirm="confirmDelete"
+      @cancel="deleteConfirm = null"
     />
   </AdminLayout>
 </template>
@@ -113,6 +149,13 @@ const reportConfirmAgentId = ref(null);
 const requestingAgentId = ref(null);
 // 24h threshold for the "回报(待清理)" pending-but-stale state
 const REPORT_PENDING_MS = 24 * 3600 * 1000;
+
+// 2026-08-26 round-19+: delete buttons on heartbeat + report tables.
+// `deleteConfirm` holds the pending confirmation: { kind: 'agent'|'dc', id: string }.
+// `deletingId` tracks in-flight DELETE so the button shows 删除中… and
+// blocks double-clicks.
+const deleteConfirm = ref(null);
+const deletingId = ref(null);
 
 // Center port self-probe panel (Task 7)
 const PROBE_ROLES = ['web', 'heartbeat', 'report'];
@@ -301,6 +344,49 @@ async function confirmRequestReport() {
   }
 }
 
+// 2026-08-26 round-19+: delete handlers for heartbeat + report tables.
+// `dcName` is exposed on the DC-tab rows by listDcs; falls back to agentId
+// on agent-tab rows where there's no separate DC identity.
+function rowDeleteId(row) {
+  if (tab.value === 'dc') return row.dcName || row.agentId;
+  return row.agentId;
+}
+function onDeleteHeartbeatRow(row) {
+  if (deletingId.value) return;
+  deleteConfirm.value = { kind: tab.value === 'dc' ? 'dc' : 'agent', id: rowDeleteId(row) };
+}
+function onDeleteReportRow(row) {
+  if (deletingId.value) return;
+  deleteConfirm.value = { kind: tab.value === 'dc' ? 'dc' : 'agent', id: rowDeleteId(row) };
+}
+async function confirmDelete() {
+  const target = deleteConfirm.value;
+  deleteConfirm.value = null;
+  if (!target || deletingId.value) return;
+  deletingId.value = target.id;
+  try {
+    if (target.kind === 'agent') {
+      const r = await heartbeatReportApi.deleteAgent(target.id);
+      const deleted = r.data?.deleted || {};
+      notifySuccess(`已删除 agent ${target.id}(心跳 ${deleted.heartbeat ?? 0} / 复制 ${deleted.replication ?? 0} / 包 ${deleted.package_runs ?? 0})`);
+    } else {
+      const r = await heartbeatReportApi.deleteDc(target.id);
+      const deleted = r.data?.deleted || {};
+      notifySuccess(`已删除 DC ${target.id}(ad_dcs ${deleted.dcs ?? 0})`);
+    }
+    // Refresh list so the row disappears immediately.
+    try { await load(); } catch {}
+  } catch (e) {
+    if (e?.response?.status === 404) {
+      notifyError(`${target.id} 不存在,可能已被其他操作删除`);
+    } else {
+      notifyError(`删除 ${target.id} 失败: ${e?.message || '未知错误'}`);
+    }
+  } finally {
+    deletingId.value = null;
+  }
+}
+
 onMounted(async () => {
   try { await load(); } catch {} finally { startTimer(); }
 });
@@ -336,6 +422,10 @@ watch(refreshIntervalSeconds, startTimer);
 .probe-t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .probe-stale-banner { margin-top: 8px; padding: 8px 12px; background: #7f1d1d; color: #fee2e2; border: 1px solid #b91c1c; border-radius: 3px; font-size: 12px; }
 
+/* 2026-08-27 round-39: 成功率百分比括号 — 跟 counts 并排显示, 颜色 muted,
+   font-family mono 跟 counts 一致. */
+.rate-pct { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; margin-left: 2px; }
+
 /* Task 8: 回报 button in heartbeat table */
 .t button[data-test="request-report"] {
   padding: 4px 12px;
@@ -350,6 +440,37 @@ watch(refreshIntervalSeconds, startTimer);
   filter: brightness(1.1);
 }
 .t button[data-test="request-report"]:disabled {
+  background: #1e293b;
+  color: var(--muted);
+  border-color: #1e293b;
+  cursor: not-allowed;
+}
+
+/* 2026-08-26 round-19+: delete buttons (heartbeat + report tables).
+ * Always red so operators can't confuse this with the neutral 回报 action. */
+.row-actions { display: flex; gap: 6px; white-space: nowrap; }
+.t button[data-test="delete-heartbeat-agent"],
+.t button[data-test="delete-heartbeat-dc"],
+.t button[data-test="delete-report-agent"],
+.t button[data-test="delete-report-dc"] {
+  padding: 4px 12px;
+  background: #ef4444;
+  color: white;
+  border: 1px solid #ef4444;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.t button[data-test="delete-heartbeat-agent"]:hover:not(:disabled),
+.t button[data-test="delete-heartbeat-dc"]:hover:not(:disabled),
+.t button[data-test="delete-report-agent"]:hover:not(:disabled),
+.t button[data-test="delete-report-dc"]:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.t button[data-test="delete-heartbeat-agent"]:disabled,
+.t button[data-test="delete-heartbeat-dc"]:disabled,
+.t button[data-test="delete-report-agent"]:disabled,
+.t button[data-test="delete-report-dc"]:disabled {
   background: #1e293b;
   color: var(--muted);
   border-color: #1e293b;

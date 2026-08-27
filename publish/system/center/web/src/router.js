@@ -14,6 +14,7 @@ import AuditView from './views/admin/AuditView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixAllView from './views/admin/SiteReplicationMatrixAllView.vue';
+import OperationsLogView from './views/admin/OperationsLogView.vue';
 import PortsView from './views/admin/PortsView.vue';
 import PackagesView from './views/admin/PackagesView.vue';
 import PackageEditView from './views/admin/PackageEditView.vue';
@@ -49,6 +50,8 @@ const routes = [
   { path: '/admin/migrations', component: () => import('./views/admin/SchemaMigrationsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
   { path: '/admin/heartbeat-report', component: () => import('./views/admin/HeartbeatReportMonitorView.vue'), meta: { perm: 'admin:users' } },
+  // 2026-08-27 round-39: 运维区统一日志 — 审计事件 + 心跳 + 报告 三块合一.
+  { path: '/admin/operations-log', component: OperationsLogView, meta: { perm: 'admin:users' } },
   { path: '/admin/orphan-schemas', component: () => import('./views/admin/OrphanSchemasView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },

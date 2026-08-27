@@ -54,7 +54,8 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
     'agent_self_register', 'apply_migration', 'apply_up_to',
     'baseline', 'bulk_assign_dc_sites',
     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
-    'commit_agent_token', 'commit_jwt_secret', 'delete_alert_rule',
+    'commit_agent_token', 'commit_jwt_secret',
+    'delete_agent_heartbeat', 'delete_alert_rule', 'delete_dc',
     'delete_server_group', 'delete_site', 'mark_applied',
     'replace_server_group_members', 'reset_failed_migration',
     'update_config', 'update_user', 'upgrade_db'
