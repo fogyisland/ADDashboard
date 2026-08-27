@@ -63,9 +63,22 @@
           </ul>
       </div>
 
+      <div class="port-summary" :data-test-port-summary="p.dcName">
+        <span v-if="p.portHealth.unprobed" class="ps-chip ps-none">无探测</span>
+        <template v-else>
+          <span class="ps-chip ps-ok">● {{ p.portHealth.ok }} 通</span>
+          <span class="ps-chip ps-warn" v-if="p.portHealth.warn">▲ {{ p.portHealth.warn }} 慢</span>
+          <span class="ps-chip ps-err"  v-if="p.portHealth.err">✕ {{ p.portHealth.err }} 不通</span>
+        </template>
+        <span class="ps-probe-time" v-if="p.portHealth.latestProbeAt">
+          最近探测: {{ fmt(p.portHealth.latestProbeAt) }}
+        </span>
+      </div>
+
       <table class="matrix">
         <thead>
           <tr>
+            <th>类型</th>
             <th>方向</th>
             <th>伙伴站点</th>
             <th>伙伴 DC</th>
@@ -74,9 +87,12 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="partner in p.partners" :key="`${partner.direction}-${partner.peerDc}`"
+          <tr v-for="partner in p.partners" :key="`${partner.peerType}-${partner.direction}-${partner.peerDc}`"
               :class="rowClass(partner)"
-              :data-test="`partner-${partner.direction}-${p.dcName}-${partner.peerDc}`">
+              :data-test="`partner-${partner.peerType}-${partner.direction}-${p.dcName}-${partner.peerDc}`">
+            <td class="peer-type">
+              <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
+            </td>
             <td class="dir">
               <span v-if="partner.direction === 'out'" class="dir-out">→ 出</span>
               <span v-else class="dir-in">← 入</span>
@@ -87,12 +103,15 @@
             </td>
             <td class="peer-dc">{{ partner.peerDc }}</td>
             <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
-            <td v-for="port in ports" :key="`${partner.direction}-${p.dcName}-${partner.peerDc}-${port}`"
+            <td v-for="port in ports" :key="`${partner.peerType}-${partner.direction}-${p.dcName}-${partner.peerDc}-${port}`"
                 :class="['port-cell', `port-${portStatusClass(partner.perPort, port)}`]"
-                :title="portTooltip(partner.perPort, port)">{{ port }}</td>
+                :title="portTooltip(partner.perPort, port)">
+              <div class="port-num">{{ port }}</div>
+              <div class="port-detail">{{ portDetailLabel(partner.perPort, port) }}</div>
+            </td>
           </tr>
           <tr v-if="!p.partners.length">
-            <td :colspan="5 + ports.length" class="empty-row">无伙伴连接</td>
+            <td :colspan="6 + ports.length" class="empty-row">无伙伴连接</td>
           </tr>
         </tbody>
       </table>
@@ -118,8 +137,12 @@ async function load() {
   error.value = '';
   try {
     const r = await dashboardApi.getSiteReplicationMatrixAll();
-    primaries.value = Array.isArray(r.data?.primaries) ? r.data.primaries : [];
     ports.value = Array.isArray(r.data?.ports) ? r.data.ports : [];
+    // round-32: pre-compute the per-primary port-health rollup once per
+    // load so the chip in the template doesn't re-iterate partners × ports
+    // on every reactive tick. portHealth attaches to each primary entry.
+    primaries.value = (Array.isArray(r.data?.primaries) ? r.data.primaries : [])
+      .map(p => ({ ...p, portHealth: computePortHealth(p, ports.value) }));
     refreshSeconds.value = Number(r.data?.siteRefreshSeconds) || 10;
     lastLoadedAt.value = new Date().toISOString();
   } catch (e) {
@@ -154,6 +177,16 @@ function portStatusClass(perPort, port) {
   if (e.reachable === false) return 'err';
   return 'warn';
 }
+// 2026-08-27 round-32: backend distinguishes within-site siblings
+// (peerType="within") from cross-site bridgehead peers
+// (peerType="bridgehead"). UI surfaces a tag so operators can see
+// at a glance which cross-site link goes via a bridgehead vs. all
+// in-site connections.
+function peerTypeLabel(p) {
+  if (p.peerType === 'within') return '本站';
+  if (p.peerType === 'bridgehead') return '桥头';
+  return '未知';
+}
 function portTooltip(perPort, port) {
   const e = perPort?.[String(port)];
   if (!e) return `${port}: 未探测`;
@@ -161,6 +194,48 @@ function portTooltip(perPort, port) {
   const lat = e.latencyMs != null ? ` ${e.latencyMs}ms` : '';
   const err = e.error ? ` — ${e.error}` : '';
   return `${port}: ${status}${lat}${err}`;
+}
+// 2026-08-27 round-32: surface the per-port PowerShell probe result inline
+// in each port cell. Reachable + measured latency → "3ms"; reachable but no
+// latency → "通"; unreachable → error reason (e.g. "timeout"); never
+// probed → "—". Compact 2-line cell keeps the matrix scannable while
+// exposing the latency/error data the PS collector emits.
+function portDetailLabel(perPort, port) {
+  const e = perPort?.[String(port)];
+  if (!e) return '—';
+  if (e.reachable === true) {
+    return e.latencyMs != null ? `${e.latencyMs}ms` : '通';
+  }
+  if (e.reachable === false) {
+    return e.error || '断';
+  }
+  return '?';
+}
+// 2026-08-27 round-32: per-primary port-health summary chip. Counts the
+// ok/warn/err buckets across every partner row + every port and shows the
+// latest probe time so operators see at a glance which primaries have
+// fresh, all-green probe data vs. stale or degraded. `unprobed` is true
+// when the primary has partners but none of them have any probe data —
+// the chip then shows "无探测" instead of "0 通 / 0 不通".
+function computePortHealth(primary, portList) {
+  let ok = 0, warn = 0, err = 0, total = 0, latestProbeAt = null;
+  for (const partner of (primary.partners || [])) {
+    for (const port of (portList || [])) {
+      total++;
+      const cls = portStatusClass(partner.perPort, port);
+      if (cls === 'ok') ok++;
+      else if (cls === 'warn') warn++;
+      else if (cls === 'err') err++;
+    }
+    if (partner.lastProbeAt) {
+      const t = Date.parse(partner.lastProbeAt);
+      if (!Number.isNaN(t) && (latestProbeAt === null || t > latestProbeAt)) {
+        latestProbeAt = t;
+      }
+    }
+  }
+  const unprobed = total > 0 && (ok + warn + err) === 0;
+  return { ok, warn, err, total, unprobed, latestProbeAt: latestProbeAt ? new Date(latestProbeAt).toISOString() : null };
 }
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 
@@ -231,6 +306,12 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .dir-in  { color: #38bdf8; }
 .peer-site { font-weight: 500; }
 .peer-dc { font-family: ui-monospace, monospace; font-size: 12px; }
+.peer-type { white-space: nowrap; }
+.peer-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+            font-family: ui-monospace, monospace; font-weight: 600; letter-spacing: 0.04em; }
+.peer-tag-within     { background: #1e293b; color: var(--text); border: 1px solid #334155; }
+.peer-tag-bridgehead { background: #0e7490; color: #cffafe; }
+.peer-tag-unknown    { background: #1e293b; color: var(--muted); }
 .status { font-size: 12px; }
 .partner-row.status-ok .status { color: #22c55e; }
 .partner-row.status-warn .status { color: #f59e0b; }
@@ -240,5 +321,20 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .port-err  { background: var(--red-bg);   color: var(--red); }
 .port-warn { background: rgba(234,179,8,0.12); color: var(--yellow); }
 .port-none { background: #1e293b; color: #475569; }
+.port-num { font-weight: 600; font-size: 12px; line-height: 1.2; }
+.port-detail { font-size: 10px; line-height: 1.2; opacity: 0.92; }
+/* 2026-08-27 round-32: per-primary port-health summary chip. Surfaces
+   the partner-port PowerShell probe rollup inline above the matrix so
+   operators see "X 通 / Y 不通 / 最新探测时间" without scanning cells. */
+.port-summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+                margin: 0 0 8px; padding: 6px 10px; border-radius: 3px;
+                background: rgba(255,255,255,0.03); border: 1px solid #1e293b; }
+.ps-chip { font-family: ui-monospace, monospace; font-size: 11px;
+           padding: 2px 8px; border-radius: 999px; letter-spacing: 0.04em; }
+.ps-ok   { background: rgba(34,197,94,0.15);  color: #22c55e; }
+.ps-warn { background: rgba(234,179,8,0.18);  color: #f59e0b; }
+.ps-err  { background: rgba(239,68,68,0.18);  color: #ef4444; }
+.ps-none { background: #1e293b; color: var(--muted); }
+.ps-probe-time { color: var(--muted); font-size: 11px; margin-left: auto; font-family: ui-monospace, monospace; }
 .empty-row { color: var(--muted); padding: 16px; }
 </style>

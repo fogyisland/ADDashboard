@@ -333,16 +333,40 @@ export function dashboardRouter({ config, logger, db }) {
       }
 
       // Walk sites in SQL order (hub-first). For each site primary, collect
-      // every link where the primary is source or dest, deduped by
-      // (direction, peerDc) — multiple naming_context rows collapse to one
-      // entry, picking the most recent attempt.
+      // replication partners — but the partner set is FILTERED to keep
+      // only operator-relevant connections (round-32 directive):
+      //   (a) within-site siblings — every other DC in the same site
+      //   (b) cross-site bridgeheads — the primary DC of every other site
+      //       (i.e. the chosen bridgehead, or the lex-first fallback if no
+      //        bridgehead is marked)
+      // Non-bridgehead cross-site DCs are intentionally excluded — the
+      // 复制伙伴状态 view is a focused per-bridgehead signal, not a
+      // dump of every replication link. Cross-site links from non-primary
+      // DCs surface only via the per-link 复制矩阵 (单站点) view or the
+      // /api/dashboard/replication-reachability endpoint.
       const sep = String.fromCharCode(1);
+      // Build the cross-site primary lookup: siteId → primaryDcName.
+      const primaryBySiteId = new Map();
+      for (const s of siteRows) {
+        const dcList = dcsBySite.get(s.site_id) || [];
+        if (dcList.length === 0) continue;
+        primaryBySiteId.set(s.site_id, dcList[0].dcName);
+      }
       const primaries = [];
       for (const s of siteRows) {
         const dcList = dcsBySite.get(s.site_id) || [];
         if (dcList.length === 0) continue; // no DCs in this site — skip
         const primaryEntry = dcList[0];
         const primaryDc = primaryEntry.dcName;
+
+        // Partner allowlist: within-site siblings + cross-site primary DCs.
+        const allowedPeers = new Set();
+        for (const d of dcList) {
+          if (d.dcName !== primaryDc) allowedPeers.add(d.dcName);
+        }
+        for (const [siteId, primaryName] of primaryBySiteId) {
+          if (siteId !== s.site_id) allowedPeers.add(primaryName);
+        }
 
         const partnerMap = new Map();
         for (const l of linkRows) {
@@ -354,6 +378,7 @@ export function dashboardRouter({ config, logger, db }) {
           } else {
             continue;
           }
+          if (!allowedPeers.has(peerDc)) continue; // round-32 filter
           const peer = dcByName.get(peerDc);
           if (!peer) continue; // orphan DC
           const peerSite = siteById.get(peer.site_id);
@@ -362,6 +387,11 @@ export function dashboardRouter({ config, logger, db }) {
           const portEntry = perPortByPair.get(`${l.source_dc}${sep}${l.dest_dc}`);
           const entry = {
             direction: dir,
+            // round-32: peerType distinguishes within-site siblings from
+            // cross-site bridgehead primaries. "within" = same-site sibling,
+            // "bridgehead" = cross-site primary (operator-selected
+            // bridgehead, or lex-first fallback).
+            peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
             peerDc,
             peerSite: peerSite.siteName,
             peerSiteIsHub: peerSite.isHub,
@@ -384,6 +414,8 @@ export function dashboardRouter({ config, logger, db }) {
         }
 
         const partners = [...partnerMap.values()].sort((a, b) => {
+          // within before bridgehead; out before in; then site; then DC.
+          if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
           if (a.direction !== b.direction) return a.direction === "out" ? -1 : 1;
           if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
           return a.peerDc.localeCompare(b.peerDc);
