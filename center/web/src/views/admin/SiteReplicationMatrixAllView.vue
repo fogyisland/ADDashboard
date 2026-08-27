@@ -99,11 +99,10 @@
               <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
               <td v-for="port in ports" :key="`cell-${dc.dcName}-${partner.peerDc}-${port}`"
                   class="port-cell" :title="portTooltip(partner.perPort, port)">
-                <div class="port-num">{{ port }}</div>
-                <!-- 2026-08-27 round-37: operator directive "针对端口的颜色
-                     不需要再来标记端口，直接标记值" — port number stays
-                     neutral (no bg, no status color), only the value text
-                     (3ms/通/断/—) carries the status color. -->
+                <!-- 2026-08-27 round-37.2: operator directive "我们只需要标题表明端口,
+                     其他的网格里面不需要写入端口" — port number lives only in the
+                     column header. Cells show ONLY the value (3ms / 通 / 断 / —),
+                     no port number repeat. -->
                 <div :class="['port-detail', `port-val-${portStatusClass(partner.perPort, port)}`]">
                   {{ portDetailLabel(partner.perPort, port) }}
                 </div>
@@ -326,7 +325,7 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .partner-row.status-ok .status { color: #22c55e; }
 .partner-row.status-warn .status { color: #f59e0b; }
 .partner-row.status-err .status { color: #ef4444; font-weight: 600; }
-.port-cell { font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; min-width: 48px; vertical-align: middle; }
+.port-cell { font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; min-width: 48px; vertical-align: middle; text-align: center; }
 /* 2026-08-27 round-37: status color applies to the VALUE text only —
    port number stays neutral, no colored background on the cell. */
 /* 2026-08-27 round-37.1: operator feedback "毫秒还是很小" — the latency
@@ -334,11 +333,13 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
    is the actionable info. Swap hierarchy: port number gets smaller +
    muted, value text (3ms / 通 / 断) becomes the dominant element with
    bold weight + larger font so it's actually scannable. */
+/* 2026-08-27 round-37.2: drop the .port-num repeat from cells entirely —
+   the column header already labels which port this cell is for. The
+   value (3ms / 通 / 断 / —) now stands alone in each cell, centered. */
 .port-val-ok   { color: var(--green); font-weight: 700; font-size: 13px; }
 .port-val-err  { color: var(--red);   font-weight: 700; font-size: 13px; }
 .port-val-warn { color: var(--yellow); font-weight: 700; font-size: 13px; }
 .port-val-none { color: var(--muted); font-size: 12px; }
-.port-num { font-size: 11px; line-height: 1.2; color: var(--muted); font-weight: 500; }
 .port-detail { font-size: 13px; line-height: 1.2; letter-spacing: -0.01em; }
 /* 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
    in round-32). Sits inside each .dc-block just above the matrix so

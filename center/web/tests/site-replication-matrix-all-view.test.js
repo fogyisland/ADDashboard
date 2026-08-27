@@ -292,38 +292,44 @@ test('round-32: each partner row has a 类型 cell with within/bridgehead tag', 
 });
 
 // 2026-08-27 round-32: each port cell embeds the PowerShell probe result
-// inline — port number on top, latency / error reason / "—" below.
-// Operators see e.g. "135 / 3ms" without hovering. The probe error
-// reason is rendered inline (not hidden in a tooltip) so it's visible
-// during incident triage.
-test('round-32: each port cell shows port number + latency/error inline', async () => {
+// 2026-08-27 round-37.2: per operator directive "我们只需要标题表明端口,
+// 其他的网格里面不需要写入端口" — port number lives only in the column
+// header (port-hdr); cells show ONLY the value (3ms / 通 / 断 / —).
+// Round-32 used to put both port number + value inline ("135 / 3ms");
+// round-37.1 made the value dominant in size; round-37.2 drops the
+// port number repeat entirely — it's redundant with the column header.
+test('round-37.2: port cell shows only the value, port number only in column header', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
-  // round-35: data-test dropped the direction segment. bridgehead
-  // partner row (DC-SH-01 ← DC-BJ-01) has perPort data:
+  // bridgehead partner row has perPort data:
   //   135 → reachable latencyMs=3, 445 → reachable=false error=timeout, 50001 → missing
   const inRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
   expect(inRow.exists()).toBe(true);
   const portCells = inRow.findAll('.port-cell');
   expect(portCells).toHaveLength(3);
 
-  // Cell 1: port 135, ok, latency 3ms inline
-  expect(portCells[0].text()).toContain('135');
-  expect(portCells[0].text()).toContain('3ms');
+  // Column header still labels each port (scope to THIS matrix table —
+  // the header row is a sibling of inRow inside the same table).
+  const matrixTable = inRow.element.closest('table');
+  const headers = w.findAll('.port-hdr').filter(h => h.element.closest('table') === matrixTable);
+  expect(headers.map(h => h.text())).toEqual(['135', '445', '50001']);
+
+  // Cell 1: port 135 — value is "3ms", cell does NOT repeat the port number
   expect(portCells[0].find('.port-detail').text()).toBe('3ms');
+  expect(portCells[0].text()).not.toContain('135');
+  expect(portCells[0].find('.port-num').exists()).toBe(false);
 
-  // Cell 2: port 445, err, error "timeout" inline (NOT hidden in tooltip)
-  expect(portCells[1].text()).toContain('445');
-  expect(portCells[1].text()).toContain('timeout');
+  // Cell 2: port 445 — value is "timeout" inline (NOT hidden in tooltip)
   expect(portCells[1].find('.port-detail').text()).toBe('timeout');
+  expect(portCells[1].text()).not.toContain('445');
 
-  // Cell 3: port 50001, no probe data → "—"
-  expect(portCells[2].text()).toContain('50001');
+  // Cell 3: port 50001 — no probe data → "—"
   expect(portCells[2].find('.port-detail').text()).toBe('—');
+  expect(portCells[2].text()).not.toContain('50001');
 });
 
 // 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
