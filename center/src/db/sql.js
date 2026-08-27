@@ -183,7 +183,16 @@ const VARIANTS = {
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
       dcsBySite: `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
       dcReplicationLinks: (placeholders) => `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, TIMESTAMPDIFF(MINUTE, last_success_time, last_attempt_time) AS duration_minutes FROM ad_replication_status WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders}) ORDER BY source_dc, dest_dc, naming_context`,
-      refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
+      refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`,
+      // 2026-08-27 round-27: all-sites variant for the global replication
+      // matrix view. Returns every site hub-first, every DC, and every
+      // within/cross replication link (excluding summary + meta + partner-port
+      // rows). Mirrors the topologyLinks JOIN pattern (catalog is source of
+      // truth, INNER JOIN ad_dcs / ad_sites) plus the 30-min UTC freshness
+      // floor and latest-per-pair correlated subquery.
+      allSitesOrdered: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites ORDER BY is_hub DESC, region_code, site_name`,
+      allDcsBySite: `SELECT d.dc_name, d.site_id, d.os_version, d.when_created, d.is_pdc, d.is_gc, d.is_rid_master, d.is_schema_master, d.is_domain_naming_master, d.is_infrastructure_master, d.discovered_at, d.discovered_by_agent_id FROM ad_dcs d INNER JOIN ad_sites s ON s.site_id = d.site_id ORDER BY s.site_name, d.dc_name`,
+      allReplicationLinks: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_success_time, t1.last_attempt_time, TIMESTAMPDIFF(MINUTE, t1.last_success_time, t1.last_attempt_time) AS duration_minutes FROM ad_replication_status t1 WHERE t1.source_dc <> t1.dest_dc AND t1.naming_context NOT IN ('__dc_summary__', 'META') AND t1.naming_context NOT LIKE '__partner_ports__:%' AND t1.collected_at = (SELECT MAX(t2.collected_at) FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context NOT IN ('__dc_summary__', 'META') AND t2.naming_context NOT LIKE '__partner_ports__:%') AND t1.collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE ORDER BY t1.source_dc, t1.dest_dc, t1.naming_context`
     },
     heartbeat: {
       // 2026-08-24 round-12: report_requested_at added (last col, matching
@@ -826,7 +835,15 @@ const VARIANTS = {
       siteLookup: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites WHERE site_name = ?`,
       dcsBySite: `SELECT dc_name, os_version, is_pdc, is_gc, is_rid_master, is_schema_master, is_domain_naming_master, is_infrastructure_master, discovered_at, discovered_by_agent_id FROM ad_dcs WHERE site_id = ? ORDER BY dc_name`,
       dcReplicationLinks: (placeholders) => `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, CASE WHEN last_success_time IS NULL OR last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, last_success_time, last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status WHERE source_dc IN (${placeholders}) AND dest_dc IN (${placeholders}) ORDER BY source_dc, dest_dc, naming_context`,
-      refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`
+      refreshSeconds: `SELECT config_value FROM system_config WHERE config_key = 'site_matrix_refresh_seconds'`,
+      // 2026-08-27 round-27: all-sites variant for the global replication
+      // matrix view. MSSQL mirror of the MySQL helpers above. OUTER APPLY
+      // is the SQL Server idiom for the per-pair max-collected_at lookup
+      // (matches the latestSummaryPerDc + topologyLinks pattern in this
+      // branch). DATETIME2-typed params are JS Dates cast by the driver.
+      allSitesOrdered: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites ORDER BY is_hub DESC, region_code, site_name`,
+      allDcsBySite: `SELECT d.dc_name, d.site_id, d.os_version, d.when_created, d.is_pdc, d.is_gc, d.is_rid_master, d.is_schema_master, d.is_domain_naming_master, d.is_infrastructure_master, d.discovered_at, d.discovered_by_agent_id FROM ad_dcs d INNER JOIN ad_sites s ON s.site_id = d.site_id ORDER BY s.site_name, d.dc_name`,
+      allReplicationLinks: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_success_time, t1.last_attempt_time, CASE WHEN t1.last_success_time IS NULL OR t1.last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, t1.last_success_time, t1.last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status t1 OUTER APPLY (SELECT TOP 1 t2.collected_at AS max_collected_at FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context NOT IN ('__dc_summary__', 'META') AND t2.naming_context NOT LIKE '__partner_ports__:%' ORDER BY t2.collected_at DESC) m WHERE t1.source_dc <> t1.dest_dc AND t1.naming_context NOT IN ('__dc_summary__', 'META') AND t1.naming_context NOT LIKE '__partner_ports__:%' AND t1.collected_at = m.max_collected_at AND t1.collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME()) ORDER BY t1.source_dc, t1.dest_dc, t1.naming_context`
     },
     heartbeat: {
       // 2026-08-24 round-12: report_requested_at added (last col). ISNULL

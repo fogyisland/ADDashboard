@@ -54,6 +54,7 @@ const groups = [
   ]},
   { title: '监控运维', items: [
     { label: '站点复制矩阵', path: '/admin/site-replication-matrix' },
+    { label: '复制矩阵 (全站)', path: '/admin/site-replication-matrix/all' },
     { label: '端口健康检查', path: '/admin/ports' },
     { label: '复制目标端口', path: '/admin/replication-port-status' },
     { label: '心跳与报告', path: '/admin/heartbeat-report' },

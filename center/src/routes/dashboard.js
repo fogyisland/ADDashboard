@@ -3,6 +3,7 @@ import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { getDb } from '../db/index.js';
 import { listPortStatusesForAgents } from '../services/port-status.js';
+import { getReplicationPortList } from '../services/replication-port-config.js';
 import { metricstore } from '../packages/metricstore.js';
 
 // Helpers ---------------------------------------------------------------
@@ -240,6 +241,112 @@ export function dashboardRouter({ config, logger, db }) {
       res.json({ site, dcs, links, siteRefreshSeconds });
     } catch (e) {
       logger.error({ err: e }, 'site-replication-matrix failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // 2026-08-27 round-27: global all-sites replication matrix view. Returns
+  // every site hub-first, each as a self-contained block with its DCs,
+  // within-site links (both source and dest in same site), and cross-site
+  // in/out lists partitioned by direction. Per-link partner-port probe
+  // data (from `partner_port_status` JSON) is merged in so the operator
+  // sees per-port reachable/latency on every cross-site link. Returns 5
+  // queries' worth of data in one round-trip.
+  r.get('/api/dashboard/site-replication-matrix/all', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      const ports = await getReplicationPortList();
+
+      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: portRows }, { rows: cfgRows }] =
+        await Promise.all([
+          db.query(db.sql.dashboard.allSitesOrdered, []),
+          db.query(db.sql.dashboard.allDcsBySite, []),
+          db.query(db.sql.dashboard.allReplicationLinks, []),
+          db.query(db.sql.replication.latestPartnerPortPerPair),
+          db.query(db.sql.dashboard.refreshSeconds, [])
+        ]);
+
+      // dcByName: source for classifying each link (source_dc -> {site_id, ...})
+      const dcByName = new Map(dcRows.map(d => [d.dc_name, d]));
+
+      // Build siteIndex keyed by site_id -> output block. SQL ORDER BY
+      // already returns rows hub-first (is_hub DESC, region_code, site_name),
+      // so Map preserves insertion order in modern JS.
+      const siteIndex = new Map();
+      for (const sr of siteRows) {
+        siteIndex.set(sr.site_id, {
+          siteId: sr.site_id, siteName: sr.site_name,
+          regionCode: sr.region_code, isHub: !!sr.is_hub,
+          description: sr.description,
+          dcs: [], withinLinks: [], crossOut: [], crossIn: []
+        });
+      }
+
+      // Attach DCs to their site block
+      for (const d of dcRows) {
+        const site = siteIndex.get(d.site_id);
+        if (!site) continue;
+        site.dcs.push({
+          dcName: d.dc_name, osVersion: d.os_version,
+          isPdc: !!d.is_pdc, isGc: !!d.is_gc,
+          isRidMaster: !!d.is_rid_master, isSchemaMaster: !!d.is_schema_master,
+          isDomainNamingMaster: !!d.is_domain_naming_master,
+          isInfrastructureMaster: !!d.is_infrastructure_master,
+          discoveredAt: toIso(d.discovered_at),
+          discoveredByAgentId: d.discovered_by_agent_id
+        });
+      }
+
+      // Partner-port probe index, normalised to JS object (both dialects:
+      // mysql2 returns parsed object, tedious returns string)
+      const perPortByPair = new Map();
+      for (const r of portRows) {
+        let perPort = {};
+        const raw = r.partner_port_status;
+        if (raw != null) {
+          if (typeof raw === 'object') perPort = raw;
+          else { try { perPort = JSON.parse(String(raw)); } catch { perPort = {}; } }
+        }
+        perPortByPair.set(`${r.source_dc}${r.dest_dc}`, {
+          perPort,
+          lastProbeAt: toIso(r.last_attempt_time ?? r.collected_at)
+        });
+      }
+
+      // Walk links, classify within vs cross, attach to source/dest sites
+      for (const l of linkRows) {
+        const srcDc = dcByName.get(l.source_dc);
+        const dstDc = dcByName.get(l.dest_dc);
+        if (!srcDc || !dstDc) continue; // orphan DC — drop
+        const srcSite = siteIndex.get(srcDc.site_id);
+        const dstSite = siteIndex.get(dstDc.site_id);
+        if (!srcSite || !dstSite) continue;
+
+        const portEntry = perPortByPair.get(`${l.source_dc}${l.dest_dc}`);
+        const baseLink = {
+          source: l.source_dc, target: l.dest_dc,
+          namingContext: l.naming_context,
+          statusCode: l.status_code,
+          lastSuccessTime: toIso(l.last_success_time),
+          lastAttemptTime: toIso(l.last_attempt_time),
+          durationMinutes: l.duration_minutes,
+          perPort: portEntry?.perPort ?? null,
+          lastProbeAt: portEntry?.lastProbeAt ?? null
+        };
+
+        if (srcDc.site_id === dstDc.site_id) {
+          srcSite.withinLinks.push({ ...baseLink });
+        } else {
+          srcSite.crossOut.push({ ...baseLink, sourceSite: srcSite.siteName, targetSite: dstSite.siteName });
+          dstSite.crossIn.push({ ...baseLink, sourceSite: srcSite.siteName, targetSite: dstSite.siteName });
+        }
+      }
+
+      const sites = [...siteIndex.values()]; // already hub-first from SQL ORDER BY
+      const siteRefreshSeconds = Number(cfgRows[0]?.config_value || 10);
+      res.json({ siteRefreshSeconds, ports, sites });
+    } catch (e) {
+      logger.error({ err: e }, 'site-replication-matrix/all failed');
       res.status(500).json({ error: 'internal' });
     }
   });
