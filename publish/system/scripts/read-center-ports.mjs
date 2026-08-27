@@ -1,10 +1,11 @@
-// read-center-ports.mjs — read the centre's 3 ports from system_config.
+// read-center-ports.mjs — read the centre's live config from system_config.
 //
 // Usage:
 //   node read-center-ports.mjs <path-to-appsettings.json>
 //
 // Prints JSON to stdout:
-//   { listenPort: 8080, heartbeatPort: 8081, reportPort: 8082,
+//   { listenPort, heartbeatPort, reportPort, agentToken,
+//     tokenSource: "system_config" | "appsettings" | "none",
 //     source: "system_config" | "defaults", hostname: "..." }
 //
 // Why a separate helper (instead of reading directly in the .ps1)?
@@ -21,6 +22,14 @@
 // baked-in defaults silently miss the live ports and the dashboard's
 // "最近报告" column freezes at the last-known value. This script reads
 // the live ports and the .ps1 passes them as env vars to the daemon.
+//
+// R41: also read agent_token_current — appsettings.json's `agentToken` is
+// only the LEGACY bundle/fallback token (see agent-token.js FALLBACK_BUNDLE_SQL).
+// The running centre authoritatively reads system_config.agent_token_current
+// for every request, so a daemon started with the appsettings value gets 401
+// on every heartbeat and silently drifts. The helper now returns the live
+// token too; the .ps1 prefers it and only falls back to appsettings if the
+// DB row is missing.
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -64,8 +73,8 @@ try {
   });
 
   const [rows] = await conn.query(
-    "SELECT config_key, config_value FROM system_config WHERE config_key IN (?, ?, ?)",
-    ['listenPort', 'heartbeat_port', 'report_port']
+    "SELECT config_key, config_value FROM system_config WHERE config_key IN (?, ?, ?, ?)",
+    ['listenPort', 'heartbeat_port', 'report_port', 'agent_token_current']
   );
   const byKey = Object.fromEntries(rows.map((r) => [r.config_key, r.config_value]));
 
@@ -73,11 +82,20 @@ try {
   // lie about where a value came from — the .ps1 prints the source so
   // operators can see at a glance whether the centre has explicit
   // overrides in place.
-  const hasOverrides = rows.length > 0;
+  const hasOverrides = rows.some(r => r.config_key !== 'agent_token_current');
+  const hasToken = !!byKey.agent_token_current;
+  const appsettingsToken = typeof cfg.agentToken === 'string' ? cfg.agentToken : '';
   const result = {
     listenPort:     Number(byKey.listenPort)     || DEFAULT_LISTEN,
     heartbeatPort:  Number(byKey.heartbeat_port)  || DEFAULT_HEARTBEAT,
     reportPort:     Number(byKey.report_port)     || DEFAULT_REPORT,
+    // R41: agent token. Live DB value wins; fall back to appsettings.json's
+    // legacy bundle value (the centre also reads it as a last-ditch
+    // fallback before auth fails — see agent-token.js). `tokenSource` lets
+    // the .ps1 print provenance so an operator can spot if the live row
+    // ever goes missing.
+    agentToken:     byKey.agent_token_current || appsettingsToken,
+    tokenSource:    hasToken ? 'system_config' : (appsettingsToken ? 'appsettings' : 'none'),
     source:         hasOverrides ? 'system_config' : 'defaults',
     hostname:       dbCfg.host
   };

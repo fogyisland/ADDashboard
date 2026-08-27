@@ -27,6 +27,17 @@ Describe 'read-center-ports.mjs (helper)' {
     $helper | Should -Match 'report_port'
   }
 
+  It 'reads the live agent_token_current from system_config (round-41 fix)' {
+    # R41: the centre authoritatively reads agent_token_current from
+    # system_config. appsettings.json's `agentToken` is only the legacy
+    # bundle/fallback. A daemon started with the appsettings value silently
+    # 401s on every heartbeat. The helper now also fetches the live token.
+    $helper = Get-Content -LiteralPath $helperPath -Raw
+    $helper | Should -Match 'agent_token_current'    'helper must query agent_token_current'
+    $helper | Should -Match 'tokenSource'            'helper must surface token provenance'
+    $helper | Should -Match 'agentToken'             'helper must return agentToken in JSON'
+  }
+
   It 'uses mysql2/promise + system_config SQL (not the centre modules)' {
     # Why a standalone helper (vs importing center/src/db.js)?
     # 1. center/src/db.js holds module-level state (pool singleton). Spinning it
@@ -97,6 +108,18 @@ Describe 'mock-daemon-start.ps1' {
     $content | Should -Match '\$env:CENTER_URL'
     $content | Should -Match '\$env:REPORT_URL'
     $content | Should -Match '\$env:AGENT_TOKEN'
+  }
+
+  It 'uses the live agentToken from helper output, NOT appsettings.json (round-41 fix)' {
+    # R41: previous version read $appsettingsObj.agentToken, which is the
+    # legacy bundle/fallback. The running centre authoritatively uses
+    # system_config.agent_token_current. Reading the appsettings token
+    # means the daemon silently 401s on every heartbeat — the regression
+    # we hit on 2026-08-27.
+    $content | Should -Match '\$ports\.agentToken'
+    # Negative assertion: must NOT read from appsettings.json's agentToken field anymore.
+    $content | Should -Not -Match '\$appsettingsObj\.agentToken'
+    $content | Should -Not -Match '\$appsettingsRaw\s*\|\s*ConvertFrom-Json'
   }
 
   It 'exits cleanly under -WhatIf (does not spawn the daemon)' {

@@ -124,13 +124,16 @@ Write-Host ("  report     = {0}  -> REPORT_URL" -f $ports.reportPort)
 $centerUrl  = "http://127.0.0.1:$($ports.heartbeatPort)"
 $reportUrl  = "http://127.0.0.1:$($ports.reportPort)"
 
-# Mock agent token — read from appsettings.json so the daemon's X-Agent-Token
-# header matches what the running centre expects.
-$appsettingsRaw = Get-Content -LiteralPath $AppsettingsPath -Raw
-$appsettingsObj = $appsettingsRaw | ConvertFrom-Json
-$agentToken = $appsettingsObj.agentToken
+# Mock agent token — read the LIVE token from system_config (via the
+# read-center-ports helper). appsettings.json's `agentToken` is only the
+# legacy bundle/fallback (see center/src/auth/agent-token.js
+# FALLBACK_BUNDLE_SQL). The running centre authoritatively reads
+# agent_token_current, so a daemon started with the appsettings value
+# silently 401s on every heartbeat (round-41 regression). The helper's
+# tokenSource field exposes the provenance.
+$agentToken = $ports.agentToken
 if (-not $agentToken) {
-  throw 'appsettings.json missing agentToken — the centre cannot authenticate the daemon.'
+  throw 'centre has no agent token (neither system_config.agent_token_current nor appsettings.json.agentToken). Centre cannot authenticate the daemon.'
 }
 
 $env:CENTER_URL = $centerUrl
@@ -142,7 +145,7 @@ Write-Host ("  CENTER_URL  = {0}" -f $env:CENTER_URL)
 Write-Host ("  REPORT_URL  = {0}" -f $env:REPORT_URL)
 $tokHead = $agentToken.Substring(0, [Math]::Min(8, $agentToken.Length))
 $tokTail = $agentToken.Substring([Math]::Max(0, $agentToken.Length - 4))
-Write-Host ("  AGENT_TOKEN = {0}...{1}" -f $tokHead, $tokTail)
+Write-Host ("  AGENT_TOKEN = {0}...{1}  (source: {2})" -f $tokHead, $tokTail, $ports.tokenSource)
 
 if ($WhatIf) {
   Write-Host '[mock-daemon-start] -WhatIf set — not spawning daemon.'

@@ -158,8 +158,20 @@ async function postJson(url, body, { timeoutMs = 5000 } = {}) {
   }
 }
 
-function buildHeartbeatBody(agentId) {
-  return {
+// 2026-08-27 round-41: track the "next heartbeat should explicitly clear
+// the server-side report_requested_at flag" latch in module scope. The
+// heartbeat UPSERT path uses COALESCE(report_requested_at, ...) which
+// silently PRESERVES the column when the agent omits the field — so an
+// agent that never explicitly nulls it leaves the button stuck on
+// "已请求回报" forever after one admin click. The real agent
+// (agent/src/heartbeat-callbacks.js makePayload) arms this flag in the
+// send-callback after a successful report-now fan-out, then the next
+// payload carries `report_requested_at: null` (which routes through the
+// centre's clearReportRequest UPDATE). Mock daemon now mirrors that
+// one-shot semantic; otherwise every heartbeat forever re-triggers
+// report-now because the centre keeps returning reportRequested: true.
+function buildHeartbeatBody(agentId, pendingReportClear) {
+  const body = {
     source: 'collect-heartbeat-mock-daemon',
     agentId,
     agentVersion: '0.1.0-mock-daemon',
@@ -173,6 +185,14 @@ function buildHeartbeatBody(agentId) {
     lastReportStatus: 'idle',
     agent_token_version: 1
   };
+  if (pendingReportClear) {
+    // Explicit null = "I consumed the report-now request, clear the flag".
+    // COALESCE in the heartbeat UPSERT would otherwise keep the column set
+    // because the bind value is JavaScript null. Mirrors the real agent's
+    // `p.report_requested_at = null` in heartbeat-callbacks.js makePayload.
+    body.report_requested_at = null;
+  }
+  return body;
 }
 
 // 2026-08-27 round-24: replaced by buildSnapshot (from mock-snapshot.mjs) so
@@ -254,6 +274,13 @@ async function runAgent(spec, { stopFlag }) {
   let lastReplicationAt = 0;
   let lastDiscoveryAt = 0;
   let heartbeatCount = 0;
+  // round-41: one-shot latch — see comment in buildHeartbeatBody above.
+  // Set to true the moment we honour a report-now, then buildHeartbeatBody
+  // consumes it on the very next heartbeat by including
+  // `report_requested_at: null`. Without this, the centre's UPSERT
+  // COALESCE preserves the column forever and every subsequent heartbeat
+  // re-triggers reportRequested: true.
+  let pendingReportClear = false;
   let reportNowCount = 0;
 
   // Initial discovery claim so the agent's row exists in ad_dcs.
@@ -271,7 +298,13 @@ async function runAgent(spec, { stopFlag }) {
   }
 
   while (!stopFlag.stopped) {
-    const hbBody = buildHeartbeatBody(agentId);
+    const hbBody = buildHeartbeatBody(agentId, pendingReportClear);
+    // round-41: consume the latch — we just emitted the explicit-null
+    // payload. Clear it BEFORE the request so a synchronous restart of
+    // the loop never re-emits null. The flag is module-scoped per
+    // agent, so other mock agents in the same process are unaffected.
+    const emitClearThisCycle = pendingReportClear;
+    pendingReportClear = false;
     const hb = await postJson(`${CENTER_URL}${HEARTBEAT_PATH}`, hbBody);
     heartbeatCount++;
     if (!hb.ok) {
@@ -306,8 +339,22 @@ async function runAgent(spec, { stopFlag }) {
             `[${agentId}] replication ok (HTTP ${rep.status}` +
             `, rows=${snapshot.Entries.length}` +
             (reportRequested ? `, triggeredBy=report-now` : '') +
-            `, collectedAt=${snapshot.CollectedAt})`
+            `, collectedAt=${snapshot.CollectedAt}` +
+            (emitClearThisCycle ? `, clearedReportRequest=true` : '') +
+            `)`
           );
+          // round-41: arm the one-shot clear so the next heartbeat body
+          // carries `report_requested_at: null`. Mirrors the real agent's
+          // setPendingClear(true) call in heartbeat-callbacks.js after a
+          // successful report-now fan-out. Only fire on report-now
+          // triggers — steady-state ticks must NOT keep emitting null,
+          // which would clobber a freshly-set admin request via the
+          // clearReportRequest path. (If an admin clicks 回报 *after* a
+          // steady-state tick, the centre's response would still say
+          // reportRequested: true, and we'd re-arm normally.)
+          if (reportRequested) {
+            pendingReportClear = true;
+          }
         } else {
           console.warn(`[${agentId}] replication failed (HTTP ${rep.status} / ${rep.error || 'unknown'})`);
         }
