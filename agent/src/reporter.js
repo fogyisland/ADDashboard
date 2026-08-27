@@ -84,7 +84,24 @@ export function toCamelEntry(e) {
     // PS1 emits this already ConvertTo-Json'd (a string). Forward verbatim;
     // the centre's rowParams JSON.stringify's non-null values, so a string
     // stays a string end-to-end.
-    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null
+    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null,
+    // 2026-08-27 round-42 (复制日志监控): history table now carries
+    // attempt_duration_ms + objects_transferred. Forward both camelCase
+    // aliases — the real agent's collect-replication.ps1 emits them in
+    // camelCase (PowerShell AST converts AttemptDurationMs → attemptDurationMs
+    // automatically via ConvertTo-Json) and the mock's PascalCase form
+    // falls back to the `?.` chain. Centre's historyParams reads them
+    // off `row.attemptDurationMs` / `row.objectsTransferred`.
+    attemptDurationMs: e.AttemptDurationMs ?? e.attemptDurationMs ?? null,
+    objectsTransferred: e.ObjectsTransferred ?? e.objectsTransferred ?? null,
+    // Mock-only forwarder — lets mock-snapshot.mjs ship a synthetic
+    // `__history__:<hash>` NamingContext while preserving the real link
+    // NC alongside. The centre's historyParams strips the prefix and
+    // binds _realNamingContext instead so the stored row matches the
+    // link's NC (which the dashboard's historyByPair lookup joins on).
+    // Real agents never set this — the prefix-strip then becomes a no-op
+    // and the literal namingContext is bound.
+    _realNamingContext: e._realNamingContext ?? e.RealNamingContext ?? null
   };
 }
 

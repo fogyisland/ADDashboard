@@ -56,6 +56,11 @@ const groups = [
     // 2026-08-27 round-33: single-site 站点复制矩阵 removed — replaced by
     // the unified 复制状态概览 view below (per-primary partner table).
     { label: '复制状态概览', path: '/admin/site-replication-matrix/all' },
+    // 2026-08-27 round-42 (复制日志监控): per-DC partner tables with
+    // expandable last-10 attempts. Sits below the high-level 复制状态概览
+    // because 复制日志监控 is the operator's drill-down view (specific
+    // connection events), not the global health overview.
+    { label: '复制日志监控', path: '/admin/replication-log/monitor' },
     { label: '端口健康检查', path: '/admin/ports' },
     { label: '心跳与报告', path: '/admin/heartbeat-report' },
     // 2026-08-27 round-39: 运维区统一日志 — 审计事件(changes/ops)+ 心跳数据 + 报告数据.

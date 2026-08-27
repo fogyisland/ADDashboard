@@ -14,6 +14,7 @@ import AuditView from './views/admin/AuditView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixAllView from './views/admin/SiteReplicationMatrixAllView.vue';
+import ReplicationLogMonitorView from './views/admin/ReplicationLogMonitorView.vue';
 import OperationsLogView from './views/admin/OperationsLogView.vue';
 import PortsView from './views/admin/PortsView.vue';
 import PackagesView from './views/admin/PackagesView.vue';
@@ -47,6 +48,11 @@ const routes = [
   // Replaced by /admin/site-replication-matrix/all (renamed 复制状态概览)
   // which is the unified per-primary-DC replication overview.
   { path: '/admin/site-replication-matrix/all', component: SiteReplicationMatrixAllView, meta: { perm: 'admin:users' } },
+  // 2026-08-27 round-42 (复制日志监控): per-DC partner tables augmented
+  // with the latest 10 connection attempts. Expandable caret on each
+  // partner row reveals attempt timestamp / status / duration / objects /
+  // success time / error message.
+  { path: '/admin/replication-log/monitor', component: ReplicationLogMonitorView, meta: { perm: 'admin:users' } },
   { path: '/admin/migrations', component: () => import('./views/admin/SchemaMigrationsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
   { path: '/admin/heartbeat-report', component: () => import('./views/admin/HeartbeatReportMonitorView.vue'), meta: { perm: 'admin:users' } },

@@ -26,20 +26,30 @@ BEGIN
 END;
 
 -- History (append-only, retention managed by job)
+-- 2026-08-27 round-42 (复制日志监控): extended with last_attempt_time,
+-- attempt_duration_ms, objects_transferred + composite index for the
+-- per-pair "last N attempts" query. The companion migration
+-- db/migrations/mssql/021-replication-attempts-log.sql applies the same
+-- shape to existing live DBs (idempotent guard pattern).
 IF OBJECT_ID('ad_replication_history', 'U') IS NULL
 BEGIN
   CREATE TABLE ad_replication_history (
-    id                BIGINT IDENTITY(1,1) PRIMARY KEY,
-    collected_at      DATETIME2 NOT NULL,
-    agent_id          NVARCHAR(64) NOT NULL,
-    source_dc         NVARCHAR(128) NOT NULL,
-    dest_dc           NVARCHAR(128) NOT NULL,
-    naming_context    NVARCHAR(256) NOT NULL,
-    last_success_time DATETIME2 NULL,
-    status_code       INT NOT NULL,
-    error_message     NVARCHAR(512) NULL
+    id                   BIGINT IDENTITY(1,1) PRIMARY KEY,
+    collected_at         DATETIME2 NOT NULL,
+    agent_id             NVARCHAR(64) NOT NULL,
+    source_dc            NVARCHAR(128) NOT NULL,
+    dest_dc              NVARCHAR(128) NOT NULL,
+    naming_context       NVARCHAR(256) NOT NULL,
+    last_success_time    DATETIME2 NULL,
+    last_attempt_time    DATETIME2 NULL,
+    attempt_duration_ms  INT NULL,
+    objects_transferred  INT NULL,
+    status_code          INT NOT NULL,
+    error_message        NVARCHAR(512) NULL
   );
   CREATE INDEX ix_hist_time ON ad_replication_history (collected_at);
+  CREATE INDEX ix_hist_pair_time
+    ON ad_replication_history (source_dc, dest_dc, naming_context, collected_at);
 END;
 
 -- Agent heartbeat

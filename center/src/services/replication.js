@@ -71,13 +71,39 @@ function rowParams(row) {
 }
 
 function historyParams(row) {
+  // 2026-08-27 round-42 (复制日志监控): history table now carries
+  // last_attempt_time, attempt_duration_ms, objects_transferred. Agents
+  // that pre-date round-42 will send null/undefined for these — coerce
+  // to null so the INSERT shape stays consistent. Real agents populate
+  // them from Get-ADReplicationPartnerMetadata._ResultHistory (see
+  // agent/scripts/collect-replication.ps1::BuildReplicationHistoryRows).
+  //
+  // Mock agents emit history rows with a synthetic `__history__:<hash>`
+  // naming_context so the route can fork them off into the history-only
+  // ingestion path. Strip the prefix here so the stored naming_context
+  // matches the link's NC — that's what the dashboard's
+  // historyByPair lookup joins on (see routes/dashboard.js replication-log
+  // endpoint). Real agents (round-42 follow-up) emit the link's real NC
+  // directly; the prefix-strip is a no-op for them.
+  let namingContext = row.namingContext;
+  if (typeof namingContext === 'string' && namingContext.startsWith('__history__:')) {
+    // The mock encodes a hash after the prefix; the real NC is in the
+    // sourceDc/destDc context but isn't recoverable from the hash alone.
+    // Mock callers must therefore also pass `_realNamingContext` on the
+    // row (see mock-snapshot.mjs buildReplicationHistoryEntries for the
+    // exact convention).
+    namingContext = row._realNamingContext ?? null;
+  }
   return [
     toMysqlDatetime(row.collectedAt),
     row.agentId,
     row.sourceDc,
     row.destDc,
-    row.namingContext,
+    namingContext,
     toMysqlDatetime(row.lastSuccessTime),
+    toMysqlDatetime(row.lastAttemptTime ?? row.lastSuccessTime),
+    row.attemptDurationMs ?? null,
+    row.objectsTransferred ?? null,
     row.statusCode,
     row.errorMessage ?? null
   ];
@@ -91,6 +117,26 @@ export async function upsertStatus(rows, { appendHistory = false } = {}) {
       await db.execute(db.sql.replication.upsertHistory, historyParams(row));
     }
   }
+}
+
+// 2026-08-27 round-42 (复制日志监控): history-only ingestion path. Mock
+// + real agents that emit per-attempt history rows with a synthetic
+// `__history__:%` naming_context can land them straight in
+// `ad_replication_history` without polluting `ad_replication_status` (a
+// back-dated history row in ad_replication_status would overwrite the
+// link's latest-per-pair row and silently break the matrix view).
+//
+// history_entries must carry: sourceDc, destDc, namingContext (the
+// synthetic __history__ key), lastAttemptTime, statusCode, errorMessage,
+// and optionally attemptDurationMs/objectsTransferred/lastSuccessTime.
+// See historyParams() for the exact bind shape.
+export async function insertHistoryEntries(historyEntries) {
+  if (!Array.isArray(historyEntries) || historyEntries.length === 0) return 0;
+  const db = getDb();
+  for (const row of historyEntries) {
+    await db.execute(db.sql.replication.upsertHistory, historyParams(row));
+  }
+  return historyEntries.length;
 }
 
 export async function listRecent(limit = 100) {

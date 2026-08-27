@@ -28,6 +28,8 @@
 //   buildLinkEntries(agentId, links, ...)    -> per-link entries (PS1 shape)
 //   buildPartnerPortEntries({ agentId, peers, ports, ... })
 //                                            -> __partner_ports__:% entries (PS1 shape)
+//   buildReplicationHistoryEntries({ agentId, peers, ... })
+//                                            -> per-attempt history entries (PS1 shape)
 //   buildSnapshot({ agentId, links, ... })   -> full snapshot (PS1 shape)
 //   postSnapshot({ centerUrl, agentToken, snapshot }) -> wraps reporter.postReport
 //   dcSummaryRowOf(snapshot)                 -> quick accessor for tests
@@ -238,6 +240,157 @@ function probeMockPort(agentId, peerHost, port) {
   return { port, reachable: true, latencyMs, error: null };
 }
 
+// 2026-08-27 round-42 (复制日志监控): emit per-attempt history rows that
+// land in ad_replication_history (extended cols: last_attempt_time,
+// attempt_duration_ms, objects_transferred). Mirrors collect-replication.ps1
+// ::BuildReplicationHistoryRows byte-for-byte: every entry has its own
+// (collected_at, last_attempt_time) timestamp; success rows carry
+// attempt_duration_ms + objects_transferred; failure rows carry null
+// for both plus a realistic error_message. Without these rows the
+// /admin/replication-log/monitor view's expandable caret shows nothing
+// and the operator sees a frozen snapshot.
+//
+// Determinism: SHA-256(agentId|peerHost|namingContext|attemptIdx) drives
+// (status, duration, objects) so a given attempt-always-resolves-the-same
+// across daemon cycles. Naming context uses a synthetic `__history__:<hash>`
+// key that the route forks off into ad_replication_history ONLY (never
+// ad_replication_status) — the centre's routes/agent.js splits incoming
+// data[] on this prefix. The route's historyByPair lookup (grouped by
+// source\1dest\1naming_context) strips the `__history__:` prefix before
+// building the lookup key so dashboard groupings match the link's NC.
+//
+// The agent's reporter.toCamelEntry accepts every PascalCase key below
+// and converts them to camelCase on the wire. Centre's
+// historyParams reads attemptDurationMs/objectsTransferred off the
+// camelCase entry — same shape for both mock + real agents.
+//
+// History opt-out: when historyEnabled=false the helper returns [] so
+// the caller doesn't have to guard against appending empty arrays.
+export function buildReplicationHistoryEntries({
+  agentId,
+  collectedAt,                                    // ISO string or Date
+  peers = [],                                     // partner identifiers (link.destDc)
+  sourceSite = null,
+  historyEnabled = true,
+  attemptsPerPair = 3                             // how many historical entries per partner
+} = {}) {
+  if (typeof agentId !== 'string' || !agentId) {
+    throw new TypeError('buildReplicationHistoryEntries: agentId required');
+  }
+  if (!historyEnabled) return [];
+  if (!Array.isArray(peers) || peers.length === 0) return [];
+  if (attemptsPerPair < 1) return [];
+
+  const ts = collectedAt instanceof Date
+    ? collectedAt.toISOString()
+    : String(collectedAt);
+
+  // Anchor for back-dated attempt timestamps. We spread attempts across
+  // the past N×5 minutes so the dashboard's "时间" column shows a
+  // realistic timeline rather than 10 identical timestamps. Each
+  // attempt is 5 min apart; for attemptsPerPair=3 the oldest attempt
+  // is 10 min before `ts`.
+  const baseTime = Date.parse(ts);
+  const STEP_MS = 5 * 60_000;
+
+  const out = [];
+  for (const peer of peers) {
+    const peerHost = typeof peer === 'string' ? peer : peer?.host;
+    if (!peerHost) continue;
+    // The REAL link NC (not the synthetic __history__ one). The route
+    // strips the `__history__:` prefix before building its lookup key.
+    const realNamingContext = `CN=${agentId}->${peerHost}`;
+
+    for (let i = 0; i < attemptsPerPair; i++) {
+      // attemptIdx 0 = most recent = matches `ts`; older attempts go back
+      // in 5-min steps. We always generate one PER ROW, so a fresh
+      // daemon tick refreshes the timeline without touching older rows.
+      const attemptAt = new Date(baseTime - i * STEP_MS);
+      const attemptIso = attemptAt.toISOString();
+
+      // Deterministic per-(agent, peer, NC, attemptIdx) outcome.
+      // status: bit 0 of hash[0] — even = success (0), odd = failure (2).
+      // duration: 50..300ms on success, null on failure.
+      // objects: 10..5000 on success, null on failure.
+      const hash = crypto.createHash('sha256')
+        .update(`${agentId}|${peerHost}|${realNamingContext}|${i}`)
+        .digest();
+      const isFail = (hash[0] & 1) === 1;
+      const statusCode = isFail ? 2 : 0;
+      const attemptDurationMs = isFail
+        ? null
+        : 50 + (hash.readUInt16BE(1) % 251);  // 50..300 ms
+      const objectsTransferred = isFail
+        ? null
+        : 10 + (hash.readUInt16BE(3) % 4991); // 10..5000
+      const lastSuccessTime = isFail ? null : attemptIso;
+      const errorMessage = isFail
+        ? pickFailureError(hash)
+        : null;
+
+      // Stable synthetic naming_context so the route's fork can
+      // recognise these rows. The 8-byte SHA-256 hex ensures no two
+      // (agent, peer, NC, attemptIdx) tuples collide.
+      const historyHash = crypto.createHash('sha256')
+        .update(`${agentId}|${peerHost}|${realNamingContext}|${i}|history`)
+        .digest()
+        .slice(0, 4)
+        .toString('hex');
+      const namingContext = `__history__:${historyHash}`;
+
+      out.push({
+        SourceDc:         agentId,
+        DestDc:           peerHost,
+        SourceSite:       sourceSite,
+        DestSite:         null,
+        NamingContext:    namingContext,
+        LastSuccessTime:  lastSuccessTime,
+        LastAttemptTime:  attemptIso,
+        AttemptDurationMs: attemptDurationMs,
+        ObjectsTransferred: objectsTransferred,
+        StatusCode:       statusCode,
+        ErrorMessage:     errorMessage,
+        // PS1 history rows are summary/link-only: never carry counters
+        // or port probes. Centre's historyParams reads
+        // attemptDurationMs/objectsTransferred off this entry; the rest
+        // (usersCount/groupsCount/gposCount/lockedCount/partnerPortStatus)
+        // are stored on ad_replication_status only.
+        UsersCount:       null,
+        GroupsCount:      null,
+        GposCount:        null,
+        LockedCount:      null,
+        PartnerPortStatus: null,
+        // 2026-08-27 round-42: route forks data[] on the
+        // `__history__:%` NamingContext prefix into the dedicated
+        // insertHistoryEntries path. historyParams strips the prefix
+        // and binds `_realNamingContext` instead so the stored row
+        // matches the link's NC (the dashboard's historyByPair lookup
+        // joins on this). Real agents never set this — the literal
+        // namingContext is bound instead, which equals _realNamingContext
+        // for them anyway.
+        _RealNamingContext: realNamingContext
+      });
+    }
+  }
+  return out;
+}
+
+// Pick a realistic AD-replication error message for a failed history
+// attempt. Deterministic per hash slot so the same attempt always
+// resolves the same error text across runs.
+const FAILURE_ERRORS = [
+  'RPC server unavailable',
+  'Target principal name incorrect',
+  'The replication operation timed out',
+  'The directory service is too busy',
+  'No writeable DC available for this partition',
+  'Replication access was denied',
+  'Schema mismatch between source and destination'
+];
+function pickFailureError(hash) {
+  return FAILURE_ERRORS[hash[0] % FAILURE_ERRORS.length];
+}
+
 // Build a complete snapshot the way collect-replication.ps1 would emit it.
 // Always appends a __dc_summary__ entry so the centre's
 // GET /api/dcs/summary → DcCard UI has live counters even when there are
@@ -250,12 +403,20 @@ function probeMockPort(agentId, peerHost, port) {
 // When present, they're appended after the per-link entries (and before
 // the summary). Without these rows the matrix view's port badges render
 // as "无探测"; the operator reports the view looks empty.
+//
+// 2026-08-27 round-42 (复制日志监控): also accepts historyEntries — the
+// per-attempt ad_replication_history rows Get-ADReplicationPartnerMetadata
+// ._ResultHistory emits in the real PS1. When present, they're appended
+// after the partner-port entries (and before the summary). Without these
+// rows the 复制日志监控 view's expandable caret shows nothing and the
+// operator cannot drill into recent failure details.
 export function buildSnapshot({
   agentId,
   collectedAt,                            // ISO string or Date
   sourceSite = null,
   links = [],
-  partnerPortEntries = []
+  partnerPortEntries = [],
+  historyEntries = []
 } = {}) {
   if (typeof agentId !== 'string' || !agentId) {
     throw new TypeError('buildSnapshot: agentId required');
@@ -270,6 +431,7 @@ export function buildSnapshot({
     Entries: [
       ...buildLinkEntries(agentId, ts, links, sourceSite),
       ...(Array.isArray(partnerPortEntries) ? partnerPortEntries : []),
+      ...(Array.isArray(historyEntries) ? historyEntries : []),
       buildSummaryEntry(agentId, ts, sourceSite)
     ]
   };

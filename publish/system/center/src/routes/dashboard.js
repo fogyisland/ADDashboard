@@ -442,6 +442,220 @@ export function dashboardRouter({ config, logger, db }) {
     }
   });
 
+  // 2026-08-27 round-42 (复制日志监控): operator directive "增加一个运维
+  // 监控, 复制日志监控 — 一个站点下面如果有多台服务器, 多台服务器有多个
+  // 复制伙伴, 列出最新的连接状态, 然后在右边多一个展开箭头, 列出最近
+  // 10 次的连接具体信息". The view mirrors the per-DC partner tables of
+  // /api/dashboard/site-replication-matrix/all (round-36) but augments
+  // every partner with attempts[] — the latest 10 history rows for that
+  // (source_dc, dest_dc, naming_context) tuple from ad_replication_history.
+  //
+  // Response envelope:
+  //   {
+  //     refreshSeconds: 10,
+  //     sites: [
+  //       {
+  //         siteId, siteName, regionCode, isHub,
+  //         dcs: [
+  //           {
+  //             dcName, isBridgehead, role flags, osVersion, discoveredAt,
+  //             partners: [
+  //               {
+  //                 peerType, peerDc, peerSite, peerSiteIsHub,
+  //                 statusCode, lastSuccessTime, lastAttemptTime,
+  //                 durationMinutes,
+  //                 attempts: [ {attemptAt, statusCode, durationMs,
+  //                              objectsTransferred, lastSuccessTime,
+  //                              errorMessage}, ... ]  // last 10 by time DESC
+  //               }
+  //             ]
+  //           }
+  //         ]
+  //       }
+  //     ]
+  //   }
+  //
+  // The 24h window on history (replicationLogRecentAttempts) limits the row
+  // count to "what an operator can actually see in one screenful"; the
+  // attempts[] slice to 10 happens client-side after the route groups rows
+  // by (source_dc, dest_dc, naming_context). The slice uses
+  // collected_at DESC so "latest 10" reads top-to-bottom in the UI.
+  r.get('/api/dashboard/replication-log/all', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+
+      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: histRows }, { rows: cfgRows }] =
+        await Promise.all([
+          db.query(db.sql.dashboard.allSitesOrdered, []),
+          db.query(db.sql.dashboard.allDcsBySite, []),
+          db.query(db.sql.dashboard.allReplicationLinks, []),
+          db.query(db.sql.dashboard.replicationLogRecentAttempts, []),
+          db.query(db.sql.dashboard.refreshSeconds, [])
+        ]);
+
+      // dcByName + siteById lookups (mirrors the matrix/all route).
+      const dcByName = new Map(dcRows.map(d => [d.dc_name, d]));
+      const siteById = new Map(siteRows.map(s => [s.site_id, {
+        siteId: s.site_id, siteName: s.site_name,
+        regionCode: s.region_code, isHub: !!s.is_hub
+      }]));
+
+      // Group DCs by site, sorted bridgehead-first then lex.
+      const dcsBySite = new Map();
+      for (const d of dcRows) {
+        if (!dcsBySite.has(d.site_id)) dcsBySite.set(d.site_id, []);
+        dcsBySite.get(d.site_id).push({
+          dcName: d.dc_name,
+          isBridgehead: !!d.is_bridgehead,
+          isPdc: !!d.is_pdc,
+          isGc: !!d.is_gc,
+          isRidMaster: !!d.is_rid_master,
+          isSchemaMaster: !!d.is_schema_master,
+          isDomainNamingMaster: !!d.is_domain_naming_master,
+          isInfrastructureMaster: !!d.is_infrastructure_master,
+          osVersion: d.os_version,
+          discoveredAt: toIso(d.discovered_at)
+        });
+      }
+      for (const arr of dcsBySite.values()) {
+        arr.sort((a, b) => {
+          if (a.isBridgehead !== b.isBridgehead) return a.isBridgehead ? -1 : 1;
+          return a.dcName.localeCompare(b.dcName);
+        });
+      }
+
+      // Build cross-site primary lookup: siteId -> primaryDcName.
+      const primaryBySiteId = new Map();
+      for (const s of siteRows) {
+        const list = dcsBySite.get(s.site_id) || [];
+        if (list.length) primaryBySiteId.set(s.site_id, list[0].dcName);
+      }
+
+      // Pre-group history rows by (source_dc||dest_dc||naming_context) so the
+      // per-partner loop is O(P) lookups instead of O(P*H) scans. Rows are
+      // already in collected_at DESC order from the SQL helper; we keep
+      // that order while grouping.
+      const historyByPair = new Map();
+      for (const h of histRows) {
+        const k = `${h.source_dc}${h.dest_dc}${h.naming_context}`;
+        if (!historyByPair.has(k)) historyByPair.set(k, []);
+        historyByPair.get(k).push(h);
+      }
+
+      const sep = String.fromCharCode(1);
+
+      const sites = [];
+      for (const s of siteRows) {
+        const dcList = dcsBySite.get(s.site_id) || [];
+        if (dcList.length === 0) continue;
+        const primaryDc = dcList[0].dcName;
+
+        // Partner allowlist: every within-site DC + every cross-site primary.
+        const allowedPeers = new Set();
+        for (const d of dcList) allowedPeers.add(d.dcName);
+        for (const [siteId, primaryName] of primaryBySiteId) {
+          if (siteId !== s.site_id) allowedPeers.add(primaryName);
+        }
+
+        const partnerMapByDc = new Map();
+        for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
+
+        for (const l of linkRows) {
+          if (l.source_dc === l.dest_dc) continue;
+          if (!partnerMapByDc.has(l.dest_dc)) continue; // dest not in this site
+          const peerDc = l.source_dc;
+          if (!allowedPeers.has(peerDc)) continue;
+          const peer = dcByName.get(peerDc);
+          if (!peer) continue;
+          const peerSite = siteById.get(peer.site_id);
+          if (!peerSite) continue;
+
+          const targetMap = partnerMapByDc.get(l.dest_dc);
+          // 2026-08-27 round-42 (复制日志监控): dedup key is (source_dc ||
+          // naming_context) NOT (source_dc alone). The same (source, dest)
+          // pair can have multiple naming_contexts (e.g. DC=contoso,DC=com
+          // vs CN=Configuration,DC=contoso,DC=com); each one carries its
+          // own history rows and must surface as a distinct partner entry
+          // in the response. The earlier "peerDc only" dedup silently
+          // dropped all but the latest, so the test "two distinct NCs
+          // produce two partner rows" was failing with 1 === 2.
+          const k = `${peerDc}${sep}${l.naming_context}`;
+          const existing = targetMap.get(k);
+          // Sibling-priority sort + keep the latest link per pair.
+          if (existing) {
+            const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
+            const newTime = l.last_attempt_time ? new Date(l.last_attempt_time).getTime() : 0;
+            if (newTime <= exTime) continue;
+          }
+          targetMap.set(k, {
+            peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
+            peerDc,
+            namingContext: l.naming_context,
+            peerSite: peerSite.siteName,
+            peerSiteIsHub: peerSite.isHub,
+            statusCode: l.status_code,
+            lastSuccessTime: toIso(l.last_success_time),
+            lastAttemptTime: toIso(l.last_attempt_time),
+            durationMinutes: l.duration_minutes,
+            // Round-42: slice last 10 attempts. Naming context is the row's
+            // naming_context from ad_replication_status — but the agent
+            // emits a separate per-attempt row per naming_context? No:
+            // naming_context is the partition key for the link itself
+            // (DC=contoso,DC=com vs CN=Configuration,DC=contoso,DC=com
+            // vs ...). Each (source, dest, naming_context) gets its own
+            // attempts list. SQL groups by all 3 keys.
+            attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
+              .slice(0, 10)
+              .map(h => ({
+                attemptAt:        toIso(h.collected_at),
+                statusCode:       h.status_code,
+                durationMs:       h.attempt_duration_ms,
+                objectsTransferred: h.objects_transferred,
+                lastSuccessTime:  toIso(h.last_success_time),
+                errorMessage:     h.error_message
+              }))
+          });
+        }
+
+        const dcs = dcList.map(d => {
+          const partners = [...partnerMapByDc.get(d.dcName).values()].sort((a, b) => {
+            if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
+            if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
+            return a.peerDc.localeCompare(b.peerDc);
+          });
+          return {
+            dcName: d.dcName,
+            isBridgehead: d.isBridgehead,
+            isPdc: d.isPdc,
+            isGc: d.isGc,
+            isRidMaster: d.isRidMaster,
+            isSchemaMaster: d.isSchemaMaster,
+            isDomainNamingMaster: d.isDomainNamingMaster,
+            isInfrastructureMaster: d.isInfrastructureMaster,
+            osVersion: d.osVersion,
+            discoveredAt: d.discoveredAt,
+            partners
+          };
+        });
+
+        sites.push({
+          siteId: s.site_id,
+          siteName: s.site_name,
+          regionCode: s.region_code,
+          isHub: !!s.is_hub,
+          primaryDc,
+          dcs
+        });
+      }
+
+      const refreshSeconds = Number(cfgRows[0]?.config_value || 10);
+      res.json({ refreshSeconds, sites });
+    } catch (e) {
+      logger.error({ err: e }, 'replication-log/all failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   // ---- Package metric dashboard (Task 9) ----
   // Summary endpoint: returns the latest gauge/counter/status rows for all
   // installed metric_*_latest tables. Filtering is done at the call site

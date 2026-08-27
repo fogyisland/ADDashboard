@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { agentToken } from '../auth/agent-token.js';
-import { upsertStatus } from '../services/replication.js';
+import { upsertStatus, insertHistoryEntries } from '../services/replication.js';
 import { getConfig, getAgentConfig } from '../services/config.js';
 import { upsertDiscoveredDc } from '../services/discovery.js';
 import { listPorts } from '../services/ports.js';
@@ -239,10 +239,29 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         const db = getDb();
         const cfg = await getConfig();
         const historyEnabled = String(cfg.history_enabled ?? 'false').toLowerCase() === 'true';
-        await upsertStatus(
-          data.map(row => ({ ...row, agentId, collectedAt })),
-          { appendHistory: historyEnabled }
-        );
+        // 2026-08-27 round-42 (复制日志监控): split data[] into
+        // status-rows (default) + history-rows (naming_context starts with
+        // '__history__:'). Status rows go through upsertStatus (so they
+        // land in ad_replication_status). History rows go through the
+        // dedicated insertHistoryEntries path (so they land ONLY in
+        // ad_replication_history — never in ad_replication_status, which
+        // would otherwise be corrupted by back-dated attempt timestamps
+        // and silently break the latest-per-pair matrix query).
+        const annotated = data.map(row => ({ ...row, agentId, collectedAt }));
+        const statusRows = [];
+        const historyRows = [];
+        for (const r of annotated) {
+          const nc = r.namingContext ?? r.naming_context ?? '';
+          if (typeof nc === 'string' && nc.startsWith('__history__:')) {
+            historyRows.push(r);
+          } else {
+            statusRows.push(r);
+          }
+        }
+        await upsertStatus(statusRows, { appendHistory: historyEnabled });
+        if (historyEnabled && historyRows.length > 0) {
+          await insertHistoryEntries(historyRows);
+        }
 
         // 2026-08-26 round-18: lockout event ingest removed from this
         // path. The agent no longer carries LockoutEvents on the

@@ -348,6 +348,181 @@ function Get-PartnerPortSnapshot {
   return ,$rows
 }
 
+# 2026-08-27 round-42 (复制日志监控): emit per-attempt history rows that
+# land in ad_replication_history (extended cols: last_attempt_time,
+# attempt_duration_ms, objects_transferred). Mirrors
+# center/mock-snapshot.mjs::buildReplicationHistoryEntries byte-for-byte
+# on the wire shape: every entry has its own (collected_at,
+# last_attempt_time) timestamp; success rows carry attemptDurationMs +
+# objectsTransferred (the real AD module does not surface these, so we
+# emit $null and let the centre fall back to the placeholder); failure
+# rows carry $null for both plus a realistic error_message string built
+# from the Win32 error code. Without these rows the
+# /admin/replication-log/monitor view's expandable caret shows nothing
+# and the operator sees a frozen snapshot.
+#
+# Naming context uses a synthetic `__history__:<sha>` key that the centre
+# forks off into ad_replication_history ONLY (never ad_replication_status)
+# — center/src/routes/agent.js splits incoming data[] on this prefix.
+# The centre's historyByPair lookup (grouped by
+# source|dest|naming_context) strips the `__history__:` prefix before
+# building the lookup key so dashboard groupings match the link's NC.
+# We forward both NamingContext (synthetic) and RealNamingContext (the
+# link's actual NC) so the centre can rebind it after the strip.
+#
+# Fault isolation: a failure to read _ResultHistory on one partner (older
+# AD module, partial metadata, AccessDenied) must not break the partner
+# loop. Helper wraps every access in try/catch and returns an empty array
+# on any error so Get-ReplicationSnapshot can keep producing link rows.
+function BuildReplicationHistoryRows {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowNull()]
+    $Partner,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ComputerName,
+
+    [Parameter(Mandatory = $true)]
+    [AllowNull()]
+    [string]$Site,
+
+    [Parameter(Mandatory = $true)]
+    [AllowNull()]
+    [string]$RealNamingContext,
+
+    [Parameter()]
+    [AllowNull()]
+    [string]$CollectedAt = $null,
+
+    [Parameter()]
+    [int]$MaxAttempts = 10
+  )
+
+  $rows = @()
+  if ($null -eq $Partner) { return ,$rows }
+
+  # Some AD module builds / older OS versions do not expose _ResultHistory
+  # at all. Don't crash the partner loop — just emit zero rows.
+  $historyProp = $null
+  try {
+    $historyProp = $Partner.PSObject.Properties['_ResultHistory']
+  } catch { $historyProp = $null }
+  if ($null -eq $historyProp -or $null -eq $historyProp.Value) {
+    return ,$rows
+  }
+
+  $ops = @($historyProp.Value)
+  if ($ops.Count -eq 0) { return ,$rows }
+
+  $partnerHost = $null
+  try { $partnerHost = [string]$Partner.Partner } catch { $partnerHost = $null }
+  if ([string]::IsNullOrEmpty($partnerHost)) { return ,$rows }
+
+  # Anchor timestamp. Match the mock agent's convention: every emitted row
+  # stamps the cycle's collectedAt so a fresh tick refreshes the timeline
+  # without touching older attempts (those keep their own timestamp via
+  # operation.Time — see attemptIso below).
+  $cycleIso = $CollectedAt
+  if ([string]::IsNullOrEmpty($cycleIso)) {
+    $cycleIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+  }
+
+  # Walk the operations oldest → newest. The collection is already in
+  # insertion order from the AD module, but be defensive — some builds
+  # return newest-first. The MaxAttempts cap protects against unbounded
+  # rows on a long-lived DC (the dashboard only shows the latest 10).
+  $ordered = @($ops | Sort-Object { $_.Time } -ErrorAction SilentlyContinue)
+  if ($ordered.Count -eq 0) { $ordered = $ops }
+  $capped = @($ordered | Select-Object -Last $MaxAttempts)
+
+  foreach ($op in $capped) {
+    if ($null -eq $op) { continue }
+
+    $opStatus = 0
+    try { $opStatus = [int]$op.Status } catch { $opStatus = 0 }
+    $opError = 0
+    try { $opError = [int]$op.Error } catch { $opError = 0 }
+
+    $opTime = $null
+    try { $opTime = $op.Time } catch { $opTime = $null }
+
+    $attemptIso = ConvertTo-UtcIso -Value $opTime
+    if ([string]::IsNullOrEmpty($attemptIso)) {
+      # Fall back to the cycle's collectedAt if the operation's Time
+      # field is unparseable. Better than emitting an empty timestamp
+      # that the dashboard can't sort by.
+      $attemptIso = $cycleIso
+    }
+
+    $errMsg = $null
+    if ($opStatus -ne 0) {
+      # The AD module returns Error as an Int32 Win32 status code (e.g.
+      # 1908 → "Target principal name incorrect"). The dashboard renders
+      # whatever string we put in ErrorMessage, so format it as a stable
+      # "error <code>" placeholder when we can't look up the message.
+      # A future enhancement could carry a small Win32→message map for
+      # the operator-friendly cases (1908, 1722, 5); out of scope here.
+      $errMsg = "error $($opError)"
+    }
+
+    # Stable synthetic naming_context — same hash inputs as
+    # mock-snapshot.mjs::buildReplicationHistoryEntries:
+    #   sha256(agentId|peerHost|realNamingContext|attemptIdx|history)
+    # The "history" sentinel keeps history NCs from colliding with the
+    # partner-port NCs (which share agentId|peerHost|realNamingContext
+    # but differ in suffix). The 8-hex slice gives a 32-bit space —
+    # collision risk across a 200-DC fleet with ~10 attempts each is
+    # negligible (birthday bound = 65k).
+    $attemptIdx = 0
+    try {
+      $idx = [int]$op.AttemptNumber
+      if ($idx -gt 0) { $attemptIdx = $idx }
+    } catch { $attemptIdx = 0 }
+
+    $hashInput = "${ComputerName}|${partnerHost}|${RealNamingContext}|${attemptIdx}|history"
+    $hashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+      [System.Text.Encoding]::UTF8.GetBytes($hashInput)
+    )
+    $historyHash = -join ($hashBytes[0..3] | ForEach-Object { $_.ToString('x2') })
+
+    $rows += [PSCustomObject]@{
+      CollectedAt        = $cycleIso
+      AgentId            = $ComputerName
+      SourceDc           = $ComputerName
+      DestDc             = $partnerHost
+      SourceSite         = $Site
+      DestSite           = $null
+      NamingContext      = "__history__:${historyHash}"
+      LastSuccessTime    = $(if ($opStatus -eq 0) { $attemptIso } else { $null })
+      LastAttemptTime    = $attemptIso
+      StatusCode         = $opStatus
+      ErrorMessage       = $errMsg
+      AttemptDurationMs  = $null
+      ObjectsTransferred = $null
+      UsersCount         = $null
+      GroupsCount        = $null
+      GposCount          = $null
+      LockedCount        = $null
+      PartnerPortStatus  = $null
+      # RealNamingContext is forwarded alongside the synthetic NC so
+      # center/src/services/replication.js::historyParams can rebind it
+      # after stripping the __history__: prefix. agent/src/reporter.js
+      # ::toCamelEntry converts to _realNamingContext on the wire. Real
+      # agents always set this — the centre's prefix-strip would otherwise
+      # leave the row with an unrecoverable synthetic NC.
+      RealNamingContext  = $RealNamingContext
+    }
+  }
+
+  # Note: callers MUST wrap the call in @( ... ) to coerce the
+  # zero-element / one-element cases into a real array. Emitting
+  # `,$rows` instead would force callers into a double-unwrap dance
+  # (which is the bug the round-42 tests tripped over).
+  return $rows
+}
+
 function Get-ReplicationSnapshot {
   [CmdletBinding()]
   param(
@@ -437,6 +612,24 @@ function Get-ReplicationSnapshot {
         ErrorMessage    = $errMsg
       }
       $entries += $entry
+
+      # 2026-08-27 round-42 (复制日志监控): append per-attempt history
+      # rows for this partner. Walk $p._ResultHistory (one AD operation
+      # per attempt) and emit a row per operation with synthetic
+      # '__history__:<sha>' naming_context so the centre's /api/agent/report
+      # route can fork these into ad_replication_history (extended by
+      # migration 021) without polluting ad_replication_status. Fault-
+      # isolated — a failure inside BuildReplicationHistoryRows returns
+      # an empty array and the partner loop keeps moving.
+      $historyRows = BuildReplicationHistoryRows `
+        -Partner $p `
+        -ComputerName $ComputerName `
+        -Site $snapshot.Site `
+        -RealNamingContext ([string]$p.NamingContext) `
+        -CollectedAt $snapshot.CollectedAt
+      if ($null -ne $historyRows -and @($historyRows).Count -gt 0) {
+        foreach ($hr in @($historyRows)) { $entries += $hr }
+      }
     }
   }
 

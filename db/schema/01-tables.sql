@@ -24,17 +24,26 @@ CREATE TABLE IF NOT EXISTS ad_replication_status (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- History (append-only, retention managed by job)
+-- 2026-08-27 round-42 (复制日志监控): extended with last_attempt_time,
+-- attempt_duration_ms, objects_transferred + composite index for the
+-- per-pair "last N attempts" query. The companion migration
+-- db/migrations/021-replication-attempts-log.sql applies the same shape
+-- to existing live DBs (idempotent guard pattern).
 CREATE TABLE IF NOT EXISTS ad_replication_history (
-  id                BIGINT AUTO_INCREMENT PRIMARY KEY,
-  collected_at      DATETIME NOT NULL,
-  agent_id          VARCHAR(64) NOT NULL,
-  source_dc         VARCHAR(128) NOT NULL,
-  dest_dc           VARCHAR(128) NOT NULL,
-  naming_context    VARCHAR(256) NOT NULL,
-  last_success_time DATETIME NULL,
-  status_code       INT NOT NULL,
-  error_message     VARCHAR(512) NULL,
-  KEY ix_hist_time (collected_at)
+  id                   BIGINT AUTO_INCREMENT PRIMARY KEY,
+  collected_at         DATETIME NOT NULL,
+  agent_id             VARCHAR(64) NOT NULL,
+  source_dc            VARCHAR(128) NOT NULL,
+  dest_dc              VARCHAR(128) NOT NULL,
+  naming_context       VARCHAR(256) NOT NULL,
+  last_success_time    DATETIME NULL,
+  last_attempt_time    DATETIME NULL,
+  attempt_duration_ms  INT NULL,
+  objects_transferred  INT NULL,
+  status_code          INT NOT NULL,
+  error_message        VARCHAR(512) NULL,
+  KEY ix_hist_time (collected_at),
+  KEY ix_hist_pair_time (source_dc, dest_dc, naming_context, collected_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Agent heartbeat

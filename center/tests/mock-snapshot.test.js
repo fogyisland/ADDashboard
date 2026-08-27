@@ -14,6 +14,7 @@ import {
   buildSummaryEntry,
   buildLinkEntries,
   buildPartnerPortEntries,
+  buildReplicationHistoryEntries,
   partnerPortNamingContext,
   buildSnapshot,
   dcSummaryRowOf
@@ -502,4 +503,245 @@ test('buildSnapshot: matrix route lookup key — link.destDc === partner-port.De
     assert.equal(linkEntries[i].DestDc, portEntries[i].DestDc);
     assert.equal(linkEntries[i].SourceDc, portEntries[i].SourceDc);
   }
+});
+
+// ----- buildReplicationHistoryEntries (round-42 复制日志监控) -----
+
+test('buildReplicationHistoryEntries: emits attemptsPerPair * peers entries, no summary', () => {
+  // 3 attempts × 2 peers = 6 entries. None of them is __dc_summary__.
+  // Every entry carries SourceDc/DestDc/DestSite=null/SourceSite/etc.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2', 'MOCK-DC3'],
+    sourceSite: 'MOCK-NC',
+    attemptsPerPair: 3
+  });
+  assert.equal(entries.length, 6);
+  for (const e of entries) {
+    assert.ok(e.NamingContext.startsWith('__history__:'),
+      `expected synthetic history NC, got ${e.NamingContext}`);
+    assert.equal(e.SourceDc, 'MOCK-DC1');
+    assert.equal(e.SourceSite, 'MOCK-NC');
+    assert.equal(e.DestSite, null);
+    // PS1 history rows never carry counters or port probes — they're
+    // summary/link-only. Centre's historyParams only reads the 11
+    // INSERT-shape fields; the rest stay null on the row.
+    assert.equal(e.UsersCount, null);
+    assert.equal(e.GroupsCount, null);
+    assert.equal(e.GposCount, null);
+    assert.equal(e.LockedCount, null);
+    assert.equal(e.PartnerPortStatus, null);
+  }
+});
+
+test('buildReplicationHistoryEntries: each peer gets the configured number of attempts', () => {
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2'],
+    attemptsPerPair: 5
+  });
+  assert.equal(entries.length, 5);
+});
+
+test('buildReplicationHistoryEntries: attempts are back-dated 5 min apart', () => {
+  // Most recent attempt (idx 0) lands at `ts`; older attempts go back
+  // 5, 10, 15 minutes. This is what the dashboard's 时间 column reads.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2'],
+    attemptsPerPair: 3
+  });
+  const times = entries.map(e => Date.parse(e.LastAttemptTime));
+  // Sort descending so idx 0 is at the front (chronological newest-first).
+  times.sort((a, b) => b - a);
+  assert.equal(times[0], Date.parse(ts));
+  assert.equal(times[1], Date.parse(ts) - 5 * 60_000);
+  assert.equal(times[2], Date.parse(ts) - 10 * 60_000);
+});
+
+test('buildReplicationHistoryEntries: success attempts carry duration + objects; failures carry error', () => {
+  // The hash distribution gives ~50% success / ~50% failure. We don't
+  // pin the exact count (deterministic-but-variable) — instead we walk
+  // every entry and assert the field invariants hold for whichever
+  // status it has.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2', 'MOCK-DC3', 'MOCK-DC4'],
+    attemptsPerPair: 4
+  });
+  let successCount = 0, failCount = 0;
+  for (const e of entries) {
+    if (e.StatusCode === 0) {
+      successCount++;
+      assert.ok(e.AttemptDurationMs >= 50 && e.AttemptDurationMs <= 300,
+        `success attempt duration out of range: ${e.AttemptDurationMs}`);
+      assert.ok(e.ObjectsTransferred >= 10 && e.ObjectsTransferred <= 5000,
+        `success attempt objects out of range: ${e.ObjectsTransferred}`);
+      assert.equal(e.ErrorMessage, null);
+      assert.equal(e.LastSuccessTime, e.LastAttemptTime);
+    } else {
+      failCount++;
+      assert.equal(e.AttemptDurationMs, null);
+      assert.equal(e.ObjectsTransferred, null);
+      assert.ok(typeof e.ErrorMessage === 'string' && e.ErrorMessage.length > 0,
+        `failure attempt missing error message: ${JSON.stringify(e)}`);
+      assert.equal(e.LastSuccessTime, null);
+    }
+  }
+  // 4 attempts × 3 peers = 12 entries. With 50/50 split we expect
+  // both populations to be present (SHA-256 distribution isn't degenerate
+  // over a 12-entry window — verified empirically across rounds).
+  assert.ok(successCount > 0, 'expected at least one success attempt');
+  assert.ok(failCount > 0, 'expected at least one failure attempt');
+  assert.equal(successCount + failCount, 12);
+});
+
+test('buildReplicationHistoryEntries: historyEnabled=false returns []', () => {
+  // Round-42 spec: when the centre's system_config.history_enabled flag
+  // is false, the mock helper returns no rows (matches real-agent
+  // BuildReplicationHistoryRows being skipped). Centre's
+  // insertHistoryEntries is also a no-op in this case — both ends
+  // guard the path.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2'],
+    historyEnabled: false
+  });
+  assert.deepEqual(entries, []);
+});
+
+test('buildReplicationHistoryEntries: empty peers → empty result', () => {
+  // A heartbeat report with zero links (e.g. a brand-new DC that
+  // hasn't replicated to anyone yet) must not produce phantom
+  // history rows. The route's historyByPair wouldn't find any links
+  // to attach them to anyway.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: []
+  });
+  assert.deepEqual(entries, []);
+});
+
+test('buildReplicationHistoryEntries: deterministic per (agent, peer, NC, attemptIdx)', () => {
+  // The mock daemon calls this on every replication tick. If outcomes
+  // drift between calls, the dashboard's attempt table flickers and
+  // operators can't correlate "I saw this failure 3 minutes ago" with
+  // a stable identity. Pin determinism here.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const first  = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1', collectedAt: ts, peers: ['MOCK-DC2'], attemptsPerPair: 4
+  });
+  const second = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1', collectedAt: ts, peers: ['MOCK-DC2'], attemptsPerPair: 4
+  });
+  assert.equal(first.length, second.length);
+  for (let i = 0; i < first.length; i++) {
+    assert.equal(first[i].StatusCode, second[i].StatusCode);
+    assert.equal(first[i].AttemptDurationMs, second[i].AttemptDurationMs);
+    assert.equal(first[i].ObjectsTransferred, second[i].ObjectsTransferred);
+    assert.equal(first[i].ErrorMessage, second[i].ErrorMessage);
+    assert.equal(first[i].NamingContext, second[i].NamingContext);
+    assert.equal(first[i].LastAttemptTime, second[i].LastAttemptTime);
+  }
+});
+
+test('buildReplicationHistoryEntries: synthetic NC encodes 8-hex hash, real NC alongside', () => {
+  // Naming context shape: `__history__:<8hex>` so the route's
+  // data[] fork can recognise it (startsWith('__history__:')). The
+  // mock also forwards the link's real NC via _realNamingContext so
+  // the centre's historyParams can strip the prefix and bind the real
+  // NC into ad_replication_history — that's what the dashboard's
+  // historyByPair joins on.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const [entry] = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    peers: ['MOCK-DC2']
+  });
+  assert.match(entry.NamingContext, /^__history__:[0-9a-f]{8}$/);
+  // _realNamingContext is the link's real NC (CN=<agent>-><peer>).
+  assert.equal(entry._RealNamingContext, 'CN=MOCK-DC1->MOCK-DC2');
+});
+
+test('buildReplicationHistoryEntries: accepts a Date object and normalizes to ISO', () => {
+  // The mock daemon passes new Date() — the helper must coerce it to
+  // ISO the same way buildPartnerPortEntries does. Otherwise the
+  // SQL driver binds a Date object, which MSSQL's tedious rejects.
+  const d = new Date('2026-08-27T12:00:00.000Z');
+  const entries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1',
+    collectedAt: d,
+    peers: ['MOCK-DC2']
+  });
+  assert.equal(entries[0].LastAttemptTime, d.toISOString());
+});
+
+test('buildReplicationHistoryEntries: rejects missing agentId', () => {
+  const ts = '2026-08-27T12:00:00.000Z';
+  assert.throws(
+    () => buildReplicationHistoryEntries({ agentId: '', collectedAt: ts, peers: ['x'] }),
+    /agentId/
+  );
+  assert.throws(
+    () => buildReplicationHistoryEntries({ collectedAt: ts, peers: ['x'] }),
+    /agentId/
+  );
+});
+
+// ----- buildSnapshot with historyEntries -----
+
+test('buildSnapshot: historyEntries are interleaved between partner-port and summary', () => {
+  // Canonical ordering: links → partner-port entries → history entries
+  // → summary. The route forks on NamingContext prefix, not position;
+  // ordering matters only for human-readable debug output.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const partnerPortEntries = buildPartnerPortEntries({
+    agentId: 'MOCK-DC1', collectedAt: ts, peers: ['MOCK-DC2']
+  });
+  const historyEntries = buildReplicationHistoryEntries({
+    agentId: 'MOCK-DC1', collectedAt: ts, peers: ['MOCK-DC2']
+  });
+  const snap = buildSnapshot({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    sourceSite: 'MOCK-NC',
+    links: [{ destDc: 'MOCK-DC2', statusCode: 0 }],
+    partnerPortEntries,
+    historyEntries
+  });
+  // 1 link + 1 partner-port + N history + 1 summary
+  assert.equal(snap.Entries[0].NamingContext, 'CN=MOCK-DC1->MOCK-DC2');
+  assert.ok(snap.Entries[1].NamingContext.startsWith('__partner_ports__:'));
+  // Last entry is always __dc_summary__ — invariant for the matrix view's
+  // server-overview counters.
+  assert.equal(snap.Entries[snap.Entries.length - 1].NamingContext, '__dc_summary__');
+  // History entries sit in the middle, prefixed with __history__:
+  const historyIdx = snap.Entries.findIndex(e => e.NamingContext.startsWith('__history__:'));
+  assert.ok(historyIdx >= 2, `expected history entries starting at idx 2, got idx ${historyIdx}`);
+});
+
+test('buildSnapshot: defaults historyEntries to empty when omitted', () => {
+  // Backward compat: callers that don't pass historyEntries still work.
+  // The mock daemon is the only caller right now; future real-agent
+  // wiring (round-42 T10) will pass them too.
+  const ts = '2026-08-27T12:00:00.000Z';
+  const snap = buildSnapshot({
+    agentId: 'MOCK-DC1',
+    collectedAt: ts,
+    links: [{ destDc: 'MOCK-DC2', statusCode: 0 }]
+  });
+  // 1 link + 1 summary = 2 entries; no history, no partner-port.
+  assert.equal(snap.Entries.length, 2);
 });

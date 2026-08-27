@@ -26,7 +26,7 @@
 // daemon runs until SIGINT/SIGTERM (Ctrl+C).
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildSnapshot, buildPartnerPortEntries } from './mock-snapshot.mjs';
+import { buildSnapshot, buildPartnerPortEntries, buildReplicationHistoryEntries } from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
@@ -241,12 +241,33 @@ function buildReplicationSnapshot(agentId, peers, failRate, sourceSite, opts = {
     sourceSite,
     portOverrides
   });
+  // 2026-08-27 round-42 (复制日志监控): also append per-attempt history
+  // entries that land in ad_replication_history via the dedicated
+  // insertHistoryEntries path on the route. The history helper uses a
+  // synthetic `__history__:%` naming_context that the route forks off
+  // into ad_replication_history ONLY (never ad_replication_status), so
+  // the matrix view's latest-per-pair queries stay uncorrupted by
+  // back-dated attempt timestamps.
+  //
+  // historyEnabled defaults true so the operator's dashboard populates
+  // out of the box. The route no-ops insertHistoryEntries if the
+  // centre's system_config.history_enabled flag is false, so this is
+  // safe regardless of operator policy.
+  const historyEntries = buildReplicationHistoryEntries({
+    agentId,
+    collectedAt,
+    peers,
+    sourceSite,
+    historyEnabled: opts.historyEnabled !== false,
+    attemptsPerPair: opts.attemptsPerPair ?? 3
+  });
   return buildSnapshot({
     agentId,
     collectedAt,
     sourceSite,
     links,
-    partnerPortEntries
+    partnerPortEntries,
+    historyEntries
   });
 }
 

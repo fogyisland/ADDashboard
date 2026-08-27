@@ -30,7 +30,7 @@
 // Each agent's timing is configurable through the JSON config so the
 // operator can re-stage the scenario without touching code.
 
-import { buildSnapshot, buildPartnerPortEntries, postSnapshot } from './mock-snapshot.mjs';
+import { buildSnapshot, buildPartnerPortEntries, buildReplicationHistoryEntries, postSnapshot } from './mock-snapshot.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -385,12 +385,26 @@ function buildReplicationSnapshot(agentId, collectedAt, links, sourceSite, opts 
     sourceSite,
     portOverrides: opts.portOverrides ?? null
   });
+  // 2026-08-27 round-42 (复制日志监控): also append per-attempt history
+  // entries that land in ad_replication_history via the dedicated
+  // insertHistoryEntries path on the route. The history helper uses a
+  // synthetic `__history__:%` naming_context that the route forks off
+  // into ad_replication_history ONLY (never ad_replication_status).
+  const historyEntries = buildReplicationHistoryEntries({
+    agentId,
+    collectedAt,
+    peers: peerIds,
+    sourceSite,
+    historyEnabled: opts.historyEnabled !== false,
+    attemptsPerPair: opts.attemptsPerPair ?? 3
+  });
   return buildSnapshot({
     agentId,
     collectedAt,
     sourceSite,
     links: links ?? [],
-    partnerPortEntries
+    partnerPortEntries,
+    historyEntries
   });
 }
 
