@@ -201,9 +201,15 @@ test('partner row renders inbound peer + colored port cells (no direction column
   // 3 port cells rendered (135, 445, 50001)
   const portCells = inRow.findAll('.port-cell');
   expect(portCells).toHaveLength(3);
-  expect(portCells[0].classes()).toContain('port-ok');
-  expect(portCells[1].classes()).toContain('port-err');
-  expect(portCells[2].classes()).toContain('port-none');
+  // round-37: status color moves off .port-cell and onto .port-detail —
+  // the value text (3ms/通/断/—) carries the colour, the port number
+  // stays neutral. The cell no longer has the status class.
+  expect(portCells[0].classes()).not.toContain('port-ok');
+  expect(portCells[1].classes()).not.toContain('port-err');
+  expect(portCells[2].classes()).not.toContain('port-none');
+  expect(portCells[0].find('.port-detail').classes()).toContain('port-val-ok');
+  expect(portCells[1].find('.port-detail').classes()).toContain('port-val-err');
+  expect(portCells[2].find('.port-detail').classes()).toContain('port-val-none');
 
   // 核心站点 DC-BJ-01's within-site inbound from DC-BJ-02
   const withinRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');

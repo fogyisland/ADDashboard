@@ -228,7 +228,7 @@ Describe 'MSI Agent Installer smoke' {
     $cfg.centerUrl                  | Should -Be $script:CenterUrl
     $cfg.agentToken                 | Should -Be $script:AgentToken
     $cfg.agentType                  | Should -Be $script:AgentType
-    $cfg.pollingIntervalMinutes     | Should -Be 15
+    $cfg.pollingIntervalMinutes     | Should -Be 1
     $cfg.heartbeatIntervalSeconds   | Should -Be 5
     $cfg.psScriptPath               | Should -BeLike '*\scripts\collect-replication.ps1'
     $cfg.psDiscoveryScriptPath      | Should -BeLike '*\scripts\collect-discovery.ps1'

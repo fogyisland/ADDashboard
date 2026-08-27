@@ -97,11 +97,16 @@
               </td>
               <td class="peer-dc">{{ partner.peerDc }}</td>
               <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
-              <td v-for="port in ports" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}-${port}`"
-                  :class="['port-cell', `port-${portStatusClass(partner.perPort, port)}`]"
-                  :title="portTooltip(partner.perPort, port)">
+              <td v-for="port in ports" :key="`cell-${dc.dcName}-${partner.peerDc}-${port}`"
+                  class="port-cell" :title="portTooltip(partner.perPort, port)">
                 <div class="port-num">{{ port }}</div>
-                <div class="port-detail">{{ portDetailLabel(partner.perPort, port) }}</div>
+                <!-- 2026-08-27 round-37: operator directive "针对端口的颜色
+                     不需要再来标记端口，直接标记值" — port number stays
+                     neutral (no bg, no status color), only the value text
+                     (3ms/通/断/—) carries the status color. -->
+                <div :class="['port-detail', `port-val-${portStatusClass(partner.perPort, port)}`]">
+                  {{ portDetailLabel(partner.perPort, port) }}
+                </div>
               </td>
             </tr>
             <tr v-if="!dc.partners.length">
@@ -321,13 +326,15 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .partner-row.status-ok .status { color: #22c55e; }
 .partner-row.status-warn .status { color: #f59e0b; }
 .partner-row.status-err .status { color: #ef4444; font-weight: 600; }
-.port-cell { font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; border-radius: 3px; min-width: 48px; }
-.port-ok   { background: var(--green-bg); color: var(--green); }
-.port-err  { background: var(--red-bg);   color: var(--red); }
-.port-warn { background: rgba(234,179,8,0.12); color: var(--yellow); }
-.port-none { background: #1e293b; color: #475569; }
-.port-num { font-weight: 600; font-size: 12px; line-height: 1.2; }
-.port-detail { font-size: 10px; line-height: 1.2; opacity: 0.92; }
+.port-cell { font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; min-width: 48px; vertical-align: middle; }
+/* 2026-08-27 round-37: status color applies to the VALUE text only —
+   port number stays neutral, no colored background on the cell. */
+.port-val-ok   { color: var(--green); font-weight: 600; }
+.port-val-err  { color: var(--red);   font-weight: 600; }
+.port-val-warn { color: var(--yellow); }
+.port-val-none { color: var(--muted); }
+.port-num { font-weight: 600; font-size: 12px; line-height: 1.2; color: var(--muted); }
+.port-detail { font-size: 10px; line-height: 1.2; }
 /* 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
    in round-32). Sits inside each .dc-block just above the matrix so
    operators see "X 通 / Y 不通 / 最新探测时间" for THIS DC. */

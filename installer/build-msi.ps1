@@ -32,7 +32,7 @@ $templateDst = Join-Path $staging 'appsettings.template.json'
   "agentId": "AUTO_HOSTNAME",
   "agentToken": "CHANGEME",
   "logLevel": "info",
-  "pollingIntervalMinutes": 15,
+  "pollingIntervalMinutes": 1,
   "heartbeatIntervalSeconds": 5,
   "discoveryIntervalHours": 1,
   "queueDbPath": "INSTALLDIR\\queue.db",

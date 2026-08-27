@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 const REQUIRED = ['centerUrl', 'agentId', 'agentToken'];
 const DEFAULTS = {
   logLevel: 'info',
-  pollingIntervalMinutes: 15,
+  pollingIntervalMinutes: 1,
   heartbeatIntervalSeconds: 5,
   discoveryIntervalHours: 1,
   psDiscoveryScriptPath: 'C:\\addashboard\\Agent\\scripts\\collect-discovery.ps1',

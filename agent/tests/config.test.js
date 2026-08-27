@@ -13,7 +13,7 @@ test('loadConfig returns parsed values with defaults', () => {
   }));
   const c = loadConfig(p);
   assert.equal(c.centerUrl, 'http://center:8080');
-  assert.equal(c.pollingIntervalMinutes, 15);
+  assert.equal(c.pollingIntervalMinutes, 1);
   assert.equal(c.heartbeatIntervalSeconds, 5);
   assert.equal(c.discoveryIntervalHours, 1);
   assert.equal(c.psDiscoveryScriptPath, 'C:\\addashboard\\Agent\\scripts\\collect-discovery.ps1');

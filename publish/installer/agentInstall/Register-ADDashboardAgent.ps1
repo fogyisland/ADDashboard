@@ -138,7 +138,7 @@ function Write-AppsettingsJson {
     agentId                  = $env:COMPUTERNAME
     agentToken               = $AgentToken
     logLevel                 = 'info'
-    pollingIntervalMinutes   = 15
+    pollingIntervalMinutes   = 1
     heartbeatIntervalSeconds = 5
     discoveryIntervalHours   = 1
     queueDbPath              = (Join-Path $InstallPath 'queue.db')

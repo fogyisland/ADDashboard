@@ -142,7 +142,7 @@ namespace ADDashboard.AgentInstaller.CA
             sb.AppendLine($"  \"agentId\": \"{EscapeJson(hostname)}\",");
             sb.AppendLine($"  \"agentToken\": \"{EscapeJson(data.AgentToken)}\",");
             sb.AppendLine("  \"logLevel\": \"info\",");
-            sb.AppendLine("  \"pollingIntervalMinutes\": 15,");
+            sb.AppendLine("  \"pollingIntervalMinutes\": 1,");
             sb.AppendLine("  \"heartbeatIntervalSeconds\": 5,");
             sb.AppendLine("  \"discoveryIntervalHours\": 1,");
             sb.AppendLine($"  \"queueDbPath\": \"{EscapeJson(Path.Combine(data.InstallDir, "queue.db"))}\",");
