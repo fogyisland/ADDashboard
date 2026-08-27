@@ -1,7 +1,7 @@
 <template>
   <AdminLayout>
     <header>
-      <h2>站点复制矩阵 (按主机)</h2>
+      <h2>复制伙伴状态 (全站)</h2>
       <div class="controls">
         <span class="refresh-indicator">
           <span :class="['dot', polling ? 'on' : 'off']"></span>
@@ -15,6 +15,11 @@
     <p class="hint">
       每个站点的首台 DC (字母序;非 PDC 标记) 显示它与所有伙伴的复制连接 — 出站与入站双向。
       端口列来自 partner-port 探针;未探测的行显示灰色徽章。
+    </p>
+    <p class="legend">
+      <span class="legend-item"><span class="legend-swatch swatch-primary"></span>主控 DC</span>
+      <span class="legend-item"><span class="legend-swatch swatch-bridgehead"></span>桥头 DC</span>
+      <span class="legend-item"><span class="legend-swatch swatch-member"></span>成员 DC</span>
     </p>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
@@ -209,6 +214,12 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .role-badge.bridgehead { background: #0e7490; color: #cffafe; font-weight: 600; }
 .role-badge.none { background: #1e293b; color: var(--muted); }
 .dc-os { font-family: ui-monospace, monospace; font-size: 11px; color: var(--muted); }
+.legend { display: flex; gap: 12px; margin: 0 0 16px; font-size: 12px; color: var(--muted); }
+.legend-item { display: inline-flex; gap: 6px; align-items: center; }
+.legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border); }
+.swatch-primary { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.swatch-bridgehead { border-color: #0e7490; }
+.swatch-member { border-color: #1e293b; background: var(--panel); }
 
 .matrix { border-collapse: collapse; background: var(--panel); width: 100%; }
 .matrix th, .matrix td { border: 1px solid #1e293b; padding: 6px 10px; text-align: center; font-size: 13px; }
