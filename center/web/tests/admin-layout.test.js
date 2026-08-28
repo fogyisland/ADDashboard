@@ -46,6 +46,16 @@ function mountLayout() {
 //   /admin/ad-file-push         (AD 域控 文件推送)
 //   /admin/member-file-push     (成员服务器 文件推送)
 //   /admin/member-command-exec  (成员服务器 执行命令)
+//
+// 2026-08-28 round-54 visual hierarchy (operator: 一级分类和二级子菜单左对齐齐平):
+//   - .nav-group-title = Group Header: 11px / uppercase / letter-spacing 0.06em
+//     / color var(--muted) / justify-content: space-between + right-aligned caret
+//   - .nav-group-items = container with ml-4 + pl-4 + 1px left border rail
+//   - .nav-link = level-2: 13px / padding 7px 10px / margin-left: -1px to sit
+//     flush on the rail / 2px transparent border-left (active swaps to blue)
+//   - .nav-link.router-link-active = bg-blue-400/14 + text-blue-400 + 2px blue
+//     border-left accent + font-weight 600
+//   - .nav-link:hover = bg var(--border) + color var(--accent)
 const EXPECTED_PATHS = [
   // 监控与诊断 (4)
   '/admin/site-replication-matrix/all',
@@ -279,4 +289,70 @@ test('theme toggle icon matches current theme (☀ when dark, 🌙 when light)',
   await nextTick();
   expect(document.documentElement.dataset.theme).toBe('light');
   expect(w.find('.theme-toggle').text()).toBe('🌙');
+});
+
+// ===== 2026-08-28 round-54: visual hierarchy tests =====
+// Operator directive: 一级分类和二级子菜单左对齐齐平,字体大小颜色几乎没有区分
+// 老大哥 Tailwind 参考: Group Header (small/dim/uppercase/right-caret) +
+// ml-4/pl-4 indent + border-left rail + active 2px blue accent + bg-blue/10
+//
+// jsdom + vitest + @vitejs/plugin-vue does not inject <style scoped> into
+// the document, so getComputedStyle() / style.cssText assertions are
+// unreliable. We verify CSS by reading the source SFC file directly and
+// asserting the rules we wrote are present. Visual rendering is verified
+// by build + browser smoke after the operator restarts NSSM.
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+
+const adminLayoutPath = resolve(dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '../src/components/AdminLayout.vue');
+const adminLayoutSrc = readFileSync(adminLayoutPath, 'utf8');
+
+test('R54: each group title contains caret + title-main wrapper (right-aligned caret)', () => {
+  const w = mountLayout();
+  const titles = w.findAll('.nav-group-title');
+  expect(titles.length).toBe(6);
+  for (const t of titles) {
+    expect(t.find('.nav-group-title-main').exists()).toBe(true);
+    expect(t.find('.nav-group-title-main .icon').exists()).toBe(true);
+    expect(t.find('.nav-group-title-main .label').exists()).toBe(true);
+    expect(t.find('.nav-group-caret').exists()).toBe(true);
+    expect(t.find('.nav-group-caret').text()).toBe('▼');
+  }
+});
+
+test('R54: nav-links sit inside a .nav-group-items wrapper (provides left rail)', () => {
+  const w = mountLayout();
+  const itemsContainers = w.findAll('.nav-group-items');
+  expect(itemsContainers.length).toBe(6);
+  // All 19 nav-links live inside these containers — none loose at nav level
+  const linksInsideItems = itemsContainers.reduce((acc, c) => acc + c.findAll('a.nav-link').length, 0);
+  expect(linksInsideItems).toBe(19);
+});
+
+test('R54: source CSS defines caret rotation rule (.nav-group:not([open]) > .nav-group-title .nav-group-caret)', () => {
+  expect(adminLayoutSrc).toMatch(/\.nav-group:not\(\[open\]\)\s*>\s*\.nav-group-title\s+\.nav-group-caret/);
+  expect(adminLayoutSrc).toMatch(/rotate\(-90deg\)/);
+});
+
+test('R54: source CSS defines active state — 2px blue border-left + bg-blue-400/14 + text-blue-400', () => {
+  expect(adminLayoutSrc).toMatch(/\.nav-link\.router-link-active/);
+  expect(adminLayoutSrc).toMatch(/border-left-color:\s*#3b82f6/);
+  expect(adminLayoutSrc).toMatch(/rgba\(96,\s*165,\s*250/);  // bg-blue-400/14
+  expect(adminLayoutSrc).toMatch(/color:\s*#60a5fa/);        // text-blue-400
+});
+
+test('R54: source CSS defines .nav-group-items with 1px left rail + ml-4 indent', () => {
+  expect(adminLayoutSrc).toMatch(/\.nav-group-items\s*\{/);
+  expect(adminLayoutSrc).toMatch(/border-left:\s*1px\s+solid/);
+  expect(adminLayoutSrc).toMatch(/margin-left:\s*14px/);  // ≈ ml-4
+});
+
+test('R54: source CSS defines group title as Group Header (uppercase + 11px + muted color)', () => {
+  // Match within a single .nav-group-title { ... } block — allow newlines
+  const titleBlock = adminLayoutSrc.match(/\.nav-group-title\s*\{([^}]*)\}/);
+  expect(titleBlock).not.toBeNull();
+  const body = titleBlock[1];
+  expect(body).toMatch(/text-transform:\s*uppercase/);
+  expect(body).toMatch(/font-size:\s*11px/);
+  expect(body).toMatch(/color:\s*var\(--muted\)/);
 });

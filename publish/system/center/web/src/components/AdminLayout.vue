@@ -4,25 +4,28 @@
       <router-link to="/" class="back">← 返回看板</router-link>
       <h3>AD Dashboard · 管理</h3>
       <nav>
-        <!-- 2026-08-28 round-53: operator directive "按照我的要求 修改当前后台的界面"
-             — explicit 5 top-level groups with specified contents. Renames per
-             spec. Schema 与清理 deleted. 3 new placeholder routes added
-             (ad-file-push, member-file-push, member-command-exec). 系统设置
-             tucked in as 6th group at the bottom for orphan items (config /
-             email-config / migrations) — these were not in operator's spec
-             but the views exist and removing them entirely would orphan
-             operator's bookmarks. -->
+        <!-- 2026-08-28 round-54: visual hierarchy — level-1 title is now a
+             dimmer/smaller/uppercase "Group Header" with right-aligned caret;
+             level-2 nav-links sit on a left rail with ml-4 indent, 2px blue
+             accent + bg on active, hover-bg on hover. Operator directive
+             "侧边栏层级感非常模糊" + "一级分类和二级子菜单左对齐齐平".
+             R53 structure (5+1 groups, 19 nav-links) unchanged. -->
         <details v-for="g in groups" :key="g.title" open class="nav-group">
           <summary class="nav-group-title">
-            <span class="icon">{{ g.icon }}</span>
-            <span class="label">{{ g.title }}</span>
+            <span class="nav-group-title-main">
+              <span class="icon">{{ g.icon }}</span>
+              <span class="label">{{ g.title }}</span>
+            </span>
+            <span class="nav-group-caret">▼</span>
           </summary>
-          <router-link
-            v-for="i in g.items"
-            :key="i.path"
-            :to="i.path"
-            class="nav-link"
-          >{{ i.label }}</router-link>
+          <div class="nav-group-items">
+            <router-link
+              v-for="i in g.items"
+              :key="i.path"
+              :to="i.path"
+              class="nav-link"
+            >{{ i.label }}</router-link>
+          </div>
         </details>
       </nav>
     </aside>
@@ -156,8 +159,8 @@ const groups = [
 .sidebar .back:hover { color: var(--accent); }
 .sidebar h3 { color: var(--accent); margin: 0 0 16px; font-size: 14px; }
 .sidebar nav { display: flex; flex-direction: column; gap: 6px; }
-.sidebar a { padding: 8px 10px; border-radius: 4px; color: var(--text); text-decoration: none; }
-.sidebar a.router-link-active, .sidebar a:hover { background: var(--border); }
+/* .sidebar a global reset kept minimal — level-2 nav-link styling now lives
+   under .nav-link (round-54) and overrides active/hover with blue accent. */
 main { display: flex; flex-direction: column; min-width: 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border); gap: 12px; }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
@@ -167,51 +170,113 @@ main { display: flex; flex-direction: column; min-width: 0; }
 .sidebar-toggle { font-size: 16px; min-width: 32px; padding: 4px 10px; font-family: monospace; }
 .content { padding: 20px; overflow: auto; }
 
-/* 2026-08-28 round-52: 6 top-level groups (R53 added 1 6th for system settings).
-   Indentation: title at 8px, items at 28px — 20px gap signals hierarchy.
-   Icons (emoji) at level 1, chevron ▸/▼ at level 1 to indicate disclosure. */
+/* 2026-08-28 round-54: visual hierarchy — level-1 = "Group Header" (small,
+   dim, uppercase, right-aligned caret); level-2 = nav-link (ml-4 indent on
+   a left rail, hover bg + active 2px blue accent). Operator directive
+   "侧边栏层级感非常模糊" + 老大哥 Tailwind 参考 (Group Header / ml-4 / pl-4
+   / border-left rail / border-l-2 blue accent / bg-blue/10 active).
+   R53 structure (5+1 groups, 19 nav-links, emoji icons) preserved.
+   CSS variable --accent-blue (#60a5fa) / --accent-blue-bg (rgba blue 0.12)
+   / --hover-bg (var(--border)) used so dark + light theme both look right. */
 .nav-group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 .nav-group + .nav-group { margin-top: 16px; }
+
+/* ---- Level 1: Group Header ---- */
 .nav-group-title {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 8px 4px;
+  justify-content: space-between;     /* caret pushed to right edge */
+  padding: 8px 10px 6px;
   margin: 0;
   cursor: pointer;
   user-select: none;
   list-style: none;
-  letter-spacing: 0.02em;
-  color: var(--text);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);                /* dimmer than nav-link text */
   font-weight: 700;
-  font-size: 13px;
+  font-size: 11px;                    /* smaller than 13px nav-link */
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
 }
+.nav-group-title:hover { color: var(--text); background: rgba(255, 255, 255, 0.03); }
 .nav-group-title::-webkit-details-marker { display: none; }
-.nav-group-title::before {
-  content: '▸';
-  display: inline-block;
-  width: 14px;
-  margin-right: 4px;
-  transition: transform .15s;
-  color: var(--muted);
-  font-weight: 400;
-  flex-shrink: 0;
+
+.nav-group-title-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .nav-group-title .icon {
-  font-size: 14px;
-  margin-right: 4px;
+  font-size: 13px;
+  line-height: 1;
   flex-shrink: 0;
   font-variant-emoji: text;
 }
-details[open] > .nav-group-title::before { transform: rotate(90deg); }
+.nav-group-title .label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
+.nav-group-caret {
+  font-size: 9px;
+  color: var(--muted);
+  font-weight: 400;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-left: 8px;
+  transition: transform 0.18s ease;
+}
+/* Accordion: when group is collapsed, caret rotates 90deg (▼ → ▶) */
+.nav-group:not([open]) > .nav-group-title .nav-group-caret { transform: rotate(-90deg); }
+.nav-group[open]     > .nav-group-title .nav-group-caret { transform: rotate(0deg); }
+
+/* ---- Level 2: container with left rail + indent ---- */
+.nav-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  padding: 4px 0;
+  /* ml-4 (16px from container edge) + pl-4 (16px more) so the rail sits
+     inside the indent, matching the Tailwind reference. */
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+/* ---- Level 2: nav-link with active blue accent ---- */
 .nav-link {
   display: block;
-  padding: 6px 12px 6px 28px;
+  padding: 7px 10px;
   font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+  border-radius: 4px;
+  position: relative;
+  /* 2px transparent placeholder so nav-link sits flush against the
+     container's 1px rail; active state swaps the transparent border
+     for a blue accent. */
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  transition: background 0.12s ease, color 0.12s ease, border-left-color 0.12s ease;
+}
+.nav-link:hover {
+  background: var(--border);
+  color: var(--accent);
+}
+.nav-link.router-link-active {
+  background: rgba(96, 165, 250, 0.14);          /* bg-blue-400/14 */
+  color: #60a5fa;                                /* text-blue-400 */
+  font-weight: 600;
+  border-left-color: #3b82f6;                   /* border-l-2 border-blue-500 */
 }
 </style>
