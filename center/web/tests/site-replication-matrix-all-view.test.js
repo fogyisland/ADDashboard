@@ -8,9 +8,6 @@ vi.mock('../src/api/dashboard.js', () => ({
         siteRefreshSeconds: 10,
         primaries: []
       }
-    })),
-    getSiteReplicationMatrixPairHistory: vi.fn(() => Promise.resolve({
-      data: { source: 'X', dest: 'Y', limit: 10, entries: [] }
     }))
   }
 }));
@@ -18,312 +15,335 @@ vi.mock('../src/api/dashboard.js', () => ({
 import SiteReplicationMatrixAllView from '../src/views/admin/SiteReplicationMatrixAllView.vue';
 import { dashboardApi } from '../src/api/dashboard.js';
 
-// 2026-08-28 round-45: R42 复制日志监控 absorbed into this view. The
-// per-port columns (R35) are gone — partner row now shows status pill +
-// caret expansion. /all envelope no longer carries `ports`, `perPort`,
-// `lastProbeAt`, or `portHealth`. Per-pair history comes from a separate
-// /pair-history endpoint, lazy-fetched on caret click.
+// 2026-08-29 R60 (operator directive "站点矩阵不用那么复杂，只保留最新的
+// 状态，在一个页面中显示所有的站点连接状态，没有问题绿色，有问题黄色，
+// 断开红色。不用做的特别复杂，要容忍足够多的数据出现"): rewrite the
+// view as an N×N site matrix. The data contract (primaries[] with
+// dcPartners[].partners[]) is unchanged; only the rendering changes.
 const basePayload = () => ({
   siteRefreshSeconds: 10,
   primaries: [
     {
       dcName: 'DC-BJ-01', siteId: 1, siteName: '核心站点',
       regionCode: 'BJ', isHub: true,
-      isBridgehead: true,
       dcs: [
-        { dcName: 'DC-BJ-01', isBridgehead: true, isPdc: true, isGc: true,
-          isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
-          isInfrastructureMaster: false, osVersion: 'Win2022', discoveredAt: '2026-08-27T08:00:00Z' },
-        { dcName: 'DC-BJ-02', isBridgehead: false, isPdc: false, isGc: true,
-          isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: false,
-          isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
+        { dcName: 'DC-BJ-01', osVersion: 'Win2022' },
+        { dcName: 'DC-BJ-02', osVersion: 'Win2019' }
       ],
       dcPartners: [
-        { dcName: 'DC-BJ-01', isBridgehead: true, isPdc: true, isGc: true,
-          isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
-          isInfrastructureMaster: false, osVersion: 'Win2022', discoveredAt: '2026-08-27T08:00:00Z',
-          partners: [
-            { peerDc: 'DC-BJ-02', peerSite: '核心站点', peerSiteIsHub: true,
-              peerType: 'within', statusCode: 0,
-              errorMessage: null,
-              lastAttemptTime: '2026-08-28T01:00:30Z',
-              lastSuccessTime: '2026-08-28T01:00:00Z' }
-          ] },
-        { dcName: 'DC-BJ-02', isBridgehead: false, isPdc: false, isGc: true,
-          isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: false,
-          isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z',
-          partners: [] }
+        { dcName: 'DC-BJ-01', partners: [
+          // cross-site to 厦门 — green OK
+          { peerDc: 'MOCK-XMADSRV1', peerSite: '厦门站点', statusCode: 0,
+            errorMessage: null,
+            lastAttemptTime: '2026-08-28T01:00:30Z',
+            lastSuccessTime: '2026-08-28T01:00:00Z' }
+        ]},
+        { dcName: 'DC-BJ-02', partners: [
+          // cross-site to 厦门 — yellow partial failure
+          { peerDc: 'MOCK-XMADSRV1', peerSite: '厦门站点', statusCode: 1,
+            errorMessage: 'partial',
+            lastAttemptTime: '2026-08-28T01:00:30Z',
+            lastSuccessTime: '2026-08-28T00:55:00Z' }
+        ]}
       ]
     },
     {
-      dcName: 'DC-SH-01', siteId: 2, siteName: '上海站点',
-      regionCode: 'SH', isHub: false,
-      isBridgehead: false,
+      dcName: 'MOCK-XMADSRV1', siteId: 2, siteName: '厦门站点',
+      regionCode: 'XM', isHub: false,
       dcs: [
-        { dcName: 'DC-SH-01', isBridgehead: false, isPdc: false, isGc: false,
-          isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
-          isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
+        { dcName: 'MOCK-XMADSRV1', osVersion: 'Win2019' }
       ],
       dcPartners: [
-        { dcName: 'DC-SH-01', isBridgehead: false, isPdc: false, isGc: false,
-          isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
-          isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z',
-          partners: [
-            { peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
-              peerType: 'bridgehead', statusCode: 2,
-              errorMessage: 'RPC server unavailable',
-              lastAttemptTime: '2026-08-28T00:55:00Z',
-              lastSuccessTime: null }
-          ] }
+        { dcName: 'MOCK-XMADSRV1', partners: [
+          // cross-site to 核心 — red failure (the 厦门→核心 perspective
+          // mirrors the same edge so we get a red cell on the 厦门 row).
+          { peerDc: 'DC-BJ-01', peerSite: '核心站点', statusCode: 2,
+            errorMessage: 'RPC server unavailable',
+            lastAttemptTime: '2026-08-28T00:55:00Z',
+            lastSuccessTime: null }
+        ]}
+      ]
+    },
+    {
+      dcName: 'MOCK-SHADSRV1', siteId: 3, siteName: '上海站点',
+      regionCode: 'SH', isHub: false,
+      dcs: [
+        { dcName: 'MOCK-SHADSRV1', osVersion: 'Win2019' }
+      ],
+      dcPartners: [
+        { dcName: 'MOCK-SHADSRV1', partners: [] }
       ]
     }
   ]
 });
 
-const historyPayload = (entries) => ({
-  data: {
-    source: 'X', dest: 'Y', limit: 10,
-    entries
-  }
-});
-
 beforeEach(() => {
   dashboardApi.getSiteReplicationMatrixAll.mockReset();
-  dashboardApi.getSiteReplicationMatrixPairHistory.mockReset();
-  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload([]));
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
 });
 afterEach(() => {
   vi.useRealTimers();
 });
 
-test('mounts and renders hub-first site blocks with hub badge', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
+function mountView() {
+  return mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
+}
+
+// ── R60: page-level skeleton ──────────────────────────────────────────
+
+test('R60: mounts and shows page title', async () => {
+  const w = mountView();
   await flushPromises();
-  const blocks = w.findAll('section.site-block');
-  expect(blocks).toHaveLength(2);
-  expect(blocks[0].text()).toContain('核心站点');
-  expect(blocks[0].find('h3 .hub-badge.yes').exists()).toBe(true);
-  expect(blocks[0].text()).toContain('2 DC');
-  expect(blocks[1].text()).toContain('上海站点');
-  expect(blocks[1].find('h3 .hub-badge.no').exists()).toBe(true);
-  expect(blocks[1].text()).toContain('1 DC');
+  expect(w.find('.page-title').text()).toBe('复制状态概览');
 });
 
-test('round-45: per-DC partner tables render without port columns', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+test('R60: legend strip shows 3 status colors + totals', async () => {
+  const w = mountView();
+  await flushPromises();
+  const legend = w.find('[data-test="legend"]');
+  expect(legend.exists()).toBe(true);
+  expect(legend.find('.swatch-ok').exists()).toBe(true);
+  expect(legend.find('.swatch-warn').exists()).toBe(true);
+  expect(legend.find('.swatch-err').exists()).toBe(true);
+  // Three sites, 4 DCs, 3 partner links total in basePayload:
+  //   1 intra-site OK + 1 cross-site warn + 1 cross-site err = 3 links
+  expect(legend.text()).toContain('站点');
+  expect(legend.text()).toContain('域控');
+  expect(legend.text()).toContain('链路');
+  // ok=1, warn=1, err=1 in the totals row
+  expect(legend.text()).toMatch(/正常\s*1/);
+  expect(legend.text()).toMatch(/部分失败\s*1/);
+  expect(legend.text()).toMatch(/断开\s*1/);
+});
+
+// ── R60: N×N matrix structure ─────────────────────────────────────────
+
+test('R60: matrix renders one row per site + one column per site', async () => {
+  const w = mountView();
+  await flushPromises();
+  const matrix = w.find('[data-test="matrix"]');
+  expect(matrix.exists()).toBe(true);
+  // 3 sites in basePayload → 3 rows in tbody + 1 header row + 1 corner cell
+  const tbodyRows = matrix.findAll('tbody tr');
+  expect(tbodyRows).toHaveLength(3);
+  // Each row: 1 row-head th + 3 cells (one per site, including self)
+  const firstRow = tbodyRows[0];
+  expect(firstRow.findAll('th.row-head')).toHaveLength(1);
+  expect(firstRow.findAll('td.cell')).toHaveLength(3);
+  // Column headers: corner + 3 col-head
+  const colHeads = matrix.findAll('thead th.col-head');
+  expect(colHeads).toHaveLength(3);
+});
+
+test('R60: row heads + column heads show site name + DC count', async () => {
+  const w = mountView();
+  await flushPromises();
+  const rowHeads = w.findAll('th.row-head .row-name');
+  expect(rowHeads.map(n => n.text())).toEqual(['核心站点', '厦门站点', '上海站点']);
+  // 核心站点 has 2 DCs, 厦门站点 + 上海站点 each have 1 DC
+  const rowMeta = w.findAll('th.row-head .row-meta-num');
+  expect(rowMeta.map(n => n.text())).toEqual(['2', '1', '1']);
+  const colMeta = w.findAll('th.col-head .col-meta');
+  expect(colMeta.map(c => c.text())).toEqual(['2 DC', '1 DC', '1 DC']);
+});
+
+// ── R60: cell color states ───────────────────────────────────────────
+
+test('R60: diagonal self cell renders cell-self + em-dash (no count)', async () => {
+  const w = mountView();
+  await flushPromises();
+  const cell = w.find('[data-test="cell-核心站点-核心站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-self');
+  expect(cell.text()).toContain('—');
+});
+
+test('R60: OK cross-site cell renders cell-ok + ✓ glyph + 1/1', async () => {
+  const w = mountView();
+  await flushPromises();
+  // 核心→厦门 via DC-BJ-01 is a green cross-site OK link (in basePayload).
+  // The cell takes the WORST of {ok, warn}, so we check that DC-BJ-02's
+  // warn link is what dominates (cell-warn) — covered by the next test.
+  // Here we use a payload where 核心→厦门 is purely OK.
+  const payload = basePayload();
+  payload.primaries[0].dcPartners[1].partners = [];
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: payload });
+  const w2 = mountView();
+  await flushPromises();
+  const cell = w2.find('[data-test="cell-核心站点-厦门站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-ok');
+  expect(cell.find('.cell-glyph').text()).toBe('✓');
+  expect(cell.find('.cell-num').text()).toBe('1/1');
+});
+
+test('R60: yellow cell renders cell-warn + ! glyph for statusCode=1', async () => {
+  const w = mountView();
+  await flushPromises();
+  const cell = w.find('[data-test="cell-核心站点-厦门站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-warn');
+  expect(cell.find('.cell-glyph').text()).toBe('!');
+  // basePayload 核心→厦门 has 2 links: 1 OK (DC-BJ-01) + 1 warn (DC-BJ-02).
+  // Worst across {ok, warn} is warn; ok ratio is 1/2.
+  expect(cell.find('.cell-num').text()).toBe('1/2');
+});
+
+test('R60: red cell renders cell-err + ✕ glyph for statusCode=2', async () => {
+  const w = mountView();
+  await flushPromises();
+  const cell = w.find('[data-test="cell-厦门站点-核心站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-err');
+  expect(cell.find('.cell-glyph').text()).toBe('✕');
+});
+
+test('R60: cell with no partner links renders cell-none + ·', async () => {
+  const w = mountView();
+  await flushPromises();
+  // 核心→上海 has no link in basePayload
+  const cell = w.find('[data-test="cell-核心站点-上海站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-none');
+  expect(cell.text()).toContain('—');
+});
+
+test('R60: cell takes the WORST status across multiple partner links', async () => {
+  // Override with a payload where one site-pair has mixed OK + err.
+  const payload = basePayload();
+  // Add an OK link from 厦门→核心 alongside the existing err link.
+  payload.primaries[1].dcPartners[0].partners.push({
+    peerDc: 'DC-BJ-02', peerSite: '核心站点', statusCode: 0,
+    errorMessage: null,
+    lastAttemptTime: '2026-08-28T01:00:00Z',
+    lastSuccessTime: '2026-08-28T01:00:00Z'
   });
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: payload });
+  const w = mountView();
   await flushPromises();
-
-  const dcBlocks = w.findAll('.dc-block');
-  expect(dcBlocks).toHaveLength(3);
-
-  // DC-BJ-01: PDC + GC + 桥头 + Win2022 + 1 partner
-  const bj01Block = w.find('[data-test-dc-block="DC-BJ-01"]');
-  expect(bj01Block.text()).toContain('DC-BJ-01');
-  expect(bj01Block.text()).toContain('PDC');
-  expect(bj01Block.text()).toContain('GC');
-  expect(bj01Block.text()).toContain('桥头');
-  expect(bj01Block.text()).toContain('Win2022');
-  expect(bj01Block.text()).toContain('1 伙伴');
-
-  // round-45: no .port-summary, no .port-hdr, no .port-cell
-  expect(bj01Block.find('.port-summary').exists()).toBe(false);
-  expect(bj01Block.find('.port-hdr').exists()).toBe(false);
-  expect(bj01Block.find('.port-cell').exists()).toBe(false);
+  const cell = w.find('[data-test="cell-厦门站点-核心站点"]');
+  // Worst across {err, ok} is err → cell-err + 1/2
+  expect(cell.classes()).toContain('cell-err');
+  expect(cell.find('.cell-num').text()).toBe('1/2');
 });
 
-test('round-45: status pill renders 复制成功 for statusCode=0', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
-  await flushPromises();
+// ── R60: tooltip ──────────────────────────────────────────────────────
 
-  const okRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
-  expect(okRow.exists()).toBe(true);
-  const pill = okRow.find('.status-pill');
-  expect(pill.exists()).toBe(true);
-  expect(pill.text()).toBe('复制成功');
-  expect(pill.classes()).toContain('status-pill-ok');
-  expect(okRow.find('.err-msg').exists()).toBe(false);
+test('R60: cell tooltip lists each partner link + status + lastSuccessTime', async () => {
+  const w = mountView();
+  await flushPromises();
+  const cell = w.find('[data-test="cell-厦门站点-核心站点"]');
+  const tip = cell.attributes('title');
+  expect(tip).toContain('厦门站点 → 核心站点');
+  expect(tip).toContain('1 条链路');
+  expect(tip).toContain('MOCK-XMADSRV1 → DC-BJ-01');
+  expect(tip).toContain('RPC server unavailable');
+  expect(tip).toContain('暂无成功记录');
 });
 
-test('round-45: status pill renders 失败 + error message for statusCode=2', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
+test('R60: cell with no links has tooltip saying "无复制链路"', async () => {
+  const w = mountView();
   await flushPromises();
-
-  const errRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
-  expect(errRow.exists()).toBe(true);
-  const pill = errRow.find('.status-pill');
-  expect(pill.exists()).toBe(true);
-  expect(pill.text()).toBe('失败');
-  expect(pill.classes()).toContain('status-pill-err');
-  // Inline error message visible
-  expect(errRow.find('.err-msg').text()).toContain('RPC server unavailable');
+  const cell = w.find('[data-test="cell-核心站点-上海站点"]');
+  expect(cell.attributes('title')).toContain('无复制链路');
 });
 
-test('round-45: matrix table headers show caret / 类型 / 伙伴 / 状态 / 最近成功', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
+// ── R60: error + empty + polling ──────────────────────────────────────
+
+test('R60: API error surfaces in error banner', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: { primaries: [], siteRefreshSeconds: 10 } });
+  const w = mountView();
   await flushPromises();
-  const headers = w.findAll('section.site-block .dc-block table thead th');
-  const texts = headers.map(h => h.text());
-  expect(texts).toContain('类型');
-  expect(texts).toContain('伙伴站点');
-  expect(texts).toContain('伙伴 DC');
-  expect(texts).toContain('当前状态');
-  expect(texts).toContain('最近成功');
-  // round-45: no port headers
-  expect(texts.some(t => /^\d+$/.test(t))).toBe(false);
-  expect(texts.some(t => t.includes('端口'))).toBe(false);
+  // No primaries → "暂无站点" empty state shows (not the error banner).
+  expect(w.find('.empty').text()).toContain('暂无站点');
 });
 
-test('round-45: caret button starts collapsed (▶)', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
+test('R60: API rejection surfaces in error banner', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockRejectedValue(new Error('boom'));
+  const w = mountView();
   await flushPromises();
-
-  const caret = w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]');
-  expect(caret.exists()).toBe(true);
-  expect(caret.text()).toBe('▶');
-  // No attempts row initially
-  expect(w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]').exists()).toBe(false);
+  expect(w.find('.error-banner').exists()).toBe(true);
 });
 
-test('round-45: clicking caret expands row + lazy-fetches pair-history', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const entries = [
-    { attemptAt: '2026-08-28T01:00:30Z', statusCode: 0,
-      durationMs: 1234, objectsTransferred: 42,
-      lastSuccessTime: '2026-08-28T01:00:00Z', errorMessage: null },
-    { attemptAt: '2026-08-28T00:55:00Z', statusCode: 2,
-      durationMs: null, objectsTransferred: null,
-      lastSuccessTime: null, errorMessage: 'RPC server unavailable' }
-  ];
-  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload(entries));
-
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
-  await flushPromises();
-  expect(dashboardApi.getSiteReplicationMatrixPairHistory).not.toHaveBeenCalled();
-
-  // Click the caret — calls API with dest=peerDc, source=thisDC
-  await w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]').trigger('click');
-  await flushPromises();
-
-  expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1);
-  const callArgs = dashboardApi.getSiteReplicationMatrixPairHistory.mock.calls[0];
-  // signature: getSiteReplicationMatrixPairHistory(destDc, sourceDc, limit)
-  expect(callArgs[0]).toBe('DC-BJ-02');
-  expect(callArgs[1]).toBe('DC-BJ-01');
-  expect(callArgs[2]).toBe(10);
-
-  const attemptsRow = w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]');
-  expect(attemptsRow.exists()).toBe(true);
-  expect(attemptsRow.findAll('.att-row')).toHaveLength(2);
-
-  // Caret flipped to ▼
-  expect(w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]').text()).toBe('▼');
-});
-
-test('round-45: second click on caret collapses without re-fetching', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload([]));
-
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
-  await flushPromises();
-
-  const caret = w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]');
-  await caret.trigger('click'); await flushPromises();
-  expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1);
-  await caret.trigger('click'); await flushPromises();
-  expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1); // unchanged
-  expect(w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]').exists()).toBe(false);
-});
-
-test('round-45: empty history entries render "暂无历史记录"', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload([]));
-
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
-  await flushPromises();
-  await w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]').trigger('click');
-  await flushPromises();
-  expect(w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]').text()).toContain('暂无历史记录');
-});
-
-test('polling: re-fetches every refreshSeconds * 1000 ms', async () => {
+test('R60: polling re-fetches every refreshSeconds * 1000 ms', async () => {
   vi.useFakeTimers();
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
+  const w = mountView();
   await flushPromises();
   expect(dashboardApi.getSiteReplicationMatrixAll).toHaveBeenCalledTimes(1);
   await vi.advanceTimersByTimeAsync(10_000);
   expect(dashboardApi.getSiteReplicationMatrixAll.mock.calls.length).toBeGreaterThanOrEqual(2);
 });
 
-test('clears interval on unmount', async () => {
+test('R60: clears polling interval on unmount', async () => {
   vi.useFakeTimers();
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
+  const w = mountView();
   await flushPromises();
   w.unmount();
   await vi.advanceTimersByTimeAsync(30_000);
   expect(dashboardApi.getSiteReplicationMatrixAll).toHaveBeenCalledTimes(1);
 });
 
-test('round-32: each partner row has a 类型 cell with within/bridgehead tag', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+// ── R60: tolerance for many sites ──────────────────────────────────────
+
+test('R60: many sites still render — single N×N matrix, no per-DC drill-down', async () => {
+  // Generate 8 sites × ~5 partner links each → 40-link payload.
+  const primaries = [];
+  for (let i = 0; i < 8; i++) {
+    const siteName = `站点${i + 1}`;
+    const peers = [];
+    for (let j = 0; j < 5; j++) {
+      const otherIdx = (i + j + 1) % 8;
+      peers.push({
+        peerDc: `DC-${otherIdx + 1}-01`,
+        peerSite: `站点${otherIdx + 1}`,
+        statusCode: (j === 0 && i % 4 === 0) ? 2 : (j === 1 ? 1 : 0),
+        errorMessage: (j === 0 && i % 4 === 0) ? 'boom' : null,
+        lastAttemptTime: '2026-08-28T01:00:30Z',
+        lastSuccessTime: (j === 0 && i % 4 === 0) ? null : '2026-08-28T01:00:00Z'
+      });
+    }
+    primaries.push({
+      dcName: `DC-${i + 1}-01`,
+      siteId: i + 1,
+      siteName,
+      regionCode: null,
+      isHub: i === 0,
+      dcs: [{ dcName: `DC-${i + 1}-01`, osVersion: 'Win2022' }],
+      dcPartners: [{ dcName: `DC-${i + 1}-01`, partners: peers }]
+    });
+  }
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({
+    data: { siteRefreshSeconds: 10, primaries }
   });
+  const w = mountView();
   await flushPromises();
-
-  const withinRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
-  expect(withinRow.find('.peer-tag-within').exists()).toBe(true);
-  expect(withinRow.find('.peer-tag-within').text()).toBe('本站');
-
-  const bridgeheadRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
-  expect(bridgeheadRow.find('.peer-tag-bridgehead').exists()).toBe(true);
-  expect(bridgeheadRow.find('.peer-tag-bridgehead').text()).toBe('桥头');
+  // 8 row-heads + 8 col-heads + 8×8=64 cells.
+  expect(w.findAll('th.row-head')).toHaveLength(8);
+  expect(w.findAll('th.col-head')).toHaveLength(8);
+  const cells = w.findAll('td.cell');
+  expect(cells).toHaveLength(64);
+  // No per-DC drill-down — no .dc-block anywhere.
+  expect(w.find('.dc-block').exists()).toBe(false);
+  // No caret buttons (no expansion).
+  expect(w.find('.caret-btn').exists()).toBe(false);
+  // No status pill (color cells only).
+  expect(w.find('.status-pill').exists()).toBe(false);
 });
 
-test('round-36: empty dcPartners array renders "该站点暂无 DC" empty state', async () => {
-  const empty = {
-    siteRefreshSeconds: 10,
-    primaries: [{
-      dcName: 'DC-X', siteId: 9, siteName: '空站点',
-      regionCode: null, isHub: false, isBridgehead: false,
-      dcs: [], dcPartners: []
-    }]
-  };
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: empty });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
+// ── R60: nothing left from R45/R47/R49 ────────────────────────────────
+
+test('R60: legacy features gone — no port health, no FSMO badges, no history, no fleet ribbon', async () => {
+  const w = mountView();
   await flushPromises();
-  const blocks = w.findAll('section.site-block');
-  expect(blocks).toHaveLength(1);
-  expect(blocks[0].text()).toContain('该站点暂无 DC');
+  expect(w.find('.port-cell').exists()).toBe(false);
+  expect(w.find('.port-summary').exists()).toBe(false);
+  expect(w.find('.role-badge').exists()).toBe(false);
+  expect(w.find('.fleet-ribbon').exists()).toBe(false);
+  expect(w.find('.attempts-row').exists()).toBe(false);
+  expect(w.find('.err-banner').exists()).toBe(false);
+  expect(w.find('.status-pill').exists()).toBe(false);
+  // The view never calls getSiteReplicationMatrixPairHistory.
+  // (Old test imported + reset that mock; new file doesn't import it.)
 });
