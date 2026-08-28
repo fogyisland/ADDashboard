@@ -755,44 +755,38 @@ test("GET /api/dashboard/site-replication-matrix/pair-history: clamps limit to [
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r2.body.limit, 10);
 });
-// ----- REPLICATION LOG MONITOR (复制日志监控) — round-42 -----
+// ----- PARTNER PORT HEALTH MONITOR (复制伙伴端口健康监控) — round-47 -----
 //
-// The route mirrors /api/dashboard/site-replication-matrix/all but augments
-// every partner entry with attempts[] (latest 10 connection details from
-// ad_replication_history). Tests pin the envelope, the auth gate, the
-// history grouping + slicing, and the inbound-only partner filter.
+// Renamed from 复制日志监控 (round-42) in round-47. The route mirrors
+// /api/dashboard/site-replication-matrix/all (per-DC partner tables,
+// inbound-only) but augments every partner with portHealth[] (latest
+// per-(source_dc, dest_dc) partner-port probe) and configuredPorts[]
+// (the global system_ports list). The replication-attempts caret history
+// (R42/R46) is intentionally dropped — that surface is exclusive to
+// 复制状态概览's inline expansion via /pair-history. Tests pin the
+// envelope, the auth gate, the inbound-only partner filter, and the
+// port-health wire shape.
 
-test("GET /api/dashboard/replication-log/all: 401 when no token", async () => {
+test("GET /api/dashboard/partner-port-health/all: 401 when no token", async () => {
   _setDbForTest(buildMockDb().standard());
   const app = buildApp();
-  const r = await supertest(app).get("/api/dashboard/replication-log/all");
+  const r = await supertest(app).get("/api/dashboard/partner-port-health/all");
   assert.equal(r.status, 401);
 });
 
-test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to last 10 grouped by source/dest/naming_context", async () => {
-  // Mirror the matrix/all fixture: 2 sites, 1 cross-link, then add a
-  // history table with 12 attempts for that cross-link — only the 10 most
-  // recent (by collected_at DESC) should surface in attempts[].
+test("GET /api/dashboard/partner-port-health/all: 200 hub-first, no attempts field on partners", async () => {
+  // 2026-08-28 round-47 dropped two R42/R46 attempts-history tests:
+  //   - "attempts slice to last 10 grouped by source/dest/naming_context"
+  //     (route no longer queries ad_replication_history)
+  //   - "attempts grouped per naming_context (different NCs don't share attempts)"
+  //     (attempts[] field removed from response envelope)
+  // The history surface moved exclusively to 复制状态概览's inline caret
+  // via /pair-history. This test pins the "no attempts field" contract.
+  // Mirror the matrix/all fixture: 2 sites, 1 cross-link. R47: the
+  // history-rows mock is gone because the route no longer queries
+  // ad_replication_history; partners do NOT carry an `attempts` field.
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
-
-  // Build 12 history rows for DC-BJ-01 → DC-SH-01, DC=contoso,DC=com.
-  // collected_at decreases by 5 min each step; the route picks the 10
-  // most recent (newest first).
-  const historyRows = [];
-  for (let i = 0; i < 12; i++) {
-    const t = new Date(la.getTime() - i * 5 * 60 * 1000);
-    historyRows.push({
-      source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
-      status_code: i === 3 ? 2 : 0,                  // one failure deep in the past
-      last_success_time: i === 3 ? null : t,
-      last_attempt_time: t,
-      attempt_duration_ms: 100 + i * 5,
-      objects_transferred: i === 3 ? null : 200 + i * 10,
-      error_message: i === 3 ? "Target principal name incorrect" : null,
-      collected_at: t
-    });
-  }
 
   const db = buildMockDb([
     { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
@@ -813,9 +807,6 @@ test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to l
         { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 }
       ]
     },
-    { match: /FROM\s+ad_replication_history/i,
-      rows: historyRows
-    },
     { match: /site_matrix_refresh_seconds/i,
       rows: [{ config_value: "12" }]
     }
@@ -823,7 +814,7 @@ test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to l
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   assert.equal(r.body.refreshSeconds, 12);
@@ -849,30 +840,12 @@ test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to l
   assert.equal(partner.statusCode, 0);
   assert.equal(partner.direction, "in");
 
-  // attempts: only the 10 most recent by collected_at DESC survive the slice.
-  assert.equal(partner.attempts.length, 10, "12 history rows → slice to 10");
-  // The newest attempt is row i=0 (collected_at = la); verify the order.
-  assert.equal(partner.attempts[0].attemptAt, new Date(la).toISOString());
-  // The 3rd-deepest (i=3) had status_code=2 — must NOT be in the top 10
-  // (i=0..9 is the kept slice; i=3 is in the slice as index 3). Verify the
-  // failure entry shows up at index 3 with its error message.
-  assert.equal(partner.attempts[3].statusCode, 2);
-  assert.equal(partner.attempts[3].errorMessage, "Target principal name incorrect");
-  assert.equal(partner.attempts[3].durationMs, 115);
-  assert.equal(partner.attempts[3].objectsTransferred, null);
-
-  // durationMs + objectsTransferred populated for success rows.
-  assert.equal(partner.attempts[0].statusCode, 0);
-  assert.equal(partner.attempts[0].durationMs, 100);
-  assert.equal(partner.attempts[0].objectsTransferred, 200);
-
-  // lastSuccessTime on success rows equals collected_at (per mock fixture).
-  assert.equal(partner.attempts[0].lastSuccessTime, new Date(la).toISOString());
+  // R47: attempts field removed — the route is port-health only.
+  assert.equal(partner.attempts, undefined, "R47: attempts[] field removed");
 });
 
-test("GET /api/dashboard/replication-log/all: empty history returns partners with empty attempts[]", async () => {
+test("GET /api/dashboard/partner-port-health/all: empty partners returns DC with zero entries", async () => {
   const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
   const db = buildMockDb([
     { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
       rows: [{ site_id: 1, site_name: "S", region_code: "BJ", is_hub: 1, description: null }]
@@ -881,13 +854,12 @@ test("GET /api/dashboard/replication-log/all: empty history returns partners wit
       rows: [{ dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" }]
     },
     { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i, rows: [] },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
     { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   assert.equal(r.body.sites.length, 1);
@@ -895,77 +867,21 @@ test("GET /api/dashboard/replication-log/all: empty history returns partners wit
   assert.equal(r.body.sites[0].dcs[0].partners.length, 0);
 });
 
-test("GET /api/dashboard/replication-log/all: 500 on DB error", async () => {
+test("GET /api/dashboard/partner-port-health/all: 500 on DB error", async () => {
   _setDbForTest(buildThrowingPool("boom"));
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 500);
   assert.equal(r.body.error, "internal");
 });
 
-test("GET /api/dashboard/replication-log/all: attempts grouped per naming_context (different NCs don't share attempts)", async () => {
-  // Two replication links between the same source/dest pair but with
-  // different naming_contexts. Each link must keep its own attempts[] —
-  // the route groups by (source, dest, naming_context), not (source, dest)
-  // alone. If grouping were by (source, dest) only, attempts from one NC
-  // would leak into the other.
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
-      rows: [{ site_id: 1, site_name: "S", region_code: "BJ", is_hub: 1, description: null },
-        { site_id: 2, site_name: "T", region_code: "SH", is_hub: 0, description: null }]
-    },
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
-      rows: [
-        { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
-        { dc_name: "DC-B1", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-B1" }
-      ]
-    },
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
-      rows: [
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com",            status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 },
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "CN=Configuration,DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 2 }
-      ]
-    },
-    { match: /FROM\s+ad_replication_history/i,
-      rows: [
-        // NC1: 2 attempts (DC=contoso,DC=com)
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: la, last_attempt_time: la, attempt_duration_ms: 100, objects_transferred: 50, error_message: null, collected_at: la },
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: new Date(la.getTime() - 60000), last_attempt_time: new Date(la.getTime() - 60000), attempt_duration_ms: 120, objects_transferred: 40, error_message: null, collected_at: new Date(la.getTime() - 60000) },
-        // NC2: 1 attempt (CN=Configuration,...)
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "CN=Configuration,DC=contoso,DC=com", status_code: 0, last_success_time: la, last_attempt_time: la, attempt_duration_ms: 200, objects_transferred: 80, error_message: null, collected_at: la }
-      ]
-    },
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  // Find the spoke site (T) — its DC DC-B1 is the inbound target of both
-  // links from DC-A1.
-  const spoke = r.body.sites.find(s => s.siteName === "T");
-  assert.equal(spoke.dcs[0].partners.length, 2, "two distinct NCs produce two partner rows");
-  // partners don't carry namingContext in the response (it's implicit per
-  // partner entry since dedup is by (source, dest, naming_context)).
-  // But the attempts[] count must match each NC's history row count.
-  // Sort by attempts.length to distinguish.
-  const sorted = spoke.dcs[0].partners.slice().sort((a, b) => a.attempts.length - b.attempts.length);
-  assert.equal(sorted[0].attempts.length, 1, "NC with 1 history row → 1 attempt");
-  assert.equal(sorted[1].attempts.length, 2, "NC with 2 history rows → 2 attempts");
-});
-
-// 2026-08-28 round-43 (superseded by R46-T4): the original R43 test emitted
-// BOTH directions per link. R46 restricts 复制日志监控 to inbound-only
-// ("出战没有意义,出战对其他机器就是入站"). The inbound destination (SH-01)
-// still sees the link with direction='in'; the source (BJ-01) does NOT.
-// The two-direction surface stays alive in 复制状态概览 (R36 view).
-test("GET /api/dashboard/replication-log/all: inbound-only filter — dest gets direction='in', source has no partner", async () => {
+// 2026-08-28 round-46 (preserved in R47): filter partners to inbound-only.
+// The inbound destination (SH-01) still sees the link with direction='in';
+// the source (BJ-01) does NOT. The two-direction surface stays alive in
+// 复制状态概览 (R36 view).
+test("GET /api/dashboard/partner-port-health/all: inbound-only filter — dest gets direction='in', source has no partner", async () => {
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
   const db = buildMockDb([
@@ -988,13 +904,12 @@ test("GET /api/dashboard/replication-log/all: inbound-only filter — dest gets 
           status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
       ]
     },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
     { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   // Hub site (核心站点) — BJ-01 has NO partners (outbound side filtered)
@@ -1011,7 +926,7 @@ test("GET /api/dashboard/replication-log/all: inbound-only filter — dest gets 
 
 // 2026-08-28 round-46 (supersedes R43 within-site variant): R46 inbound-only
 // filter — A1 (source) gets no partner; A2 (dest) sees A1 with direction='in'.
-test("GET /api/dashboard/replication-log/all: within-site link — only dest side surfaces with direction='in' (R46 inbound-only)", async () => {
+test("GET /api/dashboard/partner-port-health/all: within-site link — only dest side surfaces with direction='in' (R46 inbound-only)", async () => {
   // Within-site link A1→A2: A2 sees A1 with direction='in' (A2 receives from A1);
   // A1 sees no partner (outbound side filtered — R46).
   const ls = new Date("2026-08-27T10:00:00Z");
@@ -1033,13 +948,12 @@ test("GET /api/dashboard/replication-log/all: within-site link — only dest sid
           status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 }
       ]
     },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
     { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   const site = r.body.sites[0];
@@ -1055,7 +969,7 @@ test("GET /api/dashboard/replication-log/all: within-site link — only dest sid
 // 2026-08-28 round-46: route attaches configuredPorts[] and portHealth[] to
 // each partner. Tests pin both fields' shapes (empty when DB has no port
 // data, populated when latestPartnerPortPerPair + ports.list return rows).
-test("GET /api/dashboard/replication-log/all: partners carry empty configuredPorts[]/portHealth[] when no port data", async () => {
+test("GET /api/dashboard/partner-port-health/all: partners carry empty configuredPorts[]/portHealth[] when no port data", async () => {
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
   const db = buildMockDb([
@@ -1077,14 +991,13 @@ test("GET /api/dashboard/replication-log/all: partners carry empty configuredPor
           status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
       ]
     },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
     { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
     // latestPartnerPortPerPair + ports.list intentionally absent — route must default to []
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   const sh01 = r.body.sites[1].dcs[0];
@@ -1096,7 +1009,7 @@ test("GET /api/dashboard/replication-log/all: partners carry empty configuredPor
   assert.equal(partner.portHealth.length, 0, "no latestPartnerPortPerPair rows → empty portHealth");
 });
 
-test("GET /api/dashboard/replication-log/all: partners carry configuredPorts[] + portHealth[] from latestPartnerPortPerPair and ports.list", async () => {
+test("GET /api/dashboard/partner-port-health/all: partners carry configuredPorts[] + portHealth[] from latestPartnerPortPerPair and ports.list", async () => {
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
   const partnerPortStatusJson = JSON.stringify({
@@ -1125,7 +1038,6 @@ test("GET /api/dashboard/replication-log/all: partners carry configuredPorts[] +
           status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
       ]
     },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
     { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] },
     // latestPartnerPortPerPair row keyed on (source_dc=BJ-01, dest_dc=SH-01)
     // SQL: SELECT ... FROM ad_replication_status t1 WHERE t1.naming_context LIKE '__partner_ports__:%'
@@ -1148,7 +1060,7 @@ test("GET /api/dashboard/replication-log/all: partners carry configuredPorts[] +
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/partner-port-health/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   const sh01 = r.body.sites[1].dcs[0];
@@ -1164,6 +1076,13 @@ test("GET /api/dashboard/replication-log/all: partners carry configuredPorts[] +
   assert.equal(ph.lastAttemptTime, new Date(la).toISOString());
   assert.equal(ph.ports.length, 3);
   assert.deepEqual(ph.ports.map(p => p.port), [135, 445, 389]);
+  // R47 colour-rule data-layer inputs — view renders these via
+  // SLOW_THRESHOLD_MS=1000. Pin the inputs so the cell-matrix has
+  // known colour cases to render.
   assert.equal(ph.ports[0].ok, true);
-  assert.equal(ph.ports[2].ok, false);
+  assert.equal(ph.ports[0].latency, 4,    "latency 4 ≤ 1000 → green");
+  assert.equal(ph.ports[1].ok, true);
+  assert.equal(ph.ports[1].latency, 3,    "latency 3 ≤ 1000 → green");
+  assert.equal(ph.ports[2].ok, false,      "ok=false → red ✕");
+  assert.equal(ph.ports[2].latency, null);
 });

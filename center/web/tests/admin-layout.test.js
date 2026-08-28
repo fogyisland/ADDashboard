@@ -20,10 +20,11 @@ const EXPECTED_PATHS = [
   '/admin/member-servers', '/admin/server-groups',
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix/all',
-  // 2026-08-28 round-45 restoration: 复制日志监控 is a separate UI from
-  // 复制状态概览 (operator directive "那个和当前的复制状况概览是两个不同
-  // 界面"). The standalone drill-down view at /admin/replication-log/monitor
-  // is back; the matrix view keeps its inline caret expansion. Both coexist.
+  // 2026-08-28 round-47: standalone 复制伙伴端口健康监控 replaces the
+  // R45-restored 复制日志监控 (which listed replication-attempt history).
+  // Operator directive "在这边不叫复制日志监控了，改成复制伙伴端口健康
+  // 监控名称". Path /admin/replication-log/monitor preserved for
+  // backward-compat with any saved bookmarks; the label changed.
   '/admin/replication-log/monitor',
   '/admin/ports',
   '/admin/heartbeat-report', '/admin/operations-log', '/admin/packages',
@@ -44,13 +45,18 @@ test('renders 6 nav groups', () => {
 });
 
 test('renders all 17 nav-links with correct paths', () => {
-  // 2026-08-28 round-45 restoration: 15→17 nav-links (R42 复制日志监控
-  // restored as a separate UI alongside 复制状态概览).
+  // 2026-08-28 round-47: nav-link count stays at 17. R47 renames the
+  // label on the existing /admin/replication-log/monitor slot from
+  // 复制日志监控 → 复制伙伴端口健康监控 (no add/remove).
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
   expect(links.length).toBe(17);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
+  // R47: the /admin/replication-log/monitor slot now carries the new label.
+  const portHealthLink = links.find(a => a.attributes('href') === '/admin/replication-log/monitor');
+  expect(portHealthLink).toBeDefined();
+  expect(portHealthLink.text()).toBe('复制伙伴端口健康监控');
 });
 
 test('all groups open by default', () => {

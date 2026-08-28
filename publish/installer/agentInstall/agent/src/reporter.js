@@ -56,13 +56,13 @@ function baseUrl({ centerUrl, port }) {
 // PS script emits entries in PascalCase (SourceDc, DestDc, ...); center's
 // upsertStatus reads camelCase (sourceDc, destDc, ...). Convert at this boundary.
 //
-// This must forward ALL 16 fields of the ad_replication_status INSERT shape
-// (see center/src/services/replication.js rowParams). Any field omitted here
-// is silently dropped on the wire and lands as NULL in the DB — that was the
-// bug that kept partnerPortStatus and the 4 counters from ever reaching the
-// centre. collectedAt/agentId are forwarded for symmetry: postReport currently
-// takes them from the snapshot envelope, but per-entry values are the source
-// of truth in the PS1 rows.
+// 2026-08-28 round-46: partnerPortStatus field restored (R45 deletion undone
+// for 复制日志监控 view). The 16-column ad_replication_status INSERT shape
+// now includes partner_port_status again — bound at position 16, NULL for
+// non-partner-port rows. The route's portHealthByPair map reads
+// row.partnerPortStatus off these rows. Real agent emits PascalCase
+// (PartnerPortStatus) per buildReplicationStatusRows; mock emits
+// PartnerPortStatus via buildPartnerPortEntries (R46-T5/T6).
 export function toCamelEntry(e) {
   if (!e) return e;
   return {
@@ -81,10 +81,24 @@ export function toCamelEntry(e) {
     groupsCount: e.GroupsCount ?? e.groupsCount ?? null,
     gposCount: e.GposCount ?? e.gposCount ?? null,
     lockedCount: e.LockedCount ?? e.lockedCount ?? null,
-    // PS1 emits this already ConvertTo-Json'd (a string). Forward verbatim;
-    // the centre's rowParams JSON.stringify's non-null values, so a string
-    // stays a string end-to-end.
-    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null
+    // 2026-08-27 round-42 (复制日志监控): history table now carries
+    // attempt_duration_ms + objects_transferred. Forward both camelCase
+    // aliases — the real agent's collect-replication.ps1 emits them in
+    // camelCase (PowerShell AST converts AttemptDurationMs → attemptDurationMs
+    // automatically via ConvertTo-Json) and the mock's PascalCase form
+    // falls back to the `?.` chain. Centre's historyParams reads them
+    // off `row.attemptDurationMs` / `row.objectsTransferred`.
+    attemptDurationMs: e.AttemptDurationMs ?? e.attemptDurationMs ?? null,
+    objectsTransferred: e.ObjectsTransferred ?? e.objectsTransferred ?? null,
+    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null,
+    // Mock-only forwarder — lets mock-snapshot.mjs ship a synthetic
+    // `__history__:<hash>` NamingContext while preserving the real link
+    // NC alongside. The centre's historyParams strips the prefix and
+    // binds _realNamingContext instead so the stored row matches the
+    // link's NC (which the dashboard's historyByPair lookup joins on).
+    // Real agents never set this — the prefix-strip then becomes a no-op
+    // and the literal namingContext is bound.
+    _realNamingContext: e._realNamingContext ?? e.RealNamingContext ?? null
   };
 }
 
@@ -93,7 +107,7 @@ export function postHeartbeat({ centerUrl, agentToken, port, payload }) {
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/heartbeat`,
     headers: { 'X-Agent-Token': agentToken },
-    body: payload,
+    body: { source: 'heartbeat', ...payload },
   });
 }
 
@@ -103,6 +117,7 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
     url: `${baseUrl({ centerUrl, port })}/api/agent/report`,
     headers: { 'X-Agent-Token': agentToken },
     body: {
+      source: 'collect-replication',
       agentId: snapshot.AgentId ?? snapshot.agentId,
       collectedAt: snapshot.CollectedAt ?? snapshot.collectedAt,
       data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []

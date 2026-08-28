@@ -187,13 +187,11 @@ const VARIANTS = {
       // Filter on LIKE '__partner_ports__:%' (NOT IN the explicit values)
       // because the hash suffix makes an equality check impossible.
       latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_attempt_time, t1.partner_port_status FROM ad_replication_status t1 WHERE t1.naming_context LIKE '__partner_ports__:%' AND t1.source_dc <> t1.dest_dc AND t1.collected_at = (SELECT MAX(t2.collected_at) FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context LIKE '__partner_ports__:%') AND t1.collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE ORDER BY t1.source_dc, t1.dest_dc`,
-      // 2026-08-27 round-42 (复制日志监控): per-pair recent attempts. The
-      // dashboard groups rows client-side by (source_dc, dest_dc, naming_context)
-      // and slices to 10 per pair; the SQL just returns the rows ordered so
-      // the slice is "last 10 by collected_at DESC". The fresh window is
-      // 24h — operators care about the latest state, not 30-day trends.
-      // Index: ix_hist_pair_time covers WHERE+ORDER for the LIMIT walk.
-      replicationLogRecentAttempts: `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE collected_at >= UTC_TIMESTAMP() - INTERVAL 24 HOUR ORDER BY source_dc, dest_dc, naming_context, collected_at DESC`,
+      // 2026-08-28 round-47: replicationLogRecentAttempts helper removed —
+      // the 复制伙伴端口健康监控 route no longer embeds attempts[] on each
+      // partner row (port-health-only view). Per-pair history for the
+      // inline caret in 复制状态概览 still uses replicationLogPerPair
+      // below.
       // 2026-08-28 round-45: lazy-fetch per (source_dc, dest_dc) pair for the
       // "最近 10 条" expansion inside 复制状态概览. The 24h window mirrors
       // replicationLogRecentAttempts — operators care about recent state.
@@ -857,10 +855,11 @@ const VARIANTS = {
       // correlated subquery is the SQL Server idiom that mirrors the
       // MySQL MAX(t2.collected_at) = ... pattern.
       latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_attempt_time, t1.partner_port_status FROM ad_replication_status t1 OUTER APPLY (SELECT TOP 1 t2.collected_at AS max_collected_at FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context LIKE '__partner_ports__:%' ORDER BY t2.collected_at DESC) m WHERE t1.naming_context LIKE '__partner_ports__:%' AND t1.source_dc <> t1.dest_dc AND t1.collected_at = m.max_collected_at AND t1.collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME()) ORDER BY t1.source_dc, t1.dest_dc`,
-      // 2026-08-27 round-42 (复制日志监控) MSSQL mirror of the MySQL helper
-      // above. 24h window matches the MySQL branch (operators care about the
-      // latest state). SYSUTCDATETIME() is the SQL Server UTC clock.
-      replicationLogRecentAttempts: `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY source_dc, dest_dc, naming_context, collected_at DESC`,
+      // 2026-08-28 round-47: replicationLogRecentAttempts helper removed —
+      // the 复制伙伴端口健康监控 route no longer embeds attempts[] on each
+      // partner row (port-health-only view). Per-pair history for the
+      // inline caret in 复制状态概览 still uses replicationLogPerPair
+      // below.
       // 2026-08-28 round-45: MSSQL mirror of replicationLogPerPair. TOP (?)
       // must be the FIRST bound param (tedious driver order: literal value
       // precedes the WHERE-bound ones — see center/src/db/drivers/mssql.js).

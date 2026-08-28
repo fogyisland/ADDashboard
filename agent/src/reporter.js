@@ -56,12 +56,13 @@ function baseUrl({ centerUrl, port }) {
 // PS script emits entries in PascalCase (SourceDc, DestDc, ...); center's
 // upsertStatus reads camelCase (sourceDc, destDc, ...). Convert at this boundary.
 //
-// 2026-08-28 round-45: partnerPortStatus field removed (R35 port monitoring
-// surface deleted end-to-end — collect-replication.ps1, route, view, mock).
-// The 16-column ad_replication_status INSERT shape is now 15 columns.
-// collectedAt/agentId are forwarded for symmetry: postReport currently takes
-// them from the snapshot envelope, but per-entry values are the source of
-// truth in the PS1 rows.
+// 2026-08-28 round-46: partnerPortStatus field restored (R45 deletion undone
+// for 复制日志监控 view). The 16-column ad_replication_status INSERT shape
+// now includes partner_port_status again — bound at position 16, NULL for
+// non-partner-port rows. The route's portHealthByPair map reads
+// row.partnerPortStatus off these rows. Real agent emits PascalCase
+// (PartnerPortStatus) per buildReplicationStatusRows; mock emits
+// PartnerPortStatus via buildPartnerPortEntries (R46-T5/T6).
 export function toCamelEntry(e) {
   if (!e) return e;
   return {
@@ -89,6 +90,7 @@ export function toCamelEntry(e) {
     // off `row.attemptDurationMs` / `row.objectsTransferred`.
     attemptDurationMs: e.AttemptDurationMs ?? e.attemptDurationMs ?? null,
     objectsTransferred: e.ObjectsTransferred ?? e.objectsTransferred ?? null,
+    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null,
     // Mock-only forwarder — lets mock-snapshot.mjs ship a synthetic
     // `__history__:<hash>` NamingContext while preserving the real link
     // NC alongside. The centre's historyParams strips the prefix and

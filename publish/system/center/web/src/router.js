@@ -14,11 +14,14 @@ import AuditView from './views/admin/AuditView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixAllView from './views/admin/SiteReplicationMatrixAllView.vue';
-// 2026-08-28 round-45 restoration: 复制日志监控 is a STANDALONE drill-down
-// view per operator directive "那个和当前的复制状况概览是两个不同界面".
-// The view lists per-DC partner tables with expandable last-10 attempts;
-// 复制状态概览 stays as the high-level overview with inline caret history.
-import ReplicationLogMonitorView from './views/admin/ReplicationLogMonitorView.vue';
+// 2026-08-28 round-47: 复制伙伴端口健康监控 — per-site/DC port-health
+// surface. Replaces the standalone ReplicationLogMonitorView (which
+// listed replication-attempt history). Operator directive "在这边不叫
+// 复制日志监控了，改成复制伙伴端口健康监控名称" + port-health is now
+// the only surface for this URL (no caret expansion). Path preserved at
+// /admin/replication-log/monitor for backward-compat with any saved
+// bookmarks; the label and component change.
+import PartnerPortHealthView from './views/admin/PartnerPortHealthView.vue';
 import OperationsLogView from './views/admin/OperationsLogView.vue';
 import PortsView from './views/admin/PortsView.vue';
 import PackagesView from './views/admin/PackagesView.vue';
@@ -52,10 +55,11 @@ const routes = [
   // Replaced by /admin/site-replication-matrix/all (renamed 复制状态概览)
   // which is the unified per-primary-DC replication overview.
   { path: '/admin/site-replication-matrix/all', component: SiteReplicationMatrixAllView, meta: { perm: 'admin:users' } },
-  // 2026-08-28 round-45 restoration: 复制日志监控 is a separate UI from
-  // 复制状态概览 — the per-DC partner tables with expandable last-10
-  // attempts, used as the operator's drill-down view.
-  { path: '/admin/replication-log/monitor', component: ReplicationLogMonitorView, meta: { perm: 'admin:users' } },
+  // 2026-08-28 round-47: 复制伙伴端口健康监控. The path stays
+  // /admin/replication-log/monitor for backward-compat with any saved
+  // bookmarks; the component and label change. Port-health cells are the
+  // only surface (no replication-attempts caret).
+  { path: '/admin/replication-log/monitor', component: PartnerPortHealthView, meta: { perm: 'admin:users' } },
   { path: '/admin/migrations', component: () => import('./views/admin/SchemaMigrationsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/admin/ports', component: PortsView, meta: { perm: 'admin:users' } },
   { path: '/admin/heartbeat-report', component: () => import('./views/admin/HeartbeatReportMonitorView.vue'), meta: { perm: 'admin:users' } },

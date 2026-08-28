@@ -500,6 +500,16 @@ export function dashboardRouter({ config, logger, db }) {
   // directive: "复制日志监控 不对,我们之前需要的是监控入站信息,同时监控
   // 设定端口健康" — this view is now both inbound monitoring AND the
   // configured-port health check.
+  // 2026-08-28 round-47: renamed 复制日志监控 → 复制伙伴端口健康监控.
+  // Operator directive "在这边不叫复制日志监控了，改成复制伙伴端口健康
+  // 监控名称,否则会引起误解". The route drops the replication-attempt
+  // history surface — `attempts[]` is no longer emitted (R42 caret
+  // history is now exclusive to 复制状态概览's inline expansion via
+  // /pair-history). This view is port-health only: per-(site, DC,
+  // partner) cell matrix where each cell carries the latest TCP-probe
+  // latency (ms) for one of the configured ports, rendered with the
+  // R47 colour thresholds (≤1000ms green / >1000ms yellow / ✕ red /
+  // — gray).
   //
   // Response envelope:
   //   {
@@ -515,9 +525,8 @@ export function dashboardRouter({ config, logger, db }) {
   //                 peerType, peerDc, peerSite, peerSiteIsHub,
   //                 statusCode, lastSuccessTime, lastAttemptTime,
   //                 durationMinutes,
-  //                 attempts: [ {attemptAt, statusCode, durationMs,
-  //                              objectsTransferred, lastSuccessTime,
-  //                              errorMessage}, ... ]  // last 10 by time DESC
+  //                 configuredPorts: [{ port, label }, ...],
+  //                 portHealth: [{ statusCode, lastAttemptTime, ports: [{port, ok, latency}, ...] }]
   //               }
   //             ]
   //           }
@@ -525,16 +534,15 @@ export function dashboardRouter({ config, logger, db }) {
   //       }
   //     ]
   //   }
-  r.get('/api/dashboard/replication-log/all', auth, async (_req, res) => {
+  r.get('/api/dashboard/partner-port-health/all', auth, async (_req, res) => {
     try {
       const db = getDb();
 
-      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: histRows }, { rows: cfgRows }, { rows: portRows }, { rows: cfgPortRows }] =
+      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: cfgRows }, { rows: portRows }, { rows: cfgPortRows }] =
         await Promise.all([
           db.query(db.sql.dashboard.allSitesOrdered, []),
           db.query(db.sql.dashboard.allDcsBySite, []),
           db.query(db.sql.dashboard.allReplicationLinks, []),
-          db.query(db.sql.dashboard.replicationLogRecentAttempts, []),
           db.query(db.sql.dashboard.refreshSeconds, []),
           db.query(db.sql.dashboard.latestPartnerPortPerPair, []),
           db.query(db.sql.ports.list, [])
@@ -585,13 +593,6 @@ export function dashboardRouter({ config, logger, db }) {
 
       const sep = String.fromCharCode(1);
 
-      const historyByPair = new Map();
-      for (const h of histRows) {
-        const k = `${h.source_dc}${sep}${h.dest_dc}${sep}${h.naming_context}`;
-        if (!historyByPair.has(k)) historyByPair.set(k, []);
-        historyByPair.get(k).push(h);
-      }
-
       // 2026-08-28 round-46: index partner-port probe results by
       // (source_dc, dest_dc). Each entry's partner_port_status JSON is
       // parsed and surfaced as portHealth[] on the partner row.
@@ -630,7 +631,8 @@ export function dashboardRouter({ config, logger, db }) {
           // 2026-08-28 round-46: filter to inbound only — operator directive
           // "出战没有意义,出战对其他机器就是入站" (re-stated for R46). The
           // out-bound side still surfaces in 复制状态概览 (R36) where the
-          // partner grid enumerates both, but 复制日志监控 is INBOUND-first.
+          // partner grid enumerates both, but 复制伙伴端口健康监控 is
+          // INBOUND-first.
           const sides = [];
           if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
             sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
@@ -677,17 +679,10 @@ export function dashboardRouter({ config, logger, db }) {
               lastAttemptTime: toIso(l.last_attempt_time),
               durationMinutes: l.duration_minutes,
               configuredPorts,
-              portHealth,
-              attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
-                .slice(0, 10)
-                .map(h => ({
-                  attemptAt:        toIso(h.collected_at),
-                  statusCode:       h.status_code,
-                  durationMs:       h.attempt_duration_ms,
-                  objectsTransferred: h.objects_transferred,
-                  lastSuccessTime:  toIso(h.last_success_time),
-                  errorMessage:     h.error_message
-                }))
+              portHealth
+              // 2026-08-28 round-47: attempts[] field removed — this view
+              // is port-health only. Replication-attempt history is
+              // exclusive to 复制状态概览's inline caret via /pair-history.
             });
           }
         }
@@ -726,7 +721,7 @@ export function dashboardRouter({ config, logger, db }) {
       const refreshSeconds = Number(cfgRows[0]?.config_value || 10);
       res.json({ refreshSeconds, sites });
     } catch (e) {
-      logger.error({ err: e }, 'replication-log/all failed');
+      logger.error({ err: e }, 'partner-port-health/all failed');
       res.status(500).json({ error: 'internal' });
     }
   });

@@ -147,23 +147,29 @@ test('postHeartbeat stamps source="heartbeat" on the body', async () => {
   });
 });
 
-// --- Round-45: partnerPortStatus removed end-to-end --------------------
+// --- Round-46: partnerPortStatus restored end-to-end -------------------
 //
-// The R35 port monitoring surface is gone (collect-replication.ps1 no longer
-// emits `__partner_ports__:%` rows, no partnerPortStatus column on the
-// ad_replication_status INSERT shape). toCamelEntry now emits exactly the
-// 15 INSERT-shape fields the centre's rowParams() reads. These tests pin
-// the agent→centre boundary contract post-round-45.
+// R46 (复制日志监控 合并入站 + 端口健康) undid R45's partnerPortStatus
+// removal. The 16-column ad_replication_status INSERT shape now includes
+// partner_port_status at position 16 — bound as JSON string on
+// `__partner_ports__:%` rows. The agent boundary must forward
+// PascalCase `PartnerPortStatus` to camelCase `partnerPortStatus` so the
+// centre's rowParams() can read it off the row and bind it at position 16.
+// Without this forwarder the column was always NULL → route's
+// portHealthByPair map always empty → /replication-log/all port health
+// surface empty (regression of R35 surface restored in R46).
 
-// The canonical 15 camelCase keys the centre's rowParams() reads.
+// The canonical 16 camelCase keys the centre's rowParams() reads.
 // Keep in sync with center/src/services/replication.js.
 const INSERT_SHAPE_KEYS = [
   'collectedAt', 'agentId', 'sourceDc', 'destDc', 'sourceSite', 'destSite',
   'namingContext', 'lastSuccessTime', 'lastAttemptTime', 'statusCode',
-  'errorMessage', 'usersCount', 'groupsCount', 'gposCount', 'lockedCount'
+  'errorMessage', 'usersCount', 'groupsCount', 'gposCount', 'lockedCount',
+  'partnerPortStatus'
 ];
 
-test('toCamelEntry forwards all 15 INSERT-shape fields from a PascalCase entry', () => {
+test('toCamelEntry forwards all 16 INSERT-shape fields including partnerPortStatus (R46 restore)', () => {
+  const portJson = '{"checked_at":"...","ports":{}}';
   const out = toCamelEntry({
     CollectedAt: '2026-08-20T01:02:03.000Z',
     AgentId: 'DC1',
@@ -171,7 +177,7 @@ test('toCamelEntry forwards all 15 INSERT-shape fields from a PascalCase entry',
     DestDc: 'DC2',
     SourceSite: 'S1',
     DestSite: 'S2',
-    NamingContext: 'DC=contoso,DC=com',
+    NamingContext: '__partner_ports__:DC2',
     LastSuccessTime: '2026-08-20T01:02:03.000Z',
     LastAttemptTime: '2026-08-20T01:02:03.000Z',
     StatusCode: 0,
@@ -180,21 +186,16 @@ test('toCamelEntry forwards all 15 INSERT-shape fields from a PascalCase entry',
     GroupsCount: 22,
     GposCount: 33,
     LockedCount: 44,
-    // partnerPortStatus used to be on the wire — round-45 deletes it
-    // entirely. The PS1 no longer emits it; if a stale PS1 somehow still
-    // does, toCamelEntry must drop the value (not forward a stray camelCase
-    // key the centre's rowParams() doesn't read).
-    PartnerPortStatus: '{"checked_at":"...","ports":{}}'
+    // R46: forward the PascalCase PartnerPortStatus as camelCase
+    // partnerPortStatus so the centre's rowParams() can bind it at
+    // position 16. If we drop it here, /replication-log/all port health
+    // shows empty on every partner row.
+    PartnerPortStatus: portJson
   });
 
-  // Round-45 contract: the 15 INSERT-shape keys must all be present AND
-  // partnerPortStatus must be absent. attemptDurationMs / objectsTransferred
-  // / _realNamingContext are unrelated (round-42 history-attempt forwarders
-  // + mock-only NC rebind) — those are tested separately and don't change
-  // the agent→centre boundary contract.
   for (const k of INSERT_SHAPE_KEYS) {
     assert.ok(Object.prototype.hasOwnProperty.call(out, k),
-      `toCamelEntry must emit ${k} (round-45 15 INSERT-shape keys)`);
+      `toCamelEntry must emit ${k} (R46 16 INSERT-shape keys)`);
   }
 
   assert.equal(out.collectedAt, '2026-08-20T01:02:03.000Z');
@@ -203,7 +204,7 @@ test('toCamelEntry forwards all 15 INSERT-shape fields from a PascalCase entry',
   assert.equal(out.destDc, 'DC2');
   assert.equal(out.sourceSite, 'S1');
   assert.equal(out.destSite, 'S2');
-  assert.equal(out.namingContext, 'DC=contoso,DC=com');
+  assert.equal(out.namingContext, '__partner_ports__:DC2');
   assert.equal(out.lastSuccessTime, '2026-08-20T01:02:03.000Z');
   assert.equal(out.lastAttemptTime, '2026-08-20T01:02:03.000Z');
   assert.equal(out.statusCode, 0);
@@ -212,17 +213,17 @@ test('toCamelEntry forwards all 15 INSERT-shape fields from a PascalCase entry',
   assert.equal(out.groupsCount, 22);
   assert.equal(out.gposCount, 33);
   assert.equal(out.lockedCount, 44);
-  // partnerPortStatus must be ABSENT (not even present as null) so the
-  // wire shape is byte-for-byte the 15 INSERT-shape columns.
-  assert.equal(Object.prototype.hasOwnProperty.call(out, 'partnerPortStatus'), false,
-    'partnerPortStatus must not be on the wire after round-45');
+  // R46: partnerPortStatus must be forwarded as the original JSON string
+  // (centre's rowParams() JSON.stringify()es only when it's an object).
+  assert.equal(out.partnerPortStatus, portJson,
+    'partnerPortStatus must be forwarded end-to-end (R46 restore)');
 });
 
-// Round-45: postReport must NOT carry partnerPortStatus on the wire.
-// The endpoint takes the entry's PartnerPortStatus field and forwards it
-// (after the camelCase conversion) to the centre. With the field gone
-// from toCamelEntry entirely, the row must not include it.
-test('postReport does NOT carry partnerPortStatus on the wire (round-45)', async () => {
+// R46: postReport must carry partnerPortStatus on the wire for the
+// __partner_ports__:% row the centre routes through its port-health
+// surface. The endpoint takes the entry's PartnerPortStatus field and
+// forwards it (after camelCase conversion) to the centre.
+test('postReport carries partnerPortStatus on the wire (R46 restore)', async () => {
   const portJson = '{"checked_at":"2026-08-20T00:00:00.000Z","ports":{"135":{"reachable":true,"latencyMs":2}}}';
   let received = null;
   await withServer((req, res) => {
@@ -239,16 +240,13 @@ test('postReport does NOT carry partnerPortStatus on the wire (round-45)', async
           SourceDc: 'DC1', DestDc: 'DC2',
           NamingContext: '__partner_ports__:DC2',
           StatusCode: 0, ErrorMessage: null,
-          // A stale PS1 might still set PartnerPortStatus — toCamelEntry
-          // must drop it (R35 port monitoring is gone, the centre would
-          // only see a stray camelCase key).
           PartnerPortStatus: portJson
         }]
       }
     });
     const row = received.data[0];
-    assert.equal(Object.prototype.hasOwnProperty.call(row, 'partnerPortStatus'), false,
-      'partnerPortStatus must not appear on the wire after round-45');
+    assert.equal(row.partnerPortStatus, portJson,
+      'partnerPortStatus must appear on the wire after R46 restore');
     assert.equal(row.namingContext, '__partner_ports__:DC2');
   });
 });
@@ -293,8 +291,10 @@ test('postReport puts the 4 counters on the wire (previously dropped)', async ()
     assert.equal(row.groupsCount, 340, 'groupsCount reaches the centre');
     assert.equal(row.gposCount, 56, 'gposCount reaches the centre');
     assert.equal(row.lockedCount, 7, 'lockedCount reaches the centre');
-    // partnerPortStatus must not appear on the wire at all.
-    assert.equal(Object.prototype.hasOwnProperty.call(row, 'partnerPortStatus'), false,
-      'partnerPortStatus must not be on the wire after round-45');
+    // R46: for the __dc_summary__ row, partnerPortStatus is null (PS1 doesn't
+    // emit it). The wire shape is still the 16 INSERT-shape keys — null is
+    // the centre's "skip partner-port binding" sentinel.
+    assert.equal(row.partnerPortStatus, null,
+      'partnerPortStatus on __dc_summary__ row is null (no probe)');
   });
 });
