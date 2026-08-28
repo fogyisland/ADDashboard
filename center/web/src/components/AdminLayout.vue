@@ -4,31 +4,20 @@
       <router-link to="/" class="back">← 返回看板</router-link>
       <h3>AD Dashboard · 管理</h3>
       <nav>
+        <!-- 2026-08-28 round-51: drop R48.1/R48.2 subgroup rendering. The
+             服务器管理 umbrella + 3 sub-buckets made items feel flat (only
+             10px left-padding diff between top-level and sub-group items,
+             1px font-size diff). Operator directive: "当前就感觉很乱，其实
+             应该分成几个大类" + "也没有缩进". Now 6 flat top-level groups,
+             one nesting level max. Items always show under their title. -->
         <details v-for="g in groups" :key="g.title" open class="nav-group">
           <summary class="nav-group-title">{{ g.title }}</summary>
-          <!-- 2026-08-28 round-48.1: subgroup rendering for groups like
-               服务器管理 that have nested 活动目录服务器组 + 普通服务器组
-               sub-buckets. Most groups stay flat (use `items`); only
-               umbrella groups declare `subgroups`. -->
-          <template v-if="!g.subgroups">
-            <router-link
-              v-for="i in g.items"
-              :key="i.path"
-              :to="i.path"
-              class="nav-link"
-            >{{ i.label }}</router-link>
-          </template>
-          <template v-else>
-            <div v-for="sg in g.subgroups" :key="sg.title" class="nav-subgroup">
-              <h4 class="nav-subgroup-title">{{ sg.title }}</h4>
-              <router-link
-                v-for="i in sg.items"
-                :key="i.path"
-                :to="i.path"
-                class="nav-link"
-              >{{ i.label }}</router-link>
-            </div>
-          </template>
+          <router-link
+            v-for="i in g.items"
+            :key="i.path"
+            :to="i.path"
+            class="nav-link"
+          >{{ i.label }}</router-link>
         </details>
       </nav>
     </aside>
@@ -56,61 +45,56 @@ const router = useRouter();
 function logout() { auth.logout(); router.push('/login'); }
 const { theme, toggleTheme } = useTheme();
 
-// 2026-08-28 round-48.2: split monitoring/health items out of 活动目录服务器组
-// into a dedicated 监控与健康组 sub-bucket per operator directive "增加一个
-// 监控与健康" + "组" (sub-group under 服务器管理 umbrella, matching the
-// 活动目录服务器组 / 普通服务器组 naming pattern).
+// 2026-08-28 round-51: drop 服务器管理 umbrella + 3 sub-buckets. The
+// R48.1/R48.2 nesting made the sidebar feel flat — top-level vs sub-group
+// items differed by only 10px left-padding and 1px font size, with no
+// other visual cue. Operator directive: "当前就感觉很乱，其实应该分成
+// 几个大类" + "也没有缩进".
 //
-//   服务器管理 (umbrella)
-//     监控与健康组    (4 monitoring/health items: 复制状态概览 / 复制伙伴端口
-//                     健康监控 / 端口健康检查 / 心跳与报告)
-//     活动目录服务器组 (4 AD admin items: AD 站点清单 / AD 域控清单 /
-//                     操作日志 / 包管理)
-//     普通服务器组    (2 non-AD items: 非活动目录 / 非活动目录服务器组)
+// New shape: 6 flat top-level groups, ordered by operator check frequency.
+//   1. 监控健康  — operator's daily high-frequency surface
+//   2. AD 管理  — AD catalog + ops log + packages
+//   3. 服务器管理 — non-AD assets only (普通服务器组 split out of umbrella)
+//   4. 账号管理  — users + roles
+//   5. 数据库运维 — migrations + orphan schemas
+//   6. 系统设置  — config + email + audit
 //
-// Total top-level groups: 4 (unchanged). Total nav-links: 17 (unchanged).
-// Path order changes — monitoring items move from middle of 活动目录
-// 服务器组 to top of the new 监控与健康组 sub-bucket. URL paths preserved.
+// Total nav-links: 17 (unchanged). No URL paths change — only labels at
+// the top-level move (umbrella 标题 dropped, sub-bucket 标题 promoted).
 const groups = [
-  { title: '账号管理', items: [
-    { label: '用户',     path: '/admin/users' },
-    { label: '角色',     path: '/admin/roles' }
+  { title: '监控健康', items: [
+    // 2026-08-27 round-33: single-site 站点复制矩阵 removed — replaced by
+    // the unified 复制状态概览 view below (per-primary partner table).
+    { label: '复制状态概览', path: '/admin/site-replication-matrix/all' },
+    // 2026-08-28 round-47: 复制伙伴端口健康监控. Operator directive
+    // "在这边不叫复制日志监控了，改成复制伙伴端口健康监控名称". URL path
+    // stays /admin/replication-log/monitor for backward-compat with saved
+    // bookmarks; label and underlying component change.
+    { label: '复制伙伴端口健康监控', path: '/admin/replication-log/monitor' },
+    { label: '端口健康检查', path: '/admin/ports' },
+    { label: '心跳与报告', path: '/admin/heartbeat-report' }
   ]},
-  { title: '服务器管理', subgroups: [
-    // 2026-08-28 round-48.2: monitoring/health items lifted out of 活动目录
-    // 服务器组 into this new sub-bucket. Surfaces the 4 pages operators
-    // check most often (replication health, port health, agent heartbeat)
-    // without the catalog clutter.
-    { title: '监控与健康组', items: [
-      // 2026-08-27 round-33: single-site 站点复制矩阵 removed — replaced by
-      // the unified 复制状态概览 view below (per-primary partner table).
-      { label: '复制状态概览', path: '/admin/site-replication-matrix/all' },
-      // 2026-08-28 round-47: 复制伙伴端口健康监控. Operator directive
-      // "在这边不叫复制日志监控了，改成复制伙伴端口健康监控名称". The URL
-      // path stays /admin/replication-log/monitor for backward-compat
-      // with saved bookmarks; the label and underlying component change.
-      { label: '复制伙伴端口健康监控', path: '/admin/replication-log/monitor' },
-      { label: '端口健康检查', path: '/admin/ports' },
-      { label: '心跳与报告', path: '/admin/heartbeat-report' }
-    ]},
-    { title: '活动目录服务器组', items: [
-      { label: 'AD 站点清单', path: '/admin/sites-catalog' },
-      { label: 'AD 域控清单', path: '/admin/dcs-catalog' },
-      // 2026-08-27 round-39: 运维区统一日志 — 审计事件(changes/ops)+ 心跳数据 + 报告数据.
-      { label: '操作日志',   path: '/admin/operations-log' },
-      { label: '包管理',     path: '/admin/packages' }
-    ]},
+  { title: 'AD 管理', items: [
+    { label: 'AD 站点清单', path: '/admin/sites-catalog' },
+    { label: 'AD 域控清单', path: '/admin/dcs-catalog' },
+    // 2026-08-27 round-39: 运维区统一日志 — 审计事件(changes/ops) + 心跳数据 + 报告数据.
+    { label: '操作日志', path: '/admin/operations-log' },
+    { label: '包管理',   path: '/admin/packages' }
+  ]},
+  { title: '服务器管理', items: [
     // 2026-08-28 round-48.1: rename 非 AD 服务器 → 非活动目录, 非 AD 服务器组
-    // → 非活动目录服务器组. URL paths preserved (/admin/member-servers +
-    // /admin/server-groups). Operator wants explicit "非活动目录" wording
-    // for clarity.
-    { title: '普通服务器组', items: [
-      { label: '非活动目录',       path: '/admin/member-servers' },
-      { label: '非活动目录服务器组', path: '/admin/server-groups' }
-    ]}
+    // → 非活动目录服务器组. URL paths preserved. Round-51 lifts these out of
+    // the 服务器管理 umbrella into this slim top-level group (only remaining
+    // member after the umbrella split).
+    { label: '非活动目录',       path: '/admin/member-servers' },
+    { label: '非活动目录服务器组', path: '/admin/server-groups' }
+  ]},
+  { title: '账号管理', items: [
+    { label: '用户', path: '/admin/users' },
+    { label: '角色', path: '/admin/roles' }
   ]},
   { title: '数据库运维', items: [
-    { label: '版本升级',     path: '/admin/migrations' },
+    { label: '版本升级',         path: '/admin/migrations' },
     { label: '未签名 Schema 残留', path: '/admin/orphan-schemas' }
   ]},
   { title: '系统设置', items: [
@@ -136,17 +120,32 @@ main { display: flex; flex-direction: column; }
 .topbar-actions button { padding: 6px 14px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; background: var(--input-bg); color: var(--text); }
 .topbar-actions .theme-toggle { font-size: 14px; min-width: 32px; padding: 6px 8px; }
 .content { padding: 20px; overflow: auto; }
-.nav-group { margin-bottom: 8px; }
-.nav-group { display: flex; flex-direction: column; gap: 6px; }
-.nav-link { display: block; }
+/* 2026-08-28 round-51: 6 flat top-level groups. Indentation now expresses
+   "this item belongs to the title above" via 24px left-padding on items
+   (was 10px/22px depending on subgroup in R48.1). 13px title at weight 700
+   in --text color makes the top-level boundary obvious without decorative
+   chrome (per feedback_admin_no_marketing_chrome.md). */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Vertical gap between top-level groups — the eye reads "new category". */
+.nav-group + .nav-group { margin-top: 14px; }
+.nav-link {
+  display: block;
+  padding: 7px 12px 7px 24px;
+}
 .nav-group-title {
-  font-weight: 600;
-  color: var(--muted);
-  font-size: 12px;
-  padding: 6px 12px;
+  font-weight: 700;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 12px 4px;
+  margin: 0;
   cursor: pointer;
   user-select: none;
   list-style: none;
+  letter-spacing: 0.02em;
 }
 .nav-group-title::-webkit-details-marker { display: none; }
 .nav-group-title::before {
@@ -155,21 +154,10 @@ main { display: flex; flex-direction: column; }
   width: 14px;
   margin-right: 4px;
   transition: transform .15s;
+  color: var(--muted);
+  font-weight: 400;
 }
 details[open] .nav-group-title::before { transform: rotate(90deg); }
-/* 2026-08-28 round-48.1: nested sub-bucket headers within umbrella groups
-   (e.g. 服务器管理 > 活动目录服务器组 / 普通服务器组). Visually subordinate
-   to the top-level .nav-group-title; serves as a static label, not a
-   collapsible disclosure. */
-.nav-subgroup { margin-top: 4px; }
-.nav-subgroup-title {
-  font-weight: 500;
-  color: var(--muted);
-  font-size: 11px;
-  padding: 4px 12px 2px;
-  margin: 0;
-  border-left: 2px solid var(--border);
-  letter-spacing: 0.02em;
-}
-.nav-subgroup .nav-link { padding-left: 22px; }
+/* Round-51: dropped .nav-subgroup / .nav-subgroup-title styles — no
+   sub-buckets remain after the umbrella split. */
 </style>
