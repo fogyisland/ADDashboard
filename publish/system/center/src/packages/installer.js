@@ -151,7 +151,7 @@ export const installer = {
         throw new PkgError('PKG_DDL_FORBIDDEN', `invalid schemaName: ${schemaName}`);
       }
 
-      const applied = await listAppliedMigrations(db, schemaName);
+      const applied = await listAppliedMigrations(db, schemaName, db.dialect);
       const appliedSet = new Set(applied.map(r => r.filename));
       const zip = new AdmZip(buffer);
       const migrations = candidateManifest.database.migrations;
@@ -165,7 +165,7 @@ export const installer = {
       if (toApply.length) {
         try {
           await applyMigrations(db, { schemaName, dialect: db.dialect, files: toApply });
-          await markMigrationsApplied(db, { schemaName, version, filenames: toApply.map(f => f.filename) });
+          await markMigrationsApplied(db, { schemaName, version, filenames: toApply.map(f => f.filename), dialect: db.dialect });
         } catch (e) {
           // No automatic rollback on upgrade — MySQL DDL implicit-commits, so
           // already-applied migration files in `toApply` have been committed
@@ -291,6 +291,16 @@ export const installer = {
       `UPDATE installed_packages SET params_json = ?, updated_at = ? WHERE name = ?`,
       [JSON.stringify(params), new Date(), name]
     );
+  },
+
+  /**
+   * 2026-08-26: per-package operator interval override. `intervalSec`
+   * may be null to clear the override (fall back to manifest default).
+   * Range check (5..86400) is enforced by the route handler — installer
+   * trusts the caller (matches setEnabled / updateParams pattern).
+   */
+  async setIntervalOverride(db, { name, intervalSec }) {
+    await installedPackages.setIntervalOverride(db, { name, intervalSec });
   }
 };
 

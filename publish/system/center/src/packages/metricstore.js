@@ -134,8 +134,15 @@ async function ingestRunV2(db, { agentId, packageName, manifest, runs }) {
 
     const values = userCols.map(c => data[c]);
     const placeholders = userCols.map(() => '?').join(',');
+    // Round-14 fix: schema identifier quoting must match the dialect.
+    // MySQL uses backticks (`pkg_x`.`table`); MSSQL uses brackets
+    // ([pkg_x].[table]). Previously the backtick form was hardcoded;
+    // MSSQL rejected it with "Incorrect syntax near '`'". Both schemaName
+    // and table are validated by ajv on install (T3) + install DDL (T5),
+    // so the dynamic values here are trusted (no injection surface).
+    const q = (name) => db.dialect === 'mssql' ? `[${name}]` : `\`${name}\``;
     await db.execute(
-      `INSERT INTO \`${schemaName}\`.${table} (agent_id, ts, ${userCols.join(',')}) VALUES (?, ?, ${placeholders})`,
+      `INSERT INTO ${q(schemaName)}.${q(table)} (agent_id, ts, ${userCols.join(',')}) VALUES (?, ?, ${placeholders})`,
       [agentId, ts, ...values]
     );
   }

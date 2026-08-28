@@ -6,6 +6,18 @@
 import { scanSql } from './ddl-sandbox.js';
 import { PkgError } from './errors.js';
 
+// Quote a SQL identifier per dialect. MySQL uses backticks; MSSQL uses
+// brackets. The schema_migrations table is referenced from multiple sites
+// (list / apply INSERT / mark UPDATE) and previously used MySQL-only
+// backticks in all three — which MSSQL rejects with "Incorrect syntax
+// near '`'" (round-14 finding from live MSSQL end-to-end verification,
+// Task #428). Centralizing the quote style here keeps the three sites
+// in lockstep.
+function quoteIdent(name, dialect) {
+  if (dialect === 'mssql') return `[${name}]`;
+  return `\`${name}\``;
+}
+
 // MySQL treats "schema" and "database" as the same concept. We use
 // `CREATE DATABASE` everywhere for MySQL and `CREATE SCHEMA` for MSSQL
 // to keep the SQL faithful to each dialect.
@@ -66,12 +78,23 @@ export async function createSchemaMigrationsTable(db, schemaName, dialect) {
   await db.execute(ddl);
 }
 
-export async function applyMigrations(db, { schemaName, dialect, files }) {
+export async function applyMigrations(db, { schemaName, dialect, files, skipSandbox = false }) {
   if (!Array.isArray(files)) throw new Error('files must be an array');
-  for (const file of files) {
-    const { ok, blocked } = scanSql(file.content, schemaName);
-    if (!ok) {
-      throw new PkgError('PKG_DDL_FORBIDDEN', `${file.filename}: ${blocked}`);
+  // Sandbox skip path is reserved for trusted built-in packages (see
+  // seedBuiltinPackages). Built-ins are reviewed in-tree, never uploaded
+  // by an external author, so they don't need the sandbox defense the
+  // installer path uses. Built-in MSSQL files use `IF EXISTS (SELECT 1
+  // FROM sys.tables ...)` and multi-statement control flow (`IF ...
+  // BEGIN ... END; IF ... BEGIN ... END;`) which the current sandbox
+  // cannot parse (it blocks both `SELECT` and multi-statement).
+  // Tightening the sandbox to allow these patterns safely is a separate
+  // piece of work; for now the sandbox skip is the contained fix.
+  if (!skipSandbox) {
+    for (const file of files) {
+      const { ok, blocked } = scanSql(file.content, schemaName);
+      if (!ok) {
+        throw new PkgError('PKG_DDL_FORBIDDEN', `${file.filename}: ${blocked}`);
+      }
     }
   }
   // All scans passed — execute each + record in schema_migrations
@@ -82,7 +105,7 @@ export async function applyMigrations(db, { schemaName, dialect, files }) {
       throw new PkgError('PKG_DDL_INVALID_SQL', `${file.filename}: ${e.message}`);
     }
     await db.execute(
-      `INSERT INTO \`${schemaName}\`.schema_migrations (filename, version, applied_at) VALUES (?, ?, ?)`,
+      `INSERT INTO ${quoteIdent(schemaName, dialect)}.schema_migrations (filename, version, applied_at) VALUES (?, ?, ?)`,
       [file.filename, '__pending__', new Date()]
     );
   }
@@ -91,19 +114,26 @@ export async function applyMigrations(db, { schemaName, dialect, files }) {
   // the installer overwrites it with the actual version via UPDATE.
 }
 
-export async function markMigrationsApplied(db, { schemaName, version, filenames }) {
+export async function markMigrationsApplied(db, { schemaName, version, filenames, dialect }) {
   if (!filenames.length) return;
+  const d = dialect ?? db.dialect ?? 'mysql';
   for (const filename of filenames) {
     await db.execute(
-      `UPDATE \`${schemaName}\`.schema_migrations SET version = ? WHERE filename = ?`,
+      `UPDATE ${quoteIdent(schemaName, d)}.schema_migrations SET version = ? WHERE filename = ?`,
       [version, filename]
     );
   }
 }
 
-export async function listAppliedMigrations(db, schemaName) {
+export async function listAppliedMigrations(db, schemaName, dialect) {
+  // dialect is optional — defaults to db.dialect for production code paths.
+  // Round-14 fix: previously used MySQL-only backticks around the schema
+  // name; MSSQL rejects them. seedBuiltinPackages and installer.upgradePackage
+  // both have db.dialect available, so callers should pass it. The default
+  // fallback here keeps older callers (none in tree today) working on MySQL.
+  const d = dialect ?? db.dialect ?? 'mysql';
   const { rows } = await db.execute(
-    `SELECT filename, version, applied_at FROM \`${schemaName}\`.schema_migrations ORDER BY filename`
+    `SELECT filename, version, applied_at FROM ${quoteIdent(schemaName, d)}.schema_migrations ORDER BY filename`
   );
   return rows;
 }

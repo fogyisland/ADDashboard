@@ -414,5 +414,70 @@ export function packageRouter({ db, getLogger, getRegistryUrl, config }) {
     }
   });
 
+  // PUT /api/admin/packages/:name/interval — operator override of the
+  // package's execution interval. Body shape:
+  //   { intervalSec: 300 }   // set override
+  //   { intervalSec: null }  // clear override (fall back to manifest default)
+  //
+  // 400 on out-of-range or non-integer values; the route owns the
+  // validation so installer.setIntervalOverride can stay simple. The
+  // 5..86400 range mirrors the manifest schema constraint
+  // (manifest.js: agent.intervalSec minimum=5, maximum=86400).
+  //
+  // Agent consumes the merged manifest from /api/admin/agent/packages-for-host
+  // (see routes/agent-packages.js). That handler now reads
+  // `interval_override_sec` and rewrites manifest.agent.intervalSec before
+  // returning to the agent — the agent's setInterval is keyed on the
+  // resolved interval, so a different override value will rebuild the
+  // timer on the next poll (the existing (name, intervalSec) idempotency
+  // in agent/src/non-ad-scheduler.js handles the no-op case).
+  r.put('/api/admin/packages/:name/interval', auth, async (req, res) => {
+    const { intervalSec } = req.body || {};
+    if (intervalSec != null) {
+      // Must be a positive integer in 5..86400. Reject anything else.
+      const n = Number(intervalSec);
+      if (!Number.isInteger(n) || n < 5 || n > 86400) {
+        return res.status(400).json({
+          ok: false,
+          error: {
+            code: 'PKG_VALIDATION_FAILED',
+            message: 'intervalSec must be an integer in [5, 86400] or null'
+          }
+        });
+      }
+    }
+    try {
+      // Confirm the package exists before writing — UPDATE … WHERE name = ?
+      // is silent on a missing row, which would leave the operator thinking
+      // the change applied when it didn't. Surface 404 instead.
+      const existing = await installedPackages.get(db, req.params.name);
+      if (!existing) {
+        return res.status(404).json({
+          ok: false,
+          error: { code: 'PKG_NOT_FOUND', message: req.params.name }
+        });
+      }
+      await installer.setIntervalOverride(db, {
+        name: req.params.name,
+        intervalSec: intervalSec == null ? null : Number(intervalSec)
+      });
+      // Audit the override change so the operator can correlate later —
+      // mirrors the existing package-event audit pattern.
+      if (getLogger) {
+        getLogger().info({
+          pkg: req.params.name,
+          prev: existing.intervalOverrideSec ?? null,
+          next: intervalSec == null ? null : Number(intervalSec),
+          manifestDefault: existing.manifest?.agent?.intervalSec ?? null
+        }, 'admin package interval override applied');
+      }
+      res.json({ ok: true });
+    } catch (e) {
+      const log = getLogger ? getLogger() : null;
+      if (log) log.error({ err: e }, 'admin package setIntervalOverride failed');
+      res.status(500).json({ ok: false, error: { code: 'INTERNAL', message: e.message } });
+    }
+  });
+
   return r;
 }

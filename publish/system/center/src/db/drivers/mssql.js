@@ -77,8 +77,8 @@ export function createMssqlDriver(config) {
       connected = true;
       // Apply session-level SET options once per pool (pool reuse reuses the
       // same connection config; SET persists on the session that pool.connect
-      // returns). These three SETs fix latent silent failures the driver
-      // wrapper was built around but didn't enforce:
+      // returns). Two SETs fix latent silent failures the driver wrapper was
+      // built around but didn't enforce:
       //   SET XACT_ABORT ON — abort the entire transaction on any runtime
       //     SQL error and auto-rollback. Without this, a T-SQL error in the
       //     middle of a transaction can leave the XACT in an open-but-
@@ -86,19 +86,23 @@ export function createMssqlDriver(config) {
       //     with the uncommittable XACT. With XACT_ABORT ON, every runtime
       //     error triggers automatic rollback per T-SQL spec, which is
       //     exactly what the wrapper's catch handler expects.
-      //   SET NOCOUNT ON — suppress the 'n rows affected' rowset MSSQL emits
-      //     after every INSERT/UPDATE/DELETE/MERGE. Without it, those rows
-      //     appear as extra rowsets in `result.recordsets[]` and shift the
-      //     indices the driver uses to extract `affectedRows` at line 115.
       //   SET QUOTED_IDENTIFIER ON — SQL Server's default for new
       //     connections, but pinned explicitly here to avoid cross-driver
       //     surprises (mssql npm doesn't guarantee session-level SETs on
       //     pool connect).
-      await pool.request().batch(`
-        SET XACT_ABORT ON;
-        SET NOCOUNT ON;
-        SET QUOTED_IDENTIFIER ON;
-      `);
+      //
+      // Round-14 finding: do NOT add `SET NOCOUNT ON`. NOCOUNT ON suppresses
+      // the TDS DONE packet that carries the rowsAffected counter, which
+      // breaks INSERT/UPDATE/DELETE affectedRows tracking AND makes the
+      // appended `SELECT SCOPE_IDENTITY() AS id` probe appear to fail
+      // (`affectedRows=0` + `id=null` looks like a true INSERT failure but
+      // is just the session option hiding the count). The driver appends
+      // the SCOPE_IDENTITY probe specifically to recover the new IDENTITY
+      // value, and that flow needs NOCOUNT OFF for accurate affectedRows.
+      // The recordsets[] indexing was assumed to shift under NOCOUNT OFF
+      // but in mssql@11 the "n rows affected" goes into the TDS DONE
+      // packet, not into recordsets — verified by live end-to-end test
+      // (Task #428).
     }
   }
 
@@ -158,9 +162,22 @@ export function createMssqlDriver(config) {
       const idRow = recordsets[recordsets.length - 1]?.[0];
       if (idRow?.id != null) {
         insertId = Number(idRow.id);
-      } else {
+      } else if (affectedRows === 0) {
+        // Round-14 fix: previously the driver threw unconditionally on
+        // NULL id, but NULL just means the target table has no IDENTITY
+        // column (e.g. schema_migrations PK is filename, not IDENTITY;
+        // ad_agent_port_status has no surrogate key). Distinguish:
+        //   - affectedRows > 0 + id NULL → INSERT succeeded, no auto-id
+        //     available. Return undefined insertId (caller decides).
+        //   - affectedRows == 0 + id NULL → INSERT failed entirely
+        //     (constraint violation, syntax error caught upstream, etc).
+        //     Throw so the failure surfaces — same throw semantics as
+        //     before, only the "success with no IDENTITY" case changed.
         throw new Error(`mssql driver: SCOPE_IDENTITY() returned NULL after INSERT (rowsAffected=${affectedRows})`);
       }
+      // else: INSERT succeeded (affectedRows > 0), no IDENTITY column,
+      // insertId stays undefined. Schema-applier and ddl-apply
+      // INSERTs into no-IDENTITY tables now work without throwing.
     }
     return { rows, affectedRows, insertId };
   }
@@ -205,9 +222,14 @@ export function createMssqlDriver(config) {
             const idRow = recordsets[recordsets.length - 1]?.[0];
             if (idRow?.id != null) {
               insertId = Number(idRow.id);
-            } else {
+            } else if (affectedRows === 0) {
+              // Mirror the round-14 fix from execute() above: throw only
+              // when the INSERT actually failed. Tables without an
+              // IDENTITY column (e.g. schema_migrations, ad_agent_port_status)
+              // now succeed with insertId=undefined.
               throw new Error(`mssql driver: SCOPE_IDENTITY() returned NULL after INSERT (rowsAffected=${affectedRows})`);
             }
+            // else: INSERT succeeded, no IDENTITY — insertId stays undefined
           }
           return { rows, affectedRows, insertId };
         },

@@ -34,7 +34,14 @@ function hydrateInstalledRow(row) {
   if (typeof manifest === 'string') {
     try { manifest = JSON.parse(manifest); } catch { manifest = null; }
   }
-  return { ...row, manifest };
+  return {
+    ...row,
+    manifest,
+    // mysql2 returns INT columns as JS numbers; mssql returns them as
+    // numbers too. Either way, surface as `intervalOverrideSec` (camelCase)
+    // matching the rest of the admin API's shape.
+    intervalOverrideSec: row.interval_override_sec == null ? null : Number(row.interval_override_sec)
+  };
 }
 
 export function agentPackagesRouter({ config, logger }) {
@@ -71,15 +78,38 @@ export function agentPackagesRouter({ config, logger }) {
       // their parsed manifest, dropping any row whose manifest failed
       // to parse — a corrupted manifest_json column should not crash
       // the agent's package fetch.
-      const installedGlobal = installedRows
-        .map(hydrateInstalledRow)
+      const hydrated = installedRows.map(hydrateInstalledRow);
+      const installedGlobal = hydrated
         .filter(r => r && r.manifest && r.manifest.name)
         .map(r => r.manifest);
       const merged = mergePackagesForHost({
         installedGlobal,
         memberServerPackages: memberRows
       });
-      res.json({ items: merged });
+      // 2026-08-26 round-19 follow-up: apply per-package operator
+      // interval overrides. The agent's setInterval is keyed on the
+      // resolved interval (agent/src/non-ad-scheduler.js:32), so writing
+      // a different intervalSec here causes the next applyPackageList
+      // poll to clearInterval + start a fresh timer with the new
+      // cadence. NULL overrides fall through to the manifest default,
+      // which is what the manifest-validation minimum=5 already guards.
+      // We mutate a shallow copy so the upstream DB row's manifest object
+      // is never shared / mutated.
+      const overridesByName = new Map(
+        hydrated
+          .filter(r => r && r.manifest && r.intervalOverrideSec != null)
+          .map(r => [r.manifest.name, r.intervalOverrideSec])
+      );
+      const items = merged.map((m) => {
+        if (!m || !m.agent) return m;
+        const override = overridesByName.get(m.name);
+        if (override == null) return m;
+        return {
+          ...m,
+          agent: { ...m.agent, intervalSec: override }
+        };
+      });
+      res.json({ items });
     } catch (e) {
       // Route is unaudited by design — agents retry on 5xx, no operator
       // action needed. Surface a stable shape so agent tests can match.

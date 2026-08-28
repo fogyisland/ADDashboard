@@ -24,6 +24,7 @@
             <th>版本</th>
             <th>类型</th>
             <th>启用</th>
+            <th>执行间隔</th>
             <th>来源</th>
             <th>安装时间</th>
             <th>操作</th>
@@ -41,6 +42,39 @@
                 {{ row.enabled ? '是' : '否' }}
               </span>
             </td>
+            <td class="interval-cell">
+              <div class="interval-display">
+                <span class="interval-current">{{ formatInterval(row.intervalOverrideSec) }}</span>
+                <span class="interval-default">默认 {{ formatInterval(row.manifest?.agent?.intervalSec) }}</span>
+              </div>
+              <div class="interval-editor">
+                <input
+                  type="number"
+                  min="5"
+                  max="86400"
+                  step="1"
+                  :placeholder="String(row.manifest?.agent?.intervalSec ?? '')"
+                  v-model.number="drafts[row.name]"
+                  :disabled="saving[row.name]"
+                  @keyup.enter="saveInterval(row)"
+                  data-testid="interval-input"
+                />
+                <span class="interval-unit">秒</span>
+                <button
+                  class="small"
+                  :disabled="saving[row.name] || !isDirty(row)"
+                  @click="saveInterval(row)"
+                  data-testid="interval-save"
+                >保存</button>
+                <button
+                  class="small"
+                  :disabled="saving[row.name] || row.intervalOverrideSec == null"
+                  @click="clearInterval(row)"
+                  data-testid="interval-clear"
+                >清除覆盖</button>
+              </div>
+              <p v-if="intervalErrors[row.name]" class="interval-error">{{ intervalErrors[row.name] }}</p>
+            </td>
             <td>{{ row.source }}</td>
             <td>{{ formatDate(row.installed_at) }}</td>
             <td class="row-actions">
@@ -53,7 +87,7 @@
             </td>
           </tr>
           <tr v-if="!store.installed.length">
-            <td colspan="7" class="empty">尚未安装任何包 — 点击"上传本地包"或"从 Registry 导入"</td>
+            <td colspan="8" class="empty">尚未安装任何包 — 点击"上传本地包"或"从 Registry 导入"</td>
           </tr>
         </tbody>
       </table>
@@ -62,11 +96,35 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue';
+import { onMounted, reactive } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { usePackagesStore } from '../../stores/packages.js';
 
 const store = usePackagesStore();
+
+// 2026-08-26 T4: per-row draft state for the interval override editor.
+// We keep a draft string per package so the operator can type freely
+// without forcing immediate save; Save is enabled when the draft differs
+// from the persisted override (or when there's no override and the draft
+// is non-empty). `saving` flags disable the input + buttons during the
+// PATCH round-trip; `intervalErrors` holds transient validation messages
+// shown below the editor (range check is also enforced server-side).
+const drafts = reactive({});
+const saving = reactive({});
+const intervalErrors = reactive({});
+
+function isDirty(row) {
+  const draft = drafts[row.name];
+  if (draft == null || draft === '') return false;
+  const numeric = Number(draft);
+  if (!Number.isFinite(numeric)) return false;
+  return numeric !== (row.intervalOverrideSec ?? null);
+}
+
+function formatInterval(value) {
+  if (value == null) return '—';
+  return `${value} 秒`;
+}
 
 onMounted(() => store.fetchInstalled());
 
@@ -118,6 +176,39 @@ async function refreshRegistry() {
   }
 }
 
+async function saveInterval(row) {
+  intervalErrors[row.name] = null;
+  const draft = drafts[row.name];
+  if (draft == null || draft === '') return;
+  const n = Number(draft);
+  if (!Number.isInteger(n) || n < 5 || n > 86400) {
+    intervalErrors[row.name] = 'intervalSec 必须是 5..86400 的整数';
+    return;
+  }
+  saving[row.name] = true;
+  try {
+    await store.setIntervalOverride(row.name, n);
+    drafts[row.name] = n;
+  } catch (e) {
+    intervalErrors[row.name] = e.response?.data?.error?.message || e.message;
+  } finally {
+    saving[row.name] = false;
+  }
+}
+
+async function clearInterval(row) {
+  intervalErrors[row.name] = null;
+  saving[row.name] = true;
+  try {
+    await store.setIntervalOverride(row.name, null);
+    drafts[row.name] = '';
+  } catch (e) {
+    intervalErrors[row.name] = e.response?.data?.error?.message || e.message;
+  } finally {
+    saving[row.name] = false;
+  }
+}
+
 function formatDate(s) {
   if (!s) return '-';
   try { return new Date(s).toLocaleString('zh-CN', { hour12: false }); }
@@ -156,9 +247,22 @@ function fileToBase64(file) {
 .error { color: var(--red); margin: 0; }
 
 .t { width: 100%; border-collapse: collapse; background: var(--panel); }
-.t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; }
+.t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; vertical-align: top; }
 .t th { background: #0b1220; color: var(--muted); font-size: 12px; }
 .empty { text-align: center; color: var(--muted); padding: 24px; }
+
+.interval-cell { min-width: 220px; }
+.interval-display { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+.interval-current { font-weight: 600; }
+.interval-default { color: var(--muted); font-size: 12px; }
+.interval-editor { display: flex; gap: 4px; align-items: center; }
+.interval-editor input[type=number] {
+  width: 90px; padding: 3px 6px; background: #0b1220; color: var(--text);
+  border: 1px solid #334155; border-radius: 4px; font-size: 12px;
+}
+.interval-editor input[type=number]:disabled { opacity: 0.5; }
+.interval-unit { color: var(--muted); font-size: 12px; }
+.interval-error { color: var(--red); font-size: 12px; margin: 4px 0 0; }
 
 .tag {
   display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px;
