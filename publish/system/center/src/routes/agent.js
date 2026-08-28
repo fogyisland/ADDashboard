@@ -108,15 +108,34 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         // BEFORE the upsert, so the upsert's COALESCE-preserve path sees
         // a NULL column and leaves it NULL. Best-effort — a failure here
         // must NOT 500 the heartbeat.
+        //
+        // 2026-08-28 round-58: cold-start detection now also fires when
+        // the heartbeat row is MISSING (the agent was deleted via the
+        // admin heartbeat-table 删除 button and the agent process is
+        // still alive heartbeating). The flag is propagated past the
+        // upsert so the post-upsert block can decide whether to
+        // auto-trigger a fresh report-now request — see the
+        // `cold-start auto-trigger` block below.
         const COLD_START_THRESHOLD_S = 5 * 60;
+        let coldStart = false;
         try {
           const cs = await db.execute(db.sql.heartbeat.readLastHeartbeatAt, [agentId]);
           const lastHb = cs.rows?.[0]?.last_heartbeat_at ?? cs?.[0]?.[0]?.last_heartbeat_at;
           if (lastHb) {
             const ageMs = Date.now() - new Date(lastHb).getTime();
             if (Number.isFinite(ageMs) && ageMs > COLD_START_THRESHOLD_S * 1000) {
-              await db.execute(db.sql.heartbeat.clearReportRequest(agentId), [agentId]);
+              coldStart = true;
             }
+          } else {
+            // 2026-08-28 round-58: no existing row — treat as cold start so
+            // the post-upsert trigger can refill ad_replication_status.
+            // Without this branch, an agent that was deleted and is still
+            // alive would heartbeat back into the list but its report
+            // table would stay empty until the natural report cycle.
+            coldStart = true;
+          }
+          if (coldStart) {
+            await db.execute(db.sql.heartbeat.clearReportRequest(agentId), [agentId]);
           }
         } catch (e) {
           logger.warn({ err: e.message, agentId }, 'cold-start detection failed (best-effort)');
@@ -137,6 +156,53 @@ export function agentRouter({ config, logger, mount = 'full' }) {
             reportedTokenVersion,
             reportRequestedAt
           ]);
+        }
+
+        // 2026-08-28 round-58: cold-start auto-trigger. When an agent is
+        // "freshly resurrected" (admin deleted the heartbeat row via the
+        // heartbeat table 删除 button, or the agent process restarted
+        // after a long downtime), the heartbeat row refills via the
+        // upsert above but ad_replication_status stays empty until the
+        // natural report cycle runs (15min+ — package default for
+        // collect-replication). Operators watching the 报告表 see the
+        // row reappear with no data for many minutes, which is exactly
+        // the R58 complaint: "report 表 要等 agent 主动下一次报告才能
+        // 回填 (几分钟后)".
+        //
+        // To fix: when cold-start was detected (row missing OR >5min gap)
+        // AND ad_replication_status has zero rows for this agent, set
+        // report_requested_at = NOW() so the agent's NEXT heartbeat
+        // (~1min later) ships a fresh report and the table refills
+        // within 1-2 minutes instead of 15+. Best-effort — a failure
+        // here must NOT 500 the heartbeat.
+        //
+        // Existing heartbeat rows with historical report data are NOT
+        // re-triggered: the natural report cycle is doing its job, and
+        // a spurious extra report would waste bandwidth.
+        if (coldStart) {
+          try {
+            const cnt = await db.execute(db.sql.heartbeat.hasAnyReplicationRows(agentId), [agentId]);
+            const rows = Number(cnt.rows?.[0]?.cnt ?? cnt?.[0]?.[0]?.cnt ?? 0);
+            if (rows === 0) {
+              const now = new Date();
+              // The upsert above guarantees the heartbeat row exists now,
+              // so requestReport's MERGE/INSERT-ON-DUPLICATE takes the
+              // UPDATE path and only touches report_requested_at (it does
+              // NOT reset last_heartbeat_at — that was set by the upsert
+              // above and reflects the agent's actual last heartbeat).
+              await db.execute(
+                db.sql.heartbeat.requestReport(agentId, now.toISOString()),
+                [agentId, now]
+              );
+              logger.info({
+                event: 'agent.cold_start_trigger',
+                agentId,
+                reason: lastHb ? 'gap>5min+empty-report' : 'row-missing+empty-report'
+              }, 'auto-triggered report-now on cold start');
+            }
+          } catch (e) {
+            logger.warn({ err: e.message, agentId }, 'cold-start auto-report-now trigger failed (best-effort)');
+          }
         }
 
         // Auto-delivery: if the server's current version is newer than

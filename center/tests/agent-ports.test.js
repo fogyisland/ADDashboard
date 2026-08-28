@@ -93,8 +93,12 @@ test('POST /api/agent/heartbeat without ports returns {ok:true} (back-compat)', 
   // Records both the heartbeat upsert and any port-status writes; the latter
   // must NOT happen for pre-feature agents.
   const records = [];
+  // round-58: warm heartbeat so the cold-start auto-trigger does NOT fire.
+  const thirtySecAgo = new Date(Date.now() - 30 * 1000).toISOString();
   const db = buildMockDb([
     TOKEN_BUNDLE_SCRIPT,
+    { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+      rows: [{ last_heartbeat_at: thirtySecAgo }] },
     { match: /FROM\s+system_ports/i, rows: [] }
   ]).withRecording(records);
   _setDbForTest(db);
@@ -116,12 +120,16 @@ test('POST /api/agent/heartbeat without ports returns {ok:true} (back-compat)', 
 
 test('POST /api/agent/heartbeat with ports upserts each and returns counts', async () => {
   const records = [];
+  // round-58: warm heartbeat so the cold-start auto-trigger does NOT fire.
+  const thirtySecAgo = new Date(Date.now() - 30 * 1000).toISOString();
   // system_ports returns [{port:135,...}] so port 50001 will be rejected as
   // not in validPortsSet by upsertPortStatuses — but both rows must still be
   // walked (the function does not short-circuit). We assert counts via the
   // service contract: 1 accepted, 1 rejected → {ok:true, accepted:1, rejected:1}.
   const db = buildMockDb([
     TOKEN_BUNDLE_SCRIPT,
+    { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+      rows: [{ last_heartbeat_at: thirtySecAgo }] },
     { match: /FROM\s+system_ports/i, rows: [{ port: 135, label: 'RPC', sortOrder: 0 }] }
   ]).withRecording(records);
   _setDbForTest(db);

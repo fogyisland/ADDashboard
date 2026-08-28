@@ -341,6 +341,16 @@ const VARIANTS = {
       // previous process didn't get to consume. Caller binds [agentId].
       readLastHeartbeatAt:
         `SELECT last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
+      // 2026-08-28 round-58: cold-start auto-trigger helper. After a delete
+      // (or first heartbeat ever), the heartbeat row refills via UPSERT but
+      // ad_replication_status stays empty until the natural report cycle
+      // runs (15min+). The heartbeat handler uses this COUNT to decide
+      // whether to auto-trigger a fresh report-now request so the report
+      // table refills within 1-2 minutes instead of 15+. Returns 0 when
+      // the table has no rows for this agent (post-delete or new agent).
+      // Caller binds [agentId].
+      hasAnyReplicationRows: (agentId) =>
+        `SELECT COUNT(*) AS cnt FROM ad_replication_status WHERE agent_id = ?`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s
@@ -1005,6 +1015,16 @@ const VARIANTS = {
       // previous process didn't get to consume. Caller binds [agentId].
       readLastHeartbeatAt:
         `SELECT last_heartbeat_at FROM ad_agent_heartbeat WHERE agent_id = ?`,
+      // 2026-08-28 round-58: cold-start auto-trigger helper — MSSQL mirror.
+      // Same intent as the MySQL variant: COUNT(*) over ad_replication_status
+      // for the agent so the heartbeat handler can decide whether to
+      // auto-trigger a fresh report-now request after a delete + resurrect
+      // (or first heartbeat ever). Returns 0 when the table has no rows
+      // for this agent. The CAST(? AS NVARCHAR(64)) matches the column
+      // type — without the cast the driver sends NVARCHAR(MAX) which
+      // silently mismatches the agent_id index. Caller binds [agentId].
+      hasAnyReplicationRows: (agentId) =>
+        `SELECT COUNT(*) AS cnt FROM ad_replication_status WHERE agent_id = CAST(? AS NVARCHAR(64))`,
       reportSummaryFor: (agentId, sinceIso) =>
         `SELECT s.source_dc, s.dest_dc, s.status_code, s.error_message, s.collected_at
          FROM ad_replication_status s

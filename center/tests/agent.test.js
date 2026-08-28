@@ -54,12 +54,18 @@ function buildApp({ agentTokenValue, records, extraScripts } = {}) {
 
 test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued', async () => {
   const records = [];
+  // round-58: simulate a warm heartbeat (existing row <5min old) so the
+  // cold-start auto-trigger branch does NOT fire — this test only asserts
+  // the main UPSERT, not the new report-now trigger.
+  const thirtySecAgo = new Date(Date.now() - 30 * 1000).toISOString();
   // round-12 T6: handler now reads back report_requested_at after the
   // upsert. The mock returns null so reportRequested stays false.
   const app = buildApp({
     agentTokenValue: 'tok',
     records,
     extraScripts: [
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: thirtySecAgo }] },
       { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
         rows: [{ report_requested_at: null }] }
     ]
@@ -90,10 +96,15 @@ test('POST /api/agent/heartbeat with correct token -> 200 and UPSERT was issued'
 test('POST /api/agent/heartbeat: explicit null body field triggers clearReportRequest', async () => {
   let clearCalled = false;
   const records = [];
+  // round-58: warm heartbeat so the cold-start auto-trigger does NOT fire.
+  const thirtySecAgo = new Date(Date.now() - 30 * 1000).toISOString();
   const app = buildApp({
     agentTokenValue: 'tok',
     records,
     extraScripts: [
+      // round-58: cold-start probe returns a recent timestamp — warm.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: thirtySecAgo }] },
       // The clear path goes through clearReportRequest (UPDATE … = NULL)
       // — NOT through the heartbeat UPSERT. The mock fires onExecute for
       // the UPDATE so the test can assert the SQL was issued; the read-
@@ -158,10 +169,15 @@ test('POST /api/agent/heartbeat missing agentId -> 400 and no UPSERT issued', as
 // value preserved. See brief Step 4 + Option A rationale.
 test('POST /api/agent/heartbeat: response carries reportRequested: true when flag is set', async () => {
   const records = [];
+  // round-58: warm heartbeat so the cold-start auto-trigger does NOT fire.
+  const thirtySecAgo = new Date(Date.now() - 30 * 1000).toISOString();
   const app = buildApp({
     agentTokenValue: 'tok',
     records,
     extraScripts: [
+      // round-58: cold-start probe returns recent timestamp — warm.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: thirtySecAgo }] },
       // Mock the post-upsert read-back SELECT to return a non-null
       // report_requested_at — simulates a pending "report now" request
       // that was set via the admin route (T5).
@@ -291,6 +307,208 @@ test('POST /api/agent/heartbeat: cold-start probe error does NOT 500 the heartbe
     .set('X-Agent-Token', 'tok')
     .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
   assert.equal(r.status, 200, 'cold-start probe error must NOT 500 the heartbeat');
+  assert.equal(r.body.reportRequested, false);
+});
+
+// 2026-08-28 round-58: cold-start auto-trigger for report-now.
+// After a delete (or first heartbeat ever), the heartbeat row refills via
+// UPSERT but ad_replication_status stays empty until the natural report
+// cycle (15min+). The heartbeat handler detects cold-start (row missing OR
+// >5min gap) AND empty report table → auto-triggers requestReport so the
+// agent's NEXT heartbeat sends a fresh report, refilling the table in 1-2
+// minutes instead of waiting 15+.
+test('POST /api/agent/heartbeat: cold-start (gap>5min) + empty report table triggers requestReport', async () => {
+  const records = [];
+  let requestReportCalled = false;
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Cold-start probe: 10-min-old last_heartbeat_at → coldStart=true.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: tenMinAgo }] },
+      // Cold-start clear (always fires when coldStart=true).
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: []
+      },
+      // Empty report table → trigger fires.
+      { match: /SELECT\s+COUNT\(\*\)\s+AS\s+cnt\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ cnt: 0 }],
+        onExecute: () => { /* fired */ }
+      },
+      // requestReport UPSERT — capture so test can assert it fired.
+      { match: /INSERT\s+INTO\s+ad_agent_heartbeat\s*\(\s*agent_id\s*,\s*last_heartbeat_at\s*,\s*report_requested_at\s*\)/is,
+        rows: [],
+        onExecute: (sql) => {
+          // The main heartbeat UPSERT also matches this pattern; we want
+          // to count only the requestReport UPSERT which fires AFTER the
+          // main UPSERT.
+          requestReportCalled = true;
+        }
+      },
+      // Post-read-back reportRequested returns the value the trigger set.
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: new Date() }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  // requestReport UPSERT fires after the main heartbeat UPSERT — its
+  // INSERT shape is the same as the heartbeat row UPSERT, so we count
+  // the total INSERTs targeting ad_agent_heartbeat: should be 2 (main +
+  // trigger).
+  const heartInserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(heartInserts.length, 2,
+    'cold-start + empty report table must trigger requestReport UPSERT (got ' + heartInserts.length + ' INSERTs)');
+});
+
+test('POST /api/agent/heartbeat: cold-start (gap>5min) + report table has rows does NOT trigger', async () => {
+  const records = [];
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Cold-start probe: 10-min-old last_heartbeat_at → coldStart=true.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: tenMinAgo }] },
+      // Cold-start clear (always fires when coldStart=true).
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: []
+      },
+      // Report table HAS rows → trigger does NOT fire (count > 0).
+      { match: /SELECT\s+COUNT\(\*\)\s+AS\s+cnt\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ cnt: 42 }] },
+      // Post-read-back returns null (no pending request).
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  // Only the main heartbeat UPSERT — requestReport must NOT have fired.
+  const heartInserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(heartInserts.length, 1,
+    'cold-start + non-empty report table must NOT trigger requestReport (got ' + heartInserts.length + ' INSERTs)');
+  assert.equal(r.body.reportRequested, false);
+});
+
+test('POST /api/agent/heartbeat: row missing (delete+resurrect) + empty report table triggers requestReport', async () => {
+  // Simulates the operator's bug report: after delete, the heartbeat UPSERT
+  // refills the heartbeat row immediately. Without the trigger, the report
+  // table stays empty until the natural cycle (15min+). The trigger fires
+  // when the readLastHeartbeatAt probe finds no existing row.
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Cold-start probe: empty result → no existing row → coldStart=true.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [] },
+      // Cold-start clear (fires even on row-missing — harmless UPDATE 0 rows).
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: []
+      },
+      // Empty report table → trigger fires.
+      { match: /SELECT\s+COUNT\(\*\)\s+AS\s+cnt\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ cnt: 0 }] },
+      // Post-read-back returns the triggered value.
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: new Date() }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  // Heartbeat row INSERT (main) + requestReport UPSERT (trigger) = 2.
+  const heartInserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(heartInserts.length, 2,
+    'row-missing + empty report table must trigger requestReport (got ' + heartInserts.length + ' INSERTs)');
+  assert.equal(r.body.reportRequested, true);
+});
+
+test('POST /api/agent/heartbeat: row missing + report table has rows does NOT trigger', async () => {
+  // Edge case: row was deleted but the report table still has rows from
+  // before the delete. We don't want to spuriously trigger — the agent's
+  // existing report data is sufficient.
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Cold-start probe: empty result → no existing row → coldStart=true.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [] },
+      // Cold-start clear (harmless UPDATE 0 rows).
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: []
+      },
+      // Report table HAS rows → trigger does NOT fire.
+      { match: /SELECT\s+COUNT\(\*\)\s+AS\s+cnt\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ cnt: 7 }] },
+      // Post-read-back returns null.
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200);
+  const heartInserts = records.filter(rec => /INSERT\s+INTO\s+ad_agent_heartbeat/i.test(rec.sql));
+  assert.equal(heartInserts.length, 1,
+    'row-missing + non-empty report table must NOT trigger requestReport (got ' + heartInserts.length + ' INSERTs)');
+  assert.equal(r.body.reportRequested, false);
+});
+
+test('POST /api/agent/heartbeat: cold-start trigger query error does NOT 500 the heartbeat', async () => {
+  // The cold-start trigger query (hasAnyReplicationRows) is best-effort —
+  // if it throws, the heartbeat must still succeed.
+  const records = [];
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // Cold-start probe returns 10-min-old timestamp → coldStart=true.
+      { match: /SELECT\s+last_heartbeat_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ last_heartbeat_at: tenMinAgo }] },
+      // Cold-start clear.
+      {
+        match: /UPDATE\s+ad_agent_heartbeat\s+SET\s+report_requested_at\s*=\s*NULL/i,
+        rows: []
+      },
+      // hasAnyReplicationRows throws → trigger swallowed.
+      {
+        match: /SELECT\s+COUNT\(\*\)\s+AS\s+cnt\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [],
+        onExecute: () => { throw new Error('trigger-query-failure'); }
+      },
+      // Post-read-back returns null.
+      { match: /SELECT\s+report_requested_at\s+FROM\s+ad_agent_heartbeat\s+WHERE\s+agent_id\s*=\s*\?/is,
+        rows: [{ report_requested_at: null }] }
+    ]
+  });
+  const r = await supertest(app)
+    .post('/api/agent/heartbeat')
+    .set('X-Agent-Token', 'tok')
+    .send({ agentId: 'agent-1', agentVersion: '1.0.0', pendingQueueSize: 0 });
+  assert.equal(r.status, 200, 'trigger query error must NOT 500 the heartbeat');
   assert.equal(r.body.reportRequested, false);
 });
 
