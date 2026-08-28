@@ -120,27 +120,29 @@ main { display: flex; flex-direction: column; }
 .topbar-actions button { padding: 6px 14px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; background: var(--input-bg); color: var(--text); }
 .topbar-actions .theme-toggle { font-size: 14px; min-width: 32px; padding: 6px 8px; }
 .content { padding: 20px; overflow: auto; }
-/* 2026-08-28 round-51: 6 flat top-level groups. Indentation now expresses
-   "this item belongs to the title above" via 24px left-padding on items
-   (was 10px/22px depending on subgroup in R48.1). 13px title at weight 700
-   in --text color makes the top-level boundary obvious without decorative
+/* 2026-08-28 round-51: 6 flat top-level groups. Indentation expresses
+   "this item belongs to the title above" via a 32px left-padding on items
+   vs 8px on titles — a 24px gap that's unmistakable to the eye (R48.1's
+   10px gap was the "没有缩进" the operator flagged). 13px title at weight
+   700 in --text color marks the top-level boundary without decorative
    chrome (per feedback_admin_no_marketing_chrome.md). */
 .nav-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 /* Vertical gap between top-level groups — the eye reads "new category". */
-.nav-group + .nav-group { margin-top: 14px; }
+.nav-group + .nav-group { margin-top: 16px; }
 .nav-link {
   display: block;
-  padding: 7px 12px 7px 24px;
+  padding: 6px 12px 6px 32px;
+  font-size: 13px;
 }
 .nav-group-title {
   font-weight: 700;
   color: var(--text);
   font-size: 13px;
-  padding: 6px 12px 4px;
+  padding: 6px 8px 4px;
   margin: 0;
   cursor: pointer;
   user-select: none;
