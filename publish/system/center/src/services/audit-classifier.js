@@ -42,6 +42,11 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['baseline',                       'changes'],
   ['apply_up_to',                    'changes'],
   ['upgrade_db',                     'changes'],
+  // 2026-08-28 round-55: refresh SHA-256 checksum without re-running SQL.
+  // Metadata-only change on an already-applied row (silences the ⚠️
+  // "File edited after apply" warning). 'changes' for the same reason
+  // mark_applied is — it mutates schema_migrations state.
+  ['refresh_checksum',               'changes'],
   // I9: dual-key JWT secret rotation events — security-bearing because
   // they change the server's signing key (rotate/commit touch active auth;
   // seed bootstraps the key on first install; auto_expire silently closes
@@ -128,6 +133,12 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['baseline',                       'medium'],
   ['apply_up_to',                    'medium'],
   ['upgrade_db',                     'medium'],
+  // 2026-08-28 round-55: refresh_checksum is 'low' — it's metadata-only,
+  // does not re-run SQL, and only succeeds on rows already in applied
+  // state with a verified DB schema. Lower than mark_applied (medium)
+  // because no schema claim is being made; the operator is just
+  // acknowledging a post-apply cosmetic file edit.
+  ['refresh_checksum',               'low'],
   // I9: JWT secret rotation — operator-driven rotation/commit are high
   // because they immediately change the signing key (every newly-issued
   // token uses the new key); auto-expire is high because it silently
@@ -201,6 +212,10 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['baseline',                       '基线标记'],
   ['apply_up_to',                    '批量应用到版本'],
   ['upgrade_db',                     '升级到最新'],
+  // 2026-08-28 round-55: refresh_checksum — Chinese label matches the UI
+  // button text on SchemaMigrationsView so audit entries read naturally
+  // alongside the operator's clicks.
+  ['refresh_checksum',               '刷新迁移校验和'],
   // I9: JWT secret rotation labels (Chinese to match surrounding taxonomy).
   ['rotate_jwt_secret',              '轮换 JWT 签名密钥'],
   ['auto_expire_jwt_secret',         'JWT 密钥自动过期'],

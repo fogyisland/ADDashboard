@@ -84,6 +84,30 @@ export function schemaMigrationsRouter({ requireAuth, requirePerm, logger, getRe
     }
   });
 
+  // 2026-08-28 round-55: refresh SHA-256 checksum without re-running SQL.
+  // Operator clicks [刷新校验和] in the SchemaMigrationsView when a row
+  // shows ⚠️ "File edited after apply" — meaning the file was modified
+  // post-apply (verify-marker comments, dialect-compat rewrite, etc.)
+  // but the schema in DB is verified working. Only `checksum` column
+  // updates; everything else preserved. See migrations.refreshChecksum.
+  r.post('/api/admin/migrations/:version/refresh-checksum', ...auth, async (req, res) => {
+    try {
+      const service = getService();
+      const result = await service.refreshChecksum(req.params.version);
+      await deps.writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'refresh_checksum',
+        target: 'schema_migrations',
+        payload: { version: result.version, checksum: result.checksum.slice(0, 8) + '…' }
+      }, logger);
+      res.json(result);
+    } catch (e) {
+      const status = e.status || 500;
+      logger.error({ err: e.message, status }, 'refresh checksum failed');
+      res.status(status).json({ error: e.message });
+    }
+  });
+
   r.post('/api/admin/migrations/:version/mark-applied', ...auth, async (req, res) => {
     try {
       const service = getService();

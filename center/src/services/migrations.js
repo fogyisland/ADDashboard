@@ -25,6 +25,13 @@ export class MigrationFileMissingError extends Error {
 export class InvalidVersionError extends Error {
   constructor(version) { super(`invalid version: ${version}`); this.status = 400; }
 }
+// 2026-08-28 round-55: refresh-checksum only meaningful for applied rows.
+// Pending/failed rows have a null/placeholder checksum that refresh would
+// either invent or refuse — either way the operator's real intent is
+// mark-applied or reset, not checksum refresh.
+export class NotAppliedError extends Error {
+  constructor(version) { super(`migration ${version} is not in applied state — use mark-applied or reset instead`); this.status = 409; }
+}
 
 const VERSION_RE = /^\d{3}$/;
 
@@ -184,6 +191,39 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     return { ok: true, deleted: affectedRows };
   }
 
+  // 2026-08-28 round-55: refresh stored SHA-256 to match the current file
+  // on disk. Used when a migration was applied but the file was later
+  // edited cosmetically (verify-marker comments, dialect-compat rewrite
+  // with identical schema output, etc.) — SchemaMigrationsView flags such
+  // rows with ⚠️ "File edited after apply". This endpoint silences the
+  // warning WITHOUT re-running SQL: status, applied_at, applied_by,
+  // execution_ms, error_message are all preserved. Only `checksum` is
+  // updated to the live file SHA-256.
+  //
+  // Guards:
+  //   - file missing on disk → MigrationFileMissingError (404)
+  //   - row not in applied state → NotAppliedError (409) — operator's
+  //     real intent for pending/failed rows is mark-applied or reset,
+  //     not silent checksum refresh.
+  async function refreshChecksum(version) {
+    validateVersion(version);
+    const repoRoot = getRepoRoot();
+    const filePath = resolveFile(repoRoot, db.dialect, version);
+    if (!filePath) throw new MigrationFileMissingError(version);
+    const content = readFileSync(filePath, 'utf8');
+    const fileChecksum = sha256(content);
+
+    // Pre-check: refuse if not applied. The UPDATE's own WHERE clause
+    // would silently skip non-applied rows; surfacing the error here
+    // gives the operator a clear 409 with an actionable hint.
+    const { rows: existingRows } = await db.query(db.sql.schemaMigrations.findByVersion, [version]);
+    const existing = existingRows[0];
+    if (!existing || existing.status !== 'applied') throw new NotAppliedError(version);
+
+    await db.execute(db.sql.schemaMigrations.updateChecksum, [fileChecksum, version]);
+    return { ok: true, version, checksum: fileChecksum };
+  }
+
   async function markApplied(version, { appliedBy }) {
     validateVersion(version);
     const repoRoot = getRepoRoot();
@@ -339,5 +379,5 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     return { ok, migrations: { applied, failed }, seed: seedResult, message };
   }
 
-  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration, markApplied, baseline, applyUpTo, upgrade };
+  return { listMigrations, applyMigration, dryRunMigration, resetFailedMigration, refreshChecksum, markApplied, baseline, applyUpTo, upgrade };
 }

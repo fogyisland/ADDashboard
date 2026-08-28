@@ -555,7 +555,13 @@ const VARIANTS = {
           applied_by    = VALUES(applied_by),
           status        = VALUES(status),
           error_message = VALUES(error_message)`,
-      deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'"
+      deleteFailed: "DELETE FROM schema_migrations WHERE version = ? AND status = 'failed'",
+      // 2026-08-28 round-55: refresh stale checksum without re-running SQL.
+      // Only updates checksum; status, applied_at, applied_by, execution_ms,
+      // error_message all preserved. WHERE guards: must already be applied
+      // (refuse to "fix" a pending/failed row's checksum — operator should
+      // use mark-applied or reset instead).
+      updateChecksum: "UPDATE schema_migrations SET checksum = ? WHERE version = ? AND status = 'applied'"
     },
     // Port self-probe state (migration 012). One row per port_role, upserted
     // at 1 Hz by the probe service. getAll backs /api/probe and the admin
@@ -1234,7 +1240,12 @@ const VARIANTS = {
           (version, description, type, script, checksum, applied_at, execution_ms, applied_by, status, error_message)
           VALUES
           (s.version, s.description, s.type, s.script, s.checksum, s.applied_at, s.execution_ms, s.applied_by, s.status, s.error_message);`,
-      deleteFailed: "DELETE FROM schema_migrations WHERE version = CAST(? AS VARCHAR(32)) AND status = 'failed'"
+      deleteFailed: "DELETE FROM schema_migrations WHERE version = CAST(? AS VARCHAR(32)) AND status = 'failed'",
+      // 2026-08-28 round-55: refresh stale checksum without re-running SQL.
+      // MSSQL needs CAST(?) on the new value because checksum is VARCHAR(64)
+      // and the @pN rewriter passes through whatever the driver is given;
+      // we still keep the explicit cast for clarity & safety.
+      updateChecksum: "UPDATE schema_migrations SET checksum = CAST(? AS VARCHAR(64)) WHERE version = CAST(? AS VARCHAR(32)) AND status = 'applied'"
     },
     // Port self-probe state (migration 012). MSSQL uses MERGE for atomic
     // upsert (no native ON DUPLICATE KEY). Uses ? placeholders — db.execute

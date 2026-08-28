@@ -187,4 +187,86 @@ describe('schemaMigrationsRouter', () => {
     assert.equal(auditCalled.payload.failed, 0);
     assert.equal(auditCalled.payload.seed, 'unchanged');
   });
+
+  // 2026-08-28 round-55: refresh-checksum route. Three guards:
+  //   - 401 without auth (consistent with siblings)
+  //   - 200 success on applied row → writeAudit action=refresh_checksum
+  //   - 409 when service throws NotAppliedError
+  //   - 404 when service throws MigrationFileMissingError
+  test('POST /:version/refresh-checksum 401 without token', async () => {
+    const app = buildApp();
+    const res = await request(app).post('/api/admin/migrations/008/refresh-checksum');
+    assert.equal(res.status, 401);
+  });
+
+  test('POST /:version/refresh-checksum 200 + writeAudit action=refresh_checksum', async () => {
+    let auditCalled = null;
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          refreshChecksum: async (version) => ({
+            ok: true, version, checksum: 'a'.repeat(64)
+          })
+        }),
+        writeAudit: async (args) => { auditCalled = args; }
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/008/refresh-checksum')
+      .set('Authorization', 'Bearer valid')
+      .send({});
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, true);
+    assert.equal(res.body.version, '008');
+    assert.equal(res.body.checksum.length, 64);
+    assert.ok(auditCalled);
+    assert.equal(auditCalled.action, 'refresh_checksum');
+    assert.equal(auditCalled.target, 'schema_migrations');
+    assert.equal(auditCalled.payload.version, '008');
+    // checksum in audit is truncated to 8 chars + … to keep rows readable
+    assert.match(auditCalled.payload.checksum, /^a{8}…$/);
+  });
+
+  test('POST /:version/refresh-checksum 409 when service throws NotAppliedError', async () => {
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          refreshChecksum: async () => {
+            const e = new Error('migration 010 is not in applied state — use mark-applied or reset instead');
+            e.status = 409;
+            throw e;
+          }
+        })
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/010/refresh-checksum')
+      .set('Authorization', 'Bearer valid')
+      .send({});
+    assert.equal(res.status, 409);
+    assert.match(res.body.error, /not in applied state/);
+  });
+
+  test('POST /:version/refresh-checksum 404 when file missing on disk', async () => {
+    const app = buildApp({
+      _deps: {
+        createMigrationsService: () => ({
+          ...mockService,
+          refreshChecksum: async () => {
+            const e = new Error('migration 999 file not found');
+            e.status = 404;
+            throw e;
+          }
+        })
+      }
+    });
+    const res = await request(app)
+      .post('/api/admin/migrations/999/refresh-checksum')
+      .set('Authorization', 'Bearer valid')
+      .send({});
+    assert.equal(res.status, 404);
+    assert.match(res.body.error, /file not found/);
+  });
 });

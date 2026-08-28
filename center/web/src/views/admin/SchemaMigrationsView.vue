@@ -72,6 +72,15 @@
                   {{ applying.has(row.version) ? '标记中…' : '标记已应用' }}
                 </button>
               </template>
+              <!-- 2026-08-28 round-55: refresh SHA-256 to silence ⚠️ "File edited after apply".
+                   Only meaningful when the row is applied AND the file drifted post-apply.
+                   Server preserves status / applied_at / applied_by / execution_ms / error_message —
+                   only the checksum column is rewritten. See migrations.refreshChecksum. -->
+              <template v-if="row.status === 'applied' && row.checksumMismatch">
+                <button class="refresh-btn" :disabled="applying.has(row.version)" @click="doRefreshChecksum(row)">
+                  {{ applying.has(row.version) ? '刷新中…' : '刷新校验和' }}
+                </button>
+              </template>
             </td>
           </tr>
           <tr v-if="rowError[row.version]" class="row-error-bar">
@@ -141,7 +150,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
-import { listMigrations, applyMigration, dryRunMigration, resetMigration, markApplied, baseline, applyUpTo, upgrade } from '../../api/migrations.js';
+import { listMigrations, applyMigration, dryRunMigration, resetMigration, refreshChecksum, markApplied, baseline, applyUpTo, upgrade } from '../../api/migrations.js';
 import { notifyError, notifySuccess } from '../../lib/notify.js';
 
 const rows = ref([]);
@@ -334,6 +343,32 @@ async function doMarkApplied(row) {
   }
 }
 
+// 2026-08-28 round-55: refresh stored SHA-256 to silence ⚠️ "File edited after apply".
+// Operator confirms they trust the file-vs-DB divergence is cosmetic (the DB schema
+// is verified working; the file was edited post-apply for verify markers /
+// dialect-compat rewrite with identical output). Server overwrites ONLY the
+// checksum column — status, applied_at, applied_by, execution_ms, error_message
+// all preserved.
+async function doRefreshChecksum(row) {
+  if (!confirm(`刷新 migration ${row.version} 的校验和?\n\n文件已修改 (post-apply),将用磁盘当前 SHA-256 覆盖数据库中存储的旧值。不会重跑 SQL、不会改 status / applied_at / applied_by。\n\n请确认你已经核对过 DB schema 与当前文件输出一致。`)) return;
+  applying.value = new Set(applying.value).add(row.version);
+  delete rowError.value[row.version];
+  globalError.value = null;
+  try {
+    await refreshChecksum(row.version);
+    notifySuccess(`Migration ${row.version} 校验和已刷新`);
+    await refresh();
+  } catch (e) {
+    const msg = errMsg(e);
+    rowError.value = { ...rowError.value, [row.version]: msg };
+    notifyError(`刷新校验和失败: ${msg}`);
+  } finally {
+    const next = new Set(applying.value);
+    next.delete(row.version);
+    applying.value = next;
+  }
+}
+
 // Page-level primary CTA. Calls the bulk /upgrade endpoint, which applies
 // every pending migration in order AND re-runs the seed file if its
 // checksum changed. The server returns a `message` for both success and
@@ -453,6 +488,12 @@ onMounted(refresh);
 .actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 .mark-btn { background: #f59e0b; color: #0b1220; font-weight: 600; }
 .mark-btn:hover:not(:disabled) { border-color: #f59e0b; }
+/* 2026-08-28 round-55: refresh-checksum button — neutral slate styling so
+   it doesn't compete visually with mark-applied (orange/amber) or
+   reset (destructive). The ⚠ icon on the row already conveys the
+   reason; the button is just the operator's "yes, I've verified" click. */
+.refresh-btn { color: #93c5fd; }
+.refresh-btn:hover:not(:disabled) { border-color: #60a5fa; color: #bfdbfe; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .modal-actions button { padding: 6px 14px; }
 .modal input[type="text"], .modal input:not([type]) { width: 100%; padding: 8px; background: #0b1220; color: var(--text); border: 1px solid #1e293b; border-radius: 3px; margin-top: 8px; font-family: monospace; }

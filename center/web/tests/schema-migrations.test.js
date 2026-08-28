@@ -39,12 +39,24 @@ const sampleRows = [
   }
 ];
 
+// 2026-08-28 round-55: row with applied status BUT stale file checksum —
+// this is the row that the new [刷新校验和] button is meant to silence.
+// Distinct from the 010 row (which is pending and gets [标记已应用]) so
+// the assertions can prove the button visibility logic is correct.
+const sampleMismatchRow = {
+  version: '002', description: 'permissions-table', script: '002-permissions-table.sql',
+  dialect: 'mysql', status: 'applied',
+  appliedAt: '2026-08-06T10:00:00Z', appliedBy: 'startup', executionMs: 35,
+  checksum: 'oldchecksum', checksumMismatch: true, scriptMissing: false, errorMessage: null
+};
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.mocked(api.listMigrations).mockReset();
   vi.mocked(api.applyMigration).mockReset();
   vi.mocked(api.dryRunMigration).mockReset();
   vi.mocked(api.resetMigration).mockReset();
+  vi.mocked(api.refreshChecksum).mockReset();
   vi.mocked(api.markApplied).mockReset();
   vi.mocked(api.baseline).mockReset();
   vi.mocked(api.applyUpTo).mockReset();
@@ -204,4 +216,94 @@ test('click [升级到最新] → calls upgrade API', async () => {
   await w.findAll('button').find(b => b.text().includes('升级到最新')).trigger('click');
   await flushPromises();
   expect(api.upgrade).toHaveBeenCalled();
+});
+
+// ===== 2026-08-28 round-55: refresh-checksum button =====
+//
+// Three guards:
+//   1) Visible when row.status === 'applied' && row.checksumMismatch === true
+//   2) Hidden when applied but checksum matches (no ⚠️ on row)
+//   3) Hidden when pending/failed (those rows have [标记已应用] / [重置])
+//
+// Click semantics:
+//   - Prompts confirm before sending (operator must ack the file-vs-DB
+//     drift is cosmetic before checksum is overwritten)
+//   - Calls api.refreshChecksum(version)
+//   - Refreshes listMigrations to show the updated state
+//   - Notifies success / error
+test('R55: applied row with checksumMismatch shows [刷新校验和] button', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: [sampleMismatchRow] });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  const row = w.findAll('tr').find(r => r.text().includes('002'));
+  expect(row.text()).toContain('刷新校验和');
+});
+
+test('R55: applied row WITHOUT checksumMismatch does NOT show [刷新校验和]', async () => {
+  // sampleRows[0] (v=008) is applied with checksumMismatch=false
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: sampleRows });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  const row = w.findAll('tr').find(r => r.text().includes('008'));
+  expect(row.text()).not.toContain('刷新校验和');
+});
+
+test('R55: pending row does NOT show [刷新校验和] even if mismatch somehow set', async () => {
+  // Edge case guard: pending row that has a stale checksum stored from a
+  // prior failed apply. The button should NOT show — use mark-applied
+  // or reset for pending rows.
+  vi.mocked(api.listMigrations).mockResolvedValue({
+    data: [{ ...sampleRows[1], checksumMismatch: true }]
+  });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  const row = w.findAll('tr').find(r => r.text().includes('010'));
+  expect(row.text()).not.toContain('刷新校验和');
+});
+
+test('R55: click [刷新校验和] → calls refreshChecksum + refreshes list', async () => {
+  // First list call returns the mismatch row; second call returns it
+  // post-refresh with checksumMismatch=false (simulating the new
+  // SHA-256 having been written to schema_migrations).
+  vi.mocked(api.listMigrations)
+    .mockResolvedValueOnce({ data: [sampleMismatchRow] })
+    .mockResolvedValueOnce({ data: [{ ...sampleMismatchRow, checksumMismatch: false }] });
+  vi.mocked(api.refreshChecksum).mockResolvedValue({
+    data: { ok: true, version: '002', checksum: 'a'.repeat(64) }
+  });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  const row = w.findAll('tr').find(r => r.text().includes('002'));
+  await row.findAll('button').find(b => b.text() === '刷新校验和').trigger('click');
+  await flushPromises();
+  expect(api.refreshChecksum).toHaveBeenCalledWith('002');
+  expect(api.listMigrations).toHaveBeenCalledTimes(2);
+  expect(notify.notifySuccess).toHaveBeenCalledWith(expect.stringContaining('校验和已刷新'));
+});
+
+test('R55: [刷新校验和] surface server error message inline + notify', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: [sampleMismatchRow] });
+  vi.mocked(api.refreshChecksum).mockRejectedValue(new Error('NotAppliedError: not in applied state'));
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => true);
+  const row = w.findAll('tr').find(r => r.text().includes('002'));
+  await row.findAll('button').find(b => b.text() === '刷新校验和').trigger('click');
+  await flushPromises();
+  expect(w.text()).toContain('NotAppliedError');
+  expect(notify.notifyError).toHaveBeenCalledWith(expect.stringContaining('NotAppliedError'));
+  // failed refresh must not silently clear the row — no extra refresh
+  expect(api.listMigrations).toHaveBeenCalledTimes(1);
+});
+
+test('R55: cancelling confirm dialog does NOT call refreshChecksum', async () => {
+  vi.mocked(api.listMigrations).mockResolvedValue({ data: [sampleMismatchRow] });
+  const w = mount(SchemaMigrationsView, { global: { plugins: [makeRouter()] } });
+  await flushPromises();
+  window.confirm = vi.fn(() => false);
+  const row = w.findAll('tr').find(r => r.text().includes('002'));
+  await row.findAll('button').find(b => b.text() === '刷新校验和').trigger('click');
+  await flushPromises();
+  expect(api.refreshChecksum).not.toHaveBeenCalled();
 });
