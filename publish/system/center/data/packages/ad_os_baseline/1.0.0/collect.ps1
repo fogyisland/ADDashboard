@@ -25,8 +25,8 @@ $payload = @{
   metrics = @{
     cpu_pct    = [double]$cpuSample
     memory_pct = [double]$memPct
-    disk_free  = ($diskFree  -as [string]) ?? '{}'
-    disk_total = ($diskTotal -as [string]) ?? '{}'
+    disk_free  = if ($diskFree)  { [string]$diskFree }  else { '{}' }
+    disk_total = if ($diskTotal) { [string]$diskTotal } else { '{}' }
     services   = (ConvertTo-Json $svcMap -Compress)
     events     = (ConvertTo-Json @($events) -Compress)
   }
