@@ -65,7 +65,12 @@ const routes = [
   { path: '/admin/heartbeat-report', component: () => import('./views/admin/HeartbeatReportMonitorView.vue'), meta: { perm: 'admin:users' } },
   // 2026-08-27 round-39: 运维区统一日志 — 审计事件 + 心跳 + 报告 三块合一.
   { path: '/admin/operations-log', component: OperationsLogView, meta: { perm: 'admin:users' } },
-  { path: '/admin/orphan-schemas', component: () => import('./views/admin/OrphanSchemasView.vue'), meta: { perm: 'admin:users' } },
+  // 2026-08-28 round-53: /admin/orphan-schemas route + view DELETED per
+  // operator directive "删除Schema和清理菜单". Per feedback_full_chain_cleanup
+  // the whole chain goes — sidebar entry, route, view, and any tests that
+  // referenced it. The DB column `schema_migrations.error_message` and
+  // migration failure flow remain intact (R50's fix); this was only the
+  // operator-facing diagnostic view.
   { path: '/admin/packages', component: PackagesView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/:name', component: PackageEditView, meta: { perm: 'admin:packages' } },
@@ -75,6 +80,12 @@ const routes = [
   { path: '/admin/member-servers', component: MemberServersView, meta: { perm: 'admin:users' } },
   { path: '/admin/member-servers/:hostname', component: MemberServerDetailView, meta: { perm: 'admin:users' } },
   { path: '/admin/server-groups', component: ServerGroupsView, meta: { perm: 'admin:users' } },
+  // 2026-08-28 round-53: 3 new placeholder routes (mock-first per operator directive
+  // "先做mock 到时候agent 按照mock方案改造就好了"). UI is in place; backend
+  // endpoints + agent-side wire-up pending.
+  { path: '/admin/ad-file-push',         component: () => import('./views/admin/AdFilePushView.vue'),         meta: { perm: 'admin:users' } },
+  { path: '/admin/member-file-push',     component: () => import('./views/admin/MemberFilePushView.vue'),     meta: { perm: 'admin:users' } },
+  { path: '/admin/member-command-exec',  component: () => import('./views/admin/MemberCommandExecView.vue'), meta: { perm: 'admin:users' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

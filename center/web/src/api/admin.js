@@ -53,8 +53,9 @@ export const adminApi = {
   bulkImportSites: (rows) => api.post('/api/admin/sites-catalog/bulk', { rows }),
   bulkAssignDcs: (rows) => api.post('/api/admin/dcs-catalog/bulk-assign', { rows }),
   getDdlPreview: (name) => api.get(`/api/admin/packages/${name}/ddl-preview`),
-  listOrphanSchemas: () => api.get('/api/admin/orphan-schemas'),
-  dropOrphanSchema: (name) => api.delete(`/api/admin/orphan-schemas/${name}`),
+  // 2026-08-28 round-53: listOrphanSchemas + dropOrphanSchema removed per
+  // operator directive "删除Schema和清理菜单". Per feedback_full_chain_cleanup
+  // the whole chain is gone — view, route, sidebar entry, API client.
   uninstallPackage: (name, { purgeMetrics = false, confirmDropSchema = false } = {}) =>
     api.delete(`/api/admin/packages/${name}`, { params: { purgeMetrics, confirmDropSchema } }),
 

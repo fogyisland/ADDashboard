@@ -15,46 +15,63 @@ function mountLayout() {
   });
 }
 
-// 2026-08-28 round-52: 5 top-level groups (down from R51's 6) with emoji icons
-// + 3-level nesting for AD 复制与端口. URL paths unchanged from R51 —
-// only labels + structural grouping change.
+// 2026-08-28 round-53: operator directive "按照我的要求 修改当前后台的界面".
+// 5 top-level groups per operator's explicit spec + 1 system settings
+// group for orphans (config / email-config / migrations — not in spec
+// but functional views kept accessible).
 //
-// Group order (ops-frequency):
-//   1. 📊 监控与诊断  — 1 nested AD 复制与端口 [3 sub-items] + 1 flat 心跳与告警
-//   2. 🛡️ AD 目录服务 — 3 flat items
-//   3. 💻 服务器管理  — 3 flat items (操作日志 moved here from R51's AD 管理)
-//   4. 👥 权限与账号  — 3 flat items (包管理 moved here from R51's AD 管理)
-//   5. ⚙️ 系统运维    — 4 flat items (数据库运维 + 系统设置 consolidated)
+// Operator's exact list:
+//   监控与诊断 (4):  复制状态概览 / 复制伙伴端口监控 / 心跳与状态报告 / 包管理
+//   AD 活动目录服务器 (4): 站点清单设置 / 域控清单设置 / 域控检查端口 / 文件推送功能
+//   成员服务器管理 (4): 成员服务器组 / 成员服务器 / 成员服务器文件推送 / 成员服务器执行命令
+//   权限和账户 (2):  用户管理 / 角色管理
+//   运维日志 (2):    系统运维日志 / 心跳与状态执行日志
 //
-// Total nav-links: 17 (unchanged from R51). 14 visible at level 2
-// (5 group titles + AD 复制与端口 parent = 6 top-level + ...), 3 at level 3.
+// R53 changes from R52:
+//   - "心跳与告警" → "心跳与状态报告"
+//   - "复制伙伴端口健康监控" → "复制伙伴端口监控"
+//   - "AD 站点清单" → "AD 站点清单设置" (moved to AD 活动目录服务器)
+//   - "AD 域控清单" → "AD 域控清单设置" (moved to AD 活动目录服务器)
+//   - "端口健康检查" → "AD 域控检查端口" (moved from 监控与诊断 to AD 活动目录服务器)
+//   - "非活动目录服务器组" → "成员服务器组"
+//   - "非活动目录" → "成员服务器"
+//   - "用户" → "用户管理"
+//   - "角色" → "角色管理"
+//   - "包管理" moved 权限与账号 → 监控与诊断
+//   - "审计日志" → "系统运维日志" (moved to 运维日志)
+//   - "操作日志" / "事件与日志" → "心跳与状态执行日志" (moved to 运维日志)
+//   - DELETED "Schema 与清理" (orphan-schemas)
 //
-// DOM order: sub-links come BEFORE flat-links because they're rendered
-// inside 监控与诊断 at the top of the sidebar.
+// R53 new routes (placeholder views, mock-first):
+//   /admin/ad-file-push         (AD 域控 文件推送)
+//   /admin/member-file-push     (成员服务器 文件推送)
+//   /admin/member-command-exec  (成员服务器 执行命令)
 const EXPECTED_PATHS = [
-  // 监控与诊断 > AD 复制与端口 > [3 sub-items] (level 3, rendered first in DOM)
+  // 监控与诊断 (4)
   '/admin/site-replication-matrix/all',
   '/admin/replication-log/monitor',
-  '/admin/ports',
-  // 监控与诊断 > 心跳与告警 (level 2)
   '/admin/heartbeat-report',
-  // AD 目录服务 (level 2)
+  '/admin/packages',
+  // AD 活动目录服务器 (4)
   '/admin/sites-catalog',
   '/admin/dcs-catalog',
-  '/admin/orphan-schemas',
-  // 服务器管理 (R52: 操作日志 moved in here)
-  '/admin/member-servers',
+  '/admin/ports',
+  '/admin/ad-file-push',
+  // 成员服务器管理 (4)
   '/admin/server-groups',
-  '/admin/operations-log',
-  // 权限与账号 (R52: 包管理 moved in here)
+  '/admin/member-servers',
+  '/admin/member-file-push',
+  '/admin/member-command-exec',
+  // 权限和账户 (2)
   '/admin/users',
   '/admin/roles',
-  '/admin/packages',
-  // 系统运维 (R52: 数据库运维 + 系统设置 consolidated)
+  // 运维日志 (2)
+  '/admin/audit',
+  '/admin/operations-log',
+  // 系统设置 (3) — orphans: not in operator's spec but kept for accessibility
   '/admin/migrations',
   '/admin/config',
-  '/admin/email-config',
-  '/admin/audit'
+  '/admin/email-config'
 ];
 
 beforeEach(() => {
@@ -64,99 +81,112 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-test('R52: renders 5 top-level groups in operator-frequency order with icons', () => {
+test('R53: renders 6 top-level groups in operator-specified order', () => {
   const w = mountLayout();
   const groupTitles = w.findAll('.nav-group-title .label').map(t => t.text());
   expect(groupTitles).toEqual([
     '监控与诊断',
-    'AD 目录服务',
-    '服务器管理',
-    '权限与账号',
-    '系统运维'
+    'AD 活动目录服务器',
+    '成员服务器管理',
+    '权限和账户',
+    '运维日志',
+    '系统设置'
   ]);
-  // Each group title has an emoji icon as a sibling.
-  const icons = w.findAll('.nav-group-title .icon').map(t => t.text());
-  expect(icons).toEqual(['📊', '🛡️', '💻', '👥', '⚙️']);
-  expect(w.findAll('.nav-group').length).toBe(5);
+  expect(w.findAll('.nav-group').length).toBe(6);
 });
 
-test('R52: 监控与诊断 contains AD 复制与端口 (3-level nested) + 心跳与告警', () => {
+test('R53: emoji icons match group titles', () => {
+  const w = mountLayout();
+  const icons = w.findAll('.nav-group-title .icon').map(t => t.text());
+  expect(icons).toEqual(['📊', '🛡️', '💻', '👥', '📋', '🛠️']);
+});
+
+test('R53: 监控与诊断 contains 4 items in operator order', () => {
   const w = mountLayout();
   const monitorGroup = w.findAll('.nav-group')[0];
-  expect(monitorGroup.find('.nav-group-title .label').text()).toBe('监控与诊断');
-
-  // AD 复制与端口 is a <details> (subgroup) inside 监控与诊断.
-  const subgroup = monitorGroup.find('.nav-subgroup');
-  expect(subgroup.exists()).toBe(true);
-  expect(subgroup.find('.nav-subgroup-title').text()).toBe('AD 复制与端口');
-
-  // 3 sub-items at level 3.
-  const subLinks = subgroup.findAll('a.nav-sublink').map(a => a.attributes('href'));
-  expect(subLinks).toEqual([
+  const links = monitorGroup.findAll('a.nav-link').map(a => a.attributes('href'));
+  expect(links).toEqual([
     '/admin/site-replication-matrix/all',
     '/admin/replication-log/monitor',
-    '/admin/ports'
+    '/admin/heartbeat-report',
+    '/admin/packages'
   ]);
-
-  // 心跳与告警 is a flat <router-link> inside 监控与诊断.
-  const flatLinks = monitorGroup.findAll(':scope > a.nav-link').map(a => a.attributes('href'));
-  expect(flatLinks).toEqual(['/admin/heartbeat-report']);
+  // Verify label renames from R52 → R53
+  const labels = monitorGroup.findAll('a.nav-link').map(a => a.text());
+  expect(labels).toEqual([
+    '复制状态概览',
+    '复制伙伴端口监控',     // was 复制伙伴端口健康监控
+    '心跳与状态报告',        // was 心跳与告警
+    '包管理'
+  ]);
 });
 
-test('R52: 操作日志 lives under 服务器管理 (moved from R51 AD 管理)', () => {
+test('R53: AD 活动目录服务器 contains 4 items in operator order (站点清单设置, 域控清单设置, 域控检查端口, 文件推送功能)', () => {
   const w = mountLayout();
-  const serverGroup = w.findAll('.nav-group')[2];
-  expect(serverGroup.find('.nav-group-title .label').text()).toBe('服务器管理');
-  const links = serverGroup.findAll(':scope > a.nav-link').map(a => a.attributes('href'));
-  expect(links).toEqual([
-    '/admin/member-servers',
-    '/admin/server-groups',
-    '/admin/operations-log'
+  const adGroup = w.findAll('.nav-group')[1];
+  const labels = adGroup.findAll('a.nav-link').map(a => a.text());
+  expect(labels).toEqual([
+    'AD 站点清单设置',
+    'AD 域控清单设置',
+    'AD 域控检查端口',
+    '文件推送功能'
   ]);
 });
 
-test('R52: 包管理 lives under 权限与账号 (moved from R51 AD 管理)', () => {
+test('R53: 成员服务器管理 contains 4 items (组, 服务器, 文件推送, 执行命令)', () => {
+  const w = mountLayout();
+  const memberGroup = w.findAll('.nav-group')[2];
+  const labels = memberGroup.findAll('a.nav-link').map(a => a.text());
+  expect(labels).toEqual([
+    '成员服务器组',
+    '成员服务器',
+    '成员服务器文件推送',
+    '成员服务器执行命令'
+  ]);
+});
+
+test('R53: 权限和账户 contains only 用户管理 + 角色管理 (no 包管理 — moved to 监控与诊断)', () => {
   const w = mountLayout();
   const iamGroup = w.findAll('.nav-group')[3];
-  expect(iamGroup.find('.nav-group-title .label').text()).toBe('权限与账号');
-  const links = iamGroup.findAll(':scope > a.nav-link').map(a => a.attributes('href'));
-  expect(links).toEqual(['/admin/users', '/admin/roles', '/admin/packages']);
+  const labels = iamGroup.findAll('a.nav-link').map(a => a.text());
+  expect(labels).toEqual(['用户管理', '角色管理']);
 });
 
-test('R52: 系统运维 contains 4 items (R51 数据库运维 + 系统设置 consolidated)', () => {
+test('R53: 运维日志 contains 系统运维日志 + 心跳与状态执行日志', () => {
   const w = mountLayout();
-  const opsGroup = w.findAll('.nav-group')[4];
-  expect(opsGroup.find('.nav-group-title .label').text()).toBe('系统运维');
-  const links = opsGroup.findAll(':scope > a.nav-link').map(a => a.attributes('href'));
+  const logGroup = w.findAll('.nav-group')[4];
+  const labels = logGroup.findAll('a.nav-link').map(a => a.text());
+  expect(labels).toEqual(['系统运维日志', '心跳与状态执行日志']);
+});
+
+test('R53: 系统设置 contains orphans (版本升级 / 系统配置 / 邮件配置)', () => {
+  const w = mountLayout();
+  const sysGroup = w.findAll('.nav-group')[5];
+  const links = sysGroup.findAll('a.nav-link').map(a => a.attributes('href'));
   expect(links).toEqual([
     '/admin/migrations',
     '/admin/config',
-    '/admin/email-config',
-    '/admin/audit'
+    '/admin/email-config'
   ]);
 });
 
-test('R52: total 17 nav-links with correct paths (3 nested + 14 flat)', () => {
+test('R53: Schema 与清理 DELETED (no /admin/orphan-schemas in any nav-link)', () => {
   const w = mountLayout();
-  // DOM order: 3 level-3 nav-sublink (under AD 复制与端口) come first in DOM
-  // because they live in 监控与诊断 at the top of the sidebar, then 14 level-2
-  // nav-link flat items follow in group order. Use the combined selector
-  // so DOM order is preserved.
-  const allLinks = w.findAll('a.nav-link, a.nav-sublink').map(a => a.attributes('href'));
-  expect(allLinks.length).toBe(17);
-  expect(allLinks).toEqual(EXPECTED_PATHS);
+  const allLinks = w.findAll('a.nav-link').map(a => a.attributes('href'));
+  expect(allLinks).not.toContain('/admin/orphan-schemas');
 });
 
-test('R52: only ONE 3-level nested subgroup exists (AD 复制与端口)', () => {
+test('R53: total 19 nav-links in operator-specified order', () => {
   const w = mountLayout();
-  expect(w.findAll('.nav-subgroup').length).toBe(1);
-  expect(w.findAll('.nav-subgroup-title').length).toBe(1);
+  const allLinks = w.findAll('a.nav-link').map(a => a.attributes('href'));
+  expect(allLinks.length).toBe(19);
+  expect(allLinks).toEqual(EXPECTED_PATHS);
 });
 
 test('all top-level groups open by default', () => {
   const w = mountLayout();
   const details = w.findAll('details.nav-group');
-  expect(details.length).toBe(5);
+  expect(details.length).toBe(6);
   for (const d of details) {
     expect(d.attributes('open')).toBeDefined();
   }
@@ -176,29 +206,13 @@ test('clicking group summary toggles open state', async () => {
   expect(w.findAll('details.nav-group')[0].attributes('open')).toBeDefined();
 });
 
-test('clicking subgroup summary toggles nested open state independently', async () => {
-  const w = mountLayout();
-  const subgroup = w.find('.nav-subgroup');
-  expect(subgroup.exists()).toBe(true);
-  expect(subgroup.attributes('open')).toBeDefined();
-
-  const summary = subgroup.find('summary.nav-subgroup-title');
-  await summary.trigger('click');
-  await flushPromises();
-  expect(w.find('.nav-subgroup').attributes('open')).toBeUndefined();
-
-  await w.find('.nav-subgroup').find('summary.nav-subgroup-title').trigger('click');
-  await flushPromises();
-  expect(w.find('.nav-subgroup').attributes('open')).toBeDefined();
-});
-
-test('R52: sidebar collapse toggle is in topbar (always accessible)', () => {
+test('R53: sidebar collapse toggle is in topbar (always accessible)', () => {
   const w = mountLayout();
   const toggle = w.find('.sidebar-toggle');
   expect(toggle.exists()).toBe(true);
 });
 
-test('R52: clicking sidebar toggle flips sidebar-collapsed class on .layout', async () => {
+test('R53: clicking sidebar toggle flips sidebar-collapsed class on .layout', async () => {
   const w = mountLayout();
   expect(w.find('.layout').classes()).not.toContain('sidebar-collapsed');
   await w.find('.sidebar-toggle').trigger('click');
@@ -209,9 +223,8 @@ test('R52: clicking sidebar toggle flips sidebar-collapsed class on .layout', as
   expect(w.find('.layout').classes()).not.toContain('sidebar-collapsed');
 });
 
-test('R52: sidebar collapse state persists in localStorage', async () => {
+test('R53: sidebar collapse state persists in localStorage', async () => {
   const w = mountLayout();
-  // initial state: not collapsed
   expect(localStorage.getItem('admin-sidebar-visible')).toBeNull();
   await w.find('.sidebar-toggle').trigger('click');
   await nextTick();
@@ -221,7 +234,7 @@ test('R52: sidebar collapse state persists in localStorage', async () => {
   expect(localStorage.getItem('admin-sidebar-visible')).toBe('true');
 });
 
-test('R52: sidebar collapsed on mount when localStorage says false', async () => {
+test('R53: sidebar collapsed on mount when localStorage says false', async () => {
   localStorage.setItem('admin-sidebar-visible', 'false');
   const w = mountLayout();
   await nextTick();
