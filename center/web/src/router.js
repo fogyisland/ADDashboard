@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router';
 import api from './api/client.js';
 import LoginView from './views/LoginView.vue';
 import DashboardView from './views/DashboardView.vue';
-import SiteMatrixView from './views/SiteMatrixView.vue';
 import TopologyView from './views/TopologyView.vue';
 import ErrorsView from './views/ErrorsView.vue';
 import AgentsView from './views/AgentsView.vue';
@@ -40,7 +39,16 @@ const routes = [
   { path: '/init', component: InitWizardView, meta: { public: true } },
   { path: '/login', component: LoginView, meta: { public: true } },
   { path: '/', component: DashboardView },
-  { path: '/matrix', component: SiteMatrixView },
+  // 2026-08-29 round-59.1: /matrix redirected to the canonical R36
+  // 复制状态概览 view (per-primary-DC replication overview). The
+  // previous /matrix route mounted a 1032-byte stub (SiteMatrixView.vue)
+  // that called the deleted /api/dashboard/site-matrix endpoint (R36
+  // deletion in round-33) — empty UI since the deletion. Redirect
+  // preserves any saved bookmarks from the old /matrix page and keeps
+  // the AppLayout's "站点矩阵" sidebar entry useful. The stub view +
+  // its SiteMatrixChart component + their tests are deleted; the
+  // canonical view lives at /admin/site-replication-matrix/all.
+  { path: '/matrix', redirect: '/admin/site-replication-matrix/all' },
   { path: '/topology', component: TopologyView },
   { path: '/errors', component: ErrorsView },
   { path: '/agents', component: AgentsView },
