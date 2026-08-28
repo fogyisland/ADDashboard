@@ -8,6 +8,14 @@
           <span>每 {{ refreshSeconds }}s 刷新</span>
         </span>
         <span class="last-loaded" v-if="lastLoadedAt">最近刷新: {{ fmt(lastLoadedAt) }}</span>
+        <!-- 2026-08-28 round-34.2: data staleness header — surface how
+             stale the most recent partner-port probe actually is. Driven
+             from the max lastAttemptTime across all partners; coloured
+             green ≤5min / yellow 5-30min / red >30min so the operator
+             can tell at a glance whether the dashboard reflects reality. -->
+        <span v-if="stalenessMinutes !== null" :class="['staleness', stalenessClass]" data-test="staleness">
+          数据 {{ stalenessMinutes }} 分钟前
+        </span>
       </div>
     </header>
 
@@ -121,6 +129,7 @@ async function load() {
     sites.value = Array.isArray(r.data?.sites) ? r.data.sites : [];
     refreshSeconds.value = Number(r.data?.refreshSeconds) || 10;
     lastLoadedAt.value = new Date().toISOString();
+    recomputeStaleness();
   } catch (e) {
     error.value = e?.response?.data?.error || '加载失败';
   } finally {
@@ -169,6 +178,45 @@ function cellText(probe) {
 
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 
+// 2026-08-28 round-34.2: data staleness — derive max lastAttemptTime across
+// all partners × all sites × all DCs × all portHealth entries. Returns the
+// wall-clock minutes between the most recent probe and now. Returns null
+// when no probe timestamps exist (operator can't be misled by a 0-minute
+// false-positive; the staleness badge simply doesn't render).
+function maxLastAttemptTs(siteList) {
+  let max = null;
+  for (const site of siteList || []) {
+    for (const dc of site.dcs || []) {
+      for (const partner of dc.partners || []) {
+        for (const ph of partner.portHealth || []) {
+          if (ph.lastAttemptTime) {
+            const t = new Date(ph.lastAttemptTime).getTime();
+            if (Number.isFinite(t) && (max === null || t > max)) max = t;
+          }
+        }
+      }
+    }
+  }
+  return max;
+}
+
+const stalenessMinutes = ref(null);
+const stalenessClass = ref(''); // 'fresh' | 'warn' | 'stale'
+
+function recomputeStaleness() {
+  const ts = maxLastAttemptTs(sites.value);
+  if (ts === null) {
+    stalenessMinutes.value = null;
+    stalenessClass.value = '';
+    return;
+  }
+  const minutes = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  stalenessMinutes.value = minutes;
+  if (minutes <= 5) stalenessClass.value = 'fresh';
+  else if (minutes <= 30) stalenessClass.value = 'warn';
+  else stalenessClass.value = 'stale';
+}
+
 onMounted(async () => {
   await load();
   timerHandle = setInterval(load, refreshSeconds.value * 1000);
@@ -182,6 +230,18 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .dot.on  { background: #22c55e; }
 .dot.off { background: #475569; }
+/* 2026-08-28 round-34.2: data staleness badge — same colour vocabulary as
+   the cell matrix so the operator reads them together. fresh ≤5min /
+   warn 5-30min / stale >30min. */
+.staleness {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.staleness.fresh { background: rgba(34, 197, 94, 0.14);  color: #22c55e; }
+.staleness.warn  { background: rgba(234, 179, 8, 0.14);  color: #eab308; }
+.staleness.stale { background: rgba(239, 68, 68, 0.14);  color: #ef4444; }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
 .error-banner { background: var(--red-bg); color: var(--red); padding: 8px 12px; border-radius: 3px; margin-bottom: 12px; }
 .empty { text-align: center; color: var(--muted); padding: 24px; }

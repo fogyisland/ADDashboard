@@ -288,6 +288,97 @@ test('hint paragraph mentions port health + ms values', async () => {
   expect(hint.text()).toContain('ms');
 });
 
+// 2026-08-28 round-34.2: data staleness badge. Reads the max
+// lastAttemptTime across every partner.portHealth[] in the response,
+// derives wall-clock minutes from now, and renders a colour-coded pill.
+// Three guards:
+//   1) fresh (≤5min)  → green
+//   2) warn  (5-30min) → yellow
+//   3) stale (>30min) → red
+// Plus: payload with no portHealth → badge hidden (no false "0 分钟前").
+function withLastAttempt(payload, isoString) {
+  const out = JSON.parse(JSON.stringify(payload));
+  for (const site of out.sites) {
+    for (const dc of site.dcs) {
+      for (const partner of dc.partners) {
+        for (const ph of partner.portHealth || []) {
+          ph.lastAttemptTime = isoString;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+test('R34.2: staleness badge shows minutes since max lastAttemptTime, fresh ≤5min is green', async () => {
+  const now = new Date('2026-08-28T12:00:00Z');
+  vi.setSystemTime(now);
+  // 2 minutes ago — well under the 5-minute fresh threshold
+  const twoMinAgo = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
+  dashboardApi.getPartnerPortHealthAll.mockResolvedValue({
+    data: withLastAttempt(basePayload(), twoMinAgo)
+  });
+  const w = mountView();
+  await flushPromises();
+  const badge = w.find('[data-test="staleness"]');
+  expect(badge.exists()).toBe(true);
+  expect(badge.text()).toContain('2 分钟前');
+  expect(badge.classes()).toContain('fresh');
+});
+
+test('R34.2: staleness badge — 15min falls in warn bucket (yellow)', async () => {
+  const now = new Date('2026-08-28T12:00:00Z');
+  vi.setSystemTime(now);
+  const fifteenMinAgo = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+  dashboardApi.getPartnerPortHealthAll.mockResolvedValue({
+    data: withLastAttempt(basePayload(), fifteenMinAgo)
+  });
+  const w = mountView();
+  await flushPromises();
+  const badge = w.find('[data-test="staleness"]');
+  expect(badge.exists()).toBe(true);
+  expect(badge.text()).toContain('15 分钟前');
+  expect(badge.classes()).toContain('warn');
+  expect(badge.classes()).not.toContain('fresh');
+  expect(badge.classes()).not.toContain('stale');
+});
+
+test('R34.2: staleness badge — 60min falls in stale bucket (red)', async () => {
+  const now = new Date('2026-08-28T12:00:00Z');
+  vi.setSystemTime(now);
+  const sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  dashboardApi.getPartnerPortHealthAll.mockResolvedValue({
+    data: withLastAttempt(basePayload(), sixtyMinAgo)
+  });
+  const w = mountView();
+  await flushPromises();
+  const badge = w.find('[data-test="staleness"]');
+  expect(badge.exists()).toBe(true);
+  expect(badge.text()).toContain('60 分钟前');
+  expect(badge.classes()).toContain('stale');
+});
+
+test('R34.2: staleness badge — badge HIDDEN when no portHealth lastAttemptTime exists', async () => {
+  // basePayload: DC-BJ-01 has portHealth[] with lastAttemptTime, but
+  // DC-SH-01 has portHealth: []. Wait — actually the badge SHOULD render
+  // because at least ONE partner has a timestamp. To force the hidden
+  // case, strip lastAttemptTime from every portHealth entry.
+  const payload = basePayload();
+  for (const site of payload.sites) {
+    for (const dc of site.dcs) {
+      for (const partner of dc.partners) {
+        for (const ph of partner.portHealth || []) {
+          ph.lastAttemptTime = null;
+        }
+      }
+    }
+  }
+  dashboardApi.getPartnerPortHealthAll.mockResolvedValue({ data: payload });
+  const w = mountView();
+  await flushPromises();
+  expect(w.find('[data-test="staleness"]').exists()).toBe(false);
+});
+
 test('legend shows all three R47 colour swatches', async () => {
   dashboardApi.getPartnerPortHealthAll.mockResolvedValue({ data: basePayload() });
   const w = mountView();
