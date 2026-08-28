@@ -3,7 +3,6 @@ import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { getDb } from '../db/index.js';
 import { listPortStatusesForAgents } from '../services/port-status.js';
-import { getReplicationPortList } from '../services/replication-port-config.js';
 import { metricstore } from '../packages/metricstore.js';
 
 // Helpers ---------------------------------------------------------------
@@ -208,14 +207,18 @@ export function dashboardRouter({ config, logger, db }) {
   r.get('/api/dashboard/site-replication-matrix/all', auth, async (_req, res) => {
     try {
       const db = getDb();
-      const ports = await getReplicationPortList();
+      // 2026-08-28 round-45: port fields removed (R35 port monitoring
+      // surface deleted). `ports`, `portRows`, `latestPartnerPortPerPair`
+      // and the per-partner `perPort` / `lastProbeAt` fields are all gone
+      // — the partner entry now carries only status + timing. Per-pair
+      // history is fetched on demand via /pair-history for the inline
+      // "最近 10 条" expansion.
 
-      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: portRows }, { rows: cfgRows }] =
+      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: cfgRows }] =
         await Promise.all([
           db.query(db.sql.dashboard.allSitesOrdered, []),
           db.query(db.sql.dashboard.allDcsBySite, []),
           db.query(db.sql.dashboard.allReplicationLinks, []),
-          db.query(db.sql.replication.latestPartnerPortPerPair),
           db.query(db.sql.dashboard.refreshSeconds, [])
         ]);
 
@@ -262,20 +265,6 @@ export function dashboardRouter({ config, logger, db }) {
 
       // Partner-port probe index, normalised to JS object (both dialects:
       // mysql2 returns parsed object, tedious returns string)
-      const perPortByPair = new Map();
-      for (const r of portRows) {
-        let perPort = {};
-        const raw = r.partner_port_status;
-        if (raw != null) {
-          if (typeof raw === 'object') perPort = raw;
-          else { try { perPort = JSON.parse(String(raw)); } catch { perPort = {}; } }
-        }
-        perPortByPair.set(`${r.source_dc}${r.dest_dc}`, {
-          perPort,
-          lastProbeAt: toIso(r.last_attempt_time ?? r.collected_at)
-        });
-      }
-
       // Walk sites in SQL order (hub-first). For each site, build a
       // partner table PER DC in the site (round-36: operator directive
       // "本地站点只显示了一台,另外一台没有显示出来,我们需要显示所有的"
@@ -338,7 +327,7 @@ export function dashboardRouter({ config, logger, db }) {
           const peerSite = siteById.get(peer.site_id);
           if (!peerSite) continue;
 
-          const portEntry = perPortByPair.get(`${l.source_dc}${sep}${l.dest_dc}`);
+          const portEntry = null; // round-45: port fields removed
           const entry = {
             // round-32: peerType distinguishes within-site siblings from
             // cross-site bridgehead primaries. "within" = same-site sibling,
@@ -351,9 +340,7 @@ export function dashboardRouter({ config, logger, db }) {
             statusCode: l.status_code,
             lastSuccessTime: toIso(l.last_success_time),
             lastAttemptTime: toIso(l.last_attempt_time),
-            durationMinutes: l.duration_minutes,
-            perPort: portEntry?.perPort ?? null,
-            lastProbeAt: portEntry?.lastProbeAt ?? null
+            durationMinutes: l.duration_minutes
           };
           // round-35: dedup key no longer needs the direction prefix —
           // every entry is inbound. peerDc alone is sufficient because
@@ -435,231 +422,61 @@ export function dashboardRouter({ config, logger, db }) {
       }
 
       const siteRefreshSeconds = Number(cfgRows[0]?.config_value || 10);
-      res.json({ siteRefreshSeconds, ports, primaries });
+      // round-45: `ports` field removed from envelope (R35 port monitoring
+      // surface deleted; operator-side /admin/ports sidebar entry preserved
+      // because it has its own UI backed by services/ports.js).
+      res.json({ siteRefreshSeconds, primaries });
     } catch (e) {
       logger.error({ err: e }, 'site-replication-matrix/all failed');
       res.status(500).json({ error: 'internal' });
     }
   });
 
-  // 2026-08-27 round-42 (复制日志监控): operator directive "增加一个运维
-  // 监控, 复制日志监控 — 一个站点下面如果有多台服务器, 多台服务器有多个
-  // 复制伙伴, 列出最新的连接状态, 然后在右边多一个展开箭头, 列出最近
-  // 10 次的连接具体信息". The view mirrors the per-DC partner tables of
-  // /api/dashboard/site-replication-matrix/all (round-36) but augments
-  // every partner with attempts[] — the latest 10 history rows for that
-  // (source_dc, dest_dc, naming_context) tuple from ad_replication_history.
+  // 2026-08-28 round-45: per-pair history lazy-fetch for the inline
+  // expansion in 复制状态概览 (SiteReplicationMatrixAllView). Returns the
+  // last N history rows from ad_replication_history filtered by
+  // (source_dc, dest_dc) and a 24-hour window. The route deliberately
+  // does NOT join ad_replication_status — history is its own source of
+  // truth (one row per attempt, regardless of current status). Naming
+  // contexts are NOT filtered here because the row comes from the
+  // replication-history ingest path which stamps real naming_contexts
+  // (CN=Configuration,DC=…); the only synthetic NCs (__history__:*,
+  // __dc_summary__) never land in ad_replication_history.
   //
   // Response envelope:
-  //   {
-  //     refreshSeconds: 10,
-  //     sites: [
-  //       {
-  //         siteId, siteName, regionCode, isHub,
-  //         dcs: [
-  //           {
-  //             dcName, isBridgehead, role flags, osVersion, discoveredAt,
-  //             partners: [
-  //               {
-  //                 peerType, peerDc, peerSite, peerSiteIsHub,
-  //                 statusCode, lastSuccessTime, lastAttemptTime,
-  //                 durationMinutes,
-  //                 attempts: [ {attemptAt, statusCode, durationMs,
-  //                              objectsTransferred, lastSuccessTime,
-  //                              errorMessage}, ... ]  // last 10 by time DESC
-  //               }
-  //             ]
-  //           }
-  //         ]
-  //       }
+  //   { source, dest, limit, entries: [
+  //       { attemptAt, statusCode, durationMs, objectsTransferred,
+  //         lastSuccessTime, errorMessage }
   //     ]
   //   }
-  //
-  // The 24h window on history (replicationLogRecentAttempts) limits the row
-  // count to "what an operator can actually see in one screenful"; the
-  // attempts[] slice to 10 happens client-side after the route groups rows
-  // by (source_dc, dest_dc, naming_context). The slice uses
-  // collected_at DESC so "latest 10" reads top-to-bottom in the UI.
-  r.get('/api/dashboard/replication-log/all', auth, async (_req, res) => {
+  r.get('/api/dashboard/site-replication-matrix/pair-history', auth, async (req, res) => {
     try {
+      const source = String(req.query.source || '').trim();
+      const dest = String(req.query.dest || '').trim();
+      const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
+      if (!source || !dest) {
+        return res.status(400).json({ error: 'source and dest required' });
+      }
       const db = getDb();
-
-      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: histRows }, { rows: cfgRows }] =
-        await Promise.all([
-          db.query(db.sql.dashboard.allSitesOrdered, []),
-          db.query(db.sql.dashboard.allDcsBySite, []),
-          db.query(db.sql.dashboard.allReplicationLinks, []),
-          db.query(db.sql.dashboard.replicationLogRecentAttempts, []),
-          db.query(db.sql.dashboard.refreshSeconds, [])
-        ]);
-
-      // dcByName + siteById lookups (mirrors the matrix/all route).
-      const dcByName = new Map(dcRows.map(d => [d.dc_name, d]));
-      const siteById = new Map(siteRows.map(s => [s.site_id, {
-        siteId: s.site_id, siteName: s.site_name,
-        regionCode: s.region_code, isHub: !!s.is_hub
-      }]));
-
-      // Group DCs by site, sorted bridgehead-first then lex.
-      const dcsBySite = new Map();
-      for (const d of dcRows) {
-        if (!dcsBySite.has(d.site_id)) dcsBySite.set(d.site_id, []);
-        dcsBySite.get(d.site_id).push({
-          dcName: d.dc_name,
-          isBridgehead: !!d.is_bridgehead,
-          isPdc: !!d.is_pdc,
-          isGc: !!d.is_gc,
-          isRidMaster: !!d.is_rid_master,
-          isSchemaMaster: !!d.is_schema_master,
-          isDomainNamingMaster: !!d.is_domain_naming_master,
-          isInfrastructureMaster: !!d.is_infrastructure_master,
-          osVersion: d.os_version,
-          discoveredAt: toIso(d.discovered_at)
-        });
-      }
-      for (const arr of dcsBySite.values()) {
-        arr.sort((a, b) => {
-          if (a.isBridgehead !== b.isBridgehead) return a.isBridgehead ? -1 : 1;
-          return a.dcName.localeCompare(b.dcName);
-        });
-      }
-
-      // Build cross-site primary lookup: siteId -> primaryDcName.
-      const primaryBySiteId = new Map();
-      for (const s of siteRows) {
-        const list = dcsBySite.get(s.site_id) || [];
-        if (list.length) primaryBySiteId.set(s.site_id, list[0].dcName);
-      }
-
-      // Pre-group history rows by (source_dc||dest_dc||naming_context) so the
-      // per-partner loop is O(P) lookups instead of O(P*H) scans. Rows are
-      // already in collected_at DESC order from the SQL helper; we keep
-      // that order while grouping.
-      const historyByPair = new Map();
-      for (const h of histRows) {
-        const k = `${h.source_dc}${h.dest_dc}${h.naming_context}`;
-        if (!historyByPair.has(k)) historyByPair.set(k, []);
-        historyByPair.get(k).push(h);
-      }
-
-      const sep = String.fromCharCode(1);
-
-      const sites = [];
-      for (const s of siteRows) {
-        const dcList = dcsBySite.get(s.site_id) || [];
-        if (dcList.length === 0) continue;
-        const primaryDc = dcList[0].dcName;
-
-        // Partner allowlist: every within-site DC + every cross-site primary.
-        const allowedPeers = new Set();
-        for (const d of dcList) allowedPeers.add(d.dcName);
-        for (const [siteId, primaryName] of primaryBySiteId) {
-          if (siteId !== s.site_id) allowedPeers.add(primaryName);
-        }
-
-        const partnerMapByDc = new Map();
-        for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
-
-        for (const l of linkRows) {
-          if (l.source_dc === l.dest_dc) continue;
-
-          // 2026-08-28 round-43: a link has TWO sides, both must surface in
-          // the partner views so operators see real AD topology (hub-spoke)
-          // rather than "every DC replicates to every other DC".
-          //   - side IN:  peerDc replicates TO this site DC  →  direction='in'
-          //   - side OUT: this site DC replicates TO peerDc  →  direction='out'
-          // Both sides can fire when the link is within-site (e.g. NC1↔NC2).
-          // For each side, the "peer" is the OTHER end of the link.
-          const sides = [];
-          if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
-            sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
-          }
-          if (partnerMapByDc.has(l.source_dc)) {
-            sides.push({ dcName: l.source_dc, peerDc: l.dest_dc, direction: 'out' });
-          }
-          if (sides.length === 0) continue;
-
-          for (const side of sides) {
-            const peerDc = side.peerDc;
-            const peer = dcByName.get(peerDc);
-            if (!peer) continue;
-            const peerSite = siteById.get(peer.site_id);
-            if (!peerSite) continue;
-            const targetMap = partnerMapByDc.get(side.dcName);
-            // 2026-08-27 round-42 (复制日志监控): dedup key includes naming_context
-            // (same source/dest pair can have multiple NCs — each gets its own
-            // partner row). 2026-08-28 round-43: direction is part of the dedup
-            // key so an 'in' and an 'out' for the same (peerDc, NC) stay
-            // distinct. The view merges them client-side into a single 双向 row.
-            const k = `${peerDc}${sep}${l.naming_context}${sep}${side.direction}`;
-            const existing = targetMap.get(k);
-            if (existing) {
-              const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
-              const newTime = l.last_attempt_time ? new Date(l.last_attempt_time).getTime() : 0;
-              if (newTime <= exTime) continue;
-            }
-            targetMap.set(k, {
-              peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
-              peerDc,
-              namingContext: l.naming_context,
-              // Round-43: emit direction so the view can render 进/出/双向.
-              direction: side.direction,
-              peerSite: peerSite.siteName,
-              peerSiteIsHub: peerSite.isHub,
-              statusCode: l.status_code,
-              lastSuccessTime: toIso(l.last_success_time),
-              lastAttemptTime: toIso(l.last_attempt_time),
-              durationMinutes: l.duration_minutes,
-              // Round-42: slice last 10 attempts.
-              attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
-                .slice(0, 10)
-                .map(h => ({
-                  attemptAt:        toIso(h.collected_at),
-                  statusCode:       h.status_code,
-                  durationMs:       h.attempt_duration_ms,
-                  objectsTransferred: h.objects_transferred,
-                  lastSuccessTime:  toIso(h.last_success_time),
-                  errorMessage:     h.error_message
-                }))
-            });
-          }
-        }
-
-        const dcs = dcList.map(d => {
-          const partners = [...partnerMapByDc.get(d.dcName).values()].sort((a, b) => {
-            if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
-            if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
-            return a.peerDc.localeCompare(b.peerDc);
-          });
-          return {
-            dcName: d.dcName,
-            isBridgehead: d.isBridgehead,
-            isPdc: d.isPdc,
-            isGc: d.isGc,
-            isRidMaster: d.isRidMaster,
-            isSchemaMaster: d.isSchemaMaster,
-            isDomainNamingMaster: d.isDomainNamingMaster,
-            isInfrastructureMaster: d.isInfrastructureMaster,
-            osVersion: d.osVersion,
-            discoveredAt: d.discoveredAt,
-            partners
-          };
-        });
-
-        sites.push({
-          siteId: s.site_id,
-          siteName: s.site_name,
-          regionCode: s.region_code,
-          isHub: !!s.is_hub,
-          primaryDc,
-          dcs
-        });
-      }
-
-      const refreshSeconds = Number(cfgRows[0]?.config_value || 10);
-      res.json({ refreshSeconds, sites });
+      // MySQL binds [source, dest, limit]; MSSQL binds [limit, source, dest]
+      // because the SQL helper rewrites `LIMIT ?` to `TOP (?)` for MSSQL
+      // and the driver wrapper expects the LIMIT token to be the first
+      // bound param for MSSQL. Pass dialect-aware params via buildSql().
+      const isMssql = String(process.env.DB_DIALECT || '').toLowerCase() === 'mssql'
+        || (db?.pool?.constructor?.name || '').toLowerCase().includes('mssql');
+      const params = isMssql ? [limit, source, dest] : [source, dest, limit];
+      const { rows } = await db.query(db.sql.dashboard.replicationLogPerPair, params);
+      const entries = rows.map(r => ({
+        attemptAt: toIso(r.collected_at),
+        statusCode: r.status_code,
+        durationMs: r.attempt_duration_ms,
+        objectsTransferred: r.objects_transferred,
+        lastSuccessTime: toIso(r.last_success_time),
+        errorMessage: r.error_message
+      }));
+      res.json({ source, dest, limit, entries });
     } catch (e) {
-      logger.error({ err: e }, 'replication-log/all failed');
+      logger.error({ err: e, source: req.query.source, dest: req.query.dest }, 'site-replication-matrix/pair-history failed');
       res.status(500).json({ error: 'internal' });
     }
   });

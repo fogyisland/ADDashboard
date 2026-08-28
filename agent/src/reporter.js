@@ -56,13 +56,12 @@ function baseUrl({ centerUrl, port }) {
 // PS script emits entries in PascalCase (SourceDc, DestDc, ...); center's
 // upsertStatus reads camelCase (sourceDc, destDc, ...). Convert at this boundary.
 //
-// This must forward ALL 16 fields of the ad_replication_status INSERT shape
-// (see center/src/services/replication.js rowParams). Any field omitted here
-// is silently dropped on the wire and lands as NULL in the DB — that was the
-// bug that kept partnerPortStatus and the 4 counters from ever reaching the
-// centre. collectedAt/agentId are forwarded for symmetry: postReport currently
-// takes them from the snapshot envelope, but per-entry values are the source
-// of truth in the PS1 rows.
+// 2026-08-28 round-45: partnerPortStatus field removed (R35 port monitoring
+// surface deleted end-to-end — collect-replication.ps1, route, view, mock).
+// The 16-column ad_replication_status INSERT shape is now 15 columns.
+// collectedAt/agentId are forwarded for symmetry: postReport currently takes
+// them from the snapshot envelope, but per-entry values are the source of
+// truth in the PS1 rows.
 export function toCamelEntry(e) {
   if (!e) return e;
   return {
@@ -81,10 +80,6 @@ export function toCamelEntry(e) {
     groupsCount: e.GroupsCount ?? e.groupsCount ?? null,
     gposCount: e.GposCount ?? e.gposCount ?? null,
     lockedCount: e.LockedCount ?? e.lockedCount ?? null,
-    // PS1 emits this already ConvertTo-Json'd (a string). Forward verbatim;
-    // the centre's rowParams JSON.stringify's non-null values, so a string
-    // stays a string end-to-end.
-    partnerPortStatus: e.PartnerPortStatus ?? e.partnerPortStatus ?? null,
     // 2026-08-27 round-42 (复制日志监控): history table now carries
     // attempt_duration_ms + objects_transferred. Forward both camelCase
     // aliases — the real agent's collect-replication.ps1 emits them in

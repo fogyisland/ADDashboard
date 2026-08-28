@@ -127,7 +127,9 @@ test('upsertStatus: __dc_summary__ row carries usersCount/groupsCount/gposCount 
   // rowParams order: collectedAt(0), agentId(1), sourceDc(2), destDc(3),
   // sourceSite(4), destSite(5), namingContext(6), lastSuccessTime(7),
   // lastAttemptTime(8), statusCode(9), errorMessage(10), usersCount(11),
-  // groupsCount(12), gposCount(13), lockedCount(14), partnerPortStatus(15)
+  // groupsCount(12), gposCount(13), lockedCount(14)
+  // 2026-08-28 round-45: partnerPortStatus(15) removed — R35 port monitoring
+  // surface dropped. Schema column kept inert; binding list is now 15 deep.
   assert.equal(params[11], 1234, 'usersCount must be bound for __dc_summary__ row');
   assert.equal(params[12], 56,   'groupsCount must be bound for __dc_summary__ row');
   assert.equal(params[13], 7,    'gposCount must be bound for __dc_summary__ row');

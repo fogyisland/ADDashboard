@@ -35,21 +35,10 @@ function rowParams(row) {
   // isSummary was always false and the 4 counters were silently bound as
   // NULL on every __dc_summary__ row. That left Server Overview showing
   // — / 0 / — / — for every DC that reported through this path.
+  // 2026-08-28 round-45: drop partnerPortStatus binding (R35 port monitoring
+  // surface removed). The column remains inert in ad_replication_status —
+  // schema untouched, app-layer binding/reads deleted.
   const isSummary = row.namingContext === '__dc_summary__';
-  // partnerPortStatus on the wire (agent → centre) is already a JSON string
-  // emitted by collect-replication.ps1's ConvertTo-Json -Compress + toCamelEntry
-  // forwarding it verbatim. Other in-process callers (tests, services that
-  // build the JS object directly) pass an object. Bind whatever is given as
-  // a string to the JSON/NVARCHAR(MAX) column — JSON.stringify an already-
-  // stringified payload would produce escaped JSON-in-JSON, forcing every
-  // downstream consumer to call JSON.parse twice. null when omitted so
-  // older callers / pre-feature rows stay valid.
-  let partnerPortStatusJson = null;
-  if (row.partnerPortStatus != null) {
-    partnerPortStatusJson = typeof row.partnerPortStatus === 'string'
-      ? row.partnerPortStatus
-      : JSON.stringify(row.partnerPortStatus);
-  }
   return [
     toMysqlDatetime(row.collectedAt),
     row.agentId,
@@ -65,8 +54,7 @@ function rowParams(row) {
     isSummary ? (row.usersCount ?? null)  : null,
     isSummary ? (row.groupsCount ?? null) : null,
     isSummary ? (row.gposCount ?? null)   : null,
-    isSummary ? (row.lockedCount ?? null) : null,
-    partnerPortStatusJson
+    isSummary ? (row.lockedCount ?? null) : null
   ];
 }
 

@@ -165,7 +165,8 @@ test('report: emits info log with entries/summaryEntries counts + source on entr
   assert.equal(data.source, 'collect-replication');
   assert.equal(data.agentId, 'agent-1');
   assert.equal(data.entries, 2);
-  assert.equal(data.partnerPortEntries, 1);
+  // 2026-08-28 round-45: partnerPortEntries counter removed (R35 port
+  // monitoring surface dropped — agent emits no __partner_ports__:% rows).
   assert.equal(data.summaryEntries, 1);
   assert.equal(entry.args[1], 'agent report received');
 });
@@ -202,7 +203,8 @@ test('report: summaryEntries surfaces __dc_summary__ rows independently', async 
   const entry = findEntry(entries, 'agent.report');
   assert.ok(entry);
   assert.equal(entry.args[0].summaryEntries, 1, '__dc_summary__ row must count');
-  assert.equal(entry.args[0].partnerPortEntries, 0);
+  // partnerPortEntries counter removed in round-45 (R35 port monitoring
+  // surface dropped).
 });
 
 test('discover: emits info log with dcName/dcSite/rolesCount on entry', async () => {

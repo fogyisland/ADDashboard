@@ -47,45 +47,6 @@ Describe 'ConvertTo-SnapshotJson' {
   }
 }
 
-Describe 'Get-PartnerNamingContext (I-5 naming_context VARCHAR(256) overflow guard)' {
-  It 'returns $null for empty input' {
-    Get-PartnerNamingContext -partnerHost '' | Should -BeNullOrEmpty
-  }
-
-  It 'returns "__partner_ports__:<host>" verbatim for short hosts' {
-    $ctx = Get-PartnerNamingContext -partnerHost 'dc-1.example.com'
-    # 64-char host + underscore + 8-char hash + 17-char prefix = at most 90 chars
-    $ctx | Should -Match '^__partner_ports__:dc-1\.example\.com_[0-9a-f]{8}$'
-    $ctx.Length | Should -BeLessOrEqual 90
-  }
-
-  It 'truncates hosts longer than 64 chars and appends a hash suffix' {
-    $longHost = ('a' * 200) + '.example.com'
-    $ctx = Get-PartnerNamingContext -partnerHost $longHost
-    # 64 truncated chars + '_' + 8-char hash + 17-char prefix = 90 chars
-    $ctx.Length | Should -Be 90
-    $ctx | Should -Match '^__partner_ports__:a{64}_[0-9a-f]{8}$'
-  }
-
-  It 'produces distinct hashes for distinct hosts that share a 64-char prefix' {
-    $prefix = 'b' * 64
-    $h1 = Get-PartnerNamingContext -partnerHost $prefix
-    $h2 = Get-PartnerNamingContext -partnerHost ($prefix + 'XXX-DIFFERENT')
-    $h1 | Should -Not -Be $h2
-  }
-
-  It 'never exceeds naming_context VARCHAR(256) even for pathological inputs' {
-    # IPv6 literal — far longer than any sane FQDN
-    $ipv6 = '[2001:db8:85a3::8a2e:370:7334]:389'
-    $ctx = Get-PartnerNamingContext -partnerHost $ipv6
-    $ctx.Length | Should -BeLessOrEqual 256
-    # Also pin a 253-char FQDN (the DNS max).
-    $maxFqdn = ('c' * 240) + '.example.com'
-    $ctx2 = Get-PartnerNamingContext -partnerHost $maxFqdn
-    $ctx2.Length | Should -BeLessOrEqual 256
-  }
-}
-
 Describe 'BuildReplicationHistoryRows (round-42 复制日志监控)' {
   BeforeAll {
     # Build a minimal ADReplicationPartnerMetadata-like object with a
@@ -158,9 +119,8 @@ Describe 'BuildReplicationHistoryRows (round-42 复制日志监控)' {
     $r[0].ErrorMessage     | Should -BeNullOrEmpty
     $r[0].LastSuccessTime  | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$'
     $r[0].LastAttemptTime  | Should -Match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$'
-    # counter / port-probe columns stay null on history rows
+    # counter columns stay null on history rows (round-45: PartnerPortStatus gone)
     $r[0].UsersCount       | Should -BeNullOrEmpty
-    $r[0].PartnerPortStatus | Should -BeNullOrEmpty
     $r[0].AttemptDurationMs | Should -BeNullOrEmpty
     $r[0].ObjectsTransferred | Should -BeNullOrEmpty
   }

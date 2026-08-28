@@ -5,17 +5,14 @@
 // Before this refactor, each mock-*.mjs hand-rolled the camelCase
 // data[] shape that /api/agent/report expects — duplicating the agent's
 // `toCamelEntry()` conversion and missing every field the agent adds over
-// time (round-18 dropped LockedCount on __dc_summary__, round-13 added
-// PartnerPortStatus, etc.). The mock silently drifted out of sync.
+// time. The mock silently drifted out of sync.
 //
-// 2026-08-27 round-35: added buildPartnerPortEntries producing
-// __partner_ports__:% rows in the EXACT shape
-// collect-replication.ps1::Get-PartnerPortSnapshot emits. The matrix
-// view (复制状态概览) reads these via latestPartnerPortPerPair; without
-// them the port badges render as "无探测". The operator's "缺少端口检查"
-// complaint in round-34 traced here — mocks never exercised the partner-
-// port code path, so even with a live daemon the dashboard never saw
-// probe data.
+// 2026-08-28 round-45: buildPartnerPortEntries / partnerPortNamingContext /
+// probeMockPort deleted. R35 port monitoring surface removed end-to-end —
+// the route no longer reads partner_port_status, the matrix view no longer
+// renders per-port columns, and the real agent's Get-PartnerPortSnapshot
+// is dropped from collect-replication.ps1. Mocks stay in lockstep: no
+// __partner_ports__:% rows emitted.
 //
 // This module produces a snapshot in the EXACT PascalCase shape that
 // collect-replication.ps1 emits, then defers to the real
@@ -26,8 +23,6 @@
 //   buildDcCounters(agentId)                 -> { usersCount, groupsCount, gposCount }
 //   buildSummaryEntry(agentId, ...)          -> __dc_summary__ entry (PS1 shape)
 //   buildLinkEntries(agentId, links, ...)    -> per-link entries (PS1 shape)
-//   buildPartnerPortEntries({ agentId, peers, ports, ... })
-//                                            -> __partner_ports__:% entries (PS1 shape)
 //   buildReplicationHistoryEntries({ agentId, peers, ... })
 //                                            -> per-attempt history entries (PS1 shape)
 //   buildSnapshot({ agentId, links, ... })   -> full snapshot (PS1 shape)
@@ -84,17 +79,19 @@ export function buildSummaryEntry(agentId, collectedAt, sourceSite = null) {
     UsersCount:       counters.usersCount,
     GroupsCount:      counters.groupsCount,
     GposCount:        counters.gposCount,
-    LockedCount:      null,
-    PartnerPortStatus: null
+    LockedCount:      null
   };
 }
 
 // Convert a mock-friendly link descriptor to a PS1 PascalCase entry.
 // link shape (camelCase, mock-ergonomic):
 //   {
-//     destDc, destSite?, namingContext?, statusCode?, errorMessage?,
-//     partnerPortStatus?  // round-13: per-partner port probe JSON
+//     destDc, destSite?, namingContext?, statusCode?, errorMessage?
 //   }
+// 2026-08-28 round-45: partnerPortStatus field removed — R35 port
+// monitoring surface deleted end-to-end (collect-replication.ps1, route,
+// view, mock). Real agents no longer emit per-port probe rows; mock must
+// stay in lockstep.
 export function buildLinkEntries(agentId, collectedAt, links = [], sourceSite = null) {
   const out = [];
   for (const link of links) {
@@ -111,133 +108,10 @@ export function buildLinkEntries(agentId, collectedAt, links = [], sourceSite = 
       UsersCount:       null,
       GroupsCount:      null,
       GposCount:        null,
-      LockedCount:      null,
-      PartnerPortStatus: link.partnerPortStatus ?? null
+      LockedCount:      null
     });
   }
   return out;
-}
-
-// 2026-08-27 round-35: build a __partner_ports__:% entry per peer.
-// Mirrors collect-replication.ps1::Get-PartnerPortSnapshot + Get-PartnerNamingContext
-// byte-for-byte:
-//   - naming_context = '__partner_ports__:<truncated_host>_<4-byte SHA-256 hex>'
-//     (truncated_host = first 64 chars of the peer hostname)
-//   - status_code   = 0 when every port is reachable, else the count of unreachable ports
-//   - partner_port_status = JSON string of { checked_at, ports: { <port>:
-//     { reachable, latencyMs, error } } }
-//   - dest_dc       = the partner hostname (NOT the partner's agentId —
-//     the PS1 does `Get-ADReplicationPartnerMetadata -Target $ComputerName`
-//     which yields FQDN hostnames; the daemon should pass peer hostnames here)
-//
-// Deterministic outcomes: SHA-256(agentId|peerHost|port) drives the
-// reachable flag (top byte threshold 32 → ~87% reachable, simulating a
-// healthy-but-not-perfect AD) and the latency (next 16 bits → 2..15 ms).
-// Tests and live dashboards get stable probe data across runs.
-//
-// portOverrides: optional list of { host, portResults: [{port, reachable,
-// latencyMs, error}] } — used by mock-multi-agent to inject the
-// operator's known "FZ1 partial failure" scenario deterministically.
-export function buildPartnerPortEntries({
-  agentId,
-  collectedAt,
-  peers = [],
-  ports = [135, 445, 50001, 50002, 50003],
-  sourceSite = null,
-  portOverrides = null
-} = {}) {
-  if (typeof agentId !== 'string' || !agentId) {
-    throw new TypeError('buildPartnerPortEntries: agentId required');
-  }
-  const ts = collectedAt instanceof Date
-    ? collectedAt.toISOString()
-    : String(collectedAt);
-
-  const overrideMap = new Map();
-  if (Array.isArray(portOverrides)) {
-    for (const o of portOverrides) {
-      if (o && typeof o.host === 'string') overrideMap.set(o.host, o);
-    }
-  }
-
-  const out = [];
-  for (const peer of peers) {
-    const peerHost = typeof peer === 'string' ? peer : peer?.host;
-    if (!peerHost) continue;
-
-    const portResults = [];
-    let unreachableCount = 0;
-    const override = overrideMap.get(peerHost);
-    for (const port of ports) {
-      let result;
-      if (override && Array.isArray(override.portResults)) {
-        const ovr = override.portResults.find((p) => p.port === port);
-        if (ovr) result = ovr;
-      }
-      if (!result) {
-        result = probeMockPort(agentId, peerHost, port);
-      }
-      portResults.push(result);
-      if (!result.reachable) unreachableCount++;
-    }
-
-    const portMap = {};
-    for (const r of portResults) {
-      portMap[String(r.port)] = {
-        reachable: r.reachable,
-        latencyMs: r.latencyMs ?? null,
-        error: r.error ?? null
-      };
-    }
-    const payload = JSON.stringify({ checked_at: ts, ports: portMap });
-
-    out.push({
-      SourceDc:         agentId,
-      DestDc:           peerHost,
-      SourceSite:       sourceSite,
-      DestSite:         null,
-      NamingContext:    partnerPortNamingContext(peerHost),
-      LastSuccessTime:  ts,
-      LastAttemptTime:  ts,
-      // Mirrors Get-PartnerPortSnapshot: status_code = 0 when every port
-      // is reachable, else the count of unreachable ports. The route's
-      // partner.fillPortLookup reads this directly.
-      StatusCode:       unreachableCount,
-      ErrorMessage:     null,
-      UsersCount:       null,
-      GroupsCount:      null,
-      GposCount:        null,
-      LockedCount:      null,
-      PartnerPortStatus: payload
-    });
-  }
-  return out;
-}
-
-// Mirror collect-replication.ps1::Get-PartnerNamingContext verbatim.
-// Exported for unit tests.
-export function partnerPortNamingContext(peerHost) {
-  if (!peerHost) return null;
-  const truncated = peerHost.length > 64 ? peerHost.slice(0, 64) : peerHost;
-  const hash = crypto.createHash('sha256').update(peerHost).digest();
-  // 4-byte hex suffix — same shape PS1 emits via -join ($bytes[0..3] | %{ $_.ToString('x2') }).
-  const hashStr = hash.slice(0, 4).toString('hex');
-  return `__partner_ports__:${truncated}_${hashStr}`;
-}
-
-// Deterministic per-port mock probe. Real PS1 actually does TCP connect;
-// we synthesize a stable outcome so the dashboard renders consistent
-// data across daemon cycles. The hash distribution gives ~87% reachable.
-function probeMockPort(agentId, peerHost, port) {
-  const hash = crypto.createHash('sha256')
-    .update(`${agentId}|${peerHost}|${port}`)
-    .digest();
-  const reachable = hash[0] >= 32;
-  if (!reachable) {
-    return { port, reachable: false, latencyMs: null, error: 'timeout (mock)' };
-  }
-  const latencyMs = 2 + (hash.readUInt16BE(2) % 14); // 2..15 ms
-  return { port, reachable: true, latencyMs, error: null };
 }
 
 // 2026-08-27 round-42 (复制日志监控): emit per-attempt history rows that
@@ -359,7 +233,6 @@ export function buildReplicationHistoryEntries({
         GroupsCount:      null,
         GposCount:        null,
         LockedCount:      null,
-        PartnerPortStatus: null,
         // 2026-08-27 round-42: route forks data[] on the
         // `__history__:%` NamingContext prefix into the dedicated
         // insertHistoryEntries path. historyParams strips the prefix
@@ -398,24 +271,21 @@ function pickFailureError(hash) {
 // heartbeat). Without this the Server Overview renders — / 0 / — / —
 // which they mistake for "the data path never executed".
 //
-// 2026-08-27 round-35: optionally accepts partnerPortEntries — the
-// __partner_ports__:% rows Get-PartnerPortSnapshot emits in the real PS1.
-// When present, they're appended after the per-link entries (and before
-// the summary). Without these rows the matrix view's port badges render
-// as "无探测"; the operator reports the view looks empty.
+// 2026-08-28 round-45: partnerPortEntries dropped — R35 port monitoring
+// surface deleted end-to-end; real agent no longer emits partner-port
+// rows.
 //
 // 2026-08-27 round-42 (复制日志监控): also accepts historyEntries — the
 // per-attempt ad_replication_history rows Get-ADReplicationPartnerMetadata
 // ._ResultHistory emits in the real PS1. When present, they're appended
-// after the partner-port entries (and before the summary). Without these
-// rows the 复制日志监控 view's expandable caret shows nothing and the
+// after the per-link entries (and before the summary). Without these
+// rows the inline expansion in 复制状态概览 shows nothing and the
 // operator cannot drill into recent failure details.
 export function buildSnapshot({
   agentId,
   collectedAt,                            // ISO string or Date
   sourceSite = null,
   links = [],
-  partnerPortEntries = [],
   historyEntries = []
 } = {}) {
   if (typeof agentId !== 'string' || !agentId) {
@@ -430,7 +300,6 @@ export function buildSnapshot({
     Site:        sourceSite,
     Entries: [
       ...buildLinkEntries(agentId, ts, links, sourceSite),
-      ...(Array.isArray(partnerPortEntries) ? partnerPortEntries : []),
       ...(Array.isArray(historyEntries) ? historyEntries : []),
       buildSummaryEntry(agentId, ts, sourceSite)
     ]

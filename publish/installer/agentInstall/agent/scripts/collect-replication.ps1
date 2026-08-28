@@ -54,12 +54,16 @@ function Get-DcCounters {
     UsersCount  = $null
     GroupsCount = $null
     GposCount   = $null
-    LockedCount = $null
   }
 
   # Each counter is isolated: a failure here must not break replication
   # collection or other counters. $ErrorActionPreference stays 'Continue'
   # so unexpected throwables are still caught below.
+
+  # 2026-08-26 round-18: LockedCount is no longer part of the replication
+  # snapshot. It moved to its own ad_lockout_summary package so the
+  # cadence is independent of the replication cycle (user wants every
+  # 15 minutes, regardless of replication activity).
 
   try {
     if (-not (Get-Module -Name ActiveDirectory -ListAvailable)) {
@@ -88,227 +92,195 @@ function Get-DcCounters {
     [Console]::Error.WriteLine("gposCount failed: $($_.Exception.Message)")
   }
 
-  try {
-    if (-not (Get-Module -Name ActiveDirectory)) {
-      Import-Module ActiveDirectory -ErrorAction Stop
-    }
-    $counters.LockedCount = (Search-ADAccount -LockedOut -Server $ComputerName | Measure-Object).Count
-  } catch {
-    [Console]::Error.WriteLine("lockedCount failed: $($_.Exception.Message)")
-  }
-
   return [PSCustomObject]$counters
 }
 
-function Get-LockoutEvents {
+# 2026-08-26 round-18: Get-LockoutEvents was removed. Lockout events now
+# ship via the ad_lockout_list package on a 15-minute cadence, independent
+# of the replication cycle. The function body lives in
+# center/data/packages/ad_lockout_list/1.0.0/collect.ps1 if you need to
+# trace it.
+
+# 2026-08-28 round-45: partner-port probing removed end-to-end (R35 port
+# monitoring surface deleted). $script:DefaultPartnerPortSet,
+# Get-PartnerPortConfig, Get-PartnerNamingContext, and Get-PartnerPortSnapshot
+# are gone — real agents no longer probe partner ports or emit
+# `__partner_ports__:%` rows. The matrix view surfaces failure status
+# directly via the link's statusCode + errorMessage, and the inline caret
+# expansion drills into the last 10 ad_replication_history rows.
+
+# 2026-08-27 round-42 (复制日志监控): emit per-attempt history rows that
+# land in ad_replication_history (extended cols: last_attempt_time,
+# attempt_duration_ms, objects_transferred). Mirrors
+# center/mock-snapshot.mjs::buildReplicationHistoryEntries byte-for-byte
+# on the wire shape: every entry has its own (collected_at,
+# last_attempt_time) timestamp; success rows carry attemptDurationMs +
+# objectsTransferred (the real AD module does not surface these, so we
+# emit $null and let the centre fall back to the placeholder); failure
+# rows carry $null for both plus a realistic error_message string built
+# from the Win32 error code. Without these rows the
+# /admin/replication-log/monitor view's expandable caret shows nothing
+# and the operator sees a frozen snapshot.
+#
+# Naming context uses a synthetic `__history__:<sha>` key that the centre
+# forks off into ad_replication_history ONLY (never ad_replication_status)
+# — center/src/routes/agent.js splits incoming data[] on this prefix.
+# The centre's historyByPair lookup (grouped by
+# source|dest|naming_context) strips the `__history__:` prefix before
+# building the lookup key so dashboard groupings match the link's NC.
+# We forward both NamingContext (synthetic) and RealNamingContext (the
+# link's actual NC) so the centre can rebind it after the strip.
+#
+# Fault isolation: a failure to read _ResultHistory on one partner (older
+# AD module, partial metadata, AccessDenied) must not break the partner
+# loop. Helper wraps every access in try/catch and returns an empty array
+# on any error so Get-ReplicationSnapshot can keep producing link rows.
+function BuildReplicationHistoryRows {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
-    [string]$ComputerName
-  )
+    [AllowNull()]
+    $Partner,
 
-  # ComputerName is accepted for symmetry with Get-DcCounters but is
-  # intentionally unused inside the function body: PS 5.1's
-  # Get-WinEvent -FilterHashtable form does not accept -ComputerName
-  # (only the non-Hashtable form does). The agent runs locally on each
-  # DC, so reading the local Security log is sufficient. If remote
-  # collection is added later, switch to
-  # Get-WinEvent -ComputerName $ComputerName -FilterHashtable @{...}
-  # on pwsh 7+ only.
-  $events = @()
-  try {
-    $start = (Get-Date).AddMinutes(-15)
-    $raw = Get-WinEvent -FilterHashtable @{
-      LogName   = 'Security'
-      Id        = 4740
-      StartTime = $start
-    } -ErrorAction Stop
-    foreach ($e in $raw) {
-      $xml = [xml]$e.ToXml()
-      $ed  = $xml.Event.EventData
-      $events += [PSCustomObject]@{
-        EventRecordId      = [int64]$e.RecordId
-        OccurredAt         = (ConvertTo-UtcIso -Value $e.TimeCreated)
-        TargetUserName     = [string]$ed.Data[0].'#text'
-        SubjectUserName    = [string]$ed.Data[1].'#text'
-        SubjectDomain      = [string]$ed.Data[2].'#text'
-        CallerComputerName = [string]$ed.Data[3].'#text'
-      }
-    }
-  } catch {
-    [Console]::Error.WriteLine("lockoutEvents failed: $($_.Exception.Message)")
-  }
-  # The comma operator forces PowerShell to emit the array even when empty
-  # — without it, an empty $events collapses to $null on return.
-  return ,$events
-}
-
-# Default 5 ports to probe against every replication partner. The same set
-# appears in ad_local_port_check/collect.ps1 (Task 2). String keys
-# ("135" / "445" / ...) are used in the emitted JSON so the centre can
-# index by port without parsing dotted notation.
-$script:DefaultPartnerPortSet = @(135, 445, 50001, 50002, 50003)
-
-# Build the naming_context value for a partner-port row.
-# Column is `ad_replication_status.naming_context VARCHAR(256)` (see
-# db/schema/01-tables.sql). FQDN partners up to 253 chars + the
-# 17-char `__partner_ports__:` prefix blow past 256, and IPv6 literals
-# like `[2001:db8::1]:389` push past any reasonable limit. Truncate the
-# host to 64 chars and append a 4-byte SHA-256 hex suffix derived from
-# the FULL host — preserves uniqueness across partners that share a
-# common 64-char prefix while keeping every emitted value well under
-# 86 chars (64 + 1 separator + 8 hex + 17 prefix).
-function Get-PartnerNamingContext {
-  param([string]$partnerHost)
-  if ([string]::IsNullOrEmpty($partnerHost)) { return $null }
-  $truncated = if ($partnerHost.Length -gt 64) {
-    $partnerHost.Substring(0, 64)
-  } else {
-    $partnerHost
-  }
-  $bytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
-    [System.Text.Encoding]::UTF8.GetBytes($partnerHost)
-  )
-  $hashStr = -join ($bytes[0..3] | ForEach-Object { $_.ToString('x2') })
-  return "__partner_ports__:${truncated}_${hashStr}"
-}
-
-function Get-PartnerPortSnapshot {
-  [CmdletBinding()]
-  param(
     [Parameter(Mandatory = $true)]
     [string]$ComputerName,
 
     [Parameter(Mandatory = $true)]
     [AllowNull()]
-    $Partners,
+    [string]$Site,
 
-    [Parameter()]
-    [int]$PerProbeTimeoutMs = 1500,
-
-    [Parameter()]
-    [int]$MaxPartners = 25,
-
-    [Parameter()]
+    [Parameter(Mandatory = $true)]
     [AllowNull()]
-    [string]$Site = $null,
+    [string]$RealNamingContext,
 
     [Parameter()]
     [AllowNull()]
     [string]$CollectedAt = $null,
 
     [Parameter()]
-    [int[]]$Ports = $script:DefaultPartnerPortSet
+    [int]$MaxAttempts = 10
   )
 
   $rows = @()
-  if ($null -eq $Partners) {
+  if ($null -eq $Partner) { return ,$rows }
+
+  # Some AD module builds / older OS versions do not expose _ResultHistory
+  # at all. Don't crash the partner loop — just emit zero rows.
+  $historyProp = $null
+  try {
+    $historyProp = $Partner.PSObject.Properties['_ResultHistory']
+  } catch { $historyProp = $null }
+  if ($null -eq $historyProp -or $null -eq $historyProp.Value) {
     return ,$rows
   }
 
-  # self-loop guard — Get-ADReplicationPartnerMetadata -Target $ComputerName
-  # already excludes self, but defend-in-depth (brief: "if Partner equals
-  # ComputerName, skip").
-  $capped = @($Partners | Select-Object -First $MaxPartners)
-  $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+  $ops = @($historyProp.Value)
+  if ($ops.Count -eq 0) { return ,$rows }
 
-  # Sequential probing. Worst-case latency per partner where every port
-  # times out: Ports.Count * PerProbeTimeoutMs = 5 * 1500 = 7500 ms.
-  # 25 partners worst-case = 187 s (collector's default timeoutMs = 60 s).
-  # Start-Job startup overhead (>300 ms per job) outweighs the savings in
-  # the typical reachable case (probe completes <100 ms), so we stay
-  # sequential and document this trade-off in the report — caller can pass
-  # a bumped timeoutMs into runCollector if their topology has many
-  # unreachable partners.
-  foreach ($p in $capped) {
-    $partnerHost = $null
-    try { $partnerHost = [string]$p.Partner } catch { $partnerHost = $null }
-    if ([string]::IsNullOrEmpty($partnerHost)) { continue }
-    if ($partnerHost -eq $ComputerName) { continue }
+  $partnerHost = $null
+  try { $partnerHost = [string]$Partner.Partner } catch { $partnerHost = $null }
+  if ([string]::IsNullOrEmpty($partnerHost)) { return ,$rows }
 
-    # Probe this partner's 5 ports sequentially. Each probe is wrapped in
-    # try/catch/finally with Close() in finally so one failure cannot
-    # strand a socket or abort the rest of the partner's probes.
-    $portResults = @()
-    foreach ($port in $Ports) {
-      $client = New-Object System.Net.Sockets.TcpClient
-      $reachable = $false
-      $latencyMs = $null
-      $errorMsg = $null
-      try {
-        $connectTask = $client.ConnectAsync($partnerHost, [int]$port)
-        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $completed = $connectTask.Wait($PerProbeTimeoutMs)
-        $stopwatch.Stop()
-        if ($completed -and $client.Connected) {
-          $reachable = $true
-          $latencyMs = [int]$stopwatch.ElapsedMilliseconds
-        } else {
-          $errorMsg = 'timeout'
-        }
-      } catch {
-        $errorMsg = $_.Exception.Message
-      } finally {
-        try { $client.Close() } catch {}
-      }
-      $portResults += [PSCustomObject]@{
-        port      = [int]$port
-        reachable = $reachable
-        latencyMs = $latencyMs
-        error     = $errorMsg
-      }
+  # Anchor timestamp. Match the mock agent's convention: every emitted row
+  # stamps the cycle's collectedAt so a fresh tick refreshes the timeline
+  # without touching older attempts (those keep their own timestamp via
+  # operation.Time — see attemptIso below).
+  $cycleIso = $CollectedAt
+  if ([string]::IsNullOrEmpty($cycleIso)) {
+    $cycleIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+  }
+
+  # Walk the operations oldest → newest. The collection is already in
+  # insertion order from the AD module, but be defensive — some builds
+  # return newest-first. The MaxAttempts cap protects against unbounded
+  # rows on a long-lived DC (the dashboard only shows the latest 10).
+  $ordered = @($ops | Sort-Object { $_.Time } -ErrorAction SilentlyContinue)
+  if ($ordered.Count -eq 0) { $ordered = $ops }
+  $capped = @($ordered | Select-Object -Last $MaxAttempts)
+
+  foreach ($op in $capped) {
+    if ($null -eq $op) { continue }
+
+    $opStatus = 0
+    try { $opStatus = [int]$op.Status } catch { $opStatus = 0 }
+    $opError = 0
+    try { $opError = [int]$op.Error } catch { $opError = 0 }
+
+    $opTime = $null
+    try { $opTime = $op.Time } catch { $opTime = $null }
+
+    $attemptIso = ConvertTo-UtcIso -Value $opTime
+    if ([string]::IsNullOrEmpty($attemptIso)) {
+      # Fall back to the cycle's collectedAt if the operation's Time
+      # field is unparseable. Better than emitting an empty timestamp
+      # that the dashboard can't sort by.
+      $attemptIso = $cycleIso
     }
 
-    # Build the per-partner row matching the 16-column INSERT shape
-    # (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site,
-    # naming_context, last_success_time, last_attempt_time, status_code,
-    # error_message, users_count, groups_count, gpos_count, locked_count,
-    # partner_port_status) — see center/src/db/sql.js
-    # replication.upsertStatus. status_code: 0 = every port reachable,
-    # otherwise the count of unreachable ports (caller maps to severity
-    # tiers server-side).
-    $unreachableCount = 0
-    $portMap = [ordered]@{}
-    foreach ($r in $portResults) {
-      $portMap[[string]$r.port] = @{
-        reachable = $r.reachable
-        latencyMs = $r.latencyMs
-        error     = $r.error
-      }
-      if (-not $r.reachable) { $unreachableCount += 1 }
+    $errMsg = $null
+    if ($opStatus -ne 0) {
+      # The AD module returns Error as an Int32 Win32 status code (e.g.
+      # 1908 → "Target principal name incorrect"). The dashboard renders
+      # whatever string we put in ErrorMessage, so format it as a stable
+      # "error <code>" placeholder when we can't look up the message.
+      # A future enhancement could carry a small Win32→message map for
+      # the operator-friendly cases (1908, 1722, 5); out of scope here.
+      $errMsg = "error $($opError)"
     }
-    $statusCode = if ($unreachableCount -eq 0) { 0 } else { $unreachableCount }
-    $payload = [ordered]@{
-      checked_at = $nowIso
-      ports      = $portMap
-    } | ConvertTo-Json -Compress -Depth 4
+
+    # Stable synthetic naming_context — same hash inputs as
+    # mock-snapshot.mjs::buildReplicationHistoryEntries:
+    #   sha256(agentId|peerHost|realNamingContext|attemptIdx|history)
+    # The "history" sentinel keeps history NCs from colliding with the
+    # partner-port NCs (which share agentId|peerHost|realNamingContext
+    # but differ in suffix). The 8-hex slice gives a 32-bit space —
+    # collision risk across a 200-DC fleet with ~10 attempts each is
+    # negligible (birthday bound = 65k).
+    $attemptIdx = 0
+    try {
+      $idx = [int]$op.AttemptNumber
+      if ($idx -gt 0) { $attemptIdx = $idx }
+    } catch { $attemptIdx = 0 }
+
+    $hashInput = "${ComputerName}|${partnerHost}|${RealNamingContext}|${attemptIdx}|history"
+    $hashBytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+      [System.Text.Encoding]::UTF8.GetBytes($hashInput)
+    )
+    $historyHash = -join ($hashBytes[0..3] | ForEach-Object { $_.ToString('x2') })
 
     $rows += [PSCustomObject]@{
-      CollectedAt       = $nowIso
-      AgentId           = $ComputerName
-      SourceDc          = $ComputerName
-      DestDc            = $partnerHost
-      SourceSite        = $Site
-      DestSite          = $null
-      # Sanitized: see Get-PartnerNamingContext for the truncate+hash
-      # rationale. Keeps every emitted value well under
-      # naming_context VARCHAR(256).
-      NamingContext     = Get-PartnerNamingContext -partnerHost $partnerHost
-      LastSuccessTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
-      LastAttemptTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
-      StatusCode        = $statusCode
-      ErrorMessage      = $null
-      UsersCount        = $null
-      GroupsCount       = $null
-      GposCount         = $null
-      LockedCount       = $null
-      PartnerPortStatus = $payload
+      CollectedAt        = $cycleIso
+      AgentId            = $ComputerName
+      SourceDc           = $ComputerName
+      DestDc             = $partnerHost
+      SourceSite         = $Site
+      DestSite           = $null
+      NamingContext      = "__history__:${historyHash}"
+      LastSuccessTime    = $(if ($opStatus -eq 0) { $attemptIso } else { $null })
+      LastAttemptTime    = $attemptIso
+      StatusCode         = $opStatus
+      ErrorMessage       = $errMsg
+      AttemptDurationMs  = $null
+      ObjectsTransferred = $null
+      UsersCount         = $null
+      GroupsCount        = $null
+      GposCount          = $null
+      LockedCount        = $null
+      # RealNamingContext is forwarded alongside the synthetic NC so
+      # center/src/services/replication.js::historyParams can rebind it
+      # after stripping the __history__: prefix. agent/src/reporter.js
+      # ::toCamelEntry converts to _realNamingContext on the wire. Real
+      # agents always set this — the centre's prefix-strip would otherwise
+      # leave the row with an unrecoverable synthetic NC.
+      RealNamingContext  = $RealNamingContext
     }
   }
 
-  # Comma operator forces the array to survive even when $rows is empty,
-  # mirroring Get-LockoutEvents's documented contract.
-  return ,$rows
+  # Note: callers MUST wrap the call in @( ... ) to coerce the
+  # zero-element / one-element cases into a real array. Emitting
+  # `,$rows` instead would force callers into a double-unwrap dance
+  # (which is the bug the round-42 tests tripped over).
+  return $rows
 }
 
 function Get-ReplicationSnapshot {
@@ -400,25 +372,32 @@ function Get-ReplicationSnapshot {
         ErrorMessage    = $errMsg
       }
       $entries += $entry
+
+      # 2026-08-27 round-42 (复制日志监控): append per-attempt history
+      # rows for this partner. Walk $p._ResultHistory (one AD operation
+      # per attempt) and emit a row per operation with synthetic
+      # '__history__:<sha>' naming_context so the centre's /api/agent/report
+      # route can fork these into ad_replication_history (extended by
+      # migration 021) without polluting ad_replication_status. Fault-
+      # isolated — a failure inside BuildReplicationHistoryRows returns
+      # an empty array and the partner loop keeps moving.
+      $historyRows = BuildReplicationHistoryRows `
+        -Partner $p `
+        -ComputerName $ComputerName `
+        -Site $snapshot.Site `
+        -RealNamingContext ([string]$p.NamingContext) `
+        -CollectedAt $snapshot.CollectedAt
+      if ($null -ne $historyRows -and @($historyRows).Count -gt 0) {
+        foreach ($hr in @($historyRows)) { $entries += $hr }
+      }
     }
   }
 
-  # Per-partner port probes — one row per replication partner, each with
-  # the same 16-column INSERT shape (R1 partner_port_status carries the
-  # per-port reachable/latency JSON; R2 naming context
-  # '__partner_ports__:<host>' keeps each partner's row UNIQUE). Function
-  # is fault-isolated: a probe failure on one partner cannot abort the
-  # others, and an empty partner list produces no rows (no error).
-  if ($null -ne $partners -and @($partners).Count -gt 0) {
-    $portEntries = Get-PartnerPortSnapshot `
-      -ComputerName $ComputerName `
-      -Partners $partners `
-      -Site $snapshot.Site `
-      -CollectedAt $snapshot.CollectedAt
-    if ($null -ne $portEntries -and @($portEntries).Count -gt 0) {
-      foreach ($pe in @($portEntries)) { $entries += $pe }
-    }
-  }
+  # 2026-08-28 round-45: per-partner port probes removed end-to-end (R35
+  # port monitoring surface deleted). No `__partner_ports__:%` rows are
+  # emitted by real agents — the matrix view surfaces failure status
+  # directly via the link's statusCode + errorMessage, and the inline
+  # caret expansion drills into the last 10 ad_replication_history rows.
 
   # DC summary card counters — emitted as a self-loop entry so the data
   # rides on the same replication ingest path. Naming context 'META' is
@@ -438,18 +417,14 @@ function Get-ReplicationSnapshot {
     UsersCount      = $counters.UsersCount
     GroupsCount     = $counters.GroupsCount
     GposCount       = $counters.GposCount
-    LockedCount     = $counters.LockedCount
   }
   $entries += $summaryEntry
 
-  # Lockout troubleshooting — append the last 15 min of Security event 4740
-  # (user account locked out) from the local Security log. Travels as a
-  # top-level snapshot field (not as an Entry, because these aren't
-  # replication rows). The center's UNIQUE(dc_name, event_record_id) gives
-  # us idempotent ingest — the agent is stateless across cycles.
-  $LockoutEvents = Get-LockoutEvents -ComputerName $ComputerName
-  $snapshot | Add-Member -NotePropertyName LockoutEvents `
-                        -NotePropertyValue $LockoutEvents
+  # 2026-08-26 round-18: LockoutEvents and LockedCount moved out of the
+  # replication snapshot. They now ship via the ad_lockout_list and
+  # ad_lockout_summary packages on a 15-minute cadence, independent of
+  # the replication cycle. The center's /api/agent/report no longer
+  # reads req.body.lockoutEvents.
 
   $snapshot.Entries = $entries
   return $snapshot

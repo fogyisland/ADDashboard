@@ -26,7 +26,7 @@
 // daemon runs until SIGINT/SIGTERM (Ctrl+C).
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildSnapshot, buildPartnerPortEntries, buildReplicationHistoryEntries } from './mock-snapshot.mjs';
+import { buildSnapshot, buildReplicationHistoryEntries } from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
@@ -41,30 +41,14 @@ const DISCOVER_PATH  = '/api/agent/discover';
 
 // ----- scenario -----
 
-// 2026-08-27 round-35: peer-host probe overrides — keyed by partner
-// identifier (the same string used in link.destDc so the
-// ${source}${sep}${dest} lookup in the matrix route matches). Each
-// entry lists forced probe results for specific ports. The helper looks
-// up an override by peer identifier when assembling the partner-port
-// entry for a given peer; if the peer is listed, the forced result
-// replaces the SHA-256-derived one.
-//
-// Scenario: FZ1 (the operator's known problematic DC) reports port 50001
-// as unreachable when other agents probe it. From the matrix view's
-// inbound perspective, this is what surfaces in /admin/site-replication-
-// matrix/all for any primary DC that FZ1 replicates TO. Since FZ1
-// replicates to FZ2 and HUB1, those primaries' inbound probes will show
-// FZ1's port 50001 in red — matching the operator's "FZ1 partial failure"
-// observation from round-19.
-const FZ1_PARTNER_OVERRIDES = [
-  {
-    host: 'MOCK-FZADSRV1',
-    portResults: [
-      { port: 50001, reachable: false, latencyMs: null,
-        error: 'ConnectionRefused (FZ1 operator scenario)' }
-    ]
-  }
-];
+// 2026-08-28 round-45: FZ1_PARTNER_OVERRIDES deleted (R35 port monitoring
+// surface removed end-to-end). FZ1's "partial failure" scenario now travels
+// through the replication link's `statusCode + errorMessage` directly
+// (FZ1→HUB1 has statusCode: 2, errorMessage: 'RPC server unavailable
+// (round-trip > 30s)' in defaultScenario() below) — the matrix view
+// surfaces this as the red "失败" status pill + inline error, and the
+// caret expansion drills into the last 10 ad_replication_history rows.
+// No port-probe rows are emitted.
 
 function defaultScenario() {
   // 2026-08-26 round-19+: operator-defined topology. Each non-HUB site's
@@ -238,31 +222,22 @@ function buildReplicationSnapshot(agentId, links, sourceSite, opts = {}) {
     statusCode: l.statusCode ?? 0,
     errorMessage: l.errorMessage ?? null
   }));
-  // 2026-08-27 round-35: pass peers (raw agentIds) verbatim — they MUST
-  // match link.destDc exactly so the route's ${source}${sep}${dest}
-  // lookup against latestPartnerPortPerPair finds the partner-port row.
-  // In a real AD env, Get-PartnerPortSnapshot stores DestDc as the
-  // partner's FQDN and the per-link entry uses the same FQDN. The mock
-  // here uses the partner's agentId for both to keep the data shape
-  // internally consistent (the centre doesn't care which format the
-  // mock chose, only that source/dest match between the two row types).
+  // peers are derived from fullLinks (1:1 with destDc) — used as input
+  // to buildReplicationHistoryEntries below.
   const peers = fullLinks.map((l) => l.destDc);
   const collectedAt = new Date();
-  const portOverrides = opts.portOverrides ?? FZ1_PARTNER_OVERRIDES;
-  const partnerPortEntries = buildPartnerPortEntries({
-    agentId,
-    collectedAt,
-    peers,
-    sourceSite,
-    portOverrides
-  });
-  // 2026-08-27 round-42 (复制日志监控): also append per-attempt history
+  // 2026-08-27 round-42 (复制日志监控): append per-attempt history
   // entries that land in ad_replication_history via the dedicated
   // insertHistoryEntries path on the route. The history helper uses a
   // synthetic `__history__:%` naming_context that the route forks off
   // into ad_replication_history ONLY (never ad_replication_status), so
   // the matrix view's latest-per-pair queries stay uncorrupted by
   // back-dated attempt timestamps.
+  //
+  // 2026-08-28 round-45: buildPartnerPortEntries / portOverrides removed
+  // (R35 port monitoring surface deleted). The status pill + inline error
+  // message on the partner row now carries the failure signal directly
+  // from the replication link's statusCode/errorMessage.
   //
   // historyEnabled defaults true so the operator's dashboard populates
   // out of the box. The route no-ops insertHistoryEntries if the
@@ -286,7 +261,6 @@ function buildReplicationSnapshot(agentId, links, sourceSite, opts = {}) {
     // keeping downstream GROUP BY (source_dc, dest_dc, naming_context) consistent
     // across old + new rows during the 30-min freshness crossover window.
     links: fullLinks,
-    partnerPortEntries,
     historyEntries
   });
 }

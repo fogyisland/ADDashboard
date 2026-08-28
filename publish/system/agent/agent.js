@@ -324,9 +324,12 @@ async function runAdRuntime({ config, logger }) {
     collect: () => runCollector({
       powerShellPath: config.powerShellPath,
       psScriptPath: config.psScriptPath,
-      // I-3 — collect-replication.ps1's worst-case latency is 187s
-      // (25 partners × 5 ports × 1.5s sequential per-port timeout —
-      // see Get-PartnerPortSnapshot's documented cost in the script).
+      // I-3 — collect-replication.ps1's worst-case latency is bounded by the
+      // partner metadata fetch (Get-ADReplicationPartnerMetadata) on the
+      // largest hub. 2026-08-28 round-45: per-partner port probing is gone
+      // (R35 port monitoring deleted end-to-end) so the 25-partner × 5-port
+      // × 1.5s worst-case no longer applies. 200s remains as a defensive
+      // ceiling for the history-attempt fetch (3 attempts × 25 partners).
       // runCollector's default timeoutMs is 60s, which would SIGKILL
       // the snapshot mid-emission on large topologies. 200s leaves
       // ~13s headroom so transient TCPSocket.Wait variability doesn't

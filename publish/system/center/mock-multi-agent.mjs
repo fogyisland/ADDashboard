@@ -30,7 +30,7 @@
 // Each agent's timing is configurable through the JSON config so the
 // operator can re-stage the scenario without touching code.
 
-import { buildSnapshot, buildPartnerPortEntries, buildReplicationHistoryEntries, postSnapshot } from './mock-snapshot.mjs';
+import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot } from './mock-snapshot.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -342,24 +342,15 @@ function defaultScenario() {
 // __dc_summary__ entry with deterministic per-DC counters so the
 // Server Overview's DcCard never renders — / 0 for a healthy mock.
 //
-// 2026-08-27 round-35: also append partner-port entries — one per peer,
-// with the default probe port set (135, 445, 50001, 50002, 50003).
-// Without these rows the matrix view's per-port badges render as "无探测"
-// and operators see no port-level signal. The mock uses SHA-256-derived
-// deterministic outcomes, so a given (agent, peer, port) tuple always
-// resolves the same way across runs.
+// 2026-08-28 round-45: partner-port entries removed (R35 port monitoring
+// surface deleted end-to-end). The matrix view's status pill + inline
+// error message now carries the failure signal directly from the
+// replication link's statusCode/errorMessage — no per-port rows are
+// emitted by mock or real agent.
 function buildReplicationSnapshot(agentId, collectedAt, links, sourceSite, opts = {}) {
-  // peer IDs here are the same string used in link.destDc, so the
-  // matrix route's `${source}${sep}${dest}` lookup against
-  // latestPartnerPortPerPair finds the partner-port row.
+  // peer IDs here are the same string used in link.destDc — input to
+  // buildReplicationHistoryEntries below.
   const peerIds = (links ?? []).map((l) => l.destDc);
-  const partnerPortEntries = buildPartnerPortEntries({
-    agentId,
-    collectedAt,
-    peers: peerIds,
-    sourceSite,
-    portOverrides: opts.portOverrides ?? null
-  });
   // 2026-08-27 round-42 (复制日志监控): also append per-attempt history
   // entries that land in ad_replication_history via the dedicated
   // insertHistoryEntries path on the route. The history helper uses a
@@ -378,7 +369,6 @@ function buildReplicationSnapshot(agentId, collectedAt, links, sourceSite, opts 
     collectedAt,
     sourceSite,
     links: links ?? [],
-    partnerPortEntries,
     historyEntries
   });
 }
@@ -429,11 +419,12 @@ async function runOne(scenario) {
     if (localCollectedAt) {
       const sourceSite = discovery?.dc?.siteHint ?? null;
       // 2026-08-27 round-35: the localState sentinel uses __local_state__
-      // as a synthetic link — not a real partner, so it MUST NOT trigger
-      // partner-port probe rows. Bypass buildReplicationSnapshot and call
-      // buildSnapshot directly with empty partnerPortEntries; otherwise
-      // the helper would emit a __partner_ports__:__local_state__ row
-      // that the matrix view's perPort lookup would never match.
+      // as a synthetic link — not a real partner. Bypass
+      // buildReplicationSnapshot (which would route through the
+      // heartbeat path with history entries) and emit a minimal snapshot
+      // that only stamps collected_at for the localState clock. R45
+      // also removed partner-port rows, so the previous concern about
+      // __partner_ports__:__local_state__ leaking is now gone too.
       const snapshot = buildSnapshot({
         agentId,
         collectedAt: localCollectedAt,

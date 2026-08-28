@@ -20,8 +20,8 @@ const EXPECTED_PATHS = [
   '/admin/member-servers', '/admin/server-groups',
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix/all',
-  // 2026-08-27 round-42 (复制日志监控): new sidebar entry under 监控运维.
-  '/admin/replication-log/monitor',
+  // 2026-08-28 round-45: 复制日志监控 sidebar entry removed — R42 absorbed
+  // into the 复制状态概览 inline expansion.
   '/admin/ports',
   '/admin/heartbeat-report', '/admin/operations-log', '/admin/packages',
   '/admin/migrations', '/admin/orphan-schemas',
@@ -40,11 +40,12 @@ test('renders 6 nav groups', () => {
   expect(w.findAll('.nav-group').length).toBe(6);
 });
 
-test('renders all 17 nav-links with correct paths', () => {
-  // 2026-08-27 round-42 (复制日志监控): 16→17 nav-links.
+test('renders all 16 nav-links with correct paths', () => {
+  // 2026-08-28 round-45: 17→16 nav-links (R42 复制日志监控 absorbed into
+  // 复制状态概览 inline expansion).
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
-  expect(links.length).toBe(17);
+  expect(links.length).toBe(16);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
 });

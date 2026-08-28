@@ -11,14 +11,16 @@
       </div>
     </header>
 
-    <!-- 2026-08-27 round-36 per-DC partner tables: operator directive
-         "本地站点只显示了一台，另外一台没有显示出来" — every DC in the
-         site renders its own partner matrix. round-35 inbound-only still
-         applies: each row is another DC sending replication TO this DC.
-         round-35: "出战的没有意义" — drop outbound columns. -->
+    <!-- 2026-08-28 round-45: R42 复制日志监控 absorbed into this view.
+         Port monitoring (R35) removed entirely — operator directive
+         "去掉端口监控，但是他保留复制过程的详细信息，例如复制成功，
+         显示复制成功，但是失败了会显示详细信息。在最右边折叠最近10条的信息".
+         Each partner row now shows a status pill + a right-column caret
+         that lazy-fetches the last 10 replication attempts for that pair. -->
     <p class="hint">
       每个站点的每台 DC 各自显示自己的入站复制连接 — 即其他 DC 复制到本机的链路。
-      端口列来自 partner-port 探针;未探测的行显示灰色徽章。
+      状态: 复制成功 (绿色) / 部分失败 (黄色) / 失败 (红色,显示错误信息)。
+      点击最右侧箭头展开最近 10 条复制尝试历史。
     </p>
     <p class="legend">
       <span class="legend-item"><span class="legend-swatch swatch-primary"></span>主控 DC</span>
@@ -37,12 +39,6 @@
         <small class="dc-count">{{ (p.dcPartners || []).length }} DC / {{ p.dcs.length }} 成员</small>
       </h3>
 
-      <!-- 2026-08-27 round-36: per-DC partner tables. The operator directive
-           "本地站点只显示了一台" — only the bridgehead was visible because
-           round-28 rendered one partner matrix per site (the primary's).
-           Now every DC in the site renders its own matrix, with role
-           badges in the header. Self-loops excluded; outbound dropped per
-           round-35 inbound-only filter. -->
       <div v-if="!p.dcPartners || !p.dcPartners.length" class="empty">该站点暂无 DC</div>
 
       <div v-for="dc in p.dcPartners" :key="dc.dcName" class="dc-block" :data-test-dc-block="dc.dcName">
@@ -62,54 +58,83 @@
           <small class="dc-partner-count">{{ dc.partners.length }} 伙伴</small>
         </h4>
 
-        <div class="port-summary" :data-test-port-summary="dc.dcName">
-          <span v-if="dc.portHealth.unprobed" class="ps-chip ps-none">无探测</span>
-          <template v-else>
-            <span class="ps-chip ps-ok">● {{ dc.portHealth.ok }} 通</span>
-            <span class="ps-chip ps-warn" v-if="dc.portHealth.warn">▲ {{ dc.portHealth.warn }} 慢</span>
-            <span class="ps-chip ps-err"  v-if="dc.portHealth.err">✕ {{ dc.portHealth.err }} 不通</span>
-          </template>
-          <span class="ps-probe-time" v-if="dc.portHealth.latestProbeAt">
-            最近探测: {{ fmt(dc.portHealth.latestProbeAt) }}
-          </span>
-        </div>
-
         <table class="matrix">
           <thead>
             <tr>
+              <th class="caret-col"></th>
               <th>类型</th>
               <th>伙伴站点</th>
               <th>伙伴 DC</th>
-              <th>状态</th>
-              <th v-for="port in ports" :key="`hdr-${dc.dcName}-${port}`" class="port-hdr">{{ port }}</th>
+              <th>当前状态</th>
+              <th class="last-success-col">最近成功</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="partner in dc.partners" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}`"
-                :class="rowClass(partner)"
-                :data-test="`partner-${partner.peerType}-${dc.dcName}-${partner.peerDc}`">
-              <td class="peer-type">
-                <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
-              </td>
-              <td>
-                <span class="peer-site">{{ partner.peerSite }}</span>
-                <span v-if="partner.peerSiteIsHub" class="hub-mini">中心</span>
-              </td>
-              <td class="peer-dc">{{ partner.peerDc }}</td>
-              <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
-              <td v-for="port in ports" :key="`cell-${dc.dcName}-${partner.peerDc}-${port}`"
-                  class="port-cell" :title="portTooltip(partner.perPort, port)">
-                <!-- 2026-08-27 round-37.2: operator directive "我们只需要标题表明端口,
-                     其他的网格里面不需要写入端口" — port number lives only in the
-                     column header. Cells show ONLY the value (3ms / 通 / 断 / —),
-                     no port number repeat. -->
-                <div :class="['port-detail', `port-val-${portStatusClass(partner.perPort, port)}`]">
-                  {{ portDetailLabel(partner.perPort, port) }}
-                </div>
-              </td>
-            </tr>
+            <template v-for="partner in dc.partners" :key="`${dc.dcName}-${partner.peerType}-${partner.peerDc}`">
+              <tr :class="rowClass(partner)"
+                  :data-test="`partner-${partner.peerType}-${dc.dcName}-${partner.peerDc}`">
+                <td class="caret-col">
+                  <button class="caret-btn"
+                          :data-test="`caret-${dc.dcName}-${partner.peerDc}`"
+                          :aria-label="isExpanded(dc.dcName, partner) ? '折叠历史' : '展开历史'"
+                          @click="togglePartner(dc.dcName, partner)">
+                    {{ isExpanded(dc.dcName, partner) ? '▼' : '▶' }}
+                  </button>
+                </td>
+                <td class="peer-type">
+                  <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
+                </td>
+                <td>
+                  <span class="peer-site">{{ partner.peerSite }}</span>
+                  <span v-if="partner.peerSiteIsHub" class="hub-mini">中心</span>
+                </td>
+                <td class="peer-dc">{{ partner.peerDc }}</td>
+                <td class="status">
+                  <span :class="['status-pill', `status-pill-${statusClass(partner)}`]">{{ statusLabel(partner) }}</span>
+                  <span v-if="partner.statusCode !== 0 && partner.errorMessage" class="err-msg">— {{ partner.errorMessage }}</span>
+                  <span v-else-if="partner.statusCode !== 0 && partner.lastAttemptTime" class="err-meta">— 最近尝试 {{ fmt(partner.lastAttemptTime) }}</span>
+                </td>
+                <td class="last-success-cell">{{ fmt(partner.lastSuccessTime) }}</td>
+              </tr>
+              <tr v-if="isExpanded(dc.dcName, partner)"
+                  class="attempts-row"
+                  :data-test="`attempts-${dc.dcName}-${partner.peerDc}`">
+                <td colspan="6">
+                  <div v-if="loadingPair === expandKey(dc.dcName, partner)" class="loading">加载中…</div>
+                  <div v-else-if="(attemptsByKey(expandKey(dc.dcName, partner)) || []).length === 0" class="empty">
+                    暂无历史记录 — 该伙伴没有 24h 内的连接尝试数据
+                  </div>
+                  <table v-else class="attempts-table">
+                    <thead>
+                      <tr>
+                        <th>尝试时间</th>
+                        <th>结果</th>
+                        <th>耗时 (ms)</th>
+                        <th>传输对象</th>
+                        <th>最近成功</th>
+                        <th>错误/详情</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(a, i) in attemptsByKey(expandKey(dc.dcName, partner))" :key="i"
+                          :class="['att-row', `att-row-${attemptStatusClass(a)}`]">
+                        <td>{{ fmt(a.attemptAt) }}</td>
+                        <td>
+                          <span class="glyph">{{ attemptGlyph(a) }}</span>
+                          {{ attemptLabel(a) }}
+                        </td>
+                        <td>{{ a.durationMs ?? '—' }}</td>
+                        <td>{{ a.objectsTransferred ?? '—' }}</td>
+                        <td>{{ fmt(a.lastSuccessTime) }}</td>
+                        <td>{{ a.errorMessage || '—' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </td>
+              </tr>
+            </template>
             <tr v-if="!dc.partners.length">
-              <td :colspan="5 + ports.length" class="empty-row">无伙伴连接</td>
+              <td colspan="6" class="empty-row">无伙伴连接</td>
             </tr>
           </tbody>
         </table>
@@ -124,11 +149,16 @@ import AdminLayout from '../../components/AdminLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
 
 const primaries = ref([]);
-const ports = ref([]);
 const refreshSeconds = ref(10);
 const lastLoadedAt = ref(null);
 const error = ref('');
 const polling = ref(false);
+
+// round-45 inline expansion state.
+const expanded = ref(new Set());     // set of `${dc}|${peerDc}` keys
+const attempts = ref(new Map());     // key → entries[]
+const loadingPair = ref(null);       // currently fetching
+
 let timerHandle = null;
 
 async function load() {
@@ -136,21 +166,11 @@ async function load() {
   error.value = '';
   try {
     const r = await dashboardApi.getSiteReplicationMatrixAll();
-    ports.value = Array.isArray(r.data?.ports) ? r.data.ports : [];
-    // 2026-08-27 round-36: port-health is now per-DC, not per-site.
-    // The route emits `dcPartners[]` — one entry per DC in the site, each
-    // with its own partners[]. We attach portHealth to each dcPartner so
-    // the chip in the template doesn't re-iterate partners × ports on
-    // every reactive tick.
-    primaries.value = (Array.isArray(r.data?.primaries) ? r.data.primaries : []).map((p) => ({
-      ...p,
-      dcPartners: (Array.isArray(p.dcPartners) ? p.dcPartners : []).map((dc) => ({
-        ...dc,
-        portHealth: computePortHealth(dc, ports.value)
-      }))
-    }));
+    // round-45: ports/perPort/lastProbeAt dropped from envelope.
+    primaries.value = Array.isArray(r.data?.primaries) ? r.data.primaries : [];
     refreshSeconds.value = Number(r.data?.siteRefreshSeconds) || 10;
     lastLoadedAt.value = new Date().toISOString();
+    pruneExpanded();
   } catch (e) {
     error.value = e?.response?.data?.error || '加载失败';
   } finally {
@@ -158,13 +178,61 @@ async function load() {
   }
 }
 
-function statusGlyph(p) {
-  if (p.statusCode === 0) return '●';
-  if (p.statusCode === 1) return '▲';
-  return '✕';
+function expandKey(dc, p) { return `${dc}|${p.peerDc}`; }
+function isExpanded(dc, p) { return expanded.value.has(expandKey(dc, p)); }
+function attemptsByKey(key) { return attempts.value.get(key); }
+
+function pruneExpanded() {
+  // Drop expansion keys (and cached attempts) for partners that no longer
+  // exist in the latest /all payload — keeps the state map bounded across
+  // polling cycles.
+  const valid = new Set();
+  for (const p of primaries.value) {
+    for (const dc of (p.dcPartners || [])) {
+      for (const partner of dc.partners) {
+        valid.add(expandKey(dc.dcName, partner));
+      }
+    }
+  }
+  for (const k of [...expanded.value]) {
+    if (!valid.has(k)) expanded.value.delete(k);
+  }
+  for (const k of [...attempts.value.keys()]) {
+    if (!valid.has(k)) attempts.value.delete(k);
+  }
+}
+
+async function togglePartner(dcName, partner) {
+  const key = expandKey(dcName, partner);
+  if (expanded.value.has(key)) {
+    expanded.value.delete(key);
+    return;
+  }
+  expanded.value.add(key);
+  // Lazy fetch only on first expansion — repeated toggles reuse the cache.
+  if (!attempts.value.has(key)) {
+    loadingPair.value = key;
+    try {
+      const r = await dashboardApi.getSiteReplicationMatrixPairHistory(partner.peerDc, dcName, 10);
+      attempts.value.set(key, Array.isArray(r.data?.entries) ? r.data.entries : []);
+    } catch (e) {
+      attempts.value.set(key, []);
+      error.value = e?.response?.data?.error || '加载历史失败';
+    } finally {
+      loadingPair.value = null;
+    }
+  }
+}
+
+// Status helpers — main row uses plain text, history rows keep the
+// compact ●▲✕ glyph vocabulary operators are used to from R42.
+function statusClass(p) {
+  if (p.statusCode === 0) return 'ok';
+  if (p.statusCode === 1) return 'warn';
+  return 'err';
 }
 function statusLabel(p) {
-  if (p.statusCode === 0) return '成功';
+  if (p.statusCode === 0) return '复制成功';
   if (p.statusCode === 1) return '部分失败';
   return '失败';
 }
@@ -176,81 +244,25 @@ function rowClass(p) {
     'status-err':  p.statusCode > 1
   };
 }
-function portEntry(perPort, port) {
-  // 2026-08-27 round-36.1: partner_port_status JSON shape is
-  // `{ checked_at, ports: { '<port>': { reachable, latencyMs, error } } }`.
-  // The earlier round-32 code read `perPort[port]` which always returned
-  // undefined — every badge fell through to 'none' / "未探测" and operators
-  // only saw TTL-style latency strings via the tooltip fallback. Read the
-  // inner `ports` map so per-port reachability + latency actually surface.
-  return perPort?.ports?.[String(port)] ?? null;
+function attemptStatusClass(a) {
+  if (a.statusCode === 0) return 'ok';
+  if (a.statusCode === 1) return 'warn';
+  return 'err';
 }
-function portStatusClass(perPort, port) {
-  const e = portEntry(perPort, port);
-  if (!e) return 'none';
-  if (e.reachable === true) return 'ok';
-  if (e.reachable === false) return 'err';
-  return 'warn';
+function attemptGlyph(a) {
+  if (a.statusCode === 0) return '●';
+  if (a.statusCode === 1) return '▲';
+  return '✕';
 }
-// 2026-08-27 round-32: backend distinguishes within-site siblings
-// (peerType="within") from cross-site bridgehead peers
-// (peerType="bridgehead"). UI surfaces a tag so operators can see
-// at a glance which cross-site link goes via a bridgehead vs. all
-// in-site connections.
+function attemptLabel(a) {
+  if (a.statusCode === 0) return '成功';
+  if (a.statusCode === 1) return '部分失败';
+  return '失败';
+}
 function peerTypeLabel(p) {
   if (p.peerType === 'within') return '本站';
   if (p.peerType === 'bridgehead') return '桥头';
   return '未知';
-}
-function portTooltip(perPort, port) {
-  const e = portEntry(perPort, port);
-  if (!e) return `${port}: 未探测`;
-  const status = e.reachable === true ? '可达' : e.reachable === false ? '不可达' : '未知';
-  const lat = e.latencyMs != null ? ` ${e.latencyMs}ms` : '';
-  const err = e.error ? ` — ${e.error}` : '';
-  return `${port}: ${status}${lat}${err}`;
-}
-// 2026-08-27 round-32: surface the per-port PowerShell probe result inline
-// in each port cell. Reachable + measured latency → "3ms"; reachable but no
-// latency → "通"; unreachable → error reason (e.g. "timeout"); never
-// probed → "—". Compact 2-line cell keeps the matrix scannable while
-// exposing the latency/error data the PS collector emits.
-function portDetailLabel(perPort, port) {
-  const e = portEntry(perPort, port);
-  if (!e) return '—';
-  if (e.reachable === true) {
-    return e.latencyMs != null ? `${e.latencyMs}ms` : '通';
-  }
-  if (e.reachable === false) {
-    return e.error || '断';
-  }
-  return '?';
-}
-// 2026-08-27 round-36: per-DC port-health summary chip. Counts the
-// ok/warn/err buckets across every partner row + every port for THIS DC
-// and shows the latest probe time. Replaces the per-primary version from
-// round-32 — operator now sees per-DC freshness, not per-site.
-// `unprobed` is true when the DC has partners but none of them have any
-// probe data — the chip then shows "无探测" instead of "0 通 / 0 不通".
-function computePortHealth(dc, portList) {
-  let ok = 0, warn = 0, err = 0, total = 0, latestProbeAt = null;
-  for (const partner of (dc.partners || [])) {
-    for (const port of (portList || [])) {
-      total++;
-      const cls = portStatusClass(partner.perPort, port);
-      if (cls === 'ok') ok++;
-      else if (cls === 'warn') warn++;
-      else if (cls === 'err') err++;
-    }
-    if (partner.lastProbeAt) {
-      const t = Date.parse(partner.lastProbeAt);
-      if (!Number.isNaN(t) && (latestProbeAt === null || t > latestProbeAt)) {
-        latestProbeAt = t;
-      }
-    }
-  }
-  const unprobed = total > 0 && (ok + warn + err) === 0;
-  return { ok, warn, err, total, unprobed, latestProbeAt: latestProbeAt ? new Date(latestProbeAt).toISOString() : null };
 }
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 
@@ -268,9 +280,9 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .dot.on  { background: #22c55e; }
 .dot.off { background: #475569; }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
-.alt-link { color: var(--accent); font-size: 12px; text-decoration: none; margin-left: 12px; }
 .error-banner { background: var(--red-bg); color: var(--red); padding: 8px 12px; border-radius: 3px; margin-bottom: 12px; }
 .empty { text-align: center; color: var(--muted); padding: 24px; }
+.loading { text-align: center; color: var(--muted); padding: 12px; }
 
 .site-block { margin-bottom: 24px; padding: 16px; border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
 .site-block h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; }
@@ -281,9 +293,6 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .dc-count { color: var(--muted); font-size: 12px; margin-left: auto; }
 .hub-mini { font-size: 10px; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: #14532d; color: #bbf7d0; }
 
-/* 2026-08-27 round-36: per-DC partner block. Each DC in the site gets
-   its own matrix inside the site block. The role badges + osVersion
-   header replaces the round-31 redundant "本站 DC 清单" panel. */
 .dc-block { margin-bottom: 18px; padding: 10px 12px;
             border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
 .dc-block:last-child { margin-bottom: 0; }
@@ -308,11 +317,18 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .matrix { border-collapse: collapse; background: var(--panel); width: 100%; }
 .matrix th, .matrix td { border: 1px solid #1e293b; padding: 6px 10px; text-align: center; font-size: 13px; }
 .matrix th { background: #0b1220; color: var(--muted); font-size: 12px; font-weight: 600; }
-.matrix .port-hdr { min-width: 56px; }
 .matrix tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
-.partner-row td.dir { font-family: ui-monospace, monospace; font-weight: 600; }
-.dir-out { color: #22c55e; }
-.dir-in  { color: #38bdf8; }
+.caret-col { width: 36px; padding: 4px; }
+.caret-btn { background: transparent; border: 1px solid var(--border); border-radius: 3px;
+             width: 28px; height: 24px; padding: 0; cursor: pointer; color: var(--text);
+             font-family: ui-monospace, monospace; font-size: 11px; line-height: 1; }
+.caret-btn:hover { background: var(--border); color: var(--accent); }
+.last-success-col { min-width: 140px; }
+.last-success-cell { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+
+.partner-row.status-ok .status { color: var(--text); }
+.partner-row.status-warn .status { color: var(--text); }
+.partner-row.status-err .status { color: var(--text); }
 .peer-site { font-weight: 500; }
 .peer-dc { font-family: ui-monospace, monospace; font-size: 12px; }
 .peer-type { white-space: nowrap; }
@@ -321,38 +337,26 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .peer-tag-within     { background: #1e293b; color: var(--text); border: 1px solid #334155; }
 .peer-tag-bridgehead { background: #0e7490; color: #cffafe; }
 .peer-tag-unknown    { background: #1e293b; color: var(--muted); }
-.status { font-size: 12px; }
-.partner-row.status-ok .status { color: #22c55e; }
-.partner-row.status-warn .status { color: #f59e0b; }
-.partner-row.status-err .status { color: #ef4444; font-weight: 600; }
-.port-cell { font-family: ui-monospace, monospace; font-size: 11px; padding: 2px 6px; min-width: 48px; vertical-align: middle; text-align: center; }
-/* 2026-08-27 round-37: status color applies to the VALUE text only —
-   port number stays neutral, no colored background on the cell. */
-/* 2026-08-27 round-37.1: operator feedback "毫秒还是很小" — the latency
-   text was 10px and visually subordinate to the 12px port number, which
-   is the actionable info. Swap hierarchy: port number gets smaller +
-   muted, value text (3ms / 通 / 断) becomes the dominant element with
-   bold weight + larger font so it's actually scannable. */
-/* 2026-08-27 round-37.2: drop the .port-num repeat from cells entirely —
-   the column header already labels which port this cell is for. The
-   value (3ms / 通 / 断 / —) now stands alone in each cell, centered. */
-.port-val-ok   { color: var(--green); font-weight: 700; font-size: 13px; }
-.port-val-err  { color: var(--red);   font-weight: 700; font-size: 13px; }
-.port-val-warn { color: var(--yellow); font-weight: 700; font-size: 13px; }
-.port-val-none { color: var(--muted); font-size: 12px; }
-.port-detail { font-size: 13px; line-height: 1.2; letter-spacing: -0.01em; }
-/* 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
-   in round-32). Sits inside each .dc-block just above the matrix so
-   operators see "X 通 / Y 不通 / 最新探测时间" for THIS DC. */
-.port-summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-                margin: 0 0 8px; padding: 6px 10px; border-radius: 3px;
-                background: rgba(255,255,255,0.03); border: 1px solid #1e293b; }
-.ps-chip { font-family: ui-monospace, monospace; font-size: 11px;
-           padding: 2px 8px; border-radius: 999px; letter-spacing: 0.04em; }
-.ps-ok   { background: rgba(34,197,94,0.15);  color: #22c55e; }
-.ps-warn { background: rgba(234,179,8,0.18);  color: #f59e0b; }
-.ps-err  { background: rgba(239,68,68,0.18);  color: #ef4444; }
-.ps-none { background: #1e293b; color: var(--muted); }
-.ps-probe-time { color: var(--muted); font-size: 11px; margin-left: auto; font-family: ui-monospace, monospace; }
+
+.status-pill { display: inline-block; font-size: 11px; padding: 2px 10px;
+               border-radius: 999px; font-weight: 600; letter-spacing: 0.02em; }
+.status-pill-ok   { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid #166534; }
+.status-pill-warn { background: rgba(234,179,8,0.18);  color: #f59e0b; border: 1px solid #92400e; }
+.status-pill-err  { background: rgba(239,68,68,0.18);  color: #ef4444; border: 1px solid #991b1b; }
+.err-msg { color: var(--red); font-size: 11px; margin-left: 6px; }
+.err-meta { color: var(--muted); font-size: 11px; margin-left: 6px; }
+
+.attempts-row td { background: rgba(255,255,255,0.02); padding: 8px 12px; }
+.attempts-table { width: 100%; border-collapse: collapse; }
+.attempts-table th, .attempts-table td { border: 1px solid #1e293b; padding: 4px 8px;
+                                         text-align: center; font-size: 12px; }
+.attempts-table th { background: #0b1220; color: var(--muted); font-weight: 600; }
+.att-row-ok   { color: var(--text); }
+.att-row-warn { color: var(--yellow); }
+.att-row-err  { color: var(--red); }
+.att-row .glyph { font-family: ui-monospace, monospace; font-weight: 700; margin-right: 4px; }
+.att-row-ok   .glyph { color: var(--green); }
+.att-row-warn .glyph { color: var(--yellow); }
+.att-row-err  .glyph { color: var(--red); }
 .empty-row { color: var(--muted); padding: 16px; }
 </style>

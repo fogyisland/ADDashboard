@@ -1,0 +1,7 @@
+mock-heartbeat-daemon.mjs exited with code -1
+ËùÔÚÎ»ÖÃ D:\ToolDevelop\ADDashboard\scripts\mock-daemon-start.ps1:158 ×Ö·û: 3
++   throw "mock-heartbeat-daemon.mjs exited with code $LASTEXITCODE"
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (mock-heartbeat-...ed with code -1:String) [], RuntimeException
+    + FullyQualifiedErrorId : mock-heartbeat-daemon.mjs exited with code -1
+ 

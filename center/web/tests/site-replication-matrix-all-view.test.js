@@ -6,9 +6,11 @@ vi.mock('../src/api/dashboard.js', () => ({
     getSiteReplicationMatrixAll: vi.fn(() => Promise.resolve({
       data: {
         siteRefreshSeconds: 10,
-        ports: [135, 445, 50001],
         primaries: []
       }
+    })),
+    getSiteReplicationMatrixPairHistory: vi.fn(() => Promise.resolve({
+      data: { source: 'X', dest: 'Y', limit: 10, entries: [] }
     }))
   }
 }));
@@ -16,22 +18,17 @@ vi.mock('../src/api/dashboard.js', () => ({
 import SiteReplicationMatrixAllView from '../src/views/admin/SiteReplicationMatrixAllView.vue';
 import { dashboardApi } from '../src/api/dashboard.js';
 
-// 2026-08-27 round-36 envelope: each site carries `dcPartners[]` — one
-// entry per DC in the site, each with its own partners[] + role flags +
-// osVersion. The route ALSO emits top-level `partners` (mirrors bridgehead
-// primary's dcPartners entry) for backwards compat with consumers that
-// still deep-link to p.partners, but the view iterates dcPartners[].
-//
-// round-35 inbound-only filter is still active — every partner row is
-// inbound by definition (source_dc → THIS dest_dc); outbound is dropped.
+// 2026-08-28 round-45: R42 复制日志监控 absorbed into this view. The
+// per-port columns (R35) are gone — partner row now shows status pill +
+// caret expansion. /all envelope no longer carries `ports`, `perPort`,
+// `lastProbeAt`, or `portHealth`. Per-pair history comes from a separate
+// /pair-history endpoint, lazy-fetched on caret click.
 const basePayload = () => ({
   siteRefreshSeconds: 10,
-  ports: [135, 445, 50001],
   primaries: [
     {
       dcName: 'DC-BJ-01', siteId: 1, siteName: '核心站点',
       regionCode: 'BJ', isHub: true,
-      // round-28.5: hub DC explicitly marked bridgehead by operator
       isBridgehead: true,
       dcs: [
         { dcName: 'DC-BJ-01', isBridgehead: true, isPdc: true, isGc: true,
@@ -41,33 +38,21 @@ const basePayload = () => ({
           isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
       ],
-      // round-36: per-DC partner tables. 核心站点 has 2 DCs.
-      //   - DC-BJ-01: inbound from DC-BJ-02 (within-site) perPort=null
-      //   - DC-BJ-02: no inbound in this scenario (BJ-02 has no inbound
-      //     because all within-site links in the matrix go from BJ-01 →
-      //     BJ-02 outbound, dropped; cross-site BJ-02 → SH-01 dropped
-      //     because SH-01 isn't a peer DC here)
       dcPartners: [
         { dcName: 'DC-BJ-01', isBridgehead: true, isPdc: true, isGc: true,
           isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2022', discoveredAt: '2026-08-27T08:00:00Z',
           partners: [
             { peerDc: 'DC-BJ-02', peerSite: '核心站点', peerSiteIsHub: true,
-              peerType: 'within',
-              statusCode: 0, perPort: null, lastProbeAt: null }
+              peerType: 'within', statusCode: 0,
+              errorMessage: null,
+              lastAttemptTime: '2026-08-28T01:00:30Z',
+              lastSuccessTime: '2026-08-28T01:00:00Z' }
           ] },
         { dcName: 'DC-BJ-02', isBridgehead: false, isPdc: false, isGc: true,
           isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z',
           partners: [] }
-      ],
-      // round-36: top-level partners mirrors bridgehead primary's
-      // dcPartners entry (DC-BJ-01) — kept for backwards compat with
-      // deep-links.
-      partners: [
-        { peerDc: 'DC-BJ-02', peerSite: '核心站点', peerSiteIsHub: true,
-          peerType: 'within',
-          statusCode: 0, perPort: null, lastProbeAt: null }
       ]
     },
     {
@@ -79,43 +64,33 @@ const basePayload = () => ({
           isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z' }
       ],
-      // round-36: 1 DC → 1 dcPartners entry, with 1 inbound bridgehead.
       dcPartners: [
         { dcName: 'DC-SH-01', isBridgehead: false, isPdc: false, isGc: false,
           isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false,
           isInfrastructureMaster: false, osVersion: 'Win2019', discoveredAt: '2026-08-27T08:00:00Z',
           partners: [
             { peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
-              peerType: 'bridgehead',
-              statusCode: 1,
-              // round-36.1: perPort shape mirrors what
-              // collect-replication.ps1::Get-PartnerPortSnapshot writes to
-              // ad_replication_status.partner_port_status JSON column:
-              // `{ checked_at, ports: { '<port>': {reachable, latencyMs, error} } }`.
-              // The view reads `perPort.ports[port]` (not `perPort[port]`)
-              // — round-32 code read the wrong path and every badge
-              // silently fell through to "无探测".
-              perPort: { checked_at: '2026-08-27T10:00:00Z',
-                         ports: { '135':   { reachable: true,  latencyMs: 3 },
-                                  '445':   { reachable: false, latencyMs: null, error: 'timeout' } } },
-              lastProbeAt: '2026-08-27T10:00:00Z' }
+              peerType: 'bridgehead', statusCode: 2,
+              errorMessage: 'RPC server unavailable',
+              lastAttemptTime: '2026-08-28T00:55:00Z',
+              lastSuccessTime: null }
           ] }
-      ],
-      partners: [
-        { peerDc: 'DC-BJ-01', peerSite: '核心站点', peerSiteIsHub: true,
-          peerType: 'bridgehead',
-          statusCode: 1,
-          perPort: { checked_at: '2026-08-27T10:00:00Z',
-                     ports: { '135': { reachable: true,  latencyMs: 3 },
-                              '445': { reachable: false, latencyMs: null, error: 'timeout' } } },
-          lastProbeAt: '2026-08-27T10:00:00Z' }
       ]
     }
   ]
 });
 
+const historyPayload = (entries) => ({
+  data: {
+    source: 'X', dest: 'Y', limit: 10,
+    entries
+  }
+});
+
 beforeEach(() => {
   dashboardApi.getSiteReplicationMatrixAll.mockReset();
+  dashboardApi.getSiteReplicationMatrixPairHistory.mockReset();
+  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload([]));
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -129,36 +104,26 @@ test('mounts and renders hub-first site blocks with hub badge', async () => {
   await flushPromises();
   const blocks = w.findAll('section.site-block');
   expect(blocks).toHaveLength(2);
-  // Hub block (核心站点): h3 hub-badge "yes"
   expect(blocks[0].text()).toContain('核心站点');
   expect(blocks[0].find('h3 .hub-badge.yes').exists()).toBe(true);
-  // round-36: no "→ DC-BJ-01" anymore — the per-DC blocks replace the
-  // single primary-DC pointer. Instead the dc-count chip shows N DC.
   expect(blocks[0].text()).toContain('2 DC');
-  expect(blocks[0].find('h3 .primary-dc').exists()).toBe(false);
-  // Spoke block (上海站点): h3 hub-badge "no" only
   expect(blocks[1].text()).toContain('上海站点');
-  expect(blocks[1].find('h3 .hub-badge.yes').exists()).toBe(false);
   expect(blocks[1].find('h3 .hub-badge.no').exists()).toBe(true);
   expect(blocks[1].text()).toContain('1 DC');
 });
 
-test('round-36: every DC in the site renders its own partner matrix block', async () => {
-  // 核心站点 has 2 DCs → 2 .dc-block sections (one per DC).
-  // 上海站点 has 1 DC → 1 .dc-block section.
+test('round-45: per-DC partner tables render without port columns', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
 
-  // 3 dc-block total: BJ-01, BJ-02, SH-01
   const dcBlocks = w.findAll('.dc-block');
   expect(dcBlocks).toHaveLength(3);
 
-  // DC-BJ-01 block: header shows PDC+GC+桥头 role badges + Win2022 + 1 partner
+  // DC-BJ-01: PDC + GC + 桥头 + Win2022 + 1 partner
   const bj01Block = w.find('[data-test-dc-block="DC-BJ-01"]');
-  expect(bj01Block.exists()).toBe(true);
   expect(bj01Block.text()).toContain('DC-BJ-01');
   expect(bj01Block.text()).toContain('PDC');
   expect(bj01Block.text()).toContain('GC');
@@ -166,74 +131,142 @@ test('round-36: every DC in the site renders its own partner matrix block', asyn
   expect(bj01Block.text()).toContain('Win2022');
   expect(bj01Block.text()).toContain('1 伙伴');
 
-  // DC-BJ-02 block: header shows RID + Schema + Win2019 + 0 partners (空矩阵)
-  const bj02Block = w.find('[data-test-dc-block="DC-BJ-02"]');
-  expect(bj02Block.exists()).toBe(true);
-  expect(bj02Block.text()).toContain('DC-BJ-02');
-  expect(bj02Block.text()).toContain('RID');
-  expect(bj02Block.text()).toContain('Schema');
-  expect(bj02Block.text()).toContain('Win2019');
-  expect(bj02Block.text()).toContain('0 伙伴');
-
-  // DC-SH-01 block: 1 partner
-  const sh01Block = w.find('[data-test-dc-block="DC-SH-01"]');
-  expect(sh01Block.exists()).toBe(true);
-  expect(sh01Block.text()).toContain('DC-SH-01');
-  expect(sh01Block.text()).toContain('1 伙伴');
+  // round-45: no .port-summary, no .port-hdr, no .port-cell
+  expect(bj01Block.find('.port-summary').exists()).toBe(false);
+  expect(bj01Block.find('.port-hdr').exists()).toBe(false);
+  expect(bj01Block.find('.port-cell').exists()).toBe(false);
 });
 
-test('partner row renders inbound peer + colored port cells (no direction column)', async () => {
+test('round-45: status pill renders 复制成功 for statusCode=0', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
-  // round-35: 方向 column removed. Every partner row is inbound by
-  // definition; the direction badge (← 入) is gone.
-  // round-36: data-test attr scoped per DC: data-test="partner-<peerType>-<destDc>-<peerDc>"
-  // 上海站点 DC-SH-01's inbound from DC-BJ-01 with probe data
-  const inRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
-  expect(inRow.exists()).toBe(true);
-  expect(inRow.text()).not.toContain('→ 出');
-  expect(inRow.text()).not.toContain('← 入');
-  expect(inRow.text()).toContain('DC-BJ-01');
-  expect(inRow.text()).toContain('核心站点');
-  // 3 port cells rendered (135, 445, 50001)
-  const portCells = inRow.findAll('.port-cell');
-  expect(portCells).toHaveLength(3);
-  // round-37: status color moves off .port-cell and onto .port-detail —
-  // the value text (3ms/通/断/—) carries the colour, the port number
-  // stays neutral. The cell no longer has the status class.
-  expect(portCells[0].classes()).not.toContain('port-ok');
-  expect(portCells[1].classes()).not.toContain('port-err');
-  expect(portCells[2].classes()).not.toContain('port-none');
-  expect(portCells[0].find('.port-detail').classes()).toContain('port-val-ok');
-  expect(portCells[1].find('.port-detail').classes()).toContain('port-val-err');
-  expect(portCells[2].find('.port-detail').classes()).toContain('port-val-none');
 
-  // 核心站点 DC-BJ-01's within-site inbound from DC-BJ-02
-  const withinRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
-  expect(withinRow.exists()).toBe(true);
-  expect(withinRow.text()).toContain('DC-BJ-02');
+  const okRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
+  expect(okRow.exists()).toBe(true);
+  const pill = okRow.find('.status-pill');
+  expect(pill.exists()).toBe(true);
+  expect(pill.text()).toBe('复制成功');
+  expect(pill.classes()).toContain('status-pill-ok');
+  expect(okRow.find('.err-msg').exists()).toBe(false);
 });
 
-test('round-35: matrix table headers omit 方向 (inbound-only view)', async () => {
+test('round-45: status pill renders 失败 + error message for statusCode=2', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
-  // round-32 column order was: 类型 / 方向 / 伙伴站点 / 伙伴 DC / 状态
-  // round-35 drops 方向: 类型 / 伙伴站点 / 伙伴 DC / 状态
+
+  const errRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
+  expect(errRow.exists()).toBe(true);
+  const pill = errRow.find('.status-pill');
+  expect(pill.exists()).toBe(true);
+  expect(pill.text()).toBe('失败');
+  expect(pill.classes()).toContain('status-pill-err');
+  // Inline error message visible
+  expect(errRow.find('.err-msg').text()).toContain('RPC server unavailable');
+});
+
+test('round-45: matrix table headers show caret / 类型 / 伙伴 / 状态 / 最近成功', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
   const headers = w.findAll('section.site-block .dc-block table thead th');
-  expect(headers.length).toBeGreaterThanOrEqual(4);
-  expect(headers[0].text()).toContain('类型');
-  expect(headers[1].text()).toContain('伙伴站点');
-  expect(headers[2].text()).toContain('伙伴 DC');
-  expect(headers[3].text()).toContain('状态');
-  // round-35: no 方向 header
-  const headerTexts = headers.map(h => h.text());
-  expect(headerTexts.some(t => t.includes('方向'))).toBe(false);
+  const texts = headers.map(h => h.text());
+  expect(texts).toContain('类型');
+  expect(texts).toContain('伙伴站点');
+  expect(texts).toContain('伙伴 DC');
+  expect(texts).toContain('当前状态');
+  expect(texts).toContain('最近成功');
+  // round-45: no port headers
+  expect(texts.some(t => /^\d+$/.test(t))).toBe(false);
+  expect(texts.some(t => t.includes('端口'))).toBe(false);
+});
+
+test('round-45: caret button starts collapsed (▶)', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+
+  const caret = w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]');
+  expect(caret.exists()).toBe(true);
+  expect(caret.text()).toBe('▶');
+  // No attempts row initially
+  expect(w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]').exists()).toBe(false);
+});
+
+test('round-45: clicking caret expands row + lazy-fetches pair-history', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  const entries = [
+    { attemptAt: '2026-08-28T01:00:30Z', statusCode: 0,
+      durationMs: 1234, objectsTransferred: 42,
+      lastSuccessTime: '2026-08-28T01:00:00Z', errorMessage: null },
+    { attemptAt: '2026-08-28T00:55:00Z', statusCode: 2,
+      durationMs: null, objectsTransferred: null,
+      lastSuccessTime: null, errorMessage: 'RPC server unavailable' }
+  ];
+  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload(entries));
+
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  expect(dashboardApi.getSiteReplicationMatrixPairHistory).not.toHaveBeenCalled();
+
+  // Click the caret — calls API with dest=peerDc, source=thisDC
+  await w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]').trigger('click');
+  await flushPromises();
+
+  expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1);
+  const callArgs = dashboardApi.getSiteReplicationMatrixPairHistory.mock.calls[0];
+  // signature: getSiteReplicationMatrixPairHistory(destDc, sourceDc, limit)
+  expect(callArgs[0]).toBe('DC-BJ-02');
+  expect(callArgs[1]).toBe('DC-BJ-01');
+  expect(callArgs[2]).toBe(10);
+
+  const attemptsRow = w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]');
+  expect(attemptsRow.exists()).toBe(true);
+  expect(attemptsRow.findAll('.att-row')).toHaveLength(2);
+
+  // Caret flipped to ▼
+  expect(w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]').text()).toBe('▼');
+});
+
+test('round-45: second click on caret collapses without re-fetching', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload([]));
+
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+
+  const caret = w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]');
+  await caret.trigger('click'); await flushPromises();
+  expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1);
+  await caret.trigger('click'); await flushPromises();
+  expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1); // unchanged
+  expect(w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]').exists()).toBe(false);
+});
+
+test('round-45: empty history entries render "暂无历史记录"', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  dashboardApi.getSiteReplicationMatrixPairHistory.mockResolvedValue(historyPayload([]));
+
+  const w = mount(SiteReplicationMatrixAllView, {
+    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+  });
+  await flushPromises();
+  await w.find('[data-test="caret-DC-BJ-01-DC-BJ-02"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]').text()).toContain('暂无历史记录');
 });
 
 test('polling: re-fetches every refreshSeconds * 1000 ms', async () => {
@@ -257,15 +290,9 @@ test('clears interval on unmount', async () => {
   await flushPromises();
   w.unmount();
   await vi.advanceTimersByTimeAsync(30_000);
-  // No further calls after unmount
   expect(dashboardApi.getSiteReplicationMatrixAll).toHaveBeenCalledTimes(1);
 });
 
-// 2026-08-27 round-32: each partner row surfaces a "类型" cell with a
-// tag — "本站" for within-site siblings, "桥头" for cross-site bridgehead
-// peers. The CSS class `.peer-tag-within` / `.peer-tag-bridgehead` drives
-// the colour. Operators can see at a glance whether a link goes via a
-// bridgehead vs. an in-site connection.
 test('round-32: each partner row has a 类型 cell with within/bridgehead tag', async () => {
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
   const w = mount(SiteReplicationMatrixAllView, {
@@ -273,109 +300,22 @@ test('round-32: each partner row has a 类型 cell with within/bridgehead tag', 
   });
   await flushPromises();
 
-  // round-35: data-test attribute dropped the direction segment —
-  // every row is inbound. round-36: scoped per-DC.
-  // Within partner: DC-BJ-01 ← DC-BJ-02 (BJ-02 replicates TO BJ-01) shows
-  // "本站" + within class.
   const withinRow = w.find('[data-test="partner-within-DC-BJ-01-DC-BJ-02"]');
-  expect(withinRow.exists()).toBe(true);
-  const withinTag = withinRow.find('.peer-tag-within');
-  expect(withinTag.exists()).toBe(true);
-  expect(withinTag.text()).toBe('本站');
+  expect(withinRow.find('.peer-tag-within').exists()).toBe(true);
+  expect(withinRow.find('.peer-tag-within').text()).toBe('本站');
 
-  // Bridgehead partner: DC-SH-01 ← DC-BJ-01 shows "桥头" + bridgehead class
   const bridgeheadRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
-  expect(bridgeheadRow.exists()).toBe(true);
-  const bridgeheadTag = bridgeheadRow.find('.peer-tag-bridgehead');
-  expect(bridgeheadTag.exists()).toBe(true);
-  expect(bridgeheadTag.text()).toBe('桥头');
+  expect(bridgeheadRow.find('.peer-tag-bridgehead').exists()).toBe(true);
+  expect(bridgeheadRow.find('.peer-tag-bridgehead').text()).toBe('桥头');
 });
 
-// 2026-08-27 round-32: each port cell embeds the PowerShell probe result
-// 2026-08-27 round-37.2: per operator directive "我们只需要标题表明端口,
-// 其他的网格里面不需要写入端口" — port number lives only in the column
-// header (port-hdr); cells show ONLY the value (3ms / 通 / 断 / —).
-// Round-32 used to put both port number + value inline ("135 / 3ms");
-// round-37.1 made the value dominant in size; round-37.2 drops the
-// port number repeat entirely — it's redundant with the column header.
-test('round-37.2: port cell shows only the value, port number only in column header', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
-  await flushPromises();
-
-  // bridgehead partner row has perPort data:
-  //   135 → reachable latencyMs=3, 445 → reachable=false error=timeout, 50001 → missing
-  const inRow = w.find('[data-test="partner-bridgehead-DC-SH-01-DC-BJ-01"]');
-  expect(inRow.exists()).toBe(true);
-  const portCells = inRow.findAll('.port-cell');
-  expect(portCells).toHaveLength(3);
-
-  // Column header still labels each port (scope to THIS matrix table —
-  // the header row is a sibling of inRow inside the same table).
-  const matrixTable = inRow.element.closest('table');
-  const headers = w.findAll('.port-hdr').filter(h => h.element.closest('table') === matrixTable);
-  expect(headers.map(h => h.text())).toEqual(['135', '445', '50001']);
-
-  // Cell 1: port 135 — value is "3ms", cell does NOT repeat the port number
-  expect(portCells[0].find('.port-detail').text()).toBe('3ms');
-  expect(portCells[0].text()).not.toContain('135');
-  expect(portCells[0].find('.port-num').exists()).toBe(false);
-
-  // Cell 2: port 445 — value is "timeout" inline (NOT hidden in tooltip)
-  expect(portCells[1].find('.port-detail').text()).toBe('timeout');
-  expect(portCells[1].text()).not.toContain('445');
-
-  // Cell 3: port 50001 — no probe data → "—"
-  expect(portCells[2].find('.port-detail').text()).toBe('—');
-  expect(portCells[2].text()).not.toContain('50001');
-});
-
-// 2026-08-27 round-36: per-DC port-health summary chip (was per-primary
-// in round-32). Sits inside each .dc-block just above the matrix so
-// operators see "X 通 / Y 不通 / 最新探测时间" for THIS DC.
-test('round-36: per-DC port-health summary chip shows ok/err counts + latest probe time', async () => {
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
-  const w = mount(SiteReplicationMatrixAllView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
-  });
-  await flushPromises();
-
-  // DC-BJ-01: 1 within partner with perPort=null → 3 cells all port-none
-  // → "无探测" chip
-  const bj01Summary = w.find('[data-test-port-summary="DC-BJ-01"]');
-  expect(bj01Summary.exists()).toBe(true);
-  expect(bj01Summary.text()).toContain('无探测');
-
-  // DC-BJ-02: 0 partners → portHealth object still computed but no
-  // partners × ports = 0 total. unprobed stays false because total=0.
-  // Chip renders empty space (no chip rendered because v-if="dc.portHealth.unprobed"
-  // is false and the v-else block has nothing to show without totals).
-  const bj02Summary = w.find('[data-test-port-summary="DC-BJ-02"]');
-  expect(bj02Summary.exists()).toBe(true);
-
-  // DC-SH-01: 1 bridgehead partner with mixed probe data: 135 ok, 445
-  // err, 50001 missing. So 1 通, 1 不通, total=2.
-  const sh01Summary = w.find('[data-test-port-summary="DC-SH-01"]');
-  expect(sh01Summary.exists()).toBe(true);
-  expect(sh01Summary.text()).toMatch(/●\s*1\s*通/);
-  expect(sh01Summary.text()).toMatch(/✕\s*1\s*不通/);
-  expect(sh01Summary.text()).not.toContain('无探测');
-  // Latest probe timestamp surfaced
-  expect(sh01Summary.text()).toContain('最近探测');
-});
-
-// 2026-08-27 round-36: empty site renders "该站点暂无 DC" empty state
-// (replaces the round-31 "本站 DC 清单" panel).
 test('round-36: empty dcPartners array renders "该站点暂无 DC" empty state', async () => {
   const empty = {
     siteRefreshSeconds: 10,
-    ports: [135, 445],
     primaries: [{
       dcName: 'DC-X', siteId: 9, siteName: '空站点',
       regionCode: null, isHub: false, isBridgehead: false,
-      dcs: [], dcPartners: [], partners: []
+      dcs: [], dcPartners: []
     }]
   };
   dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: empty });
@@ -383,7 +323,6 @@ test('round-36: empty dcPartners array renders "该站点暂无 DC" empty state'
     global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
   });
   await flushPromises();
-  // round-36: empty state text moved to the new section
   const blocks = w.findAll('section.site-block');
   expect(blocks).toHaveLength(1);
   expect(blocks[0].text()).toContain('该站点暂无 DC');

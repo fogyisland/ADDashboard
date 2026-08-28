@@ -5,7 +5,10 @@ import { getConfig, getAgentConfig } from '../services/config.js';
 import { upsertDiscoveredDc } from '../services/discovery.js';
 import { listPorts } from '../services/ports.js';
 import { upsertPortStatuses } from '../services/port-status.js';
-import { getReplicationPortList } from '../services/replication-port-config.js';
+// 2026-08-28 round-45: getReplicationPortList import removed —
+// /api/agent/partner-ports endpoint deleted (R35 port monitoring surface
+// dropped). service/replication-port-config.js is also deleted in T8 —
+// dashboard.js no longer imports it after T3 strips port fields.
 import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 import { getAgentTokenState } from '../services/agent-token.js';
@@ -223,16 +226,18 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       // shape the operator needs to validate. source='collect-replication'
       // is stamped by agent/src/reporter.js postReport so the log line
       // shows which PS script produced the entries; old agents fall back to
-      // 'unknown'. partnerPortEntries/lockoutEvent counts let the operator
-      // spot the Bug Z/W class of silent drops at a glance (e.g. count=0
-      // when the PS1 emits them is a smoking gun).
+      // 'unknown'. summaryEntries count lets the operator spot the Bug Z/W
+      // class of silent drops at a glance (e.g. count=0 when the PS1 emits
+      // them is a smoking gun).
+      // 2026-08-28 round-45: partnerPortEntries counter removed (R35 port
+      // monitoring surface dropped — no agent emits __partner_ports__:% rows
+      // anymore).
       logger.info({
         event: 'agent.report',
         source: req.body?.source ?? 'unknown',
         agentId,
         collectedAt,
         entries: data.length,
-        partnerPortEntries: data.filter(r => r?.namingContext?.startsWith?.('__partner_ports__') || r?.naming_context?.startsWith?.('__partner_ports__')).length,
         summaryEntries: data.filter(r => r?.namingContext === '__dc_summary__' || r?.naming_context === '__dc_summary__').length
       }, 'agent report received');
       try {
@@ -314,24 +319,11 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       }
     });
 
-    // 2026-08-26 round-16 replication-port probe config: returns the
-    // operator-defined list of TCP ports collect-replication.ps1 probes for
-    // each replication partner. Auth-free so a freshly-installed agent
-    // (whose appsettings.json carries the agent token) can fetch this on
-    // the first cycle. The route NEVER throws — it falls back to the
-    // hardcoded default if system_config is unreadable.
-    r.get('/api/agent/partner-ports', async (_req, res) => {
-      try {
-        const ports = await getReplicationPortList();
-        res.json({ ports });
-      } catch (e) {
-        logger.error({ err: e }, 'agent partner-ports fetch failed');
-        // Mirror getReplicationPortList()'s defensive default — even on a
-        // catastrophic DB hiccup the agent should still probe the legacy
-        // [135, 445, 50001-50003] ports.
-        res.json({ ports: [135, 445, 50001, 50002, 50003] });
-      }
-    });
+    // 2026-08-28 round-45: /api/agent/partner-ports endpoint removed —
+    // R35 port monitoring surface deleted. Real agent no longer probes
+    // partner TCP ports (see collect-replication.ps1). Operator-side
+    // /api/admin/replication-port-config routes stay (separate UI backed
+    // by services/ports.js — explicitly preserved per round-45 plan).
   }
 
   // Web mount: stable bootstrap endpoint for agents. Lives on the web port

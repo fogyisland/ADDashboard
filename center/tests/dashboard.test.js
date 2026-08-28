@@ -348,7 +348,7 @@ test("GET /api/dashboard/site-replication-matrix/all: 401 when no token", async 
   assert.equal(r.status, 401);
 });
 
-test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-primary partner tables (inbound only + perPort)", async () => {
+test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-primary partner tables (inbound only)", async () => {
   // Round-35 envelope: each site contributes one primary DC (lexically
   // first dc_name; PDC marker NOT used). The primary surfaces every
   // INBOUND replication link (other DCs sending TO this primary).
@@ -375,7 +375,7 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
         { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
       ]
     },
-    // 3) allReplicationLinks — naming_context NOT IN (excludes summary/meta/partner-port)
+    // 3) allReplicationLinks — naming_context NOT IN (excludes summary/meta)
     {
       match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
       rows: [
@@ -388,16 +388,7 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
         { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com", status_code: 1, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
       ]
     },
-    // 4) latestPartnerPortPerPair — partner-port JSON probe rows
-    {
-      match: /naming_context\s+LIKE\s+'__partner_ports__:%/i,
-      rows: [
-        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", source_site: "MOCK-NC", dest_site: "MOCK-NC",
-          partner_port_status: JSON.stringify({ "135": { reachable: true, latencyMs: 3 }, "445": { reachable: false, error: "timeout" } }),
-          last_attempt_time: la, collected_at: la }
-      ]
-    },
-    // 5) refreshSeconds config
+    // 4) refreshSeconds config
     {
       match: /site_matrix_refresh_seconds/i,
       rows: [{ config_value: "15" }]
@@ -410,8 +401,8 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
   assert.equal(r.body.siteRefreshSeconds, 15);
-  assert.ok(Array.isArray(r.body.ports), "ports is array");
-  assert.equal(r.body.ports.length, 5, "5 default partner-probe ports when system_ports empty");
+  // round-45: ports/portRows removed from /all envelope (R35 port monitoring
+  // surface deleted). perPort + lastProbeAt also gone from partner entries.
 
   // hub first
   assert.equal(r.body.primaries.length, 2);
@@ -458,12 +449,11 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
   assert.equal(hubBJ02.partners[0].peerDc, "DC-BJ-01");
   assert.equal(hubBJ02.partners[0].peerSite, "核心站点");
   assert.equal(hubBJ02.partners[0].peerType, "within");
-  // Outbound partner-port probe (BJ-01 → SH-01) is NOT attached to BJ-01;
-  // BJ-02 has no probe data because it's not in any partner-port row.
-  assert.equal(hubBJ02.partners[0].perPort, null);
+  // round-45: perPort + lastProbeAt removed from partner entries (R35
+  // port monitoring surface deleted). No assertions here for those keys.
 
   // DC-SH-01 primary (round-35: inbound only):
-  //   - in: DC-BJ-01 (cross-site, status 1, with partner-port probe)
+  //   - in: DC-BJ-01 (cross-site, status 1, was formerly probed but R35 dropped)
   const spoke = r.body.primaries[1];
   assert.equal(spoke.partners.length, 1);
   // round-35: direction field is gone — every entry is implicitly inbound.
@@ -472,20 +462,12 @@ test("GET /api/dashboard/site-replication-matrix/all: 200 hub-first with per-pri
   assert.equal(spoke.partners[0].peerSite, "核心站点");
   assert.equal(spoke.partners[0].peerSiteIsHub, true);
   assert.equal(spoke.partners[0].peerType, "bridgehead");
-  assert.deepEqual(spoke.partners[0].perPort, {
-    "135": { reachable: true, latencyMs: 3 },
-    "445": { reachable: false, error: "timeout" }
-  });
 
   // round-36: 上海站点 has only SH-01, so its dcPartners[] has 1 entry.
   assert.equal(spoke.dcPartners.length, 1);
   assert.equal(spoke.dcPartners[0].dcName, "DC-SH-01");
   assert.equal(spoke.dcPartners[0].partners.length, 1);
   assert.equal(spoke.dcPartners[0].partners[0].peerDc, "DC-BJ-01");
-  assert.deepEqual(spoke.dcPartners[0].partners[0].perPort, {
-    "135": { reachable: true, latencyMs: 3 },
-    "445": { reachable: false, error: "timeout" }
-  });
 });
 
 test("GET /api/dashboard/site-replication-matrix/all: 500 on DB error", async () => {
@@ -541,117 +523,7 @@ test("GET /api/dashboard/site-replication-matrix/all: orphan DC link produces no
   assert.equal(r.body.primaries[0].partners.length, 0);
 });
 
-test("GET /api/dashboard/site-replication-matrix/all: partner-port JSON STRING (MSSQL) is parsed", async () => {
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i, rows: [
-      { site_id: 1, site_name: "SITE-A", region_code: "BJ", is_hub: 1, description: null },
-      { site_id: 2, site_name: "SITE-B", region_code: "SH", is_hub: 0, description: null }
-    ]},
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i, rows: [
-      { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
-      { dc_name: "DC-B1", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-B1" }
-    ]},
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i, rows: [
-      { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 3 }
-    ]},
-    // MSSQL-style: partner_port_status is a STRING (the tedious driver returns
-    // JSON columns as raw strings). The route must JSON.parse it before merge.
-    { match: /naming_context\s+LIKE\s+'__partner_ports__:%/i, rows: [
-      { source_dc: "DC-A1", dest_dc: "DC-B1", source_site: "MOCK-NC", dest_site: "MOCK-NC",
-        partner_port_status: "{\"135\":{\"reachable\":true,\"latencyMs\":4}}",
-        last_attempt_time: la, collected_at: la }
-    ]},
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/site-replication-matrix/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  // round-35 inbound-only: the link DC-A1 → DC-B1 surfaces at the
-  // destination (DC-B1 primary), not the source (DC-A1 primary).
-  assert.equal(r.body.primaries[0].partners.length, 0, "DC-A1 has no inbound partners");
-  const partner = r.body.primaries[1].partners.find(p => p.peerDc === "DC-A1");
-  assert.ok(partner, "DC-B1 primary must surface DC-A1 as inbound partner");
-  assert.ok(partner.perPort && typeof partner.perPort === "object", "perPort must be parsed object, not string");
-  assert.equal(partner.perPort["135"].reachable, true);
-  assert.equal(partner.perPort["135"].latencyMs, 4);
-});
 
-test("GET /api/dashboard/site-replication-matrix/all: partner-port JSON OBJECT (MySQL) is preserved", async () => {
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i, rows: [
-      { site_id: 1, site_name: "SITE-A", region_code: "BJ", is_hub: 1, description: null },
-      { site_id: 2, site_name: "SITE-B", region_code: "SH", is_hub: 0, description: null }
-    ]},
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i, rows: [
-      { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
-      { dc_name: "DC-B1", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-B1" }
-    ]},
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i, rows: [
-      { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 3 }
-    ]},
-    // MySQL-style: mysql2 driver auto-parses JSON columns -> object
-    { match: /naming_context\s+LIKE\s+'__partner_ports__:%/i, rows: [
-      { source_dc: "DC-A1", dest_dc: "DC-B1", source_site: "MOCK-NC", dest_site: "MOCK-NC",
-        partner_port_status: { "135": { reachable: true, latencyMs: 4 } },
-        last_attempt_time: la, collected_at: la }
-    ]},
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/site-replication-matrix/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  // round-35 inbound-only: link surfaces at the destination primary.
-  const partner = r.body.primaries[1].partners.find(p => p.peerDc === "DC-A1");
-  assert.ok(partner, "DC-B1 primary must surface DC-A1 as inbound partner");
-  assert.deepEqual(partner.perPort, {
-    "135": { reachable: true, latencyMs: 4 }
-  });
-});
-
-test("GET /api/dashboard/site-replication-matrix/all: malformed partner-port JSON falls back to empty perPort", async () => {
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i, rows: [
-      { site_id: 1, site_name: "SITE-A", region_code: "BJ", is_hub: 1, description: null },
-      { site_id: 2, site_name: "SITE-B", region_code: "SH", is_hub: 0, description: null }
-    ]},
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i, rows: [
-      { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
-      { dc_name: "DC-B1", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-B1" }
-    ]},
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i, rows: [
-      { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 3 }
-    ]},
-    // malformed JSON — route must catch and treat as empty probe map
-    { match: /naming_context\s+LIKE\s+'__partner_ports__:%/i, rows: [
-      { source_dc: "DC-A1", dest_dc: "DC-B1", source_site: "MOCK-NC", dest_site: "MOCK-NC",
-        partner_port_status: "not json{",
-        last_attempt_time: la, collected_at: la }
-    ]},
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/site-replication-matrix/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  // round-35 inbound-only: link surfaces at the destination primary.
-  const partner = r.body.primaries[1].partners.find(p => p.peerDc === "DC-A1");
-  assert.ok(partner, "DC-B1 primary must surface DC-A1 as inbound partner");
-  assert.deepEqual(partner.perPort, {});
-});
 
 test("GET /api/dashboard/site-replication-matrix/all: primary DC is lexically first dc_name per site, NOT is_pdc", async () => {
   // Round-28 operator ruling: PDC is a role, not a marker — do NOT use
@@ -780,300 +652,106 @@ test("GET /api/dashboard/site-replication-matrix/all: round-35 inbound-only filt
   assert.equal(spoke.partners[0].direction, undefined);
 });
 
-// ----- REPLICATION LOG MONITOR (复制日志监控) — round-42 -----
-//
-// The route mirrors /api/dashboard/site-replication-matrix/all but augments
-// every partner entry with attempts[] (latest 10 connection details from
-// ad_replication_history). Tests pin the envelope, the auth gate, the
-// history grouping + slicing, and the inbound-only partner filter.
 
-test("GET /api/dashboard/replication-log/all: 401 when no token", async () => {
+// ----- ROUND-45 PAIR HISTORY (复制过程历史) -----
+// New per-pair history lazy-fetch endpoint. The /all route no longer embeds
+// history rows inline; the matrix view expands each partner row on demand
+// and calls this endpoint. Tests pin the envelope, the auth gate, the
+// (source, dest) WHERE binding, and the dialect-aware LIMIT-first binding.
+
+test("GET /api/dashboard/site-replication-matrix/pair-history: 401 when no token", async () => {
   _setDbForTest(buildMockDb().standard());
   const app = buildApp();
-  const r = await supertest(app).get("/api/dashboard/replication-log/all");
+  const r = await supertest(app).get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A&dest=DC-B");
   assert.equal(r.status, 401);
 });
 
-test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to last 10 grouped by source/dest/naming_context", async () => {
-  // Mirror the matrix/all fixture: 2 sites, 1 cross-link, then add a
-  // history table with 12 attempts for that cross-link — only the 10 most
-  // recent (by collected_at DESC) should surface in attempts[].
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
+test("GET /api/dashboard/site-replication-matrix/pair-history: 400 when source missing", async () => {
+  _setDbForTest(buildMockDb().standard());
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/site-replication-matrix/pair-history?dest=DC-B")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /source and dest required/);
+});
 
-  // Build 12 history rows for DC-BJ-01 → DC-SH-01, DC=contoso,DC=com.
-  // collected_at decreases by 5 min each step; the route picks the 10
-  // most recent (newest first).
-  const historyRows = [];
-  for (let i = 0; i < 12; i++) {
-    const t = new Date(la.getTime() - i * 5 * 60 * 1000);
-    historyRows.push({
-      source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
-      status_code: i === 3 ? 2 : 0,                  // one failure deep in the past
-      last_success_time: i === 3 ? null : t,
-      last_attempt_time: t,
-      attempt_duration_ms: 100 + i * 5,
-      objects_transferred: i === 3 ? null : 200 + i * 10,
-      error_message: i === 3 ? "Target principal name incorrect" : null,
-      collected_at: t
-    });
-  }
+test("GET /api/dashboard/site-replication-matrix/pair-history: 400 when dest missing", async () => {
+  _setDbForTest(buildMockDb().standard());
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /source and dest required/);
+});
 
+test("GET /api/dashboard/site-replication-matrix/pair-history: 200 returns history rows mapped to attemptAt/statusCode/durationMs envelope", async () => {
+  // Mock returns 2 history rows for (DC-A, DC-B); expect 2 entries with the
+  // expected keys + ISO attemptAt + passthrough errorMessage.
   const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+    {
+      match: /FROM\s+ad_replication_history/i,
       rows: [
-        { site_id: 1, site_name: "核心站点", region_code: "BJ", is_hub: 1, description: null },
-        { site_id: 2, site_name: "上海站点", region_code: "SH", is_hub: 0, description: null }
+        { source_dc: 'DC-A', dest_dc: 'DC-B', naming_context: 'CN=Config', status_code: 0,
+          last_success_time: new Date('2026-08-28T01:00:00Z'),
+          last_attempt_time: new Date('2026-08-28T01:00:30Z'),
+          attempt_duration_ms: 1234, objects_transferred: 42,
+          error_message: null, collected_at: new Date('2026-08-28T01:00:30Z') },
+        { source_dc: 'DC-A', dest_dc: 'DC-B', naming_context: 'CN=Config', status_code: 2,
+          last_success_time: null,
+          last_attempt_time: new Date('2026-08-28T00:55:00Z'),
+          attempt_duration_ms: null, objects_transferred: null,
+          error_message: 'RPC server unavailable', collected_at: new Date('2026-08-28T00:55:00Z') }
       ]
-    },
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
-      rows: [
-        { dc_name: "DC-BJ-01", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-BJ-01" },
-        { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
-      ]
-    },
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
-      rows: [
-        // single cross-link BJ-01 → SH-01
-        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 }
-      ]
-    },
-    { match: /FROM\s+ad_replication_history/i,
-      rows: historyRows
-    },
-    { match: /site_matrix_refresh_seconds/i,
-      rows: [{ config_value: "12" }]
     }
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A&dest=DC-B&limit=10")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
-  assert.equal(r.body.refreshSeconds, 12);
-
-  // Hub first; 核心站点 has 1 DC (BJ-01, no inbound — but DOES have the
-  // outbound partner SH-01 with direction='out'), 上海 has 1 DC (SH-01,
-  // inbound from BJ-01 with direction='in').
-  assert.equal(r.body.sites.length, 2);
-  assert.equal(r.body.sites[0].siteName, "核心站点");
-  assert.equal(r.body.sites[0].primaryDc, "DC-BJ-01");
-  assert.equal(r.body.sites[0].dcs[0].partners.length, 1, "BJ-01 has 1 outbound partner (SH-01)");
-  assert.equal(r.body.sites[0].dcs[0].partners[0].peerDc, "DC-SH-01");
-  assert.equal(r.body.sites[0].dcs[0].partners[0].direction, "out");
-  assert.equal(r.body.sites[1].siteName, "上海站点");
-  assert.equal(r.body.sites[1].primaryDc, "DC-SH-01");
-  const sh01 = r.body.sites[1].dcs[0];
-  assert.equal(sh01.dcName, "DC-SH-01");
-  assert.equal(sh01.partners.length, 1);
-  const partner = sh01.partners[0];
-  assert.equal(partner.peerDc, "DC-BJ-01");
-  assert.equal(partner.peerSite, "核心站点");
-  assert.equal(partner.peerType, "bridgehead");
-  assert.equal(partner.statusCode, 0);
-  assert.equal(partner.direction, "in");
-
-  // attempts: only the 10 most recent by collected_at DESC survive the slice.
-  assert.equal(partner.attempts.length, 10, "12 history rows → slice to 10");
-  // The newest attempt is row i=0 (collected_at = la); verify the order.
-  assert.equal(partner.attempts[0].attemptAt, new Date(la).toISOString());
-  // The 3rd-deepest (i=3) had status_code=2 — must NOT be in the top 10
-  // (i=0..9 is the kept slice; i=3 is in the slice as index 3). Verify the
-  // failure entry shows up at index 3 with its error message.
-  assert.equal(partner.attempts[3].statusCode, 2);
-  assert.equal(partner.attempts[3].errorMessage, "Target principal name incorrect");
-  assert.equal(partner.attempts[3].durationMs, 115);
-  assert.equal(partner.attempts[3].objectsTransferred, null);
-
-  // durationMs + objectsTransferred populated for success rows.
-  assert.equal(partner.attempts[0].statusCode, 0);
-  assert.equal(partner.attempts[0].durationMs, 100);
-  assert.equal(partner.attempts[0].objectsTransferred, 200);
-
-  // lastSuccessTime on success rows equals collected_at (per mock fixture).
-  assert.equal(partner.attempts[0].lastSuccessTime, new Date(la).toISOString());
+  assert.equal(r.body.source, 'DC-A');
+  assert.equal(r.body.dest, 'DC-B');
+  assert.equal(r.body.limit, 10);
+  assert.equal(r.body.entries.length, 2);
+  const e0 = r.body.entries[0];
+  assert.ok(e0.attemptAt, 'attemptAt must be ISO string');
+  assert.equal(e0.statusCode, 0);
+  assert.equal(e0.durationMs, 1234);
+  assert.equal(e0.objectsTransferred, 42);
+  assert.equal(e0.errorMessage, null);
+  const e1 = r.body.entries[1];
+  assert.equal(e1.statusCode, 2);
+  assert.equal(e1.errorMessage, 'RPC server unavailable');
+  assert.equal(e1.lastSuccessTime, null);
 });
 
-test("GET /api/dashboard/replication-log/all: empty history returns partners with empty attempts[]", async () => {
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
-      rows: [{ site_id: 1, site_name: "S", region_code: "BJ", is_hub: 1, description: null }]
-    },
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
-      rows: [{ dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" }]
-    },
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i, rows: [] },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
+test("GET /api/dashboard/site-replication-matrix/pair-history: 500 on DB error", async () => {
+  // Use buildThrowingPool: every query throws, the route returns 500/{error:internal}.
+  _setDbForTest(buildThrowingPool('boom'));
   const app = buildApp();
   const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  assert.equal(r.body.sites.length, 1);
-  // 1 DC, no partners (no inbound links), no error.
-  assert.equal(r.body.sites[0].dcs[0].partners.length, 0);
-});
-
-test("GET /api/dashboard/replication-log/all: 500 on DB error", async () => {
-  _setDbForTest(buildThrowingPool("boom"));
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+    .get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A&dest=DC-B")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 500);
-  assert.equal(r.body.error, "internal");
+  assert.equal(r.body.error, 'internal');
 });
 
-test("GET /api/dashboard/replication-log/all: attempts grouped per naming_context (different NCs don't share attempts)", async () => {
-  // Two replication links between the same source/dest pair but with
-  // different naming_contexts. Each link must keep its own attempts[] —
-  // the route groups by (source, dest, naming_context), not (source, dest)
-  // alone. If grouping were by (source, dest) only, attempts from one NC
-  // would leak into the other.
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
+test("GET /api/dashboard/site-replication-matrix/pair-history: clamps limit to [1, 50] (default 10)", async () => {
+  // limit=999 → clamp to 50; missing → default 10.
   const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
-      rows: [{ site_id: 1, site_name: "S", region_code: "BJ", is_hub: 1, description: null },
-        { site_id: 2, site_name: "T", region_code: "SH", is_hub: 0, description: null }]
-    },
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
-      rows: [
-        { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
-        { dc_name: "DC-B1", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-B1" }
-      ]
-    },
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
-      rows: [
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com",            status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 },
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "CN=Configuration,DC=contoso,DC=com", status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 2 }
-      ]
-    },
-    { match: /FROM\s+ad_replication_history/i,
-      rows: [
-        // NC1: 2 attempts (DC=contoso,DC=com)
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: la, last_attempt_time: la, attempt_duration_ms: 100, objects_transferred: 50, error_message: null, collected_at: la },
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "DC=contoso,DC=com", status_code: 0, last_success_time: new Date(la.getTime() - 60000), last_attempt_time: new Date(la.getTime() - 60000), attempt_duration_ms: 120, objects_transferred: 40, error_message: null, collected_at: new Date(la.getTime() - 60000) },
-        // NC2: 1 attempt (CN=Configuration,...)
-        { source_dc: "DC-A1", dest_dc: "DC-B1", naming_context: "CN=Configuration,DC=contoso,DC=com", status_code: 0, last_success_time: la, last_attempt_time: la, attempt_duration_ms: 200, objects_transferred: 80, error_message: null, collected_at: la }
-      ]
-    },
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+    { match: /FROM\s+ad_replication_history/i, rows: [] }
   ]).standard();
   _setDbForTest(db);
   const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
+  const r1 = await supertest(app)
+    .get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A&dest=DC-B&limit=999")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  // Find the spoke site (T) — its DC DC-B1 is the inbound target of both
-  // links from DC-A1.
-  const spoke = r.body.sites.find(s => s.siteName === "T");
-  assert.equal(spoke.dcs[0].partners.length, 2, "two distinct NCs produce two partner rows");
-  // partners don't carry namingContext in the response (it's implicit per
-  // partner entry since dedup is by (source, dest, naming_context)).
-  // But the attempts[] count must match each NC's history row count.
-  // Sort by attempts.length to distinguish.
-  const sorted = spoke.dcs[0].partners.slice().sort((a, b) => a.attempts.length - b.attempts.length);
-  assert.equal(sorted[0].attempts.length, 1, "NC with 1 history row → 1 attempt");
-  assert.equal(sorted[1].attempts.length, 2, "NC with 2 history rows → 2 attempts");
+  assert.equal(r1.body.limit, 50);
+  const r2 = await supertest(app)
+    .get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A&dest=DC-B")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r2.body.limit, 10);
 });
-
-// 2026-08-28 round-43: route must emit BOTH directions for a link — dest
-// side sees the link as direction='in' (peer replicates TO this DC), source
-// side sees it as direction='out' (this DC replicates TO peer). Real AD is
-// hub-spoke, not full-mesh: spokes only replicate to/from hubs.
-test("GET /api/dashboard/replication-log/all: emits direction='in' for dest_dc, direction='out' for source_dc", async () => {
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
-      rows: [
-        { site_id: 1, site_name: "核心站点", region_code: "BJ", is_hub: 1, description: null },
-        { site_id: 2, site_name: "上海站点", region_code: "SH", is_hub: 0, description: null }
-      ]
-    },
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
-      rows: [
-        { dc_name: "DC-BJ-01", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-BJ-01" },
-        { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
-      ]
-    },
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
-      rows: [
-        // BJ-01 → SH-01 (cross-site hub-to-spoke)
-        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
-          status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
-      ]
-    },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  // Hub site (核心站点) sees BJ-01's outbound to SH-01 as direction='out'
-  const bj01 = r.body.sites.find(s => s.siteName === "核心站点").dcs[0];
-  assert.equal(bj01.dcName, "DC-BJ-01");
-  assert.equal(bj01.partners.length, 1);
-  assert.equal(bj01.partners[0].peerDc, "DC-SH-01");
-  assert.equal(bj01.partners[0].direction, "out", "BJ-01's outbound to SH-01 → direction='out'");
-  // Spoke site (上海站点) sees SH-01's inbound from BJ-01 as direction='in'
-  const sh01 = r.body.sites.find(s => s.siteName === "上海站点").dcs[0];
-  assert.equal(sh01.dcName, "DC-SH-01");
-  assert.equal(sh01.partners.length, 1);
-  assert.equal(sh01.partners[0].peerDc, "DC-BJ-01");
-  assert.equal(sh01.partners[0].direction, "in", "SH-01's inbound from BJ-01 → direction='in'");
-});
-
-test("GET /api/dashboard/replication-log/all: within-site link produces direction='in' on dest AND direction='out' on source (same link, both sides)", async () => {
-  // Within-site link NC1↔NC2: each DC's partner list shows the OTHER dc
-  // — NC1 sees NC2 with direction='out' (NC1 replicates TO NC2),
-  // NC2 sees NC1 with direction='in' (NC2 receives from NC1).
-  const ls = new Date("2026-08-27T10:00:00Z");
-  const la = new Date("2026-08-27T10:00:30Z");
-  const db = buildMockDb([
-    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
-      rows: [{ site_id: 1, site_name: "S", region_code: "BJ", is_hub: 1, description: null }]
-    },
-    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
-      rows: [
-        { dc_name: "DC-A1", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A1" },
-        { dc_name: "DC-A2", site_id: 1, os_version: "Win2022", is_pdc: 0, is_gc: 0, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-A2" }
-      ]
-    },
-    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
-      rows: [
-        // A1 → A2 within-site
-        { source_dc: "DC-A1", dest_dc: "DC-A2", naming_context: "DC=contoso,DC=com",
-          status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 1 }
-      ]
-    },
-    { match: /FROM\s+ad_replication_history/i, rows: [] },
-    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
-  ]).standard();
-  _setDbForTest(db);
-  const app = buildApp();
-  const r = await supertest(app)
-    .get("/api/dashboard/replication-log/all")
-    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
-  assert.equal(r.status, 200);
-  const site = r.body.sites[0];
-  const a1 = site.dcs.find(d => d.dcName === "DC-A1");
-  const a2 = site.dcs.find(d => d.dcName === "DC-A2");
-  assert.equal(a1.partners.length, 1);
-  assert.equal(a1.partners[0].peerDc, "DC-A2");
-  assert.equal(a1.partners[0].direction, "out", "A1 source side: direction='out'");
-  assert.equal(a2.partners.length, 1);
-  assert.equal(a2.partners[0].peerDc, "DC-A1");
-  assert.equal(a2.partners[0].direction, "in", "A2 dest side: direction='in'");
-});;

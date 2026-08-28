@@ -101,252 +101,13 @@ function Get-DcCounters {
 # center/data/packages/ad_lockout_list/1.0.0/collect.ps1 if you need to
 # trace it.
 
-# Default 5 ports to probe against every replication partner. The same set
-# appears in ad_local_port_check/collect.ps1 (Task 2). String keys
-# ("135" / "445" / ...) are used in the emitted JSON so the centre can
-# index by port without parsing dotted notation.
-$script:DefaultPartnerPortSet = @(135, 445, 50001, 50002, 50003)
-
-# 2026-08-26 round-16 replication-port probe config: fetch the operator-
-# defined port list from the centre on every run so changes in the admin UI
-# reach the agent without reinstalling. Falls back to the hardcoded default
-# set on any failure (no network, missing appsettings.json, bad token, JSON
-# parse error, non-array response, etc.) — the agent must NEVER abort a
-# replication cycle just because the port-config fetch hiccupped.
-function Get-PartnerPortConfig {
-  [CmdletBinding()]
-  param()
-
-  # Default first — overwritten on success.
-  $resolved = $script:DefaultPartnerPortSet
-
-  # Locate appsettings.json. The script lives at <install>/Agent/scripts/
-  # collect-replication.ps1; appsettings.json is at <install>/Agent/
-  # appsettings.json. $PSScriptRoot gives us a stable relative path; do not
-  # use $PWD (the agent child process inherits the NSSM service's working
-  # directory which is unrelated to the install root).
-  $cfgPath = Join-Path -Path $PSScriptRoot -ChildPath '..\appsettings.json'
-  $cfgPath = [System.IO.Path]::GetFullPath($cfgPath)
-  if (-not (Test-Path -LiteralPath $cfgPath)) {
-    return ,$resolved
-  }
-
-  # Read + parse JSON. PowerShell 5.1's ConvertFrom-Json handles PS1's own
-  # UTF-8-with-BOM (appsettings.json was historically saved that way by the
-  # agent installer — see round-8 BOM-strip story in agent/src/config.js
-  # for context).
-  $cfg = $null
-  try {
-    $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-  } catch {
-    return ,$resolved
-  }
-  if ($null -eq $cfg) { return ,$resolved }
-
-  $centerUrl = [string]$cfg.centerUrl
-  $token     = [string]$cfg.agentToken
-  if ([string]::IsNullOrEmpty($centerUrl) -or [string]::IsNullOrEmpty($token)) {
-    return ,$resolved
-  }
-
-  # The endpoint is auth-free on the server side (operator-defined read
-  # endpoint, see center/src/routes/agent.js GET /api/agent/partner-ports).
-  # We send X-Agent-Token anyway — server logs use it to attribute the
-  # request, and the server tolerates both presence and absence.
-  $url = ($centerUrl.TrimEnd('/')) + '/api/agent/partner-ports'
-  try {
-    # .NET WebClient is the lowest-common-denominator HTTP client available
-    # on PS 5.1 without Import-Module. Sync request with a 3 s timeout —
-    # the centre is on the LAN; longer than that means something is wrong
-    # and we'd rather probe the default ports than block the script.
-    Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
-    $client = New-Object System.Net.Http.HttpClient
-    $client.Timeout = [TimeSpan]::FromSeconds(3)
-    $req = New-Object System.Net.Http.HttpRequestMessage -ArgumentList 'GET', $url
-    $req.Headers.Add('X-Agent-Token', $token)
-    $resp = $client.SendAsync($req).GetAwaiter().GetResult()
-    if (-not $resp.IsSuccessStatusCode) {
-      return ,$resolved
-    }
-    $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    $parsed = $body | ConvertFrom-Json -ErrorAction Stop
-    if ($null -eq $parsed -or $null -eq $parsed.ports) { return ,$resolved }
-    # Defensive: filter to integers in [1, 65535] — refuse anything weird.
-    $clean = @()
-    foreach ($p in @($parsed.ports)) {
-      $n = 0
-      if ([int]::TryParse([string]$p, [ref]$n) -and $n -ge 1 -and $n -le 65535) {
-        $clean += $n
-      }
-    }
-    if ($clean.Count -gt 0) {
-      $resolved = @($clean | Sort-Object)
-    }
-    return ,$resolved
-  } catch {
-    return ,$resolved
-  }
-}
-
-# Build the naming_context value for a partner-port row.
-# Column is `ad_replication_status.naming_context VARCHAR(256)` (see
-# db/schema/01-tables.sql). FQDN partners up to 253 chars + the
-# 17-char `__partner_ports__:` prefix blow past 256, and IPv6 literals
-# like `[2001:db8::1]:389` push past any reasonable limit. Truncate the
-# host to 64 chars and append a 4-byte SHA-256 hex suffix derived from
-# the FULL host — preserves uniqueness across partners that share a
-# common 64-char prefix while keeping every emitted value well under
-# 86 chars (64 + 1 separator + 8 hex + 17 prefix).
-function Get-PartnerNamingContext {
-  param([string]$partnerHost)
-  if ([string]::IsNullOrEmpty($partnerHost)) { return $null }
-  $truncated = if ($partnerHost.Length -gt 64) {
-    $partnerHost.Substring(0, 64)
-  } else {
-    $partnerHost
-  }
-  $bytes = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
-    [System.Text.Encoding]::UTF8.GetBytes($partnerHost)
-  )
-  $hashStr = -join ($bytes[0..3] | ForEach-Object { $_.ToString('x2') })
-  return "__partner_ports__:${truncated}_${hashStr}"
-}
-
-function Get-PartnerPortSnapshot {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$ComputerName,
-
-    [Parameter(Mandatory = $true)]
-    [AllowNull()]
-    $Partners,
-
-    [Parameter()]
-    [int]$PerProbeTimeoutMs = 1500,
-
-    [Parameter()]
-    [int]$MaxPartners = 25,
-
-    [Parameter()]
-    [AllowNull()]
-    [string]$Site = $null,
-
-    [Parameter()]
-    [AllowNull()]
-    [string]$CollectedAt = $null,
-
-    [Parameter()]
-    [int[]]$Ports = $script:DefaultPartnerPortSet
-  )
-
-  $rows = @()
-  if ($null -eq $Partners) {
-    return ,$rows
-  }
-
-  # self-loop guard — Get-ADReplicationPartnerMetadata -Target $ComputerName
-  # already excludes self, but defend-in-depth (brief: "if Partner equals
-  # ComputerName, skip").
-  $capped = @($Partners | Select-Object -First $MaxPartners)
-  $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-
-  # Sequential probing. Worst-case latency per partner where every port
-  # times out: Ports.Count * PerProbeTimeoutMs = 5 * 1500 = 7500 ms.
-  # 25 partners worst-case = 187 s (collector's default timeoutMs = 60 s).
-  # Start-Job startup overhead (>300 ms per job) outweighs the savings in
-  # the typical reachable case (probe completes <100 ms), so we stay
-  # sequential and document this trade-off in the report — caller can pass
-  # a bumped timeoutMs into runCollector if their topology has many
-  # unreachable partners.
-  foreach ($p in $capped) {
-    $partnerHost = $null
-    try { $partnerHost = [string]$p.Partner } catch { $partnerHost = $null }
-    if ([string]::IsNullOrEmpty($partnerHost)) { continue }
-    if ($partnerHost -eq $ComputerName) { continue }
-
-    # Probe this partner's 5 ports sequentially. Each probe is wrapped in
-    # try/catch/finally with Close() in finally so one failure cannot
-    # strand a socket or abort the rest of the partner's probes.
-    $portResults = @()
-    foreach ($port in $Ports) {
-      $client = New-Object System.Net.Sockets.TcpClient
-      $reachable = $false
-      $latencyMs = $null
-      $errorMsg = $null
-      try {
-        $connectTask = $client.ConnectAsync($partnerHost, [int]$port)
-        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $completed = $connectTask.Wait($PerProbeTimeoutMs)
-        $stopwatch.Stop()
-        if ($completed -and $client.Connected) {
-          $reachable = $true
-          $latencyMs = [int]$stopwatch.ElapsedMilliseconds
-        } else {
-          $errorMsg = 'timeout'
-        }
-      } catch {
-        $errorMsg = $_.Exception.Message
-      } finally {
-        try { $client.Close() } catch {}
-      }
-      $portResults += [PSCustomObject]@{
-        port      = [int]$port
-        reachable = $reachable
-        latencyMs = $latencyMs
-        error     = $errorMsg
-      }
-    }
-
-    # Build the per-partner row matching the 16-column INSERT shape
-    # (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site,
-    # naming_context, last_success_time, last_attempt_time, status_code,
-    # error_message, users_count, groups_count, gpos_count, locked_count,
-    # partner_port_status) — see center/src/db/sql.js
-    # replication.upsertStatus. status_code: 0 = every port reachable,
-    # otherwise the count of unreachable ports (caller maps to severity
-    # tiers server-side).
-    $unreachableCount = 0
-    $portMap = [ordered]@{}
-    foreach ($r in $portResults) {
-      $portMap[[string]$r.port] = @{
-        reachable = $r.reachable
-        latencyMs = $r.latencyMs
-        error     = $r.error
-      }
-      if (-not $r.reachable) { $unreachableCount += 1 }
-    }
-    $statusCode = if ($unreachableCount -eq 0) { 0 } else { $unreachableCount }
-    $payload = [ordered]@{
-      checked_at = $nowIso
-      ports      = $portMap
-    } | ConvertTo-Json -Compress -Depth 4
-
-    $rows += [PSCustomObject]@{
-      CollectedAt       = $nowIso
-      AgentId           = $ComputerName
-      SourceDc          = $ComputerName
-      DestDc            = $partnerHost
-      SourceSite        = $Site
-      DestSite          = $null
-      # Sanitized: see Get-PartnerNamingContext for the truncate+hash
-      # rationale. Keeps every emitted value well under
-      # naming_context VARCHAR(256).
-      NamingContext     = Get-PartnerNamingContext -partnerHost $partnerHost
-      LastSuccessTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
-      LastAttemptTime   = $(if ($CollectedAt) { $CollectedAt } else { $nowIso })
-      StatusCode        = $statusCode
-      ErrorMessage      = $null
-      UsersCount        = $null
-      GroupsCount       = $null
-      GposCount         = $null
-      PartnerPortStatus = $payload
-    }
-  }
-
-  # Comma operator forces the array to survive even when $rows is empty.
-  return ,$rows
-}
+# 2026-08-28 round-45: partner-port probing removed end-to-end (R35 port
+# monitoring surface deleted). $script:DefaultPartnerPortSet,
+# Get-PartnerPortConfig, Get-PartnerNamingContext, and Get-PartnerPortSnapshot
+# are gone — real agents no longer probe partner ports or emit
+# `__partner_ports__:%` rows. The matrix view surfaces failure status
+# directly via the link's statusCode + errorMessage, and the inline caret
+# expansion drills into the last 10 ad_replication_history rows.
 
 # 2026-08-27 round-42 (复制日志监控): emit per-attempt history rows that
 # land in ad_replication_history (extended cols: last_attempt_time,
@@ -505,7 +266,6 @@ function BuildReplicationHistoryRows {
       GroupsCount        = $null
       GposCount          = $null
       LockedCount        = $null
-      PartnerPortStatus  = $null
       # RealNamingContext is forwarded alongside the synthetic NC so
       # center/src/services/replication.js::historyParams can rebind it
       # after stripping the __history__: prefix. agent/src/reporter.js
@@ -633,31 +393,11 @@ function Get-ReplicationSnapshot {
     }
   }
 
-  # Per-partner port probes — one row per replication partner, each with
-  # the same 16-column INSERT shape (R1 partner_port_status carries the
-  # per-port reachable/latency JSON; R2 naming context
-  # '__partner_ports__:<host>' keeps each partner's row UNIQUE). Function
-  # is fault-isolated: a probe failure on one partner cannot abort the
-  # others, and an empty partner list produces no rows (no error).
-  #
-  # 2026-08-26 round-16 replication-port probe config: fetch the operator-
-  # defined port list from the centre on every run. Get-PartnerPortConfig
-  # already swallows every failure mode (no appsettings.json / no token /
-  # network unreachable / bad JSON / non-2xx / out-of-range port) and falls
-  # back to $script:DefaultPartnerPortSet — so this call site stays simple:
-  # resolve the list once, hand it to Get-PartnerPortSnapshot via -Ports.
-  if ($null -ne $partners -and @($partners).Count -gt 0) {
-    $portsToProbe = Get-PartnerPortConfig
-    $portEntries = Get-PartnerPortSnapshot `
-      -ComputerName $ComputerName `
-      -Partners $partners `
-      -Site $snapshot.Site `
-      -CollectedAt $snapshot.CollectedAt `
-      -Ports $portsToProbe
-    if ($null -ne $portEntries -and @($portEntries).Count -gt 0) {
-      foreach ($pe in @($portEntries)) { $entries += $pe }
-    }
-  }
+  # 2026-08-28 round-45: per-partner port probes removed end-to-end (R35
+  # port monitoring surface deleted). No `__partner_ports__:%` rows are
+  # emitted by real agents — the matrix view surfaces failure status
+  # directly via the link's statusCode + errorMessage, and the inline
+  # caret expansion drills into the last 10 ad_replication_history rows.
 
   # DC summary card counters — emitted as a self-loop entry so the data
   # rides on the same replication ingest path. Naming context 'META' is
