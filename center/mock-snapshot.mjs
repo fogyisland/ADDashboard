@@ -25,6 +25,7 @@
 //   buildLinkEntries(agentId, links, ...)    -> per-link entries (PS1 shape)
 //   buildReplicationHistoryEntries({ agentId, peers, ... })
 //                                            -> per-attempt history entries (PS1 shape)
+//   buildMockHeartbeatPorts(agentId, ports)  -> [{port, ok, latencyMs}, ...] for heartbeat body
 //   buildSnapshot({ agentId, links, ... })   -> full snapshot (PS1 shape)
 //   postSnapshot({ centerUrl, agentToken, snapshot }) -> wraps reporter.postReport
 //   dcSummaryRowOf(snapshot)                 -> quick accessor for tests
@@ -262,6 +263,95 @@ const FAILURE_ERRORS = [
 ];
 function pickFailureError(hash) {
   return FAILURE_ERRORS[hash[0] % FAILURE_ERRORS.length];
+}
+
+// 2026-08-28 round-58.2 — emit per-port probe rows for the heartbeat
+// body (`ports[]` field), the way the real agent's collect-heartbeat.ps1
+// does. Lands in ad_agent_port_status via the centre's upsertPortStatuses
+// path (routes/agent.js:246-280). Mock previously sent `ports: []` so the
+// ad_agent_port_status table stayed empty for mock agents and the
+// operator's "复制伙伴端口健康监控" view's per-port latency column rendered
+// as `—`.
+//
+// Operator directive: "Mock 也补发 — 填充固定 latency". The real agent
+// probes each port via TcpClient + Stopwatch (collect-replication.ps1
+// ::Probe-Port); the mock uses FIXED per-port latencies instead of jitter
+// or random — deterministic so test snapshots stay stable across runs
+// and so the operator can spot regressions (a port that suddenly reports
+// `120ms` when it should be `5ms` is a smoking gun).
+//
+// Latency map (intentionally narrow, ~3-9ms, mirrors "healthy DC local
+// port response" — real AD probes typically see <10ms for loopback or
+// intra-DC TCP connect time). The map is keyed by port number; ports not
+// in the map get a default of 5ms. All entries are `ok: true` because
+// the mock is healthy — failure cases can be modeled via
+// FZ1_PARTNER_OVERRIDES in the partner-port path if needed (separate
+// concern from ad_agent_port_status).
+//
+// Argument shape: `ports` is the system_ports list returned by
+// /api/agent/ports — array of `{id, port, label, sortOrder}`. Caller
+// fetches once at startup and caches; this helper is pure so it can be
+// unit-tested without network.
+export const MOCK_PORT_LATENCY_MS = Object.freeze({
+  135: 3,    // RPC — fast local
+  88:  3,    // Kerberos
+  389: 4,    // LDAP
+  445: 5,    // SMB
+  636: 6,    // LDAPS (TLS handshake)
+  3268: 7,   // GC
+  50001: 8,  // NTDS replication
+  50002: 8,  // NETLOGON replication
+  50003: 8   // DFSR replication
+});
+const DEFAULT_MOCK_LATENCY_MS = 5;
+
+export function buildMockHeartbeatPorts(agentId, ports = []) {
+  if (!Array.isArray(ports)) {
+    throw new TypeError('buildMockHeartbeatPorts: ports must be an array');
+  }
+  return ports
+    .filter((p) => {
+      if (!p || typeof p !== 'object') return false;
+      const n = Number(p.port);
+      // Match services/ports.js::isValidPort: integer AND in [1, 65535].
+      // This rejects null (Number(null)=0 is integer but not a real port),
+      // undefined, NaN, strings, floats, and out-of-range values.
+      return Number.isInteger(n) && n >= 1 && n <= 65535;
+    })
+    .map((p) => {
+      const port = Number(p.port);
+      return {
+        port,
+        ok: true,
+        latencyMs: MOCK_PORT_LATENCY_MS[port] ?? DEFAULT_MOCK_LATENCY_MS
+      };
+    });
+}
+
+// 2026-08-28 round-58.2 — convenience for the daemon: fetch the centre's
+// configured port list once (X-Agent-Token auth, same as the real agent's
+// collect-heartbeat.ps1). Returns [] on any failure so callers can fall
+// back to an empty `ports[]` (pre-R58.2 behavior, no crash). Network
+// errors are logged via console.warn — the daemon's loop continues.
+export async function fetchConfiguredPorts({ centerUrl, agentToken, fetchImpl = globalThis.fetch, timeoutMs = 5000 } = {}) {
+  if (!centerUrl || !agentToken) return [];
+  const url = `${centerUrl.replace(/\/+$/, '')}/api/agent/ports`;
+  try {
+    const res = await fetchImpl(url, {
+      headers: { 'X-Agent-Token': agentToken },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) {
+      console.warn(`[mock-ports] GET ${url} → HTTP ${res.status}`);
+      return [];
+    }
+    const body = await res.json();
+    if (!Array.isArray(body)) return [];
+    return body;
+  } catch (e) {
+    console.warn(`[mock-ports] fetch failed: ${e.message}`);
+    return [];
+  }
 }
 
 // 2026-08-28 round-46: partner-port probe helpers restored (deleted in

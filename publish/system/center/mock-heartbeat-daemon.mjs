@@ -26,7 +26,13 @@
 // daemon runs until SIGINT/SIGTERM (Ctrl+C).
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildSnapshot, buildReplicationHistoryEntries, buildPartnerPortEntries } from './mock-snapshot.mjs';
+import {
+  buildSnapshot,
+  buildReplicationHistoryEntries,
+  buildPartnerPortEntries,
+  buildMockHeartbeatPorts,
+  fetchConfiguredPorts
+} from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
@@ -172,14 +178,21 @@ async function postJson(url, body, { timeoutMs = 5000 } = {}) {
 // centre's clearReportRequest UPDATE). Mock daemon now mirrors that
 // one-shot semantic; otherwise every heartbeat forever re-triggers
 // report-now because the centre keeps returning reportRequested: true.
-function buildHeartbeatBody(agentId, pendingReportClear) {
+//
+// 2026-08-28 round-58.2: the `ports` field now ships the configured
+// system_ports list with fixed per-port latency (mock-snapshot.mjs
+// ::buildMockHeartbeatPorts). Lands in ad_agent_port_status via the
+// centre's upsertPortStatuses path (routes/agent.js:246-280). Caller
+// passes the cached `mockPortsCache` (fetched once at daemon startup)
+// — passing through `[]` would silently regress to pre-R58.2 behavior.
+function buildHeartbeatBody(agentId, pendingReportClear, mockPortsCache = []) {
   const body = {
     source: 'collect-heartbeat-mock-daemon',
     agentId,
     agentVersion: '0.1.0-mock-daemon',
     agentType: 'ad',
     hostname: agentId,
-    ports: [],
+    ports: buildMockHeartbeatPorts(agentId, mockPortsCache),
     pendingQueueSize: 0,
     // Self-declared column is ignored by the round-15 source-of-truth switch;
     // ad_replication_status.MAX(collected_at) drives the dashboard.
@@ -315,7 +328,7 @@ export function buildDiscovery(agentId, opts = {}) {
 
 // ----- per-agent loop -----
 
-async function runAgent(spec, { stopFlag }) {
+async function runAgent(spec, { stopFlag, configuredPorts = [] }) {
   // 2026-08-28 round-43: destructure `links: [{destDc, statusCode, errorMessage?}]`
   // (replacing the round-36.1 `peers: [...] + failRate` shape). buildReplicationSnapshot
   // consumes the link shape directly so the centre's status code for each peer
@@ -333,6 +346,11 @@ async function runAgent(spec, { stopFlag }) {
   // re-triggers reportRequested: true.
   let pendingReportClear = false;
   let reportNowCount = 0;
+  // 2026-08-28 round-58.2: ports cache — fetched once in main() before
+  // runAgent spawns (so a slow /api/agent/ports call doesn't block every
+  // heartbeat at 5s cadence). buildHeartbeatBody threads this through
+  // to buildMockHeartbeatPorts which stamps per-port fixed latency.
+  const mockPortsCache = configuredPorts;
 
   // Initial discovery claim so the agent's row exists in ad_dcs.
   const disc = await postJson(`${REPORT_URL}${DISCOVER_PATH}`, {
@@ -360,7 +378,7 @@ async function runAgent(spec, { stopFlag }) {
   }
 
   while (!stopFlag.stopped) {
-    const hbBody = buildHeartbeatBody(agentId, pendingReportClear);
+    const hbBody = buildHeartbeatBody(agentId, pendingReportClear, mockPortsCache);
     // round-41: consume the latch — we just emitted the explicit-null
     // payload. Clear it BEFORE the request so a synchronous restart of
     // the loop never re-emits null. The flag is module-scoped per
@@ -467,8 +485,24 @@ async function main() {
   console.log(`mock-heartbeat-daemon starting: ${agents.length} agent(s), heartbeat=${HEARTBEAT_INTERVAL_MS}ms, replication-tick=${REPLICATION_TICK_MS}ms`);
   console.log(`  center=${CENTER_URL}  report=${REPORT_URL}`);
 
+  // 2026-08-28 round-58.2: fetch the centre's configured port list ONCE
+  // at startup so every heartbeat body can include ports[] without
+  // hitting the network on a 5s cadence. Best-effort — a failure here
+  // doesn't abort the daemon; buildHeartbeatBody falls back to ports:[]
+  // (pre-R58.2 behavior, no crash). The fetched cache is shared across
+  // all agents because ports are a per-DC-shape concern, not per-agent.
+  const configuredPorts = await fetchConfiguredPorts({
+    centerUrl: CENTER_URL,
+    agentToken: AGENT_TOKEN
+  });
+  if (configuredPorts.length > 0) {
+    console.log(`  ports cache: ${configuredPorts.length} configured port(s) → ad_agent_port_status`);
+  } else {
+    console.warn(`  ports cache: empty (GET /api/agent/ports failed; falling back to ports:[])`);
+  }
+
   const tasks = agents.map((spec) =>
-    runAgent(spec, { stopFlag }).catch((e) => {
+    runAgent(spec, { stopFlag, configuredPorts }).catch((e) => {
       console.error(`[${spec.agentId}] crashed:`, e?.message || e);
     })
   );

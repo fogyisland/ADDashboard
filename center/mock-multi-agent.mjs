@@ -30,7 +30,7 @@
 // Each agent's timing is configurable through the JSON config so the
 // operator can re-stage the scenario without touching code.
 
-import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot, buildPartnerPortEntries } from './mock-snapshot.mjs';
+import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot, buildPartnerPortEntries, buildMockHeartbeatPorts, fetchConfiguredPorts } from './mock-snapshot.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -76,13 +76,20 @@ function floorSec(d) {
 // ----- HTTP helpers -----
 
 async function postHeartbeat({ agentId, source = 'collect-heartbeat-mock' }) {
+  // 2026-08-28 round-58.2: ports[] populated from the cached system_ports
+  // list (fetched once at startup via fetchConfiguredPorts). Falls back
+  // to ports:[] if the cache is empty (e.g. /api/agent/ports returned 401
+  // or 500 during startup). Fixed per-port latency via
+  // buildMockHeartbeatPorts — matches operator directive "Mock 也补发 —
+  // 填充固定 latency".
+  const configuredPorts = await getConfiguredPorts();
   const body = {
     source,
     agentId,
     agentVersion: '0.1.0-mock-multi',
     agentType: 'ad',
     hostname: agentId,
-    ports: [],
+    ports: buildMockHeartbeatPorts(agentId, configuredPorts),
     pendingQueueSize: 0,
     // Mirrors what the real agent's postHeartbeat() emits. lastReportAt
     // is null because we never use the self-declared heartbeat column
@@ -111,7 +118,19 @@ async function postHeartbeat({ agentId, source = 'collect-heartbeat-mock' }) {
 // is alive and reporting. The real agent's collect-discovery.ps1 makes
 // this call; the mock mirrors that flow so the dashboard renders the
 // DC the same way it does for a real DC.
-//
+
+// 2026-08-28 round-58.2: ports cache — same pattern as mock-heartbeat-daemon.
+// Fetched once in main() before the scenario loop, threaded into every
+// postHeartbeat call. Best-effort — failure falls back to ports:[].
+let _configuredPortsCache = null;
+async function getConfiguredPorts() {
+  if (_configuredPortsCache !== null) return _configuredPortsCache;
+  _configuredPortsCache = await fetchConfiguredPorts({
+    centerUrl: CENTER_URL,
+    agentToken: AGENT_TOKEN
+  });
+  return _configuredPortsCache;
+}
 // IMPORTANT: /api/agent/discover lives on the REPORT port (8082), not
 // the heartbeat port (8081). server.js mounts the agentRouter three
 // times — once per role — with `mount: 'report'` enabling /discover,

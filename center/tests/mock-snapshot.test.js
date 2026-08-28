@@ -15,7 +15,10 @@ import {
   buildLinkEntries,
   buildReplicationHistoryEntries,
   buildSnapshot,
-  dcSummaryRowOf
+  dcSummaryRowOf,
+  buildMockHeartbeatPorts,
+  MOCK_PORT_LATENCY_MS,
+  fetchConfiguredPorts
 } from '../mock-snapshot.mjs';
 
 // ----- buildDcCounters -----
@@ -421,4 +424,133 @@ test('buildSnapshot: defaults historyEntries to empty when omitted', () => {
   });
   // 1 link + 1 summary = 2 entries; no history, no partner-port.
   assert.equal(snap.Entries.length, 2);
+});
+
+// ----- R58.2: buildMockHeartbeatPorts -----
+//
+// Operator directive: "Mock 也补发 — 填充固定 latency". The helper stamps
+// fixed per-port latency from a static map; tests pin the contract so a
+// future refactor (e.g. switching to jitter) is caught here before the
+// dashboard renders nonsense latencies.
+
+test('buildMockHeartbeatPorts: emits one row per valid port with fixed latency', () => {
+  const ports = [
+    { port: 135,  label: 'RPC' },
+    { port: 445,  label: 'SMB' },
+    { port: 50001, label: 'NTDS Replication' },
+    { port: 389,  label: 'LDAP' }
+  ];
+  const out = buildMockHeartbeatPorts('MOCK-NC1', ports);
+  assert.equal(out.length, 4);
+  for (const row of out) {
+    assert.equal(row.ok, true, `port ${row.port} should be reachable`);
+    assert.ok(Number.isInteger(row.latencyMs), `latencyMs must be integer, got ${row.latencyMs}`);
+    assert.ok(row.latencyMs >= 1 && row.latencyMs <= 100, `latencyMs out of plausible range: ${row.latencyMs}`);
+  }
+  // Spot-check fixed latencies from MOCK_PORT_LATENCY_MS.
+  const byPort = Object.fromEntries(out.map((r) => [r.port, r.latencyMs]));
+  assert.equal(byPort[135], 3);
+  assert.equal(byPort[445], 5);
+  assert.equal(byPort[50001], 8);
+});
+
+test('buildMockHeartbeatPorts: deterministic across calls (same agentId, same input)', () => {
+  // The fixed-latency map is static so two calls with the same input
+  // must produce identical output. This pins determinism so future
+  // changes (jitter, randomization) trip a test failure here.
+  const ports = [{ port: 445 }, { port: 389 }];
+  const a = buildMockHeartbeatPorts('MOCK-NC1', ports);
+  const b = buildMockHeartbeatPorts('MOCK-NC1', ports);
+  assert.deepEqual(a, b);
+});
+
+test('buildMockHeartbeatPorts: default latency (5ms) for ports outside the map', () => {
+  // 9999 isn't in MOCK_PORT_LATENCY_MS — helper falls back to 5ms default.
+  const out = buildMockHeartbeatPorts('MOCK-NC1', [{ port: 9999 }]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].port, 9999);
+  assert.equal(out[0].latencyMs, 5);
+  assert.equal(out[0].ok, true);
+});
+
+test('buildMockHeartbeatPorts: filters out entries without integer port', () => {
+  // Defends against an upstream caller (services/ports.js) that might
+  // ever return rows with a malformed port column — the centre's
+  // upsertPortStatuses would reject them anyway, but failing here keeps
+  // the mock heartbeat body clean.
+  const ports = [
+    { port: 135 },            // ok
+    { port: 'not-a-number' }, // filtered
+    { port: null },           // filtered
+    {},                       // filtered (no port)
+    { port: 445 }             // ok
+  ];
+  const out = buildMockHeartbeatPorts('MOCK-NC1', ports);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((r) => r.port).sort(), [135, 445]);
+});
+
+test('buildMockHeartbeatPorts: empty ports array → empty ports[]', () => {
+  // Defends against pre-R58.2 caller code paths that may still pass [].
+  assert.deepEqual(buildMockHeartbeatPorts('MOCK-NC1', []), []);
+  assert.deepEqual(buildMockHeartbeatPorts('MOCK-NC1', undefined), []);
+});
+
+test('buildMockHeartbeatPorts: rejects non-array ports argument', () => {
+  // TypeError is the only documented signal — caller should NOT swallow it.
+  assert.throws(() => buildMockHeartbeatPorts('MOCK-NC1', 'not-an-array'), TypeError);
+  assert.throws(() => buildMockHeartbeatPorts('MOCK-NC1', null), TypeError);
+});
+
+test('MOCK_PORT_LATENCY_MS: every port maps to a positive integer ≤ 100ms', () => {
+  // Sanity bound on the static map — if someone adds an unrealistic entry
+  // (e.g. latencyMs: 99999), this test catches it before it pollutes the
+  // dashboard's per-port latency column.
+  for (const [port, ms] of Object.entries(MOCK_PORT_LATENCY_MS)) {
+    assert.ok(Number.isInteger(Number(port)), `${port} must be integer port number`);
+    assert.ok(Number.isInteger(ms) && ms > 0 && ms <= 100, `port ${port} latencyMs out of range: ${ms}`);
+  }
+});
+
+// ----- R58.2: fetchConfiguredPorts -----
+
+test('fetchConfiguredPorts: returns parsed array on 200 JSON', async () => {
+  const fakeFetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ([{ port: 135, label: 'RPC' }, { port: 445, label: 'SMB' }])
+  });
+  const out = await fetchConfiguredPorts({
+    centerUrl: 'http://center.local:8081',
+    agentToken: 'tok',
+    fetchImpl: fakeFetch,
+    timeoutMs: 1000
+  });
+  assert.equal(out.length, 2);
+  assert.equal(out[0].port, 135);
+});
+
+test('fetchConfiguredPorts: returns [] on non-2xx response', async () => {
+  const fakeFetch = async () => ({ ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) });
+  const out = await fetchConfiguredPorts({ centerUrl: 'http://center.local:8081', agentToken: 'bad', fetchImpl: fakeFetch });
+  assert.deepEqual(out, []);
+});
+
+test('fetchConfiguredPorts: returns [] on network error (no throw)', async () => {
+  const fakeFetch = async () => { throw new Error('ECONNREFUSED'); };
+  const out = await fetchConfiguredPorts({ centerUrl: 'http://center.local:8081', agentToken: 'tok', fetchImpl: fakeFetch });
+  assert.deepEqual(out, []);
+});
+
+test('fetchConfiguredPorts: returns [] when response body is not an array', async () => {
+  const fakeFetch = async () => ({ ok: true, status: 200, json: async () => ({ ports: [] }) });
+  const out = await fetchConfiguredPorts({ centerUrl: 'http://center.local:8081', agentToken: 'tok', fetchImpl: fakeFetch });
+  assert.deepEqual(out, []);
+});
+
+test('fetchConfiguredPorts: returns [] when centerUrl or agentToken missing', async () => {
+  // Guard against callers that pass undefined — helper short-circuits
+  // instead of hitting the network with no token (would 401 every call).
+  assert.deepEqual(await fetchConfiguredPorts({ centerUrl: null, agentToken: 'tok' }), []);
+  assert.deepEqual(await fetchConfiguredPorts({ centerUrl: 'http://x', agentToken: null }), []);
 });
