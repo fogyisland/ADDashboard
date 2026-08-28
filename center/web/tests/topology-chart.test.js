@@ -2,11 +2,20 @@ import { test, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 
 // vi.mock factory is hoisted to top of file; reference hoisted vars to avoid TDZ errors.
-const { setOptionMock, disposeMock, initMock } = vi.hoisted(() => {
+// R63: chart.on('finished', ...) + chart.convertToPixel(...) need mockable methods.
+const { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock } = vi.hoisted(() => {
   const setOptionMock = vi.fn();
   const disposeMock = vi.fn();
-  const initMock = vi.fn(() => ({ setOption: setOptionMock, dispose: disposeMock }));
-  return { setOptionMock, disposeMock, initMock };
+  const onMock = vi.fn();
+  const convertToPixelMock = vi.fn();
+  const initMock = vi.fn(() => ({
+    setOption: setOptionMock,
+    dispose: disposeMock,
+    on: onMock,
+    convertToPixel: convertToPixelMock,
+    resize: vi.fn()
+  }));
+  return { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock };
 });
 
 vi.mock('echarts', () => ({
@@ -16,11 +25,31 @@ vi.mock('echarts', () => ({
 
 import TopologyChart from '../src/components/TopologyChart.vue';
 
+// R63 helpers: capture the 'finished' handler and feed deterministic pixel coords.
+function getFinishedHandler() {
+  const call = onMock.mock.calls.find(c => c[0] === 'finished');
+  return call ? call[1] : null;
+}
+function setupPixelCoords(map) {
+  convertToPixelMock.mockImplementation((find, dc) => {
+    if (dc && dc.name && map[dc.name]) return map[dc.name];
+    return [100, 100];
+  });
+}
+
 beforeEach(() => {
   setOptionMock.mockReset();
   disposeMock.mockReset();
   initMock.mockReset();
-  initMock.mockImplementation(() => ({ setOption: setOptionMock, dispose: disposeMock }));
+  onMock.mockReset();
+  convertToPixelMock.mockReset();
+  initMock.mockImplementation(() => ({
+    setOption: setOptionMock,
+    dispose: disposeMock,
+    on: onMock,
+    convertToPixel: convertToPixelMock,
+    resize: vi.fn()
+  }));
 });
 
 // 2026-08-29 round-62 (operator directive "复制拓扑去掉两个图表 集合成
@@ -279,4 +308,255 @@ test('R62: prop change re-renders the chart', async () => {
   await w.setProps({ data: data2 });
   await flushPromises();
   expect(setOptionMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// 2026-08-29 round-63 (operator "服务器和站点的关系可以这样绘制"):
+// draw site bounding boxes around each site's DCs using ECharts graphic
+// component. After 'finished' fires, each site gets a rounded rect with
+// site-palette stroke + a bold site-name header text.
+// ────────────────────────────────────────────────────────────────────────
+
+// R63: registers chart.on('finished') so the box renderer hooks into
+// the post-layout tick.
+test('R63: registers chart.on(finished) handler for box rendering', async () => {
+  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  const events = onMock.mock.calls.map(c => c[0]);
+  expect(events).toContain('finished');
+});
+
+// R63: one site with 2 DCs produces ONE bounding box (group of rect + text).
+test('R63: one site with 2 DCs produces one bounding box', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [300, 250] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const handler = getFinishedHandler();
+  expect(handler).toBeDefined();
+  handler();
+  await flushPromises();
+
+  const withGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length > 0);
+  expect(withGraphic).toBeDefined();
+  expect(withGraphic.graphic).toHaveLength(1);
+  const group = withGraphic.graphic[0];
+  expect(group.type).toBe('group');
+  expect(group.silent).toBe(true);
+  expect(group.z).toBe(-1);
+  expect(group.children).toHaveLength(2);
+  expect(group.children[0].type).toBe('rect');
+  expect(group.children[1].type).toBe('text');
+  expect(group.children[1].style.text).toBe('A');
+});
+
+// R63: rect shape is rounded (r > 0), dashed border, and encloses both DCs.
+test('R63: bounding box is rounded with dashed border enclosing the DCs', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [300, 250] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+
+  const withGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length > 0);
+  const rect = withGraphic.graphic[0].children[0];
+  expect(rect.shape.r).toBeGreaterThan(0);
+  expect(rect.style.lineDash).toEqual([6, 6]);
+  expect(rect.style.lineWidth).toBeGreaterThan(0);
+  // Box width/height positive (encloses both DCs)
+  expect(rect.shape.width).toBeGreaterThan(0);
+  expect(rect.shape.height).toBeGreaterThan(0);
+});
+
+// R63: two sites → two bounding boxes (one per site, with distinct headers).
+test('R63: two sites produce two bounding boxes', async () => {
+  const data = {
+    nodes: [
+      { name: '核心站点', type: 'site' },
+      { name: '厦门站点', type: 'site' },
+      { name: 'DC1', type: 'dc', site: '核心站点' },
+      { name: 'DC2', type: 'dc', site: '厦门站点' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [500, 250] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+
+  const withGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length === 2);
+  expect(withGraphic).toBeDefined();
+  const siteNames = withGraphic.graphic.map(g => g.children[1].style.text);
+  expect(siteNames).toContain('核心站点');
+  expect(siteNames).toContain('厦门站点');
+});
+
+// R63: empty data → setOption({ graphic: [] }) to clear any prior boxes.
+test('R63: empty data clears the graphic (no boxes drawn)', async () => {
+  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+  const withGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .find(opt => opt.graphic !== undefined);
+  expect(withGraphic).toBeDefined();
+  expect(withGraphic.graphic).toEqual([]);
+});
+
+// R63: box stroke color matches the SITE_PALETTE entry for that site
+// (核心站点 = siteOrder[0] = SITE_PALETTE[0] = '#38bdf8').
+test('R63: box color matches site palette entry', async () => {
+  const data = {
+    nodes: [
+      { name: '核心站点', type: 'site' },
+      { name: 'DC1', type: 'dc', site: '核心站点' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+  const withGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length > 0);
+  const rect = withGraphic.graphic[0].children[0];
+  const text = withGraphic.graphic[0].children[1];
+  expect(rect.style.stroke).toBe('#38bdf8');
+  expect(rect.style.fill).toMatch(/rgba\(56,\s*189,\s*248,\s*0\.08\)/);
+  expect(text.style.fill).toBe('#38bdf8');
+});
+
+// R63: second site uses its own palette color (different from first).
+test('R63: distinct sites use distinct palette colors', async () => {
+  const data = {
+    nodes: [
+      { name: '核心站点', type: 'site' },
+      { name: '厦门站点', type: 'site' },
+      { name: 'DC1', type: 'dc', site: '核心站点' },
+      { name: 'DC2', type: 'dc', site: '厦门站点' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [500, 250] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+  const withGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length === 2);
+  const strokes = withGraphic.graphic.map(g => g.children[0].style.stroke);
+  expect(strokes).toContain('#38bdf8'); // 核心站点
+  expect(strokes).toContain('#a78bfa'); // 厦门站点 = SITE_PALETTE[1]
+});
+
+// R63: convertToPixel is called once per DC (not per site, not per all nodes).
+test('R63: convertToPixel is called once per DC', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'A' },
+      { name: 'DC3', type: 'dc', site: 'B' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [300, 250], 'DC3': [500, 200] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  convertToPixelMock.mockClear();
+  getFinishedHandler()();
+  await flushPromises();
+  expect(convertToPixelMock).toHaveBeenCalledTimes(3);
+});
+
+// R63: when data prop changes, the boxes are re-rendered with the new
+// site count (not stale from the previous mount).
+test('R63: prop change re-renders boxes with the new site count', async () => {
+  const data1 = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  const data2 = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [500, 250] });
+  const w = mount(TopologyChart, { props: { data: data1 } });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+  await w.setProps({ data: data2 });
+  await flushPromises();
+  getFinishedHandler()();
+  await flushPromises();
+
+  const callsWithGraphic = setOptionMock.mock.calls
+    .map(c => c[0])
+    .filter(opt => opt.graphic && Array.isArray(opt.graphic));
+  expect(callsWithGraphic.length).toBeGreaterThanOrEqual(2);
+  // First box render: 1 site
+  expect(callsWithGraphic[0].graphic).toHaveLength(1);
+  // Latest box render: 2 sites
+  expect(callsWithGraphic[callsWithGraphic.length - 1].graphic).toHaveLength(2);
+});
+
+// R63: 'finished' firing twice without data change does NOT re-render boxes
+// (feedback loop guard via lastBoxDataKey).
+test('R63: re-firing finished without data change does not redraw boxes', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  setupPixelCoords({ 'DC1': [200, 200] });
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const handler = getFinishedHandler();
+  handler();
+  await flushPromises();
+  const countAfter1 = setOptionMock.mock.calls
+    .filter(c => c[0].graphic !== undefined).length;
+  // Fire again — same data, should be a no-op
+  handler();
+  await flushPromises();
+  const countAfter2 = setOptionMock.mock.calls
+    .filter(c => c[0].graphic !== undefined).length;
+  expect(countAfter2).toBe(countAfter1);
 });

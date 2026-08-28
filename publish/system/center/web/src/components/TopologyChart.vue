@@ -6,11 +6,20 @@
   the arrow at each edge's target end — no need to split into two
   panels to disambiguate source vs target.
 
+  2026-08-29 round-63 (operator "服务器和站点的关系可以这样绘制"):
+  draw site bounding boxes around each site's DCs using ECharts
+  `graphic` component. After force layout settles (chart.on('finished')),
+  compute pixel bbox per site via convertToPixel() and render a rounded
+  rect (dashed border, site palette color, transparent fill) plus a
+  bold site-name header. This makes the "site → DC" containment
+  hierarchy visually explicit without needing a second chart.
+
   History:
     - R43 — add direction (was mutual connections → fixed to hub-spoke)
     - R59 — split into 出战 + 入站 two ECharts panels with lens-aware labels
     - R61 — change panels from vertical to horizontal + 3-color edges
     - R62 — collapse back to ONE chart; arrow direction is enough
+    - R63 — wrap each site's DCs in a colored site bounding box
 
   Layout choices (single canvas):
     - Sites get per-site category index → ECharts force layout clusters
@@ -36,7 +45,7 @@
       <header class="structure-header">
         <span class="structure-tag">复制拓扑</span>
         <h3>所有站点的复制链路</h3>
-        <span class="structure-sub">源 DC → 目标 DC — 箭头指向复制方向</span>
+        <span class="structure-sub">站点框 → DC 节点 → 复制链路（虚线框 = 站点，箭头 = 复制方向）</span>
       </header>
       <div ref="chartEl" class="chart" data-test="topology-chart"></div>
     </section>
@@ -53,6 +62,13 @@ const props = defineProps({
 
 const chartEl = ref(null);
 let chart = null;
+// R63: keep references to nodes passed to setOption so convertToPixel()
+// can resolve each DC back to its pixel position from ECharts'
+// internal data store.
+let lastBuiltDataNodes = [];
+// R63: guard against the 'finished' → setOption(graphic) → 'finished'
+// feedback loop. Only re-render boxes when the underlying data changed.
+let lastBoxDataKey = '';
 
 // ── Site order + DC → site lookup (shared across renders) ──────────────
 const siteOrder = computed(() => {
@@ -91,6 +107,13 @@ const SITE_PALETTE = [
   '#f472b6', '#facc15', '#60a5fa', '#fb7185'
 ];
 
+// R63: hex → rgba helper for site-box transparent fills.
+function hexToRgba(hex, alpha) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return `rgba(0,0,0,${alpha})`;
+  return `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${alpha})`;
+}
+
 function buildOption() {
   const siteIndex = new Map(siteOrder.value.map((s, i) => [s, i]));
   const dcSites = dcSiteLookup();
@@ -99,6 +122,9 @@ function buildOption() {
     const isSite = n.type === 'site';
     return {
       name: n.name,
+      // R63: remember site membership so renderSiteBoxes can group DCs
+      // into per-site bounding boxes after force layout settles.
+      _siteName: isSite ? n.name : (n.site || null),
       category: isSite ? (siteIndex.get(n.name) ?? 0) : (siteIndex.get(n.site) ?? 0),
       symbolSize: isSite ? 38 : 16,
       mass: isSite ? 8 : 1,
@@ -112,6 +138,11 @@ function buildOption() {
       }
     };
   });
+
+  // R63: keep references to the node objects passed to setOption so
+  // renderSiteBoxes can pass them to convertToPixel() to read pixel
+  // positions back from ECharts' internal layout.
+  lastBuiltDataNodes = nodes;
 
   const links = (props.data.links || []).map(l => {
     const sourceSite = dcSites.get(l.source);
@@ -217,10 +248,110 @@ function render() {
   chart.setOption(buildOption());
 }
 
+// R63: site bounding boxes. After the force layout settles (signaled by
+// ECharts' 'finished' event), compute each site's DC bbox in pixel
+// coordinates via convertToPixel(), then draw a rounded rect with the
+// site's palette color (dashed border + transparent fill) plus a bold
+// site-name header. The result is a visual container that makes the
+// site → DC membership hierarchy obvious without needing a second chart.
+//
+// Implementation notes:
+//   - Group DCs by `_siteName` (set in buildOption).
+//   - Use convertToPixel({ seriesIndex: 0 }, dcItem) — ECharts finds
+//     the data item by reference in its internal data store.
+//   - `silent: true` so boxes don't intercept hover/click on DC nodes.
+//   - `lastBoxDataKey` guard prevents feedback: setOption({graphic})
+//     itself triggers 'finished', which would re-enter renderSiteBoxes.
+//     We short-circuit if the data hasn't changed since last render.
+function renderSiteBoxes() {
+  if (!chart) return;
+  const key = JSON.stringify(props.data.nodes || []);
+  if (key === lastBoxDataKey) return;
+  lastBoxDataKey = key;
+
+  const dcNodes = lastBuiltDataNodes.filter(n => n.symbol === 'circle');
+  if (dcNodes.length === 0) {
+    chart.setOption({ graphic: [] });
+    return;
+  }
+
+  const bySite = new Map();
+  for (const dc of dcNodes) {
+    if (!dc._siteName) continue;
+    if (!bySite.has(dc._siteName)) bySite.set(dc._siteName, []);
+    bySite.get(dc._siteName).push(dc);
+  }
+  if (bySite.size === 0) {
+    chart.setOption({ graphic: [] });
+    return;
+  }
+
+  const siteIdxMap = new Map(siteOrder.value.map((s, i) => [s, i]));
+  const padding = 28;
+  const headerHeight = 22;
+  const elements = [];
+
+  bySite.forEach((dcs, siteName) => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let validCoords = false;
+    for (const dc of dcs) {
+      let px;
+      try { px = chart.convertToPixel({ seriesIndex: 0 }, dc); }
+      catch { continue; }
+      if (!px || !Array.isArray(px) || px.length < 2) continue;
+      if (!isFinite(px[0]) || !isFinite(px[1])) continue;
+      minX = Math.min(minX, px[0]);
+      maxX = Math.max(maxX, px[0]);
+      minY = Math.min(minY, px[1]);
+      maxY = Math.max(maxY, px[1]);
+      validCoords = true;
+    }
+    if (!validCoords) return;
+
+    const color = SITE_PALETTE[siteIdxMap.get(siteName) ?? 0] ?? '#38bdf8';
+    const boxX = minX - padding;
+    const boxY = minY - padding - headerHeight;
+    const boxW = (maxX - minX) + padding * 2;
+    const boxH = (maxY - minY) + padding * 2 + headerHeight;
+
+    elements.push({
+      type: 'group',
+      z: -1,
+      silent: true,
+      children: [
+        {
+          type: 'rect',
+          shape: { x: boxX, y: boxY, width: boxW, height: boxH, r: 8 },
+          style: {
+            fill: hexToRgba(color, 0.08),
+            stroke: color,
+            lineWidth: 1.5,
+            lineDash: [6, 6]
+          }
+        },
+        {
+          type: 'text',
+          style: {
+            text: siteName,
+            fill: color,
+            font: 'bold 12px sans-serif',
+            x: boxX + 8,
+            y: boxY + 4
+          }
+        }
+      ]
+    });
+  });
+
+  chart.setOption({ graphic: elements });
+}
+
 onMounted(async () => {
   await nextTick();
   if (chartEl.value) {
     chart = echarts.init(chartEl.value);
+    // R63: site bounding boxes re-render after force layout settles.
+    chart.on('finished', renderSiteBoxes);
     render();
   }
 });
