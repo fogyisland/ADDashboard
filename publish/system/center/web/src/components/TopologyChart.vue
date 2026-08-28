@@ -1,29 +1,44 @@
+<!--
+  复制拓扑 — 单图表视图
+  2026-08-29 round-62 (operator directive "复制拓扑去掉两个图表 集合成一个图标"):
+  collapse the dual-panel layout (R59 outbound + inbound, R61 horizontal
+  side-by-side) into a SINGLE ECharts graph. Direction is preserved by
+  the arrow at each edge's target end — no need to split into two
+  panels to disambiguate source vs target.
+
+  History:
+    - R43 — add direction (was mutual connections → fixed to hub-spoke)
+    - R59 — split into 出战 + 入站 two ECharts panels with lens-aware labels
+    - R61 — change panels from vertical to horizontal + 3-color edges
+    - R62 — collapse back to ONE chart; arrow direction is enough
+
+  Layout choices (single canvas):
+    - Sites get per-site category index → ECharts force layout clusters
+      each site's DCs around its site node. Sites are heavy anchors
+      (mass: 8); DCs are light (mass: 1) and settle around their parent.
+    - Edge `symbol: ['none', 'arrow']` puts an arrow at target — direction
+      is unambiguous.
+    - Edge color = green (statusCode 0) / yellow (statusCode 1) / red
+      (statusCode 2+). Matches R60 复制状态概览 + R61 vocabulary.
+    - Edge label = "SourceSite→DestSite" for cross-site links,
+      "↔ 内" for intra-site links.
+-->
 <template>
-  <!-- 2026-08-29 round-61: 3-color legend (green/yellow/red) so the
-       operator can map edge color → health state at a glance. Lives
-       above the side-by-side panels so it's visible regardless of
-       which lens the operator is reading. -->
+  <!-- 3-color legend (green/yellow/red) so the operator can map edge
+       color → health state at a glance. -->
   <div class="color-legend" data-test="color-legend">
     <span class="color-legend-item"><span class="color-swatch swatch-ok"></span>正常 (statusCode 0)</span>
     <span class="color-legend-item"><span class="color-swatch swatch-warn"></span>部分失败 (statusCode 1)</span>
     <span class="color-legend-item"><span class="color-swatch swatch-err"></span>断开/失败 (statusCode 2+)</span>
   </div>
-  <div class="topology-split">
-    <section class="structure outbound" data-test="outbound-structure">
+  <div class="topology-single">
+    <section class="structure" data-test="topology-structure">
       <header class="structure-header">
-        <span class="structure-tag tag-out">出战</span>
-        <h3>出战复制结构</h3>
-        <span class="structure-sub">源 DC → 目标 DC — 谁主动推送复制伙伴</span>
+        <span class="structure-tag">复制拓扑</span>
+        <h3>所有站点的复制链路</h3>
+        <span class="structure-sub">源 DC → 目标 DC — 箭头指向复制方向</span>
       </header>
-      <div ref="outboundEl" class="chart" data-test="outbound-chart"></div>
-    </section>
-    <section class="structure inbound" data-test="inbound-structure">
-      <header class="structure-header">
-        <span class="structure-tag tag-in">入站</span>
-        <h3>入站复制结构</h3>
-        <span class="structure-sub">源 DC → 目标 DC — 谁被动接收复制伙伴</span>
-      </header>
-      <div ref="inboundEl" class="chart" data-test="inbound-chart"></div>
+      <div ref="chartEl" class="chart" data-test="topology-chart"></div>
     </section>
   </div>
 </template>
@@ -36,44 +51,10 @@ const props = defineProps({
   data: { type: Object, default: () => ({ nodes: [], links: [] }) }
 });
 
-const outboundEl = ref(null);
-const inboundEl = ref(null);
-let outboundChart = null;
-let inboundChart = null;
+const chartEl = ref(null);
+let chart = null;
 
-// 2026-08-29 round-59 (operator directive): 复制拓扑展示时,站点作为域控
-// 的父级 (sites-as-parents of DCs),入站和出战链路分成两个独立的结构
-// 展示 (inbound + outbound links as TWO separate visual structures).
-//
-// 2026-08-29 round-61 (operator directive "复制拓扑 改成左右结构 左边是
-// 出站 右边是入站...也是绿色 黄色 红色 展现连接效果"): change the
-// panel layout from vertical stack to horizontal side-by-side (left =
-// 出战 outbound, right = 入站 inbound) and add YELLOW for partial-
-// failure edges (statusCode === 1), so the topology now matches the
-// R60 matrix's 3-color health vocabulary: green (OK), yellow (warn),
-// red (err).
-//
-// Why two structures (not one merged canvas with arrow direction):
-//   - Operator reads "出战" naturally as "from this DC's POV, who do I
-//     push to?" and "入站" as "into this DC, who pushes to me?". A
-//     single canvas with arrows makes the operator mentally invert
-//     every edge; two canvases let them pick the lens they need.
-//   - Each lens reuses the same site-as-parent layout so the topology
-//     geometry is identical across the two — the operator can verify
-//     symmetry by glancing between the two panels (e.g. a hub that
-//     appears as a source in 出战 should appear as a target in 入站 for
-//     the same edge).
-//
-// Layout choices (shared by both canvases):
-//   - Sites get per-site category index → ECharts force layout clusters
-//     each site's DCs around its site node. Sites are heavy anchors
-//     (mass: 8); DCs are light (mass: 1) and settle around their parent.
-//   - Edge `symbol: ['none', 'arrow']` puts an arrow at target — direction
-//     is unambiguous regardless of which panel you're reading.
-//   - Edge color = green (statusCode 0) / yellow (statusCode 1) / red
-//     (statusCode 2+). Matches R60 复制状态概览 vocabulary.
-//   - Edge label = "SourceSite→DestSite" in 出战, "DestSite←SourceSite"
-//     in 入站 — same edge, different reading lens.
+// ── Site order + DC → site lookup (shared across renders) ──────────────
 const siteOrder = computed(() => {
   const seen = new Set();
   const out = [];
@@ -110,11 +91,7 @@ const SITE_PALETTE = [
   '#f472b6', '#facc15', '#60a5fa', '#fb7185'
 ];
 
-// Build the shared node list + the per-panel edge set. The two panels
-// show the same edges (every edge is both an outbound-from-source and an
-// inbound-to-target) but with different label direction so the operator
-// can pick the lens they need.
-function buildOption({ lens }) {
+function buildOption() {
   const siteIndex = new Map(siteOrder.value.map((s, i) => [s, i]));
   const dcSites = dcSiteLookup();
 
@@ -140,24 +117,17 @@ function buildOption({ lens }) {
     const sourceSite = dcSites.get(l.source);
     const destSite = dcSites.get(l.target);
     const isIntra = sourceSite && destSite && sourceSite === destSite;
-    let labelText = '';
+    // Single unified label: cross-site uses source→dest convention
+    // (matches the arrow direction). Intra-site keeps the ↔ marker.
+    let labelText;
     if (isIntra) {
-      // Intra-site link: same site, just show the ↔ marker.
       labelText = '↔ 内';
-    } else if (lens === 'outbound') {
-      // 出战 lens: emphasize the source DC pushing out.
+    } else {
       const ss = shortSite(sourceSite);
       const ds = shortSite(destSite);
       labelText = `${ss}→${ds}`;
-    } else {
-      // 入站 lens: emphasize the target DC receiving.
-      const ss = shortSite(sourceSite);
-      const ds = shortSite(destSite);
-      labelText = `${ds}←${ss}`;
     }
-    // 2026-08-29 round-61: 3-color health vocabulary to match R60
-    // 复制状态概览 — green (statusCode 0), yellow (1 = partial),
-    // red (2+ = failure). Used by both lineStyle + edgeLabel text.
+    // 3-color health vocabulary (matches R60 matrix + R61 topology).
     const edgeColor =
       l.statusCode === 0 ? '#22c55e' :
       l.statusCode === 1 ? '#eab308' :
@@ -202,17 +172,15 @@ function buildOption({ lens }) {
           const sourceSite = dcSites.get(l.source);
           const destSite = dcSites.get(l.target);
           const isIntra = sourceSite && destSite && sourceSite === destSite;
-          const dirWord = lens === 'outbound' ? '出战→' : '→入站';
           const dir = isIntra
             ? 'intra-site (内)'
-            : `${sourceSite || '?'} ${dirWord} ${destSite || '?'}`;
-          // 2026-08-29 round-61: 3-state status word matches the 3 colors.
+            : `${sourceSite || '?'} → ${destSite || '?'}`;
           const c = l.lineStyle && l.lineStyle.color;
           const status =
             c === '#22c55e' ? '✓ 复制成功' :
             c === '#eab308' ? '! 部分失败' :
             '✕ 失败/断开';
-          return `<b>${l.source} → ${l.target}</b><br/>视角: ${lens === 'outbound' ? '出战复制结构' : '入站复制结构'}<br/>方向: ${dir}<br/>状态: ${status}`;
+          return `<b>${l.source} → ${l.target}</b><br/>方向: ${dir}<br/>状态: ${status}`;
         }
         if (p.dataType === 'node') {
           const site = dcSites.get(p.name);
@@ -244,53 +212,27 @@ function buildOption({ lens }) {
   };
 }
 
-function renderOutbound() {
-  if (!outboundChart || !outboundEl.value) return;
-  outboundChart.setOption(buildOption({ lens: 'outbound' }));
-}
-
-function renderInbound() {
-  if (!inboundChart || !inboundEl.value) return;
-  inboundChart.setOption(buildOption({ lens: 'inbound' }));
+function render() {
+  if (!chart || !chartEl.value) return;
+  chart.setOption(buildOption());
 }
 
 onMounted(async () => {
   await nextTick();
-  if (outboundEl.value) {
-    outboundChart = echarts.init(outboundEl.value);
-    renderOutbound();
-  }
-  if (inboundEl.value) {
-    inboundChart = echarts.init(inboundEl.value);
-    renderInbound();
+  if (chartEl.value) {
+    chart = echarts.init(chartEl.value);
+    render();
   }
 });
 
-watch(() => props.data, () => {
-  renderOutbound();
-  renderInbound();
-}, { deep: true });
+watch(() => props.data, () => { render(); }, { deep: true });
 
-onUnmounted(() => {
-  outboundChart?.dispose();
-  inboundChart?.dispose();
-});
+onUnmounted(() => { chart?.dispose(); });
 </script>
 
 <style scoped>
-/* 2026-08-29 round-61: operator directive "复制拓扑 改成左右结构 左边是
-   出站 右边是入站". The two panels sit side-by-side, not stacked.
-   On narrow viewports (<900px) they collapse back to vertical stack
-   so the canvas stays usable. */
-.topology-split {
-  display: flex;
-  flex-direction: row;
-  gap: 14px;
-  align-items: stretch;
-}
+.topology-single { display: block; }
 .structure {
-  flex: 1 1 50%;
-  min-width: 0;
   background: #0f172a;
   border: 1px solid #1e293b;
   border-radius: 8px;
@@ -315,16 +257,9 @@ onUnmounted(() => {
   letter-spacing: 0.04em;
   padding: 2px 8px;
   border-radius: 999px;
-}
-.tag-out {
-  color: #fde68a;
-  background: rgba(251, 191, 36, 0.16);
-  border: 1px solid rgba(251, 191, 36, 0.4);
-}
-.tag-in {
-  color: #a5f3fc;
-  background: rgba(34, 211, 238, 0.14);
-  border: 1px solid rgba(34, 211, 238, 0.4);
+  color: #e2e8f0;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.4);
 }
 .structure-sub {
   color: #94a3b8;
@@ -332,11 +267,9 @@ onUnmounted(() => {
 }
 .chart {
   width: 100%;
-  height: 460px;
+  height: 560px;
   border-radius: 6px;
 }
-/* Compact legend (3 colors) shown at the top of the page header so
-   the operator can map edge color → health state at a glance. */
 .color-legend {
   display: inline-flex;
   align-items: center;
@@ -353,9 +286,4 @@ onUnmounted(() => {
 .swatch-ok   { background: #22c55e; }
 .swatch-warn { background: #eab308; }
 .swatch-err  { background: #ef4444; }
-
-@media (max-width: 900px) {
-  .topology-split { flex-direction: column; }
-  .structure { flex: 1 1 100%; }
-}
 </style>
