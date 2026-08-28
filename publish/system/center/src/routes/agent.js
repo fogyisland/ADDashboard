@@ -325,7 +325,16 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       try {
         const db = getDb();
         const cfg = await getConfig();
-        const historyEnabled = String(cfg.history_enabled ?? 'false').toLowerCase() === 'true';
+        // Accept both '1' and 'true' (case-insensitive) — matches the
+        // convention in init/marker.js:118 (ADDASHBOARD_* env vars) and
+        // avoids the silent-drop class where a UI / CLI sets the flag to
+        // '1' and the route never fires insertHistoryEntries. The route
+        // used to be strict-string; R58.1 widened it after a live-verify
+        // catch where ad_replication_history stayed empty.
+        const historyEnabled = (() => {
+          const v = String(cfg.history_enabled ?? 'false').toLowerCase();
+          return v === 'true' || v === '1' || v === 'yes';
+        })();
         // 2026-08-27 round-42 (复制日志监控): split data[] into
         // status-rows (default) + history-rows (naming_context starts with
         // '__history__:'). Status rows go through upsertStatus (so they

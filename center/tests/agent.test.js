@@ -551,6 +551,130 @@ test('POST /api/agent/report missing payload -> 400', async () => {
   assert.equal(records.length, 0);
 });
 
+// 2026-08-28 R58.1: history_enabled='1' (the value an UPDATE from mysql shell
+// typically writes) must enable insertHistoryEntries — not just the strict
+// string 'true'. The previous check was strict-string and silently dropped
+// every __history__:% row whenever the flag was set via anything other than
+// a literal 'true' write. Each script kind runs through its own matcher so
+// the test can assert both branches fired.
+test('POST /api/agent/report: history_enabled="1" fires insertHistoryEntries', async () => {
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      // route reads history_enabled from the first system_config SELECT
+      { match: /SELECT\s+config_key,\s*config_value\s+FROM\s+system_config/i,
+        rows: [{ config_key: 'history_enabled', config_value: '1' }] },
+      // getAgentConfig() reads the full bundle (second system_config SELECT)
+      { match: /FROM\s+system_config/i,
+        rows: [
+          { config_key: 'polling_interval_minutes', config_value: '15' },
+          { config_key: 'latency_threshold_minutes', config_value: '180' },
+          { config_key: 'heartbeat_interval_seconds', config_value: '5' },
+          { config_key: 'agent_token', config_value: 'tok' }
+        ] }
+    ]
+  });
+  const res = await supertest(app)
+    .post('/api/agent/report')
+    .set('X-Agent-Token', 'tok')
+    .send({
+      source: 'collect-replication',
+      agentId: 'agent-1',
+      collectedAt: '2026-07-11T00:00:00Z',
+      data: [
+        // status row -> ad_replication_status (no __history__: prefix)
+        { sourceDc: 'DC-A', destDc: 'DC-B', namingContext: 'CN=A->B', statusCode: 0, lastSuccessTime: '2026-07-11T00:00:00Z' },
+        // history rows -> ad_replication_history (synthetic __history__: prefix)
+        { sourceDc: 'DC-A', destDc: 'DC-B', namingContext: '__history__:deadbeef', statusCode: 0, lastSuccessTime: '2026-07-11T00:00:00Z', lastAttemptTime: '2026-07-11T00:00:00Z', attemptDurationMs: 123, objectsTransferred: 42, _realNamingContext: 'CN=A->B' },
+        { sourceDc: 'DC-A', destDc: 'DC-C', namingContext: '__history__:cafebabe', statusCode: 2, lastSuccessTime: null, lastAttemptTime: '2026-07-11T00:00:00Z', errorMessage: 'boom', _realNamingContext: 'CN=A->C' }
+      ]
+    });
+  assert.equal(res.status, 200);
+  // Status row landed in ad_replication_status (mock INSERT via db.execute).
+  const statusInserts = records.filter(r => /INSERT\s+INTO\s+ad_replication_status/i.test(r.sql));
+  assert.equal(statusInserts.length, 1, 'one status row must upsert');
+  // History rows landed in ad_replication_history via TWO paths now that
+  // historyEnabled=true: (a) upsertStatus writes appendHistory=true history
+  // row for the status row's NC, (b) insertHistoryEntries fires for the 2
+  // explicit __history__:% rows. The bug R58.1 fixed was that NEITHER path
+  // fired when history_enabled='1'.
+  const historyInserts = records.filter(r => /INSERT\s+INTO\s+ad_replication_history/i.test(r.sql));
+  assert.equal(historyInserts.length, 3, '1 (appendHistory from status) + 2 (__history__:% rows) must all insert');
+  // historyParams strips the __history__: prefix and binds _realNamingContext
+  // instead — the stored row matches the link's NC (what the dashboard joins on).
+  const firstHist = historyInserts[0];
+  assert.equal(firstHist.params[4], 'CN=A->B', 'naming_context stripped to _realNamingContext');
+});
+
+// 2026-08-28 R58.1: history_enabled='false' (or '0') must NOT fire
+// insertHistoryEntries — pin the negative side of the truthiness fix.
+test('POST /api/agent/report: history_enabled="0" skips insertHistoryEntries', async () => {
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      { match: /SELECT\s+config_key,\s*config_value\s+FROM\s+system_config/i,
+        rows: [{ config_key: 'history_enabled', config_value: '0' }] },
+      { match: /FROM\s+system_config/i,
+        rows: [
+          { config_key: 'polling_interval_minutes', config_value: '15' },
+          { config_key: 'latency_threshold_minutes', config_value: '180' },
+          { config_key: 'heartbeat_interval_seconds', config_value: '5' },
+          { config_key: 'agent_token', config_value: 'tok' }
+        ] }
+    ]
+  });
+  await supertest(app)
+    .post('/api/agent/report')
+    .set('X-Agent-Token', 'tok')
+    .send({
+      source: 'collect-replication',
+      agentId: 'agent-1',
+      collectedAt: '2026-07-11T00:00:00Z',
+      data: [
+        { sourceDc: 'DC-A', destDc: 'DC-B', namingContext: '__history__:deadbeef', statusCode: 0, _realNamingContext: 'CN=A->B' }
+      ]
+    });
+  const historyInserts = records.filter(r => /INSERT\s+INTO\s+ad_replication_history/i.test(r.sql));
+  assert.equal(historyInserts.length, 0, 'history_enabled="0" must skip the history ingest');
+});
+
+// 2026-08-28 R58.1: history_enabled='yes' is also accepted (CLI flag pattern).
+test('POST /api/agent/report: history_enabled="yes" fires insertHistoryEntries', async () => {
+  const records = [];
+  const app = buildApp({
+    agentTokenValue: 'tok',
+    records,
+    extraScripts: [
+      { match: /SELECT\s+config_key,\s*config_value\s+FROM\s+system_config/i,
+        rows: [{ config_key: 'history_enabled', config_value: 'yes' }] },
+      { match: /FROM\s+system_config/i,
+        rows: [
+          { config_key: 'polling_interval_minutes', config_value: '15' },
+          { config_key: 'latency_threshold_minutes', config_value: '180' },
+          { config_key: 'heartbeat_interval_seconds', config_value: '5' },
+          { config_key: 'agent_token', config_value: 'tok' }
+        ] }
+    ]
+  });
+  await supertest(app)
+    .post('/api/agent/report')
+    .set('X-Agent-Token', 'tok')
+    .send({
+      source: 'collect-replication',
+      agentId: 'agent-1',
+      collectedAt: '2026-07-11T00:00:00Z',
+      data: [
+        { sourceDc: 'DC-A', destDc: 'DC-B', namingContext: '__history__:deadbeef', statusCode: 0, _realNamingContext: 'CN=A->B' }
+      ]
+    });
+  const historyInserts = records.filter(r => /INSERT\s+INTO\s+ad_replication_history/i.test(r.sql));
+  assert.equal(historyInserts.length, 1, 'history_enabled="yes" must insert history rows');
+});
+
 test('GET /api/agent/config -> 200 returns polling/latency/heartbeat/token', async () => {
   const app = buildApp({
     agentTokenValue: 'tok',
