@@ -298,3 +298,82 @@ test('postReport puts the 4 counters on the wire (previously dropped)', async ()
       'partnerPortStatus on __dc_summary__ row is null (no probe)');
   });
 });
+
+// 2026-08-28 round-58.4 (CRITICAL): mock-snapshot.mjs emits the
+// _RealNamingContext field as PascalCase-with-underscore (matching the rest
+// of its PascalCase keys like SourceDc/NamingContext). The centre's
+// historyParams reads `row._realNamingContext ?? null` and binds it as the
+// stored naming_context for `__history__:%` rows. If toCamelEntry fails to
+// forward the field, historyParams gets null, SQL fails
+// (ER_BAD_NULL_ERROR), and every replication report with `__history__:%`
+// rows 500s. This test pins the forwarder to accept all three shapes —
+// mock (_RealNamingContext), real-agent (RealNamingContext), and the
+// already-camelCase _realNamingContext — so a future refactor can't drop
+// one of them.
+test('toCamelEntry forwards _RealNamingContext for __history__:% rows (round-58.4 regression)', () => {
+  const real = 'CN=DC1->DC2';
+
+  // mock-snapshot.mjs shape (PascalCase + underscore prefix)
+  const fromMock = toCamelEntry({
+    SourceDc: 'DC1', DestDc: 'DC2', NamingContext: '__history__:abc123',
+    _RealNamingContext: real
+  });
+  assert.equal(fromMock._realNamingContext, real,
+    'toCamelEntry must forward _RealNamingContext from mock-snapshot.mjs');
+
+  // collect-replication.ps1 shape (PascalCase, no underscore prefix)
+  const fromReal = toCamelEntry({
+    SourceDc: 'DC1', DestDc: 'DC2', NamingContext: '__history__:abc123',
+    RealNamingContext: real
+  });
+  assert.equal(fromReal._realNamingContext, real,
+    'toCamelEntry must forward RealNamingContext from collect-replication.ps1');
+
+  // already-camelCase shape (defensive — both fallbacks must yield the same field)
+  const fromCamel = toCamelEntry({
+    sourceDc: 'DC1', destDc: 'DC2', namingContext: '__history__:abc123',
+    _realNamingContext: real
+  });
+  assert.equal(fromCamel._realNamingContext, real,
+    'toCamelEntry must forward _realNamingContext when pre-camelCased');
+
+  // missing field → null (matches the centre's null-binding behavior)
+  const missing = toCamelEntry({
+    SourceDc: 'DC1', DestDc: 'DC2', NamingContext: '__history__:abc123'
+  });
+  assert.equal(missing._realNamingContext, null,
+    'toCamelEntry must default _realNamingContext to null when not present');
+});
+
+// 2026-08-28 round-58.4 (CRITICAL): postReport end-to-end — verify the
+// _RealNamingContext actually reaches the centre over the wire (not just
+// the in-memory toCamelEntry). This is the integration counterpart of the
+// unit test above; if a future refactor splits the JSON wire shape from
+// the in-memory shape, this test catches it.
+test('postReport forwards _RealNamingContext end-to-end (round-58.4 regression)', async () => {
+  let received = null;
+  await withServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => { received = JSON.parse(body); res.end('{}'); });
+  }, async (url) => {
+    await postReport({
+      centerUrl: url, agentToken: 't',
+      snapshot: {
+        AgentId: 'MOCK-FAKE',
+        CollectedAt: '2026-08-28T00:00:00.000Z',
+        Entries: [{
+          SourceDc: 'MOCK-FAKE', DestDc: 'MOCK-PEER',
+          NamingContext: '__history__:abcdef',
+          StatusCode: 0, LastSuccessTime: '2026-08-28T00:00:00.000Z',
+          LastAttemptTime: '2026-08-28T00:00:00.000Z',
+          _RealNamingContext: 'CN=MOCK-FAKE->MOCK-PEER'
+        }]
+      }
+    });
+  });
+  const row = received.data[0];
+  assert.equal(row.namingContext, '__history__:abcdef');
+  assert.equal(row._realNamingContext, 'CN=MOCK-FAKE->MOCK-PEER',
+    '_RealNamingContext must reach the centre over the wire so historyParams can strip the prefix');
+});
