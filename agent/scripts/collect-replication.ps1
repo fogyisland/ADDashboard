@@ -297,19 +297,46 @@ function Get-PartnerPortConfig {
   [CmdletBinding()]
   param(
     [Parameter(Mandatory = $true)]
-    [string]$AgentId
+    [string]$AgentId,
+    # 2026-08-28 round-57 (R57-E): default path lookup is the script's
+    # sibling fetch-partner-ports.ps1. Override lets unit tests inject a
+    # fake fetch script via New-Item in a temp dir without polluting the
+    # production tree.
+    [Parameter()]
+    [string]$ConfigScriptPath
   )
+
+  if ([string]::IsNullOrEmpty($ConfigScriptPath)) {
+    $ConfigScriptPath = Join-Path -Path $PSScriptRoot -ChildPath 'fetch-partner-ports.ps1'
+  }
 
   $cfg = $null
   try {
-    $cfgScript = Join-Path -Path $PSScriptRoot -ChildPath 'fetch-partner-ports.ps1'
-    if (Test-Path -LiteralPath $cfgScript) {
-      $cfg = & $cfgScript -AgentId $AgentId
+    if (Test-Path -LiteralPath $ConfigScriptPath) {
+      $cfg = & $ConfigScriptPath -AgentId $AgentId
     }
   } catch {
     Write-Warning "Get-PartnerPortConfig: fetch-partner-ports.ps1 failed: $($_.Exception.Message)"
   }
-  if ($null -eq $cfg -or $cfg.Count -eq 0) {
+  # 2026-08-28 round-57 (R57-F): the fetch script may return a hashtable
+  # with a $null .ports key (e.g., when appsettings.json was readable but
+  # the HTTP call failed). Treat that as "no ports" so we fall through
+  # to the default set, instead of returning a hashtable that the probe
+  # loop can't iterate.
+  #
+  # We use try/catch on $cfg.ports rather than $cfg.PSObject.Properties
+  # because for [hashtable], Properties[] doesn't expose user keys
+  # (Properties only contains Keys/Values/Count/etc.) — the bracket
+  # accessor returns $null for hashtable user keys, which then throws
+  # when we try to read .Value on the next line. Direct key access works
+  # for both hashtable and PSCustomObject shapes.
+  $hasPorts = $false
+  if ($null -ne $cfg) {
+    try {
+      if ($null -ne $cfg.ports) { $hasPorts = $true }
+    } catch { $hasPorts = $false }
+  }
+  if (-not $hasPorts -or @($cfg.ports).Count -eq 0) {
     return @{ ports = $script:DefaultPartnerPortSet }
   }
   return $cfg
@@ -335,6 +362,44 @@ function Get-PartnerNamingContext {
   return '__partner_ports__:{0}' -f $hex
 }
 
+function Test-TcpPort {
+  # 2026-08-28 round-57 (R57-E): split the BeginConnect / EndConnect /
+  # WaitOne dance out of Get-PartnerPortSnapshot so each port probe can
+  # be unit-tested in isolation. Returns { ok, latency } where latency
+  # is a small pseudo-random int 2..14 on success and $null on failure.
+  # Caller is responsible for closing $tcp on success (the helper opens
+  # one and returns it via $Script:TcpClient so a higher-level loop can
+  # short-circuit on the first attempt; in practice we close inline since
+  # the handshake is fire-and-forget — no payload exchange).
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$HostName,
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
+    [Parameter()]
+    [int]$TimeoutMs = 800
+  )
+
+  $tcp = $null
+  try {
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    $iar = $tcp.BeginConnect($HostName, $Port, $null, $null)
+    $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+    if ($ok) {
+      try { $tcp.EndConnect($iar) } catch { $ok = $false }
+    }
+    return [PSCustomObject]@{
+      ok      = [bool]$ok
+      latency = if ($ok) { [int](Get-Random -Minimum 2 -Maximum 15) } else { $null }
+    }
+  } catch {
+    return [PSCustomObject]@{ ok = $false; latency = $null }
+  } finally {
+    if ($tcp) { try { $tcp.Close() } catch {} }
+  }
+}
+
 function Get-PartnerPortSnapshot {
   [CmdletBinding()]
   param(
@@ -343,41 +408,46 @@ function Get-PartnerPortSnapshot {
     [Parameter(Mandatory = $true)]
     [string]$PeerHost,
     [Parameter(Mandatory = $false)]
-    [string]$PeerLabel = $PeerHost
+    [string]$PeerLabel = $PeerHost,
+    # 2026-08-28 round-57 (R57-E): explicit port list override (bypasses
+    # the centre fetch + default fallback). Unit tests pass a small
+    # known list to exercise the probe loop deterministically without
+    # depending on a TcpListener accepting every default port.
+    [Parameter()]
+    [AllowNull()]
+    [int[]]$Ports
   )
 
-  $cfg = Get-PartnerPortConfig -AgentId $AgentId
-  $ports = if ($cfg.ports) { @($cfg.ports) } else { @($cfg) }
-  if ($ports.Count -eq 0) { $ports = $script:DefaultPartnerPortSet }
+  if ($null -eq $Ports -or @($Ports).Count -eq 0) {
+    $cfg = Get-PartnerPortConfig -AgentId $AgentId
+    # Same hashtable property-access caveat as Get-PartnerPortConfig:
+    # $cfg.PSObject.Properties['ports'] returns $null for [hashtable]
+    # shapes, so use a guarded direct .ports access instead.
+    $portsFromCfg = $null
+    if ($null -ne $cfg) {
+      try {
+        if ($null -ne $cfg.ports) { $portsFromCfg = @($cfg.ports) }
+      } catch { $portsFromCfg = $null }
+    }
+    if ($null -eq $portsFromCfg -or $portsFromCfg.Count -eq 0) {
+      $ports = $script:DefaultPartnerPortSet
+    } else {
+      $ports = $portsFromCfg
+    }
+  } else {
+    $ports = @($Ports)
+  }
 
   $probes = New-Object System.Collections.Generic.List[object]
   $unreachableCount = 0
   foreach ($port in $ports) {
-    $tcp = $null
-    try {
-      $tcp = New-Object System.Net.Sockets.TcpClient
-      $iar = $tcp.BeginConnect($PeerHost, [int]$port, $null, $null)
-      $ok = $iar.AsyncWaitHandle.WaitOne(800, $false)
-      if ($ok) {
-        try { $tcp.EndConnect($iar) } catch { $ok = $false }
-      }
-      if (-not $ok) { $unreachableCount += 1 }
-      $probe = [PSCustomObject]@{
-        port    = [int]$port
-        ok      = [bool]$ok
-        latency = if ($ok) { [int](Get-Random -Minimum 2 -Maximum 15) } else { $null }
-      }
-      $probes.Add($probe) | Out-Null
-    } catch {
-      $unreachableCount += 1
-      $probes.Add([PSCustomObject]@{
-        port    = [int]$port
-        ok      = $false
-        latency = $null
-      }) | Out-Null
-    } finally {
-      if ($tcp) { try { $tcp.Close() } catch {} }
-    }
+    $r = Test-TcpPort -HostName $PeerHost -Port ([int]$port)
+    if (-not $r.ok) { $unreachableCount += 1 }
+    $probes.Add([PSCustomObject]@{
+      port    = [int]$port
+      ok      = [bool]$r.ok
+      latency = $r.latency
+    }) | Out-Null
   }
 
   $status = if ($unreachableCount -eq 0) { 0 } elseif ($unreachableCount -lt $ports.Count) { 1 } else { 2 }

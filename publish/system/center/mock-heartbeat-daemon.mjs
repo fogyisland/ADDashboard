@@ -98,24 +98,32 @@ function defaultScenario() {
   const ok   = (destDc)               => ({ destDc, statusCode: 0 });
   const fail = (destDc, errorMessage) => ({ destDc, statusCode: 2, errorMessage });
   return [
+    // 2026-08-28 R57-B: every DC carries isGc:true (universal GC). The
+    // forest-level FSMO holders (RID / Infrastructure / Schema / Domain
+    // Naming Master) all sit on HUB1 by operator convention — the
+    // canonical "FSMO holder DC" for the mock forest. NC1 is the PDC
+    // Emulator (site-local for snappy client time-sync).
+    //
     // NC site — 2 DCs (NC1 is PDC).
     // NC1 → intra-site sibling + HUB1 (reverse of HUB1's outbound to NC1).
-    { agentId: NC1, isPdc: true,  links: [ok(NC2), ok(HUB1)], ip: '10.99.0.10', siteHint: 'MOCK-NC' },
-    // NC2 → only PDC (sibling intra-site).
-    { agentId: NC2, isPdc: false, links: [ok(NC1)], ip: '10.99.0.14', siteHint: 'MOCK-NC' },
+    { agentId: NC1, isPdc: true, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(NC2), ok(HUB1)], ip: '10.99.0.10', siteHint: 'MOCK-NC' },
+    // NC2 → only PDC (sibling intra-site). GC only.
+    { agentId: NC2, isPdc: false, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(NC1)], ip: '10.99.0.14', siteHint: 'MOCK-NC' },
     // FZ site — 2 DCs (FZ1 partial-failure on HUB1 specifically — preserved
     // from round-19 as the operator's known problematic DC scenario).
     // FZ1 → intra-site sibling + HUB1 (FAIL — RPC unavailable).
-    { agentId: FZ1, isPdc: false, links: [ok(FZ2), fail(HUB1, 'RPC server unavailable (round-trip > 30s)')], ip: '10.99.0.11', siteHint: 'MOCK-FZ' },
-    { agentId: FZ2, isPdc: false, links: [ok(FZ1)], ip: '10.99.0.15', siteHint: 'MOCK-FZ' },
+    { agentId: FZ1, isPdc: false, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(FZ2), fail(HUB1, 'RPC server unavailable (round-trip > 30s)')], ip: '10.99.0.11', siteHint: 'MOCK-FZ' },
+    { agentId: FZ2, isPdc: false, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(FZ1)], ip: '10.99.0.15', siteHint: 'MOCK-FZ' },
     // XM site — 2 DCs (XM1 stale: replicationTickMs ×4 so the row ages past 30-min floor during normal observation).
-    { agentId: XM1, isPdc: false, links: [ok(XM2), ok(HUB1)], ip: '10.99.0.12', siteHint: 'MOCK-XM', replicationTickMs: REPLICATION_TICK_MS * 4 },
-    { agentId: XM2, isPdc: false, links: [ok(XM1)], ip: '10.99.0.16', siteHint: 'MOCK-XM' },
+    { agentId: XM1, isPdc: false, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(XM2), ok(HUB1)], ip: '10.99.0.12', siteHint: 'MOCK-XM', replicationTickMs: REPLICATION_TICK_MS * 4 },
+    { agentId: XM2, isPdc: false, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(XM1)], ip: '10.99.0.16', siteHint: 'MOCK-XM' },
     // Hub site — 2 DCs.
     // HUB1 → same-site sibling HUB2 + first DC of every other site (NC1, FZ1, XM1).
-    { agentId: HUB1, isPdc: false, links: [ok(HUB2), ok(NC1), ok(FZ1), ok(XM1)], ip: '10.99.0.13', siteHint: 'MOCK-HUB' },
-    // HUB2 → only HUB1 (operator directive: 备份 hub 仅与主 hub 同步).
-    { agentId: HUB2, isPdc: false, links: [ok(HUB1)], ip: '10.99.0.17', siteHint: 'MOCK-HUB' }
+    // HUB1 holds the canonical forest-level FSMO cluster: RID + Infrastructure +
+    // Schema + Domain Naming Master. GC is universal.
+    { agentId: HUB1, isPdc: false, isGc: true, isRidMaster: true, isSchemaMaster: true, isDomainNamingMaster: true, isInfrastructureMaster: true, links: [ok(HUB2), ok(NC1), ok(FZ1), ok(XM1)], ip: '10.99.0.13', siteHint: 'MOCK-HUB' },
+    // HUB2 → only HUB1 (operator directive: 备份 hub 仅与主 hub 同步). GC only.
+    { agentId: HUB2, isPdc: false, isGc: true, isRidMaster: false, isSchemaMaster: false, isDomainNamingMaster: false, isInfrastructureMaster: false, links: [ok(HUB1)], ip: '10.99.0.17', siteHint: 'MOCK-HUB' }
   ];
 }
 
@@ -272,20 +280,36 @@ function buildReplicationSnapshot(agentId, links, sourceSite, opts = {}) {
   });
 }
 
-function buildDiscovery(agentId, isPdc, opts = {}) {
+// 2026-08-28 round-57 (R57-B): mirror mock-multi-agent.mjs::dc() — emit
+// the full 6-bool FSMO shape the backend's discovery.js upsertDc expects.
+// Dropped hostname/ipAddress (ad_dcs has no such columns). Exported for
+// mock-discovery-shape.test.js.
+export function buildDiscovery(agentId, opts = {}) {
+  const roles = ['DomainController'];
+  if (opts.isPdc) roles.push('PDCEmulator');
+  if (opts.isGc) roles.push('GC');
+  if (opts.isRidMaster) roles.push('RIDMaster');
+  if (opts.isSchemaMaster) roles.push('SchemaMaster');
+  if (opts.isDomainNamingMaster) roles.push('DomainNamingMaster');
+  if (opts.isInfrastructureMaster) roles.push('InfrastructureMaster');
   return {
     name: agentId,
-    hostname: `${agentId.toLowerCase()}.mock.local`,
-    ipAddress: opts.ip ?? '10.99.0.10',
     osVersion: 'Windows Server 2022 (mock)',
     // Round-19 follow-up #2: pass per-site hint through from the scenario
     // spec so the operator sees MOCK-NC / MOCK-FZ / MOCK-XM / MOCK-HUB in
     // the dashboard's site grouping, instead of the generic MOCK-SITE.
     siteHint: opts.siteHint ?? 'MOCK-SITE',
-    isPdc: !!isPdc,
-    roles: isPdc
-      ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
-      : ['DomainController']
+    // whenCreated mirrors what the real agent emits when the AD object
+    // lacks a whenCreated attribute — null on the wire. Backend's
+    // toMysqlDatetime(null) returns NULL → ad_dcs.when_created = NULL.
+    whenCreated: opts.whenCreated ?? null,
+    isPdc: !!opts.isPdc,
+    isGc: !!opts.isGc,
+    isRidMaster: !!opts.isRidMaster,
+    isSchemaMaster: !!opts.isSchemaMaster,
+    isDomainNamingMaster: !!opts.isDomainNamingMaster,
+    isInfrastructureMaster: !!opts.isInfrastructureMaster,
+    roles
   };
 }
 
@@ -315,7 +339,18 @@ async function runAgent(spec, { stopFlag }) {
     source: 'collect-discovery-mock-daemon',
     agentId,
     collectedAt: new Date().toISOString(),
-    dc: buildDiscovery(agentId, isPdc, { ip: spec.ip, siteHint: spec.siteHint })
+    // 2026-08-28 R57-B: forward all 6 FSMO flags from spec + siteHint.
+    // buildDiscovery() defaults each to false if absent; omitting one
+    // would silently land `0` in ad_dcs and confuse the role-badge UI.
+    dc: buildDiscovery(agentId, {
+      isPdc: spec.isPdc,
+      isGc: spec.isGc,
+      isRidMaster: spec.isRidMaster,
+      isSchemaMaster: spec.isSchemaMaster,
+      isDomainNamingMaster: spec.isDomainNamingMaster,
+      isInfrastructureMaster: spec.isInfrastructureMaster,
+      siteHint: spec.siteHint
+    })
   });
   if (disc.ok) {
     lastDiscoveryAt = Date.now();
@@ -394,7 +429,16 @@ async function runAgent(spec, { stopFlag }) {
           source: 'collect-discovery-mock-daemon',
           agentId,
           collectedAt: new Date().toISOString(),
-          dc: buildDiscovery(agentId, isPdc, { ip: spec.ip, siteHint: spec.siteHint })
+          // 2026-08-28 R57-B: forward all 6 FSMO flags (same as initial claim above).
+          dc: buildDiscovery(agentId, {
+            isPdc: spec.isPdc,
+            isGc: spec.isGc,
+            isRidMaster: spec.isRidMaster,
+            isSchemaMaster: spec.isSchemaMaster,
+            isDomainNamingMaster: spec.isDomainNamingMaster,
+            isInfrastructureMaster: spec.isInfrastructureMaster,
+            siteHint: spec.siteHint
+          })
         });
         if (d.ok) lastDiscoveryAt = now;
       }
@@ -407,23 +451,45 @@ async function runAgent(spec, { stopFlag }) {
 // ----- main -----
 
 const stopFlag = { stopped: false };
-const agents = loadScenario();
+// 2026-08-28 R57-B: export defaultScenario so mock-discovery-shape.test.js
+// can verify every scenario's dc payload conforms to the backend's
+// discovery.js upsertDc 12-param binding without spinning up the full
+// daemon.
+export { defaultScenario };
 
-console.log(`mock-heartbeat-daemon starting: ${agents.length} agent(s), heartbeat=${HEARTBEAT_INTERVAL_MS}ms, replication-tick=${REPLICATION_TICK_MS}ms`);
-console.log(`  center=${CENTER_URL}  report=${REPORT_URL}`);
+// 2026-08-28 R57-B: wrap the daemon startup in main() and only invoke
+// when this file is run directly. Without this guard, importing the
+// module (e.g., from mock-discovery-shape.test.js) would trigger the
+// top-level await and start heartbeating against a live center.
+async function main() {
+  const agents = loadScenario();
 
-const tasks = agents.map((spec) =>
-  runAgent(spec, { stopFlag }).catch((e) => {
-    console.error(`[${spec.agentId}] crashed:`, e?.message || e);
-  })
-);
+  console.log(`mock-heartbeat-daemon starting: ${agents.length} agent(s), heartbeat=${HEARTBEAT_INTERVAL_MS}ms, replication-tick=${REPLICATION_TICK_MS}ms`);
+  console.log(`  center=${CENTER_URL}  report=${REPORT_URL}`);
 
-const shutdown = (sig) => {
-  console.log(`\n${sig} received; stopping...`);
-  stopFlag.stopped = true;
-};
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
+  const tasks = agents.map((spec) =>
+    runAgent(spec, { stopFlag }).catch((e) => {
+      console.error(`[${spec.agentId}] crashed:`, e?.message || e);
+    })
+  );
 
-await Promise.all(tasks);
-console.log('mock-heartbeat-daemon stopped.');
+  const shutdown = (sig) => {
+    console.log(`\n${sig} received; stopping...`);
+    stopFlag.stopped = true;
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  await Promise.all(tasks);
+  console.log('mock-heartbeat-daemon stopped.');
+}
+
+// Detect "run directly" via process.argv[1] comparison. We can't use
+// import.meta.url here because the script is plain ESM without a
+// stable file: URL on every platform (Windows path quirks).
+const isDirectRun = process.argv[1] &&
+  (process.argv[1].endsWith('mock-heartbeat-daemon.mjs') ||
+   process.argv[1].endsWith('mock-heartbeat-daemon'));
+if (isDirectRun) {
+  await main();
+}

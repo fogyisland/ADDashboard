@@ -133,6 +133,51 @@ async function postDiscover({ agentId, dc, source = 'collect-discovery-mock' }) 
 
 // ----- default scenario -----
 
+// 2026-08-28 round-57 (R57-B): mock discovery now emits the EXACT 6-bool
+// FSMO shape the backend's discovery.js upsertDc expects (12-param
+// MySQL binding; MERGE INTO ad_dcs on the MSSQL branch). Rounds prior
+// to 57 only set isPdc + roles[] — the rest of the 6 bools were
+// defaulted to 0/false silently and the roles[] array was logged but
+// never consumed. Real agents (collect-discovery.ps1) emit this full
+// shape per Get-LocalDcSnapshot; the mock mirrors it so the operator's
+// DC catalog (and any future FSMO-aware UI) sees realistic flags from
+// both real and mock sources.
+//
+// hostname/ipAddress were dropped: ad_dcs has NO columns for them and
+// the backend never bound them. Including them was mock-only noise.
+//
+// Roles[] is kept for logging visibility (the route logs rolesCount
+// per round-12) but the bools are the source of truth — every flag
+// toggled here drives both its bool AND its roles[] entry.
+//
+// Exported for testability (mock-discovery-shape.test.js).
+export const dc = (agentId, opts = {}) => {
+  const roles = ['DomainController'];
+  if (opts.isPdc) roles.push('PDCEmulator');
+  if (opts.isGc) roles.push('GC');
+  if (opts.isRidMaster) roles.push('RIDMaster');
+  if (opts.isSchemaMaster) roles.push('SchemaMaster');
+  if (opts.isDomainNamingMaster) roles.push('DomainNamingMaster');
+  if (opts.isInfrastructureMaster) roles.push('InfrastructureMaster');
+  return {
+    name: agentId,
+    osVersion: opts.osVersion ?? 'Windows Server 2022 (mock)',
+    // 2026-08-26 round-15 follow-up: discovery.js reads dc.siteHint
+    // (NOT dc.site). The real collect-discovery.ps1 emits siteHint in
+    // camelCase; the mock must do the same so ad_dcs.site_hint lands
+    // populated and the operator's DC list can JOIN ad_sites on it.
+    siteHint: opts.siteHint ?? 'MOCK-SITE',
+    whenCreated: opts.whenCreated ?? null,
+    isPdc: !!opts.isPdc,
+    isGc: !!opts.isGc,
+    isRidMaster: !!opts.isRidMaster,
+    isSchemaMaster: !!opts.isSchemaMaster,
+    isDomainNamingMaster: !!opts.isDomainNamingMaster,
+    isInfrastructureMaster: !!opts.isInfrastructureMaster,
+    roles
+  };
+};
+
 function defaultScenario() {
   const now = new Date();
   const withinHour = new Date(now.getTime() - 5 * 60_000);   // 5 min ago
@@ -150,21 +195,6 @@ function defaultScenario() {
   // operator's DC list shows nothing for the mock — only heartbeats and
   // replication land. Real agents run collect-discovery.ps1 on a
   // schedule; the mock mirrors that.
-  const dc = (agentId, opts = {}) => ({
-    name: agentId,
-    hostname: `${agentId.toLowerCase()}.mock.local`,
-    ipAddress: opts.ip ?? '10.99.0.10',
-    osVersion: 'Windows Server 2022 (mock)',
-    // 2026-08-26 round-15 follow-up: discovery.js reads dc.siteHint
-    // (NOT dc.site). The real collect-discovery.ps1 emits siteHint in
-    // camelCase; the mock must do the same so ad_dcs.site_hint lands
-    // populated and the operator's DC list can JOIN ad_sites on it.
-    siteHint: opts.siteHint ?? 'MOCK-SITE',
-    isPdc: !!opts.isPdc,
-    roles: opts.isPdc
-      ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
-      : ['DomainController']
-  });
   // 2026-08-26 follow-up: agent IDs now use MOCK- prefix to avoid
   // collision with REAL production DCs at the same names. The operator's
   // ncadserv1 / fzadsrv1 / hubadsrv1 / xmadsrv1 are real DCs in their
@@ -210,7 +240,10 @@ function defaultScenario() {
       label: 'NC site DC1 (PDC) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: NC1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(NC1, { isPdc: true, ip: '10.99.0.10', siteHint: 'MOCK-NC' }) },
+      // 2026-08-28 round-57: NC1 holds PDC Emulator + GC. PDC Emulator is
+      // site-local (operator policy: keep PDC at the spoke for snappy
+      // client time-sync); GC is universal so every DC carries it.
+      discovery: { dc: dc(NC1, { isPdc: true, isGc: true, siteHint: 'MOCK-NC' }) },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke: spoke PDC → intra-site sibling + HUB1 only
@@ -225,7 +258,13 @@ function defaultScenario() {
       label: 'FZ site DC1 (PDC) — recent partial_failure (HUB1 link fails, round-19 regression)',
       agentId: FZ1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(FZ1, { ip: '10.99.0.11', siteHint: 'MOCK-FZ' }) },
+      // 2026-08-28 round-57: FZ1 was previously treated as the spoke PDC
+      // (it gets the partial-failure scenario) but in this revision the
+      // PDC Emulator lives at NC1 only — so FZ1 is just GC. (Note: real
+      // forests normally have only ONE PDC Emulator; this mock keeps the
+      // label "PDC" on FZ1 for topology-test continuity but its flag
+      // model reflects reality.)
+      discovery: { dc: dc(FZ1, { isGc: true, siteHint: 'MOCK-FZ' }) },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke: spoke PDC → intra-site sibling + HUB1 only.
@@ -241,7 +280,8 @@ function defaultScenario() {
       label: 'XM site DC1 (PDC) — stale (replication 2h old)',
       agentId: XM1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(XM1, { ip: '10.99.0.12', siteHint: 'MOCK-XM' }) },
+      // 2026-08-28 round-57: XM1 is GC only (PDC is at NC1).
+      discovery: { dc: dc(XM1, { isGc: true, siteHint: 'MOCK-XM' }) },
       replication: {
         when: twoHoursAgo,
         // 2026-08-28 R44 sparse hub-spoke: spoke PDC → intra-site sibling + HUB1 only.
@@ -257,7 +297,22 @@ function defaultScenario() {
       label: 'Hub DC1 — outbound to HUB2 + each site\'s first (PDC) DC',
       agentId: HUB1,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(HUB1, { ip: '10.99.0.13', siteHint: 'MOCK-HUB' }) },
+      // 2026-08-28 round-57: HUB1 holds the canonical forest-level FSMO
+      // cluster (RID + Infrastructure + Schema + Domain Naming Master).
+      // Real AD often distributes these across multiple DCs, but for a
+      // mock topology the operator wants HUB1 to be visibly "the
+      // holder" so the DC catalog's role badges are non-trivial. GC is
+      // universal — every DC carries it.
+      discovery: {
+        dc: dc(HUB1, {
+          isGc: true,
+          isRidMaster: true,
+          isInfrastructureMaster: true,
+          isSchemaMaster: true,
+          isDomainNamingMaster: true,
+          siteHint: 'MOCK-HUB'
+        })
+      },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke (operator directive):
@@ -275,7 +330,8 @@ function defaultScenario() {
       label: 'NC site DC2 (sibling) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: NC2,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(NC2, { ip: '10.99.0.14', siteHint: 'MOCK-NC' }) },
+      // 2026-08-28 round-57: NC2 is the intra-site sibling — GC only.
+      discovery: { dc: dc(NC2, { isGc: true, siteHint: 'MOCK-NC' }) },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke: spoke non-PDC → intra-site PDC only
@@ -289,7 +345,8 @@ function defaultScenario() {
       label: 'FZ site DC2 (sibling) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: FZ2,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(FZ2, { ip: '10.99.0.15', siteHint: 'MOCK-FZ' }) },
+      // 2026-08-28 round-57: GC only.
+      discovery: { dc: dc(FZ2, { isGc: true, siteHint: 'MOCK-FZ' }) },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke: spoke non-PDC → intra-site PDC only
@@ -303,7 +360,8 @@ function defaultScenario() {
       label: 'XM site DC2 (sibling) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: XM2,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(XM2, { ip: '10.99.0.16', siteHint: 'MOCK-XM' }) },
+      // 2026-08-28 round-57: GC only.
+      discovery: { dc: dc(XM2, { isGc: true, siteHint: 'MOCK-XM' }) },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke: spoke non-PDC → intra-site PDC only
@@ -317,7 +375,9 @@ function defaultScenario() {
       label: 'Hub DC2 — outbound to HUB1 only (operator directive: backup hub)',
       agentId: HUB2,
       heartbeat: { when: 'now' },
-      discovery: { dc: dc(HUB2, { ip: '10.99.0.17', siteHint: 'MOCK-HUB' }) },
+      // 2026-08-28 round-57: HUB2 is the backup hub — GC only, no FSMO
+      // holders. Operator directive: 备份 hub 仅与主 hub 同步.
+      discovery: { dc: dc(HUB2, { isGc: true, siteHint: 'MOCK-HUB' }) },
       replication: {
         when: withinHour,
         // 2026-08-28 R44 sparse hub-spoke: HUB2 → HUB1 only (no spoke replication).
@@ -508,4 +568,19 @@ async function main() {
   console.log(`  hubadsrv1   → null / 未上传    (no replication ever)`);
 }
 
-main().catch((e) => { console.error('fatal:', e); process.exit(1); });
+// 2026-08-28 round-57 (R57-B): export defaultScenario so
+// mock-discovery-shape.test.js can verify every scenario's discovery.dc
+// payload conforms to the backend's discovery.js upsertDc 12-param binding
+// without spinning up the full daemon.
+export { defaultScenario };
+
+// 2026-08-28 R57-B: only invoke main() when this file is run directly.
+// Without this guard, importing the module (e.g., from
+// mock-discovery-shape.test.js) would trigger main() and try to POST to
+// a live center.
+const isDirectRun = process.argv[1] &&
+  (process.argv[1].endsWith('mock-multi-agent.mjs') ||
+   process.argv[1].endsWith('mock-multi-agent'));
+if (isDirectRun) {
+  main().catch((e) => { console.error('fatal:', e); process.exit(1); });
+}
