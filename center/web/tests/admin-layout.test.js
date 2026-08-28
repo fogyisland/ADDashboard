@@ -20,8 +20,11 @@ const EXPECTED_PATHS = [
   '/admin/member-servers', '/admin/server-groups',
   '/admin/sites-catalog', '/admin/dcs-catalog',
   '/admin/site-replication-matrix/all',
-  // 2026-08-28 round-45: 复制日志监控 sidebar entry removed — R42 absorbed
-  // into the 复制状态概览 inline expansion.
+  // 2026-08-28 round-45 restoration: 复制日志监控 is a separate UI from
+  // 复制状态概览 (operator directive "那个和当前的复制状况概览是两个不同
+  // 界面"). The standalone drill-down view at /admin/replication-log/monitor
+  // is back; the matrix view keeps its inline caret expansion. Both coexist.
+  '/admin/replication-log/monitor',
   '/admin/ports',
   '/admin/heartbeat-report', '/admin/operations-log', '/admin/packages',
   '/admin/migrations', '/admin/orphan-schemas',
@@ -40,12 +43,12 @@ test('renders 6 nav groups', () => {
   expect(w.findAll('.nav-group').length).toBe(6);
 });
 
-test('renders all 16 nav-links with correct paths', () => {
-  // 2026-08-28 round-45: 17→16 nav-links (R42 复制日志监控 absorbed into
-  // 复制状态概览 inline expansion).
+test('renders all 17 nav-links with correct paths', () => {
+  // 2026-08-28 round-45 restoration: 15→17 nav-links (R42 复制日志监控
+  // restored as a separate UI alongside 复制状态概览).
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
-  expect(links.length).toBe(16);
+  expect(links.length).toBe(17);
   const actualPaths = links.map(a => a.attributes('href'));
   expect(actualPaths).toEqual(EXPECTED_PATHS);
 });

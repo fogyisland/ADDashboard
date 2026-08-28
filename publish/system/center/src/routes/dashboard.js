@@ -481,6 +481,204 @@ export function dashboardRouter({ config, logger, db }) {
     }
   });
 
+  // 2026-08-27 round-42 (复制日志监控): operator directive "增加一个运维
+  // 监控, 复制日志监控 — 一个站点下面如果有多台服务器, 多台服务器有多个
+  // 复制伙伴, 列出最新的连接状态, 然后在右边多一个展开箭头, 列出最近
+  // 10 次的连接具体信息". The view mirrors the per-DC partner tables of
+  // /api/dashboard/site-replication-matrix/all (round-36) but augments
+  // every partner with attempts[] — the latest 10 history rows for that
+  // (source_dc, dest_dc, naming_context) tuple from ad_replication_history.
+  // 2026-08-28 round-45: route restored as a STANDALONE view (the inline
+  // caret expansion inside 复制状态概览 uses the slimmer /pair-history
+  // endpoint above; 复制日志监控 is the drill-down UI per operator
+  // directive "那个和当前的复制状况概览是两个不同界面").
+  //
+  // Response envelope:
+  //   {
+  //     refreshSeconds: 10,
+  //     sites: [
+  //       {
+  //         siteId, siteName, regionCode, isHub,
+  //         dcs: [
+  //           {
+  //             dcName, isBridgehead, role flags, osVersion, discoveredAt,
+  //             partners: [
+  //               {
+  //                 peerType, peerDc, peerSite, peerSiteIsHub,
+  //                 statusCode, lastSuccessTime, lastAttemptTime,
+  //                 durationMinutes,
+  //                 attempts: [ {attemptAt, statusCode, durationMs,
+  //                              objectsTransferred, lastSuccessTime,
+  //                              errorMessage}, ... ]  // last 10 by time DESC
+  //               }
+  //             ]
+  //           }
+  //         ]
+  //       }
+  //     ]
+  //   }
+  r.get('/api/dashboard/replication-log/all', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+
+      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: histRows }, { rows: cfgRows }] =
+        await Promise.all([
+          db.query(db.sql.dashboard.allSitesOrdered, []),
+          db.query(db.sql.dashboard.allDcsBySite, []),
+          db.query(db.sql.dashboard.allReplicationLinks, []),
+          db.query(db.sql.dashboard.replicationLogRecentAttempts, []),
+          db.query(db.sql.dashboard.refreshSeconds, [])
+        ]);
+
+      const dcByName = new Map(dcRows.map(d => [d.dc_name, d]));
+      const siteById = new Map(siteRows.map(s => [s.site_id, {
+        siteId: s.site_id, siteName: s.site_name,
+        regionCode: s.region_code, isHub: !!s.is_hub
+      }]));
+
+      const dcsBySite = new Map();
+      for (const d of dcRows) {
+        if (!dcsBySite.has(d.site_id)) dcsBySite.set(d.site_id, []);
+        dcsBySite.get(d.site_id).push({
+          dcName: d.dc_name,
+          isBridgehead: !!d.is_bridgehead,
+          isPdc: !!d.is_pdc,
+          isGc: !!d.is_gc,
+          isRidMaster: !!d.is_rid_master,
+          isSchemaMaster: !!d.is_schema_master,
+          isDomainNamingMaster: !!d.is_domain_naming_master,
+          isInfrastructureMaster: !!d.is_infrastructure_master,
+          osVersion: d.os_version,
+          discoveredAt: toIso(d.discovered_at)
+        });
+      }
+      for (const arr of dcsBySite.values()) {
+        arr.sort((a, b) => {
+          if (a.isBridgehead !== b.isBridgehead) return a.isBridgehead ? -1 : 1;
+          return a.dcName.localeCompare(b.dcName);
+        });
+      }
+
+      const primaryBySiteId = new Map();
+      for (const s of siteRows) {
+        const list = dcsBySite.get(s.site_id) || [];
+        if (list.length) primaryBySiteId.set(s.site_id, list[0].dcName);
+      }
+
+      const sep = String.fromCharCode(1);
+
+      const historyByPair = new Map();
+      for (const h of histRows) {
+        const k = `${h.source_dc}${sep}${h.dest_dc}${sep}${h.naming_context}`;
+        if (!historyByPair.has(k)) historyByPair.set(k, []);
+        historyByPair.get(k).push(h);
+      }
+
+      const sites = [];
+      for (const s of siteRows) {
+        const dcList = dcsBySite.get(s.site_id) || [];
+        if (dcList.length === 0) continue;
+        const primaryDc = dcList[0].dcName;
+
+        const allowedPeers = new Set();
+        for (const d of dcList) allowedPeers.add(d.dcName);
+        for (const [siteId, primaryName] of primaryBySiteId) {
+          if (siteId !== s.site_id) allowedPeers.add(primaryName);
+        }
+
+        const partnerMapByDc = new Map();
+        for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
+
+        for (const l of linkRows) {
+          if (l.source_dc === l.dest_dc) continue;
+
+          const sides = [];
+          if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
+            sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
+          }
+          if (partnerMapByDc.has(l.source_dc)) {
+            sides.push({ dcName: l.source_dc, peerDc: l.dest_dc, direction: 'out' });
+          }
+          if (sides.length === 0) continue;
+
+          for (const side of sides) {
+            const peerDc = side.peerDc;
+            const peer = dcByName.get(peerDc);
+            if (!peer) continue;
+            const peerSite = siteById.get(peer.site_id);
+            if (!peerSite) continue;
+            const targetMap = partnerMapByDc.get(side.dcName);
+            const k = `${peerDc}${sep}${l.naming_context}${sep}${side.direction}`;
+            const existing = targetMap.get(k);
+            if (existing) {
+              const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;
+              const newTime = l.last_attempt_time ? new Date(l.last_attempt_time).getTime() : 0;
+              if (newTime <= exTime) continue;
+            }
+            targetMap.set(k, {
+              peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
+              peerDc,
+              namingContext: l.naming_context,
+              direction: side.direction,
+              peerSite: peerSite.siteName,
+              peerSiteIsHub: peerSite.isHub,
+              statusCode: l.status_code,
+              lastSuccessTime: toIso(l.last_success_time),
+              lastAttemptTime: toIso(l.last_attempt_time),
+              durationMinutes: l.duration_minutes,
+              attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
+                .slice(0, 10)
+                .map(h => ({
+                  attemptAt:        toIso(h.collected_at),
+                  statusCode:       h.status_code,
+                  durationMs:       h.attempt_duration_ms,
+                  objectsTransferred: h.objects_transferred,
+                  lastSuccessTime:  toIso(h.last_success_time),
+                  errorMessage:     h.error_message
+                }))
+            });
+          }
+        }
+
+        const dcs = dcList.map(d => {
+          const partners = [...partnerMapByDc.get(d.dcName).values()].sort((a, b) => {
+            if (a.peerType !== b.peerType) return a.peerType === "within" ? -1 : 1;
+            if (a.peerSite !== b.peerSite) return a.peerSite.localeCompare(b.peerSite, "zh");
+            return a.peerDc.localeCompare(b.peerDc);
+          });
+          return {
+            dcName: d.dcName,
+            isBridgehead: d.isBridgehead,
+            isPdc: d.isPdc,
+            isGc: d.isGc,
+            isRidMaster: d.isRidMaster,
+            isSchemaMaster: d.isSchemaMaster,
+            isDomainNamingMaster: d.isDomainNamingMaster,
+            isInfrastructureMaster: d.isInfrastructureMaster,
+            osVersion: d.osVersion,
+            discoveredAt: d.discoveredAt,
+            partners
+          };
+        });
+
+        sites.push({
+          siteId: s.site_id,
+          siteName: s.site_name,
+          regionCode: s.region_code,
+          isHub: !!s.is_hub,
+          primaryDc,
+          dcs
+        });
+      }
+
+      const refreshSeconds = Number(cfgRows[0]?.config_value || 10);
+      res.json({ refreshSeconds, sites });
+    } catch (e) {
+      logger.error({ err: e }, 'replication-log/all failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   // ---- Package metric dashboard (Task 9) ----
   // Summary endpoint: returns the latest gauge/counter/status rows for all
   // installed metric_*_latest tables. Filtering is done at the call site
