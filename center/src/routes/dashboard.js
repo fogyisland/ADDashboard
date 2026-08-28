@@ -646,7 +646,18 @@ export function dashboardRouter({ config, logger, db }) {
             const peerSite = siteById.get(peer.site_id);
             if (!peerSite) continue;
             const targetMap = partnerMapByDc.get(side.dcName);
-            const k = `${peerDc}${sep}${l.naming_context}${sep}${side.direction}`;
+            // 2026-08-28 round-56: dedup key was previously keyed on
+            // (peerDc, naming_context, direction) — but `allReplicationLinks`
+            // returns one row per (source_dc, dest_dc, naming_context)
+            // tuple, and AD reports multiple naming_contexts per partner
+            // pair (CN=Configuration, CN=Schema, DC=domain) PLUS the
+            // synthetic `__partner_ports__:<hash>` rows. The operator's
+            // mental model is "one partner per (DC, peer, direction)"; the
+            // view renders a single row for each. Drop naming_context from
+            // the key; keep the most recent attempt across all naming
+            // contexts (the partner_port_status JSON blob is sourced from
+            // `portHealthByPair` independently, so it always joins back in).
+            const k = `${peerDc}${sep}${side.direction}`;
             const existing = targetMap.get(k);
             if (existing) {
               const exTime = existing.lastAttemptTime ? new Date(existing.lastAttemptTime).getTime() : 0;

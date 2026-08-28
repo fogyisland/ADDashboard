@@ -1086,3 +1086,85 @@ test("GET /api/dashboard/partner-port-health/all: partners carry configuredPorts
   assert.equal(ph.ports[2].ok, false,      "ok=false → red ✕");
   assert.equal(ph.ports[2].latency, null);
 });
+
+// 2026-08-28 round-56: regression test for the "monitor 有重复的数据"
+// operator bug. `allReplicationLinks` returns one row per
+// (source_dc, dest_dc, naming_context) tuple — AD reports 3 naming
+// contexts per partner pair (CN=Configuration, CN=Schema, DC=domain)
+// plus the synthetic `__partner_ports__:<hash>` rows the port probe
+// emits. Before this fix, the route's dedup key was
+// `${peerDc}${sep}${naming_context}${sep}${direction}` so each naming
+// context became its own partner entry → operator saw each pair 4×.
+// After the fix, dedup key is `${peerDc}${sep}${direction}` only,
+// keeping the most recent attempt across all naming contexts and
+// yielding exactly ONE partner row per (DC, peer, direction).
+test("GET /api/dashboard/partner-port-health/all: R56 dedup — one partner per (dc, peer, direction) regardless of naming_context", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la1 = new Date("2026-08-27T10:00:30Z"); // older attempt
+  const la2 = new Date("2026-08-27T10:01:00Z"); // newer attempt (wins)
+  const partnerPortStatusJson = JSON.stringify({
+    ports: [{ port: 135, ok: true, latency: 5 }]
+  });
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [
+        { site_id: 1, site_name: "核心站点", region_code: "BJ", is_hub: 1, description: null },
+        { site_id: 2, site_name: "上海站点", region_code: "SH", is_hub: 0, description: null }
+      ]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "DC-BJ-01", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-BJ-01" },
+        { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
+      ]
+    },
+    // allReplicationLinks returns 3 naming_contexts for the same
+    // (BJ-01, SH-01) pair — exactly the operator's bug condition.
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "CN=Configuration,DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la1, duration_minutes: 1 },
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "CN=Schema,CN=Configuration,DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la1, duration_minutes: 1 },
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la2, duration_minutes: 2 }
+      ]
+    },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] },
+    // partner-port row — same (BJ-01, SH-01), different naming_context,
+    // status_code=1 (the synthetic hash format). Mirror the live agent's
+    // pattern where the hash suffix makes equality comparisons impossible.
+    { match: /FROM\s+ad_replication_status\s+t1/i,
+      rows: [
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01",
+          naming_context: "__partner_ports__:abc12345",
+          status_code: 1, last_attempt_time: la2, partner_port_status: partnerPortStatusJson }
+      ]
+    },
+    { match: /FROM\s+system_ports/i,
+      rows: [{ port: 135, label: "RPC" }]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/partner-port-health/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  // R46 inbound-only: BJ-01 outbound is filtered; SH-01 inbound is shown.
+  const sh01 = r.body.sites[1].dcs[0];
+  assert.equal(sh01.dcName, "DC-SH-01");
+  // R56: was 4 partner entries (one per naming_context). After fix: 1.
+  assert.equal(sh01.partners.length, 1,
+    "R56: must collapse all naming_context variants into one partner entry");
+  const partner = sh01.partners[0];
+  assert.equal(partner.peerDc, "DC-BJ-01");
+  assert.equal(partner.direction, "in");
+  // The newer attempt (la2) wins; the older la1 rows are dropped.
+  assert.equal(partner.lastAttemptTime, new Date(la2).toISOString());
+  // portHealth is keyed on (source_dc, dest_dc) — independent of
+  // naming_context — so it still joins back in to the single partner row.
+  assert.equal(partner.portHealth.length, 1);
+  assert.equal(partner.portHealth[0].statusCode, 1);
+  assert.equal(partner.portHealth[0].ports.length, 1);
+});
