@@ -2,35 +2,35 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSql } from '../src/db/sql.js';
 
-test('mysql upsertStatus binds 15 params and includes 4 new counter columns (R45 drops partner_port_status)', () => {
+test('mysql upsertStatus binds 16 params and includes partner_port_status (R46 restore)', () => {
   const sql = buildSql('mysql');
   const upsert = sql.replication.upsertStatus;
   const placeholders = (upsert.match(/\?/g) || []).length;
-  assert.strictEqual(placeholders, 15,
-    `expected 15 ? placeholders in mysql upsertStatus, got ${placeholders}`);
+  assert.strictEqual(placeholders, 16,
+    `expected 16 ? placeholders in mysql upsertStatus, got ${placeholders}`);
   assert.match(upsert, /users_count/);
   assert.match(upsert, /groups_count/);
   assert.match(upsert, /gpos_count/);
   assert.match(upsert, /locked_count/);
-  assert.doesNotMatch(upsert, /partner_port_status/,
-    'partner_port_status binding removed in round-45');
+  assert.match(upsert, /partner_port_status/,
+    'partner_port_status binding restored in round-46 for /replication-log/all port health');
   assert.match(upsert, /ON DUPLICATE KEY UPDATE.*users_count\s*=\s*VALUES\(users_count\)/s);
 });
 
-test('mssql upsertStatus binds 15 params via MERGE and includes 4 new counter columns (R45 drops partner_port_status)', () => {
+test('mssql upsertStatus binds 16 params via MERGE and includes partner_port_status (R46 restore)', () => {
   const sql = buildSql('mssql');
   const upsert = sql.replication.upsertStatus;
   // The mssql driver rewrites ? -> @pN at execute() time, so the registry
   // holds SQL in `?` form (same as mysql). Count `?` placeholders here.
   const placeholders = (upsert.match(/\?/g) || []).length;
-  assert.strictEqual(placeholders, 15,
-    `expected 15 ? placeholders in mssql upsertStatus, got ${placeholders}`);
+  assert.strictEqual(placeholders, 16,
+    `expected 16 ? placeholders in mssql upsertStatus, got ${placeholders}`);
   assert.match(upsert, /users_count/);
   assert.match(upsert, /groups_count/);
   assert.match(upsert, /gpos_count/);
   assert.match(upsert, /locked_count/);
-  assert.doesNotMatch(upsert, /partner_port_status/,
-    'partner_port_status binding removed in round-45');
+  assert.match(upsert, /partner_port_status/,
+    'partner_port_status binding restored in round-46 for /replication-log/all port health');
   assert.match(upsert, /WHEN MATCHED THEN UPDATE SET[\s\S]*users_count\s*=\s*s\.users_count/);
 });
 

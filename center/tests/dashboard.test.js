@@ -828,15 +828,15 @@ test("GET /api/dashboard/replication-log/all: 200 hub-first, attempts slice to l
   assert.equal(r.status, 200);
   assert.equal(r.body.refreshSeconds, 12);
 
-  // Hub first; 核心站点 has 1 DC (BJ-01, no inbound — but DOES have the
-  // outbound partner SH-01 with direction='out'), 上海 has 1 DC (SH-01,
-  // inbound from BJ-01 with direction='in').
+  // Hub first; R46 inbound-only filter: 核心站点 has 1 DC (BJ-01) with 0 partners
+  // (its outbound link is NOT surfaced here — operator directive "出战没有意义").
+  // 上海 has 1 DC (SH-01) with 1 partner (inbound from BJ-01, direction='in').
   assert.equal(r.body.sites.length, 2);
   assert.equal(r.body.sites[0].siteName, "核心站点");
   assert.equal(r.body.sites[0].primaryDc, "DC-BJ-01");
-  assert.equal(r.body.sites[0].dcs[0].partners.length, 1, "BJ-01 has 1 outbound partner (SH-01)");
-  assert.equal(r.body.sites[0].dcs[0].partners[0].peerDc, "DC-SH-01");
-  assert.equal(r.body.sites[0].dcs[0].partners[0].direction, "out");
+  // R46 inbound-only: BJ-01's outbound to SH-01 is filtered; it surfaces on SH-01 below.
+  assert.equal(r.body.sites[0].dcs[0].partners.length, 0,
+    "R46: BJ-01 has 0 partners (outbound side filtered out)");
   assert.equal(r.body.sites[1].siteName, "上海站点");
   assert.equal(r.body.sites[1].primaryDc, "DC-SH-01");
   const sh01 = r.body.sites[1].dcs[0];
@@ -960,11 +960,12 @@ test("GET /api/dashboard/replication-log/all: attempts grouped per naming_contex
   assert.equal(sorted[1].attempts.length, 2, "NC with 2 history rows → 2 attempts");
 });
 
-// 2026-08-28 round-43: route must emit BOTH directions for a link — dest
-// side sees the link as direction='in' (peer replicates TO this DC), source
-// side sees it as direction='out' (this DC replicates TO peer). Real AD is
-// hub-spoke, not full-mesh: spokes only replicate to/from hubs.
-test("GET /api/dashboard/replication-log/all: emits direction='in' for dest_dc, direction='out' for source_dc", async () => {
+// 2026-08-28 round-43 (superseded by R46-T4): the original R43 test emitted
+// BOTH directions per link. R46 restricts 复制日志监控 to inbound-only
+// ("出战没有意义,出战对其他机器就是入站"). The inbound destination (SH-01)
+// still sees the link with direction='in'; the source (BJ-01) does NOT.
+// The two-direction surface stays alive in 复制状态概览 (R36 view).
+test("GET /api/dashboard/replication-log/all: inbound-only filter — dest gets direction='in', source has no partner", async () => {
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
   const db = buildMockDb([
@@ -996,13 +997,11 @@ test("GET /api/dashboard/replication-log/all: emits direction='in' for dest_dc, 
     .get("/api/dashboard/replication-log/all")
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r.status, 200);
-  // Hub site (核心站点) sees BJ-01's outbound to SH-01 as direction='out'
+  // Hub site (核心站点) — BJ-01 has NO partners (outbound side filtered)
   const bj01 = r.body.sites.find(s => s.siteName === "核心站点").dcs[0];
   assert.equal(bj01.dcName, "DC-BJ-01");
-  assert.equal(bj01.partners.length, 1);
-  assert.equal(bj01.partners[0].peerDc, "DC-SH-01");
-  assert.equal(bj01.partners[0].direction, "out", "BJ-01's outbound to SH-01 → direction='out'");
-  // Spoke site (上海站点) sees SH-01's inbound from BJ-01 as direction='in'
+  assert.equal(bj01.partners.length, 0, "R46: BJ-01 outbound side filtered out");
+  // Spoke site (上海站点) — SH-01 sees BJ-01's inbound as direction='in'
   const sh01 = r.body.sites.find(s => s.siteName === "上海站点").dcs[0];
   assert.equal(sh01.dcName, "DC-SH-01");
   assert.equal(sh01.partners.length, 1);
@@ -1010,10 +1009,11 @@ test("GET /api/dashboard/replication-log/all: emits direction='in' for dest_dc, 
   assert.equal(sh01.partners[0].direction, "in", "SH-01's inbound from BJ-01 → direction='in'");
 });
 
-test("GET /api/dashboard/replication-log/all: within-site link produces direction='in' on dest AND direction='out' on source (same link, both sides)", async () => {
-  // Within-site link NC1↔NC2: each DC's partner list shows the OTHER dc
-  // — NC1 sees NC2 with direction='out' (NC1 replicates TO NC2),
-  // NC2 sees NC1 with direction='in' (NC2 receives from NC1).
+// 2026-08-28 round-46 (supersedes R43 within-site variant): R46 inbound-only
+// filter — A1 (source) gets no partner; A2 (dest) sees A1 with direction='in'.
+test("GET /api/dashboard/replication-log/all: within-site link — only dest side surfaces with direction='in' (R46 inbound-only)", async () => {
+  // Within-site link A1→A2: A2 sees A1 with direction='in' (A2 receives from A1);
+  // A1 sees no partner (outbound side filtered — R46).
   const ls = new Date("2026-08-27T10:00:00Z");
   const la = new Date("2026-08-27T10:00:30Z");
   const db = buildMockDb([
@@ -1045,10 +1045,125 @@ test("GET /api/dashboard/replication-log/all: within-site link produces directio
   const site = r.body.sites[0];
   const a1 = site.dcs.find(d => d.dcName === "DC-A1");
   const a2 = site.dcs.find(d => d.dcName === "DC-A2");
-  assert.equal(a1.partners.length, 1);
-  assert.equal(a1.partners[0].peerDc, "DC-A2");
-  assert.equal(a1.partners[0].direction, "out", "A1 source side: direction='out'");
+  // R46 inbound-only filter — A1 (source) has no partner rows; A2 (dest) sees the inbound from A1.
+  assert.equal(a1.partners.length, 0, "R46: A1 outbound side filtered out");
   assert.equal(a2.partners.length, 1);
   assert.equal(a2.partners[0].peerDc, "DC-A1");
   assert.equal(a2.partners[0].direction, "in", "A2 dest side: direction='in'");
+});
+
+// 2026-08-28 round-46: route attaches configuredPorts[] and portHealth[] to
+// each partner. Tests pin both fields' shapes (empty when DB has no port
+// data, populated when latestPartnerPortPerPair + ports.list return rows).
+test("GET /api/dashboard/replication-log/all: partners carry empty configuredPorts[]/portHealth[] when no port data", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [
+        { site_id: 1, site_name: "核心站点", region_code: "BJ", is_hub: 1, description: null },
+        { site_id: 2, site_name: "上海站点", region_code: "SH", is_hub: 0, description: null }
+      ]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "DC-BJ-01", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-BJ-01" },
+        { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
+      ]
+    },
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
+      ]
+    },
+    { match: /FROM\s+ad_replication_history/i, rows: [] },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+    // latestPartnerPortPerPair + ports.list intentionally absent — route must default to []
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/replication-log/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  const sh01 = r.body.sites[1].dcs[0];
+  assert.equal(sh01.partners.length, 1);
+  const partner = sh01.partners[0];
+  assert.ok(Array.isArray(partner.configuredPorts), "configuredPorts is an array");
+  assert.equal(partner.configuredPorts.length, 0, "no system_ports rows → empty configuredPorts");
+  assert.ok(Array.isArray(partner.portHealth), "portHealth is an array");
+  assert.equal(partner.portHealth.length, 0, "no latestPartnerPortPerPair rows → empty portHealth");
+});
+
+test("GET /api/dashboard/replication-log/all: partners carry configuredPorts[] + portHealth[] from latestPartnerPortPerPair and ports.list", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const partnerPortStatusJson = JSON.stringify({
+    ports: [
+      { port: 135, ok: true,  latency: 4 },
+      { port: 445, ok: true,  latency: 3 },
+      { port: 389, ok: false, latency: null }
+    ]
+  });
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [
+        { site_id: 1, site_name: "核心站点", region_code: "BJ", is_hub: 1, description: null },
+        { site_id: 2, site_name: "上海站点", region_code: "SH", is_hub: 0, description: null }
+      ]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "DC-BJ-01", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-BJ-01" },
+        { dc_name: "DC-SH-01", site_id: 2, os_version: "Win2019", is_pdc: 0, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "DC-SH-01" }
+      ]
+    },
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01", naming_context: "DC=contoso,DC=com",
+          status_code: 0, last_success_time: ls, last_attempt_time: la, duration_minutes: 12 }
+      ]
+    },
+    { match: /FROM\s+ad_replication_history/i, rows: [] },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] },
+    // latestPartnerPortPerPair row keyed on (source_dc=BJ-01, dest_dc=SH-01)
+    // SQL: SELECT ... FROM ad_replication_status t1 WHERE t1.naming_context LIKE '__partner_ports__:%'
+    { match: /FROM\s+ad_replication_status\s+t1/i,
+      rows: [
+        { source_dc: "DC-BJ-01", dest_dc: "DC-SH-01",
+          status_code: 1, last_attempt_time: la, partner_port_status: partnerPortStatusJson }
+      ]
+    },
+    // ports.list (system_ports) — global probe target list
+    { match: /FROM\s+system_ports/i,
+      rows: [
+        { port: 135, label: "RPC"   },
+        { port: 445, label: "SMB"   },
+        { port: 389, label: "LDAP"  },
+        { port: 636, label: "LDAPS" }
+      ]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/replication-log/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  const sh01 = r.body.sites[1].dcs[0];
+  const partner = sh01.partners[0];
+  // configuredPorts: array of {port, label} from system_ports
+  assert.equal(partner.configuredPorts.length, 4);
+  assert.deepEqual(partner.configuredPorts.map(p => p.port), [135, 445, 389, 636]);
+  assert.equal(partner.configuredPorts[0].label, "RPC");
+  // portHealth: single entry for (BJ-01, SH-01) with parsed JSON
+  assert.equal(partner.portHealth.length, 1);
+  const ph = partner.portHealth[0];
+  assert.equal(ph.statusCode, 1, "partial reachability (one port failed)");
+  assert.equal(ph.lastAttemptTime, new Date(la).toISOString());
+  assert.equal(ph.ports.length, 3);
+  assert.deepEqual(ph.ports.map(p => p.port), [135, 445, 389]);
+  assert.equal(ph.ports[0].ok, true);
+  assert.equal(ph.ports[2].ok, false);
 });

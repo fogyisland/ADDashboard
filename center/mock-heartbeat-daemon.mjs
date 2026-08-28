@@ -26,7 +26,7 @@
 // daemon runs until SIGINT/SIGTERM (Ctrl+C).
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildSnapshot, buildReplicationHistoryEntries } from './mock-snapshot.mjs';
+import { buildSnapshot, buildReplicationHistoryEntries, buildPartnerPortEntries } from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
@@ -41,14 +41,11 @@ const DISCOVER_PATH  = '/api/agent/discover';
 
 // ----- scenario -----
 
-// 2026-08-28 round-45: FZ1_PARTNER_OVERRIDES deleted (R35 port monitoring
-// surface removed end-to-end). FZ1's "partial failure" scenario now travels
-// through the replication link's `statusCode + errorMessage` directly
-// (FZ1→HUB1 has statusCode: 2, errorMessage: 'RPC server unavailable
-// (round-trip > 30s)' in defaultScenario() below) — the matrix view
-// surfaces this as the red "失败" status pill + inline error, and the
-// caret expansion drills into the last 10 ad_replication_history rows.
-// No port-probe rows are emitted.
+// 2026-08-28 round-46: FZ1_PARTNER_OVERRIDES re-imported from mock-snapshot
+// (R35 surface restored for the 复制日志监控 view's port-health column).
+// mock-snapshot.mjs owns the canonical override map; the daemon does not
+// redefine it. Real agent wires the same override via
+// collect-replication.ps1::FZ1_PARTNER_OVERRIDES.
 
 function defaultScenario() {
   // 2026-08-26 round-19+: operator-defined topology. Each non-HUB site's
@@ -234,9 +231,18 @@ function buildReplicationSnapshot(agentId, links, sourceSite, opts = {}) {
   // the matrix view's latest-per-pair queries stay uncorrupted by
   // back-dated attempt timestamps.
   //
-  // 2026-08-28 round-45: buildPartnerPortEntries / portOverrides removed
-  // (R35 port monitoring surface deleted). The status pill + inline error
-  // message on the partner row now carries the failure signal directly
+  // 2026-08-28 round-46: buildPartnerPortEntries restored (R35 deletion
+  // undone for the 复制日志监控 view). One row per unique peer DC with JSON
+  // partner_port_status; ports = the configured system_ports list from
+  // /api/agent/partner-ports (defaulted here to [135,445,389,636,3268,88,
+  // 50001,50002,50003] if the agent didn't query the configured list).
+  const partnerPortEntries = buildPartnerPortEntries(
+    agentId, collectedAt, fullLinks,
+    opts.configuredPorts ?? [135, 445, 389, 636, 3268, 88, 50001, 50002, 50003]
+  );
+
+  // 2026-08-28 round-46: historyEntries keep their R42 contract; the
+  // partner-port entries ride alongside, sorted before history + summary.
   // from the replication link's statusCode/errorMessage.
   //
   // historyEnabled defaults true so the operator's dashboard populates
@@ -261,6 +267,7 @@ function buildReplicationSnapshot(agentId, links, sourceSite, opts = {}) {
     // keeping downstream GROUP BY (source_dc, dest_dc, naming_context) consistent
     // across old + new rows during the 30-min freshness crossover window.
     links: fullLinks,
+    partnerPortEntries,
     historyEntries
   });
 }

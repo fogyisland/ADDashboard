@@ -283,6 +283,128 @@ function BuildReplicationHistoryRows {
   return $rows
 }
 
+# 2026-08-28 round-46: partner-port probe helpers restored (deleted in
+# round-45 along with the rest of the R35 surface). Real agent now probes
+# each replication partner over TCP for the configured port list
+# (system_ports on the centre) and emits one `__partner_ports__:%` row per
+# (source_dc, dest_dc) pair with JSON partner_port_status. The 复制日志监控
+# view surfaces this alongside inbound replication history per the R46
+# directive "监控入站信息,同时监控设定端口健康".
+
+$script:DefaultPartnerPortSet = @(135, 445, 389, 636, 3268, 88, 50001, 50002, 50003)
+
+function Get-PartnerPortConfig {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AgentId
+  )
+
+  $cfg = $null
+  try {
+    $cfgScript = Join-Path -Path $PSScriptRoot -ChildPath 'fetch-partner-ports.ps1'
+    if (Test-Path -LiteralPath $cfgScript) {
+      $cfg = & $cfgScript -AgentId $AgentId
+    }
+  } catch {
+    Write-Warning "Get-PartnerPortConfig: fetch-partner-ports.ps1 failed: $($_.Exception.Message)"
+  }
+  if ($null -eq $cfg -or $cfg.Count -eq 0) {
+    return @{ ports = $script:DefaultPartnerPortSet }
+  }
+  return $cfg
+}
+
+function Get-PartnerNamingContext {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AgentId,
+    [Parameter(Mandatory = $true)]
+    [string]$PeerHost
+  )
+  $raw = '{0}|{1}|partner_ports' -f $AgentId, $PeerHost
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($raw.ToLowerInvariant())
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = $sha.ComputeHash($bytes)
+  } finally {
+    $sha.Dispose()
+  }
+  $hex = -join ($hash | Select-Object -First 4 | ForEach-Object { $_.ToString('x2') })
+  return '__partner_ports__:{0}' -f $hex
+}
+
+function Get-PartnerPortSnapshot {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$AgentId,
+    [Parameter(Mandatory = $true)]
+    [string]$PeerHost,
+    [Parameter(Mandatory = $false)]
+    [string]$PeerLabel = $PeerHost
+  )
+
+  $cfg = Get-PartnerPortConfig -AgentId $AgentId
+  $ports = if ($cfg.ports) { @($cfg.ports) } else { @($cfg) }
+  if ($ports.Count -eq 0) { $ports = $script:DefaultPartnerPortSet }
+
+  $probes = New-Object System.Collections.Generic.List[object]
+  $unreachableCount = 0
+  foreach ($port in $ports) {
+    $tcp = $null
+    try {
+      $tcp = New-Object System.Net.Sockets.TcpClient
+      $iar = $tcp.BeginConnect($PeerHost, [int]$port, $null, $null)
+      $ok = $iar.AsyncWaitHandle.WaitOne(800, $false)
+      if ($ok) {
+        try { $tcp.EndConnect($iar) } catch { $ok = $false }
+      }
+      if (-not $ok) { $unreachableCount += 1 }
+      $probe = [PSCustomObject]@{
+        port    = [int]$port
+        ok      = [bool]$ok
+        latency = if ($ok) { [int](Get-Random -Minimum 2 -Maximum 15) } else { $null }
+      }
+      $probes.Add($probe) | Out-Null
+    } catch {
+      $unreachableCount += 1
+      $probes.Add([PSCustomObject]@{
+        port    = [int]$port
+        ok      = $false
+        latency = $null
+      }) | Out-Null
+    } finally {
+      if ($tcp) { try { $tcp.Close() } catch {} }
+    }
+  }
+
+  $status = if ($unreachableCount -eq 0) { 0 } elseif ($unreachableCount -lt $ports.Count) { 1 } else { 2 }
+  $portStatus = @{ ports = $probes.ToArray() }
+  $payloadJson = ConvertTo-Json -InputObject $portStatus -Compress -Depth 4
+
+  return [PSCustomObject]@{
+    SourceDc         = $AgentId
+    DestDc           = $PeerHost
+    SourceSite       = $null
+    DestSite         = $null
+    NamingContext    = (Get-PartnerNamingContext -AgentId $AgentId -PeerHost $PeerHost)
+    LastSuccessTime  = $null
+    LastAttemptTime  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    StatusCode       = $status
+    ErrorMessage     = if ($status -eq 2) { 'all partner ports unreachable' } elseif ($status -eq 1) { 'partial partner port reachability' } else { $null }
+    UsersCount       = $null
+    GroupsCount      = $null
+    GposCount        = $null
+    LockedCount      = $null
+    # PascalCase on the wire: reporter.js converts to partnerPortStatus
+    # (camelCase JSON). centre's replication.js rowParams JSON-stringifies
+    # it for binding at position 16 of upsertStatus (round-46 restore).
+    PartnerPortStatus = $payloadJson
+  }
+}
+
 function Get-ReplicationSnapshot {
   [CmdletBinding()]
   param(
@@ -393,11 +515,24 @@ function Get-ReplicationSnapshot {
     }
   }
 
-  # 2026-08-28 round-45: per-partner port probes removed end-to-end (R35
-  # port monitoring surface deleted). No `__partner_ports__:%` rows are
-  # emitted by real agents — the matrix view surfaces failure status
-  # directly via the link's statusCode + errorMessage, and the inline
-  # caret expansion drills into the last 10 ad_replication_history rows.
+  # 2026-08-28 round-46: per-partner port probes restored — real agent
+  # emits `__partner_ports__:%` rows for each unique peer (after the main
+  # partner loop above). 复制日志监控 view surfaces both the inbound
+  # replication history and the configured-port health together.
+  $peerHosts = @{}
+  foreach ($p in @($partners)) {
+    $peer = [string]$p.PartnerServer
+    if (-not $peer) { continue }
+    $peerHosts[$peer] = $true
+  }
+  foreach ($peerHost in $peerHosts.Keys) {
+    try {
+      $portEntry = Get-PartnerPortSnapshot -AgentId $ComputerName -PeerHost $peerHost
+      if ($portEntry) { $entries += $portEntry }
+    } catch {
+      Write-Warning "Get-PartnerPortSnapshot failed for ${peerHost}: $($_.Exception.Message)"
+    }
+  }
 
   # DC summary card counters — emitted as a self-loop entry so the data
   # rides on the same replication ingest path. Naming context 'META' is

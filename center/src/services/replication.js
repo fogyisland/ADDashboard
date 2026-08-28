@@ -35,10 +35,19 @@ function rowParams(row) {
   // isSummary was always false and the 4 counters were silently bound as
   // NULL on every __dc_summary__ row. That left Server Overview showing
   // — / 0 / — / — for every DC that reported through this path.
-  // 2026-08-28 round-45: drop partnerPortStatus binding (R35 port monitoring
-  // surface removed). The column remains inert in ad_replication_status —
-  // schema untouched, app-layer binding/reads deleted.
+  // 2026-08-28 round-46: restore partnerPortStatus binding (R46 = 复制日志监控
+  // inbound + 端口健康). Real agent + mock emit partner-port probe results
+  // as JSON string on __partner_ports__:% rows; partnerPortStatusJson is
+  // bound at position 16 (NULL for non-partner-port rows). This unblocks
+  // /replication-log/all port health surface.
   const isSummary = row.namingContext === '__dc_summary__';
+  const isPartnerPort = typeof row.namingContext === 'string'
+    && row.namingContext.startsWith('__partner_ports__:');
+  const partnerPortStatusJson = isPartnerPort && row.partnerPortStatus != null
+    ? (typeof row.partnerPortStatus === 'string'
+       ? row.partnerPortStatus
+       : JSON.stringify(row.partnerPortStatus))
+    : null;
   return [
     toMysqlDatetime(row.collectedAt),
     row.agentId,
@@ -54,7 +63,8 @@ function rowParams(row) {
     isSummary ? (row.usersCount ?? null)  : null,
     isSummary ? (row.groupsCount ?? null) : null,
     isSummary ? (row.gposCount ?? null)   : null,
-    isSummary ? (row.lockedCount ?? null) : null
+    isSummary ? (row.lockedCount ?? null) : null,
+    partnerPortStatusJson
   ];
 }
 

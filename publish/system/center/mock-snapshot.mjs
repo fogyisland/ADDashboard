@@ -264,6 +264,95 @@ function pickFailureError(hash) {
   return FAILURE_ERRORS[hash[0] % FAILURE_ERRORS.length];
 }
 
+// 2026-08-28 round-46: partner-port probe helpers restored (deleted in
+// R45 along with the rest of the R35 surface). Mock agents now emit one
+// `__partner_ports__:%` row per unique replication peer with a JSON
+// partner_port_status — byte-for-byte matching what collect-replication.ps1
+// ::Get-PartnerPortSnapshot produces. 复制日志监控 view shows the inbound
+// replication history AND configured-port health together.
+
+export function partnerPortNamingContext(agentId, peerHost) {
+  const raw = `${agentId}|${peerHost}|partner_ports`.toLowerCase();
+  // SHA-256 → first 4 bytes (8 hex chars), matches collect-replication.ps1's
+  // Get-PartnerNamingContext so the synthetic NC is byte-identical between
+  // real agent and mock for the same (agent, peer) tuple.
+  const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
+  return `__partner_ports__:${hash}`;
+}
+
+function probeMockPort(host, port) {
+  // Deterministic per-(host, port) probe. ~87% reachable with 2-15ms latency,
+  // matching collect-replication.ps1's TcpClient.BeginConnect + Get-Random
+  // jitter pattern.
+  const h = crypto.createHash('sha256').update(`${host}|${port}`).digest();
+  const reachable = h[0] % 8 !== 0;       // ~87.5% reachable (fail on 0)
+  const latency = reachable ? 2 + (h[1] % 14) : null;
+  return {
+    port: Number(port),
+    ok: reachable,
+    latency
+  };
+}
+
+// Per-peer override map (matches the real agent's R35 FZ1_PARTNER_OVERRIDES):
+// any (agent, peer) tuple listed here forces a specific port to fail. Used
+// to keep deterministic tests for the 端口检测 not running failure path.
+export const FZ1_PARTNER_OVERRIDES = new Map([
+  ['FZ1ADSRV1:50001', false]
+]);
+
+export function buildPartnerPortEntries(agentId, collectedAt, links = [], configuredPorts = [] = []) {
+  if (typeof agentId !== 'string' || !agentId) {
+    throw new TypeError('buildPartnerPortEntries: agentId required');
+  }
+  const ts = collectedAt instanceof Date
+    ? collectedAt.toISOString()
+    : String(collectedAt);
+  const ports = (configuredPorts && configuredPorts.length)
+    ? configuredPorts
+    : [135, 445, 389, 636, 3268, 88, 50001, 50002, 50003];
+  const seen = new Set();
+  const out = [];
+  for (const link of links) {
+    const peer = link.destDc;
+    if (!peer || seen.has(peer)) continue;
+    seen.add(peer);
+    const probes = ports.map((p) => {
+      const key = `${agentId}:${p}`;
+      let probe = probeMockPort(peer, p);
+      if (FZ1_PARTNER_OVERRIDES.has(key)) {
+        probe = { port: p, ok: !!FZ1_PARTNER_OVERRIDES.get(key), latency: null };
+      }
+      return probe;
+    });
+    const unreachableCount = probes.filter((p) => !p.ok).length;
+    const status = unreachableCount === 0
+      ? 0
+      : (unreachableCount === probes.length ? 2 : 1);
+    const payload = { ports: probes };
+    const payloadJson = JSON.stringify(payload);
+    out.push({
+      SourceDc:         agentId,
+      DestDc:           peer,
+      SourceSite:       link.sourceSite ?? null,
+      DestSite:         link.destSite ?? null,
+      NamingContext:    partnerPortNamingContext(agentId, peer),
+      LastSuccessTime:  status === 0 ? ts : null,
+      LastAttemptTime:  ts,
+      StatusCode:       status,
+      ErrorMessage:     status === 2 ? 'all partner ports unreachable'
+                     : status === 1 ? 'partial partner port reachability'
+                     : null,
+      UsersCount:       null,
+      GroupsCount:      null,
+      GposCount:        null,
+      LockedCount:      null,
+      PartnerPortStatus: payloadJson
+    });
+  }
+  return out;
+}
+
 // Build a complete snapshot the way collect-replication.ps1 would emit it.
 // Always appends a __dc_summary__ entry so the centre's
 // GET /api/dcs/summary → DcCard UI has live counters even when there are
@@ -271,9 +360,10 @@ function pickFailureError(hash) {
 // heartbeat). Without this the Server Overview renders — / 0 / — / —
 // which they mistake for "the data path never executed".
 //
-// 2026-08-28 round-45: partnerPortEntries dropped — R35 port monitoring
-// surface deleted end-to-end; real agent no longer emits partner-port
-// rows.
+// 2026-08-28 round-46: partnerPortEntries restored (R35 deletion undone for
+// this view). Accepts partnerPortEntries[] — one entry per unique peer DC
+// with JSON partner_port_status — emitted AFTER per-link entries and
+// BEFORE history + summary.
 //
 // 2026-08-27 round-42 (复制日志监控): also accepts historyEntries — the
 // per-attempt ad_replication_history rows Get-ADReplicationPartnerMetadata
@@ -286,6 +376,7 @@ export function buildSnapshot({
   collectedAt,                            // ISO string or Date
   sourceSite = null,
   links = [],
+  partnerPortEntries = [],
   historyEntries = []
 } = {}) {
   if (typeof agentId !== 'string' || !agentId) {
@@ -300,6 +391,7 @@ export function buildSnapshot({
     Site:        sourceSite,
     Entries: [
       ...buildLinkEntries(agentId, ts, links, sourceSite),
+      ...(Array.isArray(partnerPortEntries) ? partnerPortEntries : []),
       ...(Array.isArray(historyEntries) ? historyEntries : []),
       buildSummaryEntry(agentId, ts, sourceSite)
     ]

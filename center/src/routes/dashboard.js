@@ -492,6 +492,14 @@ export function dashboardRouter({ config, logger, db }) {
   // caret expansion inside 复制状态概览 uses the slimmer /pair-history
   // endpoint above; 复制日志监控 is the drill-down UI per operator
   // directive "那个和当前的复制状况概览是两个不同界面").
+  // 2026-08-28 round-46: filter partners to inbound-only (`direction='in'`
+  // per R43 direction emission; out-bound entries drop). Each inbound
+  // partner gets `portHealth[]` — the latest per-(source_dc, dest_dc)
+  // partner-port probe result for the configured ports, plus
+  // `configuredPorts[]` (the global list from system_ports). The operator
+  // directive: "复制日志监控 不对,我们之前需要的是监控入站信息,同时监控
+  // 设定端口健康" — this view is now both inbound monitoring AND the
+  // configured-port health check.
   //
   // Response envelope:
   //   {
@@ -521,14 +529,24 @@ export function dashboardRouter({ config, logger, db }) {
     try {
       const db = getDb();
 
-      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: histRows }, { rows: cfgRows }] =
+      const [{ rows: siteRows }, { rows: dcRows }, { rows: linkRows }, { rows: histRows }, { rows: cfgRows }, { rows: portRows }, { rows: cfgPortRows }] =
         await Promise.all([
           db.query(db.sql.dashboard.allSitesOrdered, []),
           db.query(db.sql.dashboard.allDcsBySite, []),
           db.query(db.sql.dashboard.allReplicationLinks, []),
           db.query(db.sql.dashboard.replicationLogRecentAttempts, []),
-          db.query(db.sql.dashboard.refreshSeconds, [])
+          db.query(db.sql.dashboard.refreshSeconds, []),
+          db.query(db.sql.dashboard.latestPartnerPortPerPair, []),
+          db.query(db.sql.ports.list, [])
         ]);
+
+      // Index the configured port list (from system_ports) once. Each
+      // partner gets the same list appended as `configuredPorts[]` so the
+      // view can show reachability per port without an extra round-trip.
+      const configuredPorts = cfgPortRows.map(p => ({
+        port: p.port,
+        label: p.label
+      }));
 
       const dcByName = new Map(dcRows.map(d => [d.dc_name, d]));
       const siteById = new Map(siteRows.map(s => [s.site_id, {
@@ -574,6 +592,23 @@ export function dashboardRouter({ config, logger, db }) {
         historyByPair.get(k).push(h);
       }
 
+      // 2026-08-28 round-46: index partner-port probe results by
+      // (source_dc, dest_dc). Each entry's partner_port_status JSON is
+      // parsed and surfaced as portHealth[] on the partner row.
+      const portHealthByPair = new Map();
+      for (const r of portRows) {
+        let parsed = null;
+        if (typeof r.partner_port_status === 'string' && r.partner_port_status.length) {
+          try { parsed = JSON.parse(r.partner_port_status); }
+          catch { parsed = null; }
+        }
+        portHealthByPair.set(`${r.source_dc}${sep}${r.dest_dc}`, {
+          statusCode: r.status_code,
+          lastAttemptTime: toIso(r.last_attempt_time),
+          portStatus: parsed
+        });
+      }
+
       const sites = [];
       for (const s of siteRows) {
         const dcList = dcsBySite.get(s.site_id) || [];
@@ -592,12 +627,13 @@ export function dashboardRouter({ config, logger, db }) {
         for (const l of linkRows) {
           if (l.source_dc === l.dest_dc) continue;
 
+          // 2026-08-28 round-46: filter to inbound only — operator directive
+          // "出战没有意义,出战对其他机器就是入站" (re-stated for R46). The
+          // out-bound side still surfaces in 复制状态概览 (R36) where the
+          // partner grid enumerates both, but 复制日志监控 is INBOUND-first.
           const sides = [];
           if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
             sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
-          }
-          if (partnerMapByDc.has(l.source_dc)) {
-            sides.push({ dcName: l.source_dc, peerDc: l.dest_dc, direction: 'out' });
           }
           if (sides.length === 0) continue;
 
@@ -615,6 +651,20 @@ export function dashboardRouter({ config, logger, db }) {
               const newTime = l.last_attempt_time ? new Date(l.last_attempt_time).getTime() : 0;
               if (newTime <= exTime) continue;
             }
+            // 2026-08-28 round-46: attach portHealth + configuredPorts. The
+            // probe is keyed on (source_dc, dest_dc) — same as the inbound
+            // peer DC pair — so this is a single Map lookup per partner.
+            const portKey = `${l.source_dc}${sep}${l.dest_dc}`;
+            const portHealthEntry = portHealthByPair.get(portKey);
+            const portHealth = portHealthEntry
+              ? [{
+                  statusCode: portHealthEntry.statusCode,
+                  lastAttemptTime: portHealthEntry.lastAttemptTime,
+                  ports: Array.isArray(portHealthEntry.portStatus?.ports)
+                    ? portHealthEntry.portStatus.ports
+                    : []
+                }]
+              : [];
             targetMap.set(k, {
               peerType: peer.site_id === s.site_id ? "within" : "bridgehead",
               peerDc,
@@ -626,6 +676,8 @@ export function dashboardRouter({ config, logger, db }) {
               lastSuccessTime: toIso(l.last_success_time),
               lastAttemptTime: toIso(l.last_attempt_time),
               durationMinutes: l.duration_minutes,
+              configuredPorts,
+              portHealth,
               attempts: (historyByPair.get(`${l.source_dc}${sep}${l.dest_dc}${sep}${l.naming_context}`) || [])
                 .slice(0, 10)
                 .map(h => ({

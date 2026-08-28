@@ -35,6 +35,22 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       }
     });
 
+    // 2026-08-28 round-46: partner-ports endpoint restored (was deleted in
+    // round-45). Real agent + mock now read the configured port list from
+    // /api/agent/partner-ports and probe each replication partner over
+    // TCP, emitting __partner_ports__:% rows with JSON partner_port_status.
+    // The 复制日志监控 view surfaces this alongside inbound replication
+    // history per the R46 directive ("监控入站信息,同时监控设定端口健康").
+    r.get('/api/agent/partner-ports', agentMw, async (_req, res) => {
+      try {
+        const rows = await listPorts();
+        res.json({ ports: rows });
+      } catch (e) {
+        logger.error({ err: e }, 'agent partner-ports fetch failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
+
     r.post('/api/agent/heartbeat', agentMw, async (req, res) => {
       const { agentId, agentVersion, pendingQueueSize, lastReportAt, lastReportStatus, ports, agentType, hostname, agent_token_version, report_requested_at } = req.body || {};
       if (!agentId) return res.status(400).json({ error: 'missing agentId' });

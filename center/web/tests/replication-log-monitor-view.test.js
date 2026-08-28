@@ -200,58 +200,43 @@ test('renders 方向 column with 进 badge for inbound partner', async () => {
   expect(dirTag.classes()).toContain('dir-tag-in');
 });
 
-test('renders 出 badge when partner direction is out', async () => {
+test('R46 inbound-only: payload contains only inbound partners', async () => {
+  // Round-46: 复制日志监控 only surfaces inbound partner rows. Outbound
+  // (本机 → partner) is meaningless — to the partner it IS their inbound.
+  // The route strips outbound before serializing; the view only ever sees
+  // direction='in' partners in payload.partners[]. This test pins the
+  // basePayload() invariant: all partner rows must be 'in'.
   const payload = basePayload();
-  // Mark DC-BJ-02 → DC-BJ-01 as out
-  payload.sites[0].dcs[1].partners[0].direction = 'out';
+  for (const site of payload.sites) {
+    for (const dc of site.dcs) {
+      for (const p of dc.partners) {
+        expect(p.direction).toBe('in');
+      }
+    }
+  }
+  // And only inbound partner rows render
   dashboardApi.getReplicationLogAll.mockResolvedValue({ data: payload });
   const w = mountView();
   await flushPromises();
-  const partnerRow = w.find('[data-test="partner-DC-BJ-02-DC-BJ-01"]');
-  expect(partnerRow.exists()).toBe(true);
-  expect(partnerRow.attributes('data-test-direction')).toBe('out');
-  const dirTag = partnerRow.find('.dir-tag');
-  expect(dirTag.text()).toBe('出');
-  expect(dirTag.classes()).toContain('dir-tag-out');
+  // All visible rows carry direction='in'
+  const inRows = w.findAll('[data-test-direction="in"]');
+  expect(inRows.length).toBeGreaterThan(0);
+  const outRows = w.findAll('[data-test-direction="out"]');
+  expect(outRows.length).toBe(0);
 });
 
-test('merges same-(peerDc, NC) in + out entries into a single 双向 row', async () => {
-  // Round-43: when the same peerDc+NC appears twice with different
-  // directions (one inbound, one outbound), the view must dedup into a
-  // single row with 双向 label, NOT show two rows.
-  const payload = basePayload();
-  // DC-BJ-02 has peer DC-BJ-01 direction='in'; add the 'out' twin
-  payload.sites[0].dcs[1].partners.push({
-    peerType: 'within', peerDc: 'DC-BJ-01', peerSite: '核心站点',
-    peerSiteIsHub: true, statusCode: 0,
-    namingContext: 'DC=contoso,DC=com',
-    direction: 'out',
-    lastSuccessTime: '2026-08-27T10:00:00Z',
-    lastAttemptTime:  '2026-08-27T10:00:30Z',
-    durationMinutes: 1,
-    attempts: []
-  });
-  dashboardApi.getReplicationLogAll.mockResolvedValue({ data: payload });
-  const w = mountView();
-  await flushPromises();
-  // Only ONE partner row for DC-BJ-02 → DC-BJ-01
-  const rows = w.findAll('[data-test="partner-DC-BJ-02-DC-BJ-01"]');
-  expect(rows).toHaveLength(1);
-  // That row carries direction='both'
-  expect(rows[0].attributes('data-test-direction')).toBe('both');
-  // Tag rendered as 双向
-  const dirTag = rows[0].find('.dir-tag');
-  expect(dirTag.text()).toBe('双向');
-  expect(dirTag.classes()).toContain('dir-tag-both');
-});
-
-test('legend shows all three direction swatches', async () => {
+test('legend shows the inbound swatch (R46 inbound-only)', async () => {
+  // Round-46: legend now only documents the single direction shown
+  // (inbound). Outbound/双向 removed since the route filters them out.
   dashboardApi.getReplicationLogAll.mockResolvedValue({ data: basePayload() });
   const w = mountView();
   await flushPromises();
   const legend = w.find('.legend');
   expect(legend.exists()).toBe(true);
   expect(legend.text()).toContain('进');
-  expect(legend.text()).toContain('出');
-  expect(legend.text()).toContain('双向');
+  expect(legend.text()).toContain('入站');
+  // Port-health swatches still present (R46 restored port monitoring
+  // for this view).
+  expect(legend.text()).toContain('端口可达');
+  expect(legend.text()).toContain('端口不可达');
 });

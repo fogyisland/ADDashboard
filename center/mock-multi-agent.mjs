@@ -30,7 +30,7 @@
 // Each agent's timing is configurable through the JSON config so the
 // operator can re-stage the scenario without touching code.
 
-import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot } from './mock-snapshot.mjs';
+import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot, buildPartnerPortEntries } from './mock-snapshot.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -342,11 +342,11 @@ function defaultScenario() {
 // __dc_summary__ entry with deterministic per-DC counters so the
 // Server Overview's DcCard never renders — / 0 for a healthy mock.
 //
-// 2026-08-28 round-45: partner-port entries removed (R35 port monitoring
-// surface deleted end-to-end). The matrix view's status pill + inline
-// error message now carries the failure signal directly from the
-// replication link's statusCode/errorMessage — no per-port rows are
-// emitted by mock or real agent.
+// 2026-08-28 round-46: partner-port entries restored (R35 deletion undone
+// for the 复制日志监控 view's port-health column). One row per unique peer
+// DC with JSON partner_port_status. Deterministic probes via SHA256(host|port)
+// — ~87% reachable with 2-15ms latency. FZ1's 50001 failure preserved via
+// FZ1_PARTNER_OVERRIDES in mock-snapshot.mjs.
 function buildReplicationSnapshot(agentId, collectedAt, links, sourceSite, opts = {}) {
   // peer IDs here are the same string used in link.destDc — input to
   // buildReplicationHistoryEntries below.
@@ -364,11 +364,20 @@ function buildReplicationSnapshot(agentId, collectedAt, links, sourceSite, opts 
     historyEnabled: opts.historyEnabled !== false,
     attemptsPerPair: opts.attemptsPerPair ?? 3
   });
+  // 2026-08-28 round-46: partner-port entries ride alongside history
+  // entries. The configured port list defaults to the R35 default set
+  // (matches what collect-replication.ps1's Get-PartnerPortConfig falls
+  // back to when /api/agent/partner-ports is unreachable).
+  const partnerPortEntries = buildPartnerPortEntries(
+    agentId, collectedAt, links ?? [],
+    [135, 445, 389, 636, 3268, 88, 50001, 50002, 50003]
+  );
   return buildSnapshot({
     agentId,
     collectedAt,
     sourceSite,
     links: links ?? [],
+    partnerPortEntries,
     historyEntries
   });
 }

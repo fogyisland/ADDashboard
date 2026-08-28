@@ -12,17 +12,19 @@
     </header>
 
     <p class="hint">
-      按 站点 → DC → 复制伙伴 展示最新连接状态。
+      按 站点 → DC → 复制伙伴 展示入站连接状态 + 配置端口健康 (R46)。
       右侧 <span class="caret-glyph">▸</span> 展开按钮可查看最近 10 次的连接具体信息 —
-      成功时显示耗时与对象传输数,失败时显示错误描述。
+      成功时显示耗时与对象传输数,失败时显示错误描述;展开后下方还会列出
+      设定端口健康 (每端口可达性 + 延迟)。
     </p>
     <p class="legend">
       <span class="legend-item"><span class="legend-swatch swatch-primary"></span>主控 DC</span>
       <span class="legend-item"><span class="legend-swatch swatch-bridgehead"></span>桥头 DC</span>
       <span class="legend-item"><span class="legend-swatch swatch-member"></span>成员 DC</span>
       <span class="legend-item"><span class="dir-tag dir-tag-in">进</span>伙伴 → 本机 (入站)</span>
-      <span class="legend-item"><span class="dir-tag dir-tag-out">出</span>本机 → 伙伴 (出站)</span>
-      <span class="legend-item"><span class="dir-tag dir-tag-both">双向</span>双向复制</span>
+      <span class="legend-item"><span class="port-chip port-chip-ok">●</span>端口可达</span>
+      <span class="legend-item"><span class="port-chip port-chip-warn">▲</span>部分端口</span>
+      <span class="legend-item"><span class="port-chip port-chip-err">✕</span>端口不可达</span>
     </p>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
@@ -64,6 +66,7 @@
               <th>伙伴站点</th>
               <th>伙伴 DC</th>
               <th>当前状态</th>
+              <th>端口健康</th>
               <th>最近成功</th>
               <th>耗时 (分)</th>
             </tr>
@@ -93,12 +96,16 @@
                 </td>
                 <td class="peer-dc">{{ partner.peerDc }}</td>
                 <td class="status">{{ statusGlyph(partner) }} {{ statusLabel(partner) }}</td>
+                <td class="port-health">
+                  <span :class="['port-chip', portChipClass(partner)]">{{ portChipGlyph(partner) }}</span>
+                  <span class="port-health-text">{{ portChipText(partner) }}</span>
+                </td>
                 <td class="time">{{ partner.lastSuccessTime ? fmt(partner.lastSuccessTime) : '—' }}</td>
                 <td class="duration">{{ partner.durationMinutes == null ? '—' : `${partner.durationMinutes}` }}</td>
               </tr>
               <tr v-if="isExpanded(dc.dcName, partner.peerDc)" class="attempts-row"
                   :data-test="`attempts-${dc.dcName}-${partner.peerDc}`">
-                <td colspan="8" class="attempts-cell">
+                <td colspan="9" class="attempts-cell">
                   <div class="attempts-panel">
                     <div v-if="!partner.attempts || !partner.attempts.length" class="attempts-empty">
                       暂无历史记录 — 该伙伴没有 24h 内的连接尝试数据
@@ -130,6 +137,24 @@
                         </tr>
                       </tbody>
                     </table>
+                  </div>
+                  <div v-if="partner.configuredPorts && partner.configuredPorts.length" class="ports-strip">
+                    <span class="ports-strip-label">设定端口:</span>
+                    <span
+                      v-for="p in partner.configuredPorts"
+                      :key="`cfg-${p}`"
+                      class="port-num"
+                    >{{ p }}</span>
+                  </div>
+                  <div v-if="partner.portHealth && partner.portHealth.length" class="ports-strip">
+                    <span class="ports-strip-label">端口健康:</span>
+                    <span
+                      v-for="ph in partner.portHealth"
+                      :key="`ph-${ph.peerDc || partner.peerDc}-${ph.lastAttemptTime}`"
+                      :class="['port-mini-chip', portMiniClass(ph)]"
+                    >
+                      {{ portMiniGlyph(ph) }} {{ portMiniText(ph) }}
+                    </span>
                   </div>
                 </td>
               </tr>
@@ -289,6 +314,60 @@ function attemptRowClass(a) {
 }
 function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
 
+// 2026-08-28 round-46: partner port-health helpers. The route emits
+// partner.portHealth[] (latestPartnerPortPerPair rows for the (source, dest)
+// pair) and partner.configuredPorts[] (system_ports list). portChip* render
+// the main cell summary; portMini* render each row's per-attempt snapshot
+// inside the expanded attempts panel.
+function portChipClass(p) {
+  const arr = Array.isArray(p?.portHealth) ? p.portHealth : [];
+  if (arr.length === 0) return 'port-chip-none';
+  // Pick the latest attempt by lastAttemptTime
+  const latest = arr.slice().sort((a, b) => {
+    const ta = a.lastAttemptTime ? new Date(a.lastAttemptTime).getTime() : 0;
+    const tb = b.lastAttemptTime ? new Date(b.lastAttemptTime).getTime() : 0;
+    return tb - ta;
+  })[0];
+  const sc = Number(latest.statusCode);
+  if (sc === 0) return 'port-chip-ok';
+  if (sc === 1) return 'port-chip-warn';
+  return 'port-chip-err';
+}
+function portChipGlyph(p) {
+  const cls = portChipClass(p);
+  if (cls === 'port-chip-ok') return '●';
+  if (cls === 'port-chip-warn') return '▲';
+  if (cls === 'port-chip-err') return '✕';
+  return '—';
+}
+function portChipText(p) {
+  const arr = Array.isArray(p?.portHealth) ? p.portHealth : [];
+  if (arr.length === 0) return '未探测';
+  const cls = portChipClass(p);
+  if (cls === 'port-chip-ok') return '端口可达';
+  if (cls === 'port-chip-warn') return '部分端口';
+  if (cls === 'port-chip-err') return '端口不可达';
+  return '—';
+}
+function portMiniClass(ph) {
+  const sc = Number(ph?.statusCode);
+  if (sc === 0) return 'port-mini-ok';
+  if (sc === 1) return 'port-mini-warn';
+  return 'port-mini-err';
+}
+function portMiniGlyph(ph) {
+  const cls = portMiniClass(ph);
+  if (cls === 'port-mini-ok') return '●';
+  if (cls === 'port-mini-warn') return '▲';
+  return '✕';
+}
+function portMiniText(ph) {
+  const sc = Number(ph?.statusCode);
+  if (sc === 0) return '全可达';
+  if (sc === 1) return '部分';
+  return '不可达';
+}
+
 onMounted(async () => {
   await load();
   timerHandle = setInterval(load, refreshSeconds.value * 1000);
@@ -392,4 +471,30 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .att-glyph-ok   { color: #22c55e; }
 .att-glyph-warn { color: #f59e0b; }
 .att-glyph-err  { color: #ef4444; }
+
+/* 2026-08-28 round-46: port-health chip + strip styles for the inline
+   port-health surface added on top of replication history. */
+.port-health { white-space: nowrap; min-width: 110px; }
+.port-chip { display: inline-block; width: 14px; height: 14px; line-height: 14px;
+             text-align: center; border-radius: 3px; margin-right: 4px;
+             font-family: ui-monospace, monospace; font-weight: 600; font-size: 11px; }
+.port-chip-ok   { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
+.port-chip-warn { background: #78350f; color: #fde68a; border: 1px solid #b45309; }
+.port-chip-err  { background: #7f1d1d; color: #fecaca; border: 1px solid #b91c1c; }
+.port-chip-none { background: #1e293b; color: var(--muted); border: 1px solid #334155; }
+.port-health-text { font-size: 12px; color: var(--muted); }
+
+.ports-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+               padding: 8px 4px 4px; font-size: 11px; color: var(--muted); }
+.ports-strip-label { font-weight: 600; color: var(--muted); margin-right: 4px; }
+.port-num { font-family: ui-monospace, monospace; background: #0b1220;
+            color: var(--text); padding: 2px 6px; border-radius: 3px;
+            border: 1px solid #1e293b; }
+.port-mini-chip { display: inline-flex; gap: 3px; align-items: center;
+                  padding: 2px 8px; border-radius: 999px;
+                  font-family: ui-monospace, monospace; font-size: 11px;
+                  font-weight: 600; letter-spacing: 0.04em; }
+.port-mini-ok   { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
+.port-mini-warn { background: #78350f; color: #fde68a; border: 1px solid #b45309; }
+.port-mini-err  { background: #7f1d1d; color: #fecaca; border: 1px solid #b91c1c; }
 </style>

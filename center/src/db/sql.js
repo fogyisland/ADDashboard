@@ -20,7 +20,7 @@ const VARIANTS = {
       lastHeartbeat: 'SELECT last_heartbeat_at AS last FROM ad_agent_heartbeat ORDER BY last_heartbeat_at DESC LIMIT 1'
     },
     replication: {
-      upsertStatus: `INSERT INTO ad_replication_status (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE collected_at = VALUES(collected_at), agent_id = VALUES(agent_id), source_site = VALUES(source_site), dest_site = VALUES(dest_site), last_success_time = VALUES(last_success_time), last_attempt_time = VALUES(last_attempt_time), status_code = VALUES(status_code), error_message = VALUES(error_message), users_count = VALUES(users_count), groups_count = VALUES(groups_count), gpos_count = VALUES(gpos_count), locked_count = VALUES(locked_count)`,
+      upsertStatus: `INSERT INTO ad_replication_status (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE collected_at = VALUES(collected_at), agent_id = VALUES(agent_id), source_site = VALUES(source_site), dest_site = VALUES(dest_site), last_success_time = VALUES(last_success_time), last_attempt_time = VALUES(last_attempt_time), status_code = VALUES(status_code), error_message = VALUES(error_message), users_count = VALUES(users_count), groups_count = VALUES(groups_count), gpos_count = VALUES(gpos_count), locked_count = VALUES(locked_count), partner_port_status = VALUES(partner_port_status)`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC LIMIT ?`,
       listBySite: `SELECT source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC LIMIT ?`,
@@ -178,6 +178,15 @@ const VARIANTS = {
       allSitesOrdered: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites ORDER BY is_hub DESC, region_code, site_name`,
       allDcsBySite: `SELECT d.dc_name, d.site_id, d.os_version, d.when_created, d.is_pdc, d.is_gc, d.is_rid_master, d.is_schema_master, d.is_domain_naming_master, d.is_infrastructure_master, d.is_bridgehead, d.discovered_at, d.discovered_by_agent_id FROM ad_dcs d INNER JOIN ad_sites s ON s.site_id = d.site_id ORDER BY s.site_name, d.dc_name`,
       allReplicationLinks: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_success_time, t1.last_attempt_time, TIMESTAMPDIFF(MINUTE, t1.last_success_time, t1.last_attempt_time) AS duration_minutes FROM ad_replication_status t1 WHERE t1.source_dc <> t1.dest_dc AND t1.naming_context NOT IN ('__dc_summary__', 'META') AND t1.collected_at = (SELECT MAX(t2.collected_at) FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context NOT IN ('__dc_summary__', 'META')) AND t1.collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE ORDER BY t1.source_dc, t1.dest_dc, t1.naming_context`,
+      // 2026-08-28 round-46: latest per-partner TCP-port probe. The probe
+      // data lands on the `__partner_ports__:<sha>` naming_context rows
+      // collected-replication.ps1 emits (R35 surface, brought back in
+      // R46 to feed 复制日志监控's port-health view). partner_port_status
+      // carries a JSON blob with per-port reachability details (see
+      // collect-replication.ps1::Get-PartnerPortSnapshot for the schema).
+      // Filter on LIKE '__partner_ports__:%' (NOT IN the explicit values)
+      // because the hash suffix makes an equality check impossible.
+      latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_attempt_time, t1.partner_port_status FROM ad_replication_status t1 WHERE t1.naming_context LIKE '__partner_ports__:%' AND t1.source_dc <> t1.dest_dc AND t1.collected_at = (SELECT MAX(t2.collected_at) FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context LIKE '__partner_ports__:%') AND t1.collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE ORDER BY t1.source_dc, t1.dest_dc`,
       // 2026-08-27 round-42 (复制日志监控): per-pair recent attempts. The
       // dashboard groups rows client-side by (source_dc, dest_dc, naming_context)
       // and slices to 10 per pair; the SQL just returns the rows ordered so
@@ -616,7 +625,8 @@ const VARIANTS = {
            ?                          AS users_count,
            ?                          AS groups_count,
            ?                          AS gpos_count,
-           ?                          AS locked_count
+           ?                          AS locked_count,
+           CAST(? AS NVARCHAR(MAX))   AS partner_port_status
          ) AS s
          ON t.source_dc = s.source_dc AND t.dest_dc = s.dest_dc AND t.naming_context = s.naming_context
          WHEN MATCHED THEN UPDATE SET
@@ -631,10 +641,11 @@ const VARIANTS = {
            users_count = s.users_count,
            groups_count = s.groups_count,
            gpos_count = s.gpos_count,
-           locked_count = s.locked_count
+           locked_count = s.locked_count,
+           partner_port_status = s.partner_port_status
          WHEN NOT MATCHED THEN INSERT
-           (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count)
-           VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count);`,
+           (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status)
+           VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
       listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
@@ -840,6 +851,12 @@ const VARIANTS = {
       allSitesOrdered: `SELECT site_id, site_name, region_code, is_hub, description FROM ad_sites ORDER BY is_hub DESC, region_code, site_name`,
       allDcsBySite: `SELECT d.dc_name, d.site_id, d.os_version, d.when_created, d.is_pdc, d.is_gc, d.is_rid_master, d.is_schema_master, d.is_domain_naming_master, d.is_infrastructure_master, d.is_bridgehead, d.discovered_at, d.discovered_by_agent_id FROM ad_dcs d INNER JOIN ad_sites s ON s.site_id = d.site_id ORDER BY s.site_name, d.dc_name`,
       allReplicationLinks: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_success_time, t1.last_attempt_time, CASE WHEN t1.last_success_time IS NULL OR t1.last_attempt_time IS NULL THEN NULL ELSE CAST(DATEDIFF_BIG(SECOND, t1.last_success_time, t1.last_attempt_time) AS float) / 60.0 END AS duration_minutes FROM ad_replication_status t1 OUTER APPLY (SELECT TOP 1 t2.collected_at AS max_collected_at FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context NOT IN ('__dc_summary__', 'META') ORDER BY t2.collected_at DESC) m WHERE t1.source_dc <> t1.dest_dc AND t1.naming_context NOT IN ('__dc_summary__', 'META') AND t1.collected_at = m.max_collected_at AND t1.collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME()) ORDER BY t1.source_dc, t1.dest_dc, t1.naming_context`,
+      // 2026-08-28 round-46: MSSQL mirror of latestPartnerPortPerPair.
+      // LIKE '__partner_ports__:%' is portable across dialects (round-14
+      // confirmed MSSQL handles the wildcard as expected). The TOP 1
+      // correlated subquery is the SQL Server idiom that mirrors the
+      // MySQL MAX(t2.collected_at) = ... pattern.
+      latestPartnerPortPerPair: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code, t1.last_attempt_time, t1.partner_port_status FROM ad_replication_status t1 OUTER APPLY (SELECT TOP 1 t2.collected_at AS max_collected_at FROM ad_replication_status t2 WHERE t2.source_dc = t1.source_dc AND t2.dest_dc = t1.dest_dc AND t2.naming_context LIKE '__partner_ports__:%' ORDER BY t2.collected_at DESC) m WHERE t1.naming_context LIKE '__partner_ports__:%' AND t1.source_dc <> t1.dest_dc AND t1.collected_at = m.max_collected_at AND t1.collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME()) ORDER BY t1.source_dc, t1.dest_dc`,
       // 2026-08-27 round-42 (复制日志监控) MSSQL mirror of the MySQL helper
       // above. 24h window matches the MySQL branch (operators care about the
       // latest state). SYSUTCDATETIME() is the SQL Server UTC clock.
