@@ -18,8 +18,8 @@ function mountLayout() {
 const EXPECTED_PATHS = [
   // 账号管理
   '/admin/users', '/admin/roles',
-  // 服务器管理 > 活动目录服务器组 (8 items — R48.1 absorbs 目录管理 + 监控运维)
-  '/admin/sites-catalog', '/admin/dcs-catalog',
+  // 服务器管理 > 监控与健康组 (4 monitoring/health items — R48.2 lifted
+  // out of 活动目录服务器组)
   '/admin/site-replication-matrix/all',
   // 2026-08-28 round-47: standalone 复制伙伴端口健康监控 replaces the
   // R45-restored 复制日志监控 (which listed replication-attempt history).
@@ -28,7 +28,11 @@ const EXPECTED_PATHS = [
   // backward-compat with any saved bookmarks; the label changed.
   '/admin/replication-log/monitor',
   '/admin/ports',
-  '/admin/heartbeat-report', '/admin/operations-log', '/admin/packages',
+  '/admin/heartbeat-report',
+  // 服务器管理 > 活动目录服务器组 (4 AD admin items — R48.1 absorbed 目录管理
+  // + 监控运维; R48.2 split off monitoring items to 监控与健康组)
+  '/admin/sites-catalog', '/admin/dcs-catalog',
+  '/admin/operations-log', '/admin/packages',
   // 服务器管理 > 普通服务器组 (2 items — R48.1 absorbs 服务器管理; labels
   // renamed 非 AD 服务器 → 非活动目录, 非 AD 服务器组 → 非活动目录服务器组)
   '/admin/member-servers', '/admin/server-groups',
@@ -45,7 +49,7 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-test('renders 4 nav groups (round-48.1: 服务器管理 absorbs 目录管理+服务器管理; sub-groups 活动目录服务器组 + 普通服务器组)', () => {
+test('renders 4 nav groups (round-48.2: 服务器管理 now has 3 sub-groups 监控与健康组 + 活动目录服务器组 + 普通服务器组)', () => {
   const w = mountLayout();
   const groupTitles = w.findAll('.nav-group-title').map(t => t.text());
   expect(groupTitles).toEqual(['账号管理', '服务器管理', '数据库运维', '系统设置']);
@@ -58,6 +62,8 @@ test('renders all 17 nav-links with correct paths', () => {
   // 复制日志监控 → 复制伙伴端口健康监控 (no add/remove).
   // 2026-08-28 round-48.1: same 17 nav-links, now nested under 服务器管理
   // umbrella instead of split into 活动目录 + 非活动目录 top-level groups.
+  // 2026-08-28 round-48.2: 4 monitoring items lifted out of 活动目录服务器组
+  // into new 监控与健康组 sub-bucket. Total nav-links unchanged at 17.
   const w = mountLayout();
   const links = w.findAll('a.nav-link');
   expect(links.length).toBe(17);
@@ -69,31 +75,40 @@ test('renders all 17 nav-links with correct paths', () => {
   expect(portHealthLink.text()).toBe('复制伙伴端口健康监控');
 });
 
-test('R48.1: 服务器管理 umbrella has 2 sub-groups (活动目录服务器组 + 普通服务器组)', () => {
+test('R48.2: 服务器管理 umbrella has 3 sub-groups (监控与健康组 + 活动目录服务器组 + 普通服务器组)', () => {
   const w = mountLayout();
   const serverMgmtGroup = w.findAll('.nav-group')[1];
   expect(serverMgmtGroup.find('.nav-group-title').text()).toBe('服务器管理');
   const subGroupTitles = serverMgmtGroup.findAll('.nav-subgroup-title').map(t => t.text());
-  expect(subGroupTitles).toEqual(['活动目录服务器组', '普通服务器组']);
+  expect(subGroupTitles).toEqual(['监控与健康组', '活动目录服务器组', '普通服务器组']);
 });
 
-test('R48.1: 活动目录服务器组 sub-group contains the 8 AD-related items', () => {
+test('R48.2: 监控与健康组 sub-group contains the 4 monitoring/health items', () => {
   const w = mountLayout();
   const serverMgmtGroup = w.findAll('.nav-group')[1];
-  const activeDirSubgroup = serverMgmtGroup.findAll('.nav-subgroup')[0];
-  expect(activeDirSubgroup.find('.nav-subgroup-title').text()).toBe('活动目录服务器组');
-  const activeDirLinks = activeDirSubgroup.findAll('a.nav-link').map(a => a.text());
-  expect(activeDirLinks).toEqual([
-    'AD 站点清单', 'AD 域控清单',
-    '复制状态概览', '复制伙伴端口健康监控', '端口健康检查',
-    '心跳与报告', '操作日志', '包管理'
+  const monitorSubgroup = serverMgmtGroup.findAll('.nav-subgroup')[0];
+  expect(monitorSubgroup.find('.nav-subgroup-title').text()).toBe('监控与健康组');
+  const monitorLinks = monitorSubgroup.findAll('a.nav-link').map(a => a.text());
+  expect(monitorLinks).toEqual([
+    '复制状态概览', '复制伙伴端口健康监控', '端口健康检查', '心跳与报告'
   ]);
 });
 
-test('R48.1: 普通服务器组 sub-group contains the 2 non-AD items (renamed 非 AD → 非活动目录)', () => {
+test('R48.2: 活动目录服务器组 sub-group contains the 4 AD admin items (monitoring items extracted to 监控与健康组)', () => {
   const w = mountLayout();
   const serverMgmtGroup = w.findAll('.nav-group')[1];
-  const normalServerSubgroup = serverMgmtGroup.findAll('.nav-subgroup')[1];
+  const activeDirSubgroup = serverMgmtGroup.findAll('.nav-subgroup')[1];
+  expect(activeDirSubgroup.find('.nav-subgroup-title').text()).toBe('活动目录服务器组');
+  const activeDirLinks = activeDirSubgroup.findAll('a.nav-link').map(a => a.text());
+  expect(activeDirLinks).toEqual([
+    'AD 站点清单', 'AD 域控清单', '操作日志', '包管理'
+  ]);
+});
+
+test('R48.2: 普通服务器组 sub-group contains the 2 non-AD items (renamed 非 AD → 非活动目录)', () => {
+  const w = mountLayout();
+  const serverMgmtGroup = w.findAll('.nav-group')[1];
+  const normalServerSubgroup = serverMgmtGroup.findAll('.nav-subgroup')[2];
   expect(normalServerSubgroup.find('.nav-subgroup-title').text()).toBe('普通服务器组');
   const normalServerLinks = normalServerSubgroup.findAll('a.nav-link').map(a => a.text());
   expect(normalServerLinks).toEqual(['非活动目录', '非活动目录服务器组']);

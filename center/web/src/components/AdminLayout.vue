@@ -56,27 +56,32 @@ const router = useRouter();
 function logout() { auth.logout(); router.push('/login'); }
 const { theme, toggleTheme } = useTheme();
 
-// 2026-08-28 round-48.1: sidebar reorganized per operator revision
-// "将目录管理和服务器管理 合并成服务器管理 ，非活动目录和非活动目录服务器组
-//  放在 普通服务器组 其他的放在活动目录服务器组".
+// 2026-08-28 round-48.2: split monitoring/health items out of 活动目录服务器组
+// into a dedicated 监控与健康组 sub-bucket per operator directive "增加一个
+// 监控与健康" + "组" (sub-group under 服务器管理 umbrella, matching the
+// 活动目录服务器组 / 普通服务器组 naming pattern).
 //
-//   服务器管理 (umbrella, merges prior 目录管理 + 服务器管理 + 监控运维)
-//     活动目录服务器组 (sub-bucket, 8 AD-related items)
-//     普通服务器组    (sub-bucket, 2 non-AD items, renamed 非 AD → 非活动目录)
+//   服务器管理 (umbrella)
+//     监控与健康组    (4 monitoring/health items: 复制状态概览 / 复制伙伴端口
+//                     健康监控 / 端口健康检查 / 心跳与报告)
+//     活动目录服务器组 (4 AD admin items: AD 站点清单 / AD 域控清单 /
+//                     操作日志 / 包管理)
+//     普通服务器组    (2 non-AD items: 非活动目录 / 非活动目录服务器组)
 //
-// Utility groups (账号管理 / 数据库运维 / 系统设置) stay as-is. Total
-// top-level groups: 5 → 4. Total nav-links: 17 (unchanged). Path order
-// preserved (AD group first, then 普通服务器组) so the only change vs
-// flat list is the nested rendering inside 服务器管理.
+// Total top-level groups: 4 (unchanged). Total nav-links: 17 (unchanged).
+// Path order changes — monitoring items move from middle of 活动目录
+// 服务器组 to top of the new 监控与健康组 sub-bucket. URL paths preserved.
 const groups = [
   { title: '账号管理', items: [
     { label: '用户',     path: '/admin/users' },
     { label: '角色',     path: '/admin/roles' }
   ]},
   { title: '服务器管理', subgroups: [
-    { title: '活动目录服务器组', items: [
-      { label: 'AD 站点清单', path: '/admin/sites-catalog' },
-      { label: 'AD 域控清单', path: '/admin/dcs-catalog' },
+    // 2026-08-28 round-48.2: monitoring/health items lifted out of 活动目录
+    // 服务器组 into this new sub-bucket. Surfaces the 4 pages operators
+    // check most often (replication health, port health, agent heartbeat)
+    // without the catalog clutter.
+    { title: '监控与健康组', items: [
       // 2026-08-27 round-33: single-site 站点复制矩阵 removed — replaced by
       // the unified 复制状态概览 view below (per-primary partner table).
       { label: '复制状态概览', path: '/admin/site-replication-matrix/all' },
@@ -86,7 +91,11 @@ const groups = [
       // with saved bookmarks; the label and underlying component change.
       { label: '复制伙伴端口健康监控', path: '/admin/replication-log/monitor' },
       { label: '端口健康检查', path: '/admin/ports' },
-      { label: '心跳与报告', path: '/admin/heartbeat-report' },
+      { label: '心跳与报告', path: '/admin/heartbeat-report' }
+    ]},
+    { title: '活动目录服务器组', items: [
+      { label: 'AD 站点清单', path: '/admin/sites-catalog' },
+      { label: 'AD 域控清单', path: '/admin/dcs-catalog' },
       // 2026-08-27 round-39: 运维区统一日志 — 审计事件(changes/ops)+ 心跳数据 + 报告数据.
       { label: '操作日志',   path: '/admin/operations-log' },
       { label: '包管理',     path: '/admin/packages' }
