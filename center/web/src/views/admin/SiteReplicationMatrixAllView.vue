@@ -1,48 +1,101 @@
+<!--
+  复制状态概览 (复制伙伴状态 全站)
+  ────────────────────────────────
+  2026-08-28 round-49: 整页视觉重做,首屏保留 R45/R47 的数据契约 (per-DC
+  partner tables / status pill + caret / /pair-history lazy expand) 但
+  把布局从"边框堆叠"换成"色阶分层"。
+
+  - 顶部新增 **fleet health ribbon** — 站点 / 域控 / 入站链路 / 健康 /
+    部分失败 / 失败 的总览数字,带轻微色阶(健康绿 / 警告黄 / 失败红)。
+    这是 operator 扫一眼就知道全局状态的入口。
+  - 站点区块:header 用 --panel-alt 区分背景,无外边框;统计 inline 排
+    在右侧 (DC 数 / 链路数 / 异常数)。
+  - DC 区块:不再有 dc-block 外边框,只在区块间用 1px 行分隔线;role
+    badge 收紧 (fsmo 用绿色系,桥头用青色系),"成员" 这种默认标签直接
+    去掉 (无 badge 即默认成员)。
+  - 伙伴行:6 列不变 (caret / 类型 / 伙伴站点 / 伙伴 DC / 当前状态 /
+    最近成功),保留全部 data-test 选择器;状态 pill 用方角 + 前置圆
+    点,行首左侧 2px 色条代替整行染色,视觉更克制。
+  - 展开行:失败时顶部增加 err-banner (失败标题 + 错误信息 + 最近尝
+    试时间),attempts-table 用更小的字号 + 透明背景,视觉降级为
+    "详情面板",而不是抢主行的风头。
+  - 全部沿用 style.css 里的设计 token (--panel / --panel-alt /
+    --border / --accent / --green / --yellow / --red / --muted),light
+    / dark 主题自动适配。
+-->
 <template>
   <AdminLayout>
-    <header>
-      <h2>复制伙伴状态 (全站)</h2>
-      <div class="controls">
-        <span class="refresh-indicator">
-          <span :class="['dot', polling ? 'on' : 'off']"></span>
-          <span>每 {{ refreshSeconds }}s 刷新</span>
-        </span>
-        <span class="last-loaded" v-if="lastLoadedAt">最近刷新: {{ fmt(lastLoadedAt) }}</span>
+    <header class="page-header">
+      <div class="page-titles">
+        <div class="eyebrow">OPERATIONS · 复制健康</div>
+        <h2 class="page-title">复制状态概览</h2>
+        <p class="subtitle">所有站点的入站复制链路 · {{ refreshSeconds }} 秒自动刷新</p>
+      </div>
+      <div class="page-meta">
+        <div class="refresh-pill">
+          <span :class="['refresh-dot', polling ? 'on' : 'off']"></span>
+          <span class="refresh-label">{{ polling ? '同步中' : '已同步' }}</span>
+        </div>
+        <div class="last-loaded" v-if="lastLoadedAt">
+          <span class="muted-label">最近刷新</span>
+          <span class="time">{{ fmt(lastLoadedAt) }}</span>
+        </div>
       </div>
     </header>
 
-    <!-- 2026-08-28 round-45: R42 复制日志监控 absorbed into this view.
-         Port monitoring (R35) removed entirely — operator directive
-         "去掉端口监控，但是他保留复制过程的详细信息，例如复制成功，
-         显示复制成功，但是失败了会显示详细信息。在最右边折叠最近10条的信息".
-         Each partner row now shows a status pill + a right-column caret
-         that lazy-fetches the last 10 replication attempts for that pair. -->
-    <p class="hint">
-      每个站点的每台 DC 各自显示自己的入站复制连接 — 即其他 DC 复制到本机的链路。
-      状态: 复制成功 (绿色) / 部分失败 (黄色) / 失败 (红色,显示错误信息)。
-      点击最右侧箭头展开最近 10 条复制尝试历史。
-    </p>
-    <p class="legend">
-      <span class="legend-item"><span class="legend-swatch swatch-primary"></span>主控 DC</span>
-      <span class="legend-item"><span class="legend-swatch swatch-bridgehead"></span>桥头 DC</span>
-      <span class="legend-item"><span class="legend-swatch swatch-member"></span>成员 DC</span>
-    </p>
+    <!-- Fleet health ribbon — the signature element of this page.
+      Counts derived from the loaded /all payload via a computed; tiles
+      tint only when non-zero so a fully-healthy fleet reads as calm. -->
+    <div class="fleet-ribbon" v-if="primaries.length" data-test="fleet-ribbon">
+      <div class="ribbon-tile">
+        <div class="ribbon-num">{{ totals.sites }}</div>
+        <div class="ribbon-label">站点</div>
+      </div>
+      <div class="ribbon-tile">
+        <div class="ribbon-num">{{ totals.dcs }}</div>
+        <div class="ribbon-label">域控</div>
+      </div>
+      <div class="ribbon-tile">
+        <div class="ribbon-num">{{ totals.links }}</div>
+        <div class="ribbon-label">入站链路</div>
+      </div>
+      <div class="ribbon-tile ribbon-ok">
+        <div class="ribbon-num">{{ totals.ok }}</div>
+        <div class="ribbon-label">健康</div>
+      </div>
+      <div class="ribbon-tile" :class="{ 'ribbon-warn': totals.warn > 0 }">
+        <div class="ribbon-num">{{ totals.warn }}</div>
+        <div class="ribbon-label">部分失败</div>
+      </div>
+      <div class="ribbon-tile" :class="{ 'ribbon-err': totals.err > 0 }">
+        <div class="ribbon-num">{{ totals.err }}</div>
+        <div class="ribbon-label">失败</div>
+      </div>
+    </div>
 
     <div v-if="error" class="error-banner">{{ error }}</div>
-    <div v-if="!primaries.length && !error" class="empty">暂无站点 — 请在 AD 站点/DC 清单添加</div>
+    <div v-if="!primaries.length && !error" class="empty">暂无站点 — 请在 AD 站点清单添加</div>
 
     <section v-for="p in primaries" :key="p.siteId ?? p.siteName" class="site-block" :data-test-site="p.siteName">
-      <h3>
-        <span :class="['hub-badge', p.isHub ? 'yes' : 'no']">{{ p.isHub ? '中心' : '分支' }}</span>
-        {{ p.siteName }}
-        <small class="region">{{ p.regionCode || '—' }}</small>
-        <small class="dc-count">{{ (p.dcPartners || []).length }} DC / {{ p.dcs.length }} 成员</small>
-      </h3>
+      <header class="site-header">
+        <div class="site-title">
+          <h3>
+            <span :class="['hub-badge', p.isHub ? 'yes' : 'no']">{{ p.isHub ? '中心站点' : '分支站点' }}</span>
+            {{ p.siteName }}
+            <span class="site-region">{{ p.regionCode || '—' }}</span>
+          </h3>
+        </div>
+        <div class="site-stats">
+          <span class="stat"><span class="stat-num">{{ (p.dcs || []).length }}</span><span class="stat-label"> DC</span></span>
+          <span class="stat"><span class="stat-num">{{ siteLinkCount(p) }}</span><span class="stat-label"> 链路</span></span>
+          <span v-if="siteErrCount(p) > 0" class="stat stat-error"><span class="stat-num">{{ siteErrCount(p) }}</span><span class="stat-label"> 异常</span></span>
+        </div>
+      </header>
 
       <div v-if="!p.dcPartners || !p.dcPartners.length" class="empty">该站点暂无 DC</div>
 
       <div v-for="dc in p.dcPartners" :key="dc.dcName" class="dc-block" :data-test-dc-block="dc.dcName">
-        <h4>
+        <header class="dc-header">
           <span class="dc-name">{{ dc.dcName }}</span>
           <span class="dc-roles-inline">
             <span v-if="dc.isBridgehead" class="role-badge bridgehead">桥头</span>
@@ -52,11 +105,10 @@
             <span v-if="dc.isSchemaMaster" class="role-badge fsmo">Schema</span>
             <span v-if="dc.isDomainNamingMaster" class="role-badge fsmo">DNaming</span>
             <span v-if="dc.isInfrastructureMaster" class="role-badge fsmo">Infra</span>
-            <span v-if="!dc.isBridgehead && !dc.isPdc && !dc.isGc && !dc.isRidMaster && !dc.isSchemaMaster && !dc.isDomainNamingMaster && !dc.isInfrastructureMaster" class="role-badge none">成员</span>
           </span>
-          <small class="dc-os-inline">{{ dc.osVersion || '—' }}</small>
-          <small class="dc-partner-count">{{ dc.partners.length }} 伙伴</small>
-        </h4>
+          <span class="dc-os-inline">{{ dc.osVersion || '—' }}</span>
+          <span class="dc-partner-count">{{ dc.partners.length }} 伙伴</span>
+        </header>
 
         <table class="matrix">
           <thead>
@@ -81,7 +133,7 @@
                     {{ isExpanded(dc.dcName, partner) ? '▼' : '▶' }}
                   </button>
                 </td>
-                <td class="peer-type">
+                <td>
                   <span :class="['peer-tag', `peer-tag-${partner.peerType || 'unknown'}`]">{{ peerTypeLabel(partner) }}</span>
                 </td>
                 <td>
@@ -92,7 +144,6 @@
                 <td class="status">
                   <span :class="['status-pill', `status-pill-${statusClass(partner)}`]">{{ statusLabel(partner) }}</span>
                   <span v-if="partner.statusCode !== 0 && partner.errorMessage" class="err-msg">— {{ partner.errorMessage }}</span>
-                  <span v-else-if="partner.statusCode !== 0 && partner.lastAttemptTime" class="err-meta">— 最近尝试 {{ fmt(partner.lastAttemptTime) }}</span>
                 </td>
                 <td class="last-success-cell">{{ fmt(partner.lastSuccessTime) }}</td>
               </tr>
@@ -104,32 +155,44 @@
                   <div v-else-if="(attemptsByKey(expandKey(dc.dcName, partner)) || []).length === 0" class="empty">
                     暂无历史记录 — 该伙伴没有 24h 内的连接尝试数据
                   </div>
-                  <table v-else class="attempts-table">
-                    <thead>
-                      <tr>
-                        <th>尝试时间</th>
-                        <th>结果</th>
-                        <th>耗时 (ms)</th>
-                        <th>传输对象</th>
-                        <th>最近成功</th>
-                        <th>错误/详情</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(a, i) in attemptsByKey(expandKey(dc.dcName, partner))" :key="i"
-                          :class="['att-row', `att-row-${attemptStatusClass(a)}`]">
-                        <td>{{ fmt(a.attemptAt) }}</td>
-                        <td>
-                          <span class="glyph">{{ attemptGlyph(a) }}</span>
-                          {{ attemptLabel(a) }}
-                        </td>
-                        <td>{{ a.durationMs ?? '—' }}</td>
-                        <td>{{ a.objectsTransferred ?? '—' }}</td>
-                        <td>{{ fmt(a.lastSuccessTime) }}</td>
-                        <td>{{ a.errorMessage || '—' }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  <div v-else class="attempts-container">
+                    <div v-if="partner.statusCode !== 0" class="err-banner">
+                      <div class="err-banner-icon">!</div>
+                      <div class="err-banner-body">
+                        <div class="err-banner-title">
+                          <strong>{{ statusLabel(partner) }}</strong>
+                          <span v-if="partner.errorMessage">— {{ partner.errorMessage }}</span>
+                        </div>
+                        <div v-if="partner.lastAttemptTime" class="err-banner-meta">最近尝试 {{ fmt(partner.lastAttemptTime) }}</div>
+                      </div>
+                    </div>
+                    <table class="attempts-table">
+                      <thead>
+                        <tr>
+                          <th>尝试时间</th>
+                          <th>结果</th>
+                          <th>耗时 (ms)</th>
+                          <th>传输对象</th>
+                          <th>最近成功</th>
+                          <th>错误/详情</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(a, i) in attemptsByKey(expandKey(dc.dcName, partner))" :key="i"
+                            :class="['att-row', `att-row-${attemptStatusClass(a)}`]">
+                          <td>{{ fmt(a.attemptAt) }}</td>
+                          <td>
+                            <span class="glyph">{{ attemptGlyph(a) }}</span>
+                            {{ attemptLabel(a) }}
+                          </td>
+                          <td>{{ a.durationMs ?? '—' }}</td>
+                          <td>{{ a.objectsTransferred ?? '—' }}</td>
+                          <td>{{ fmt(a.lastSuccessTime) }}</td>
+                          <td>{{ a.errorMessage || '—' }}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </td>
               </tr>
             </template>
@@ -144,7 +207,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
 
@@ -161,12 +224,47 @@ const loadingPair = ref(null);       // currently fetching
 
 let timerHandle = null;
 
+// round-49: fleet-level totals for the ribbon. Walks the loaded payload
+// once per render — O(DCs × partners). Cheap enough to keep as a
+// computed; the alternative (memoizing on a load-tick) adds complexity
+// for a win we don't need.
+const totals = computed(() => {
+  let sites = 0, dcs = 0, links = 0, ok = 0, warn = 0, err = 0;
+  for (const p of primaries.value) {
+    sites++;
+    dcs += (p.dcs || []).length;
+    for (const dc of (p.dcPartners || [])) {
+      for (const partner of dc.partners) {
+        links++;
+        if (partner.statusCode === 0) ok++;
+        else if (partner.statusCode === 1) warn++;
+        else err++;
+      }
+    }
+  }
+  return { sites, dcs, links, ok, warn, err };
+});
+
+function siteLinkCount(p) {
+  let n = 0;
+  for (const dc of (p.dcPartners || [])) n += dc.partners.length;
+  return n;
+}
+function siteErrCount(p) {
+  let n = 0;
+  for (const dc of (p.dcPartners || [])) {
+    for (const partner of dc.partners) {
+      if (partner.statusCode !== 0) n++;
+    }
+  }
+  return n;
+}
+
 async function load() {
   polling.value = true;
   error.value = '';
   try {
     const r = await dashboardApi.getSiteReplicationMatrixAll();
-    // round-45: ports/perPort/lastProbeAt dropped from envelope.
     primaries.value = Array.isArray(r.data?.primaries) ? r.data.primaries : [];
     refreshSeconds.value = Number(r.data?.siteRefreshSeconds) || 10;
     lastLoadedAt.value = new Date().toISOString();
@@ -274,89 +372,300 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 </script>
 
 <style scoped>
-.controls { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
-.refresh-indicator { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
-.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.dot.on  { background: #22c55e; }
-.dot.off { background: #475569; }
-.hint { color: var(--muted); font-size: 12px; margin: 0 0 16px; }
-.error-banner { background: var(--red-bg); color: var(--red); padding: 8px 12px; border-radius: 3px; margin-bottom: 12px; }
-.empty { text-align: center; color: var(--muted); padding: 24px; }
-.loading { text-align: center; color: var(--muted); padding: 12px; }
+/* ===== Page header ===================================================== */
+.page-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; margin-bottom: 20px; padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+.page-titles { display: flex; flex-direction: column; gap: 4px; }
+.eyebrow {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+  color: var(--muted); text-transform: uppercase;
+}
+.page-title {
+  margin: 0; font-size: 20px; font-weight: 600; color: var(--text);
+  letter-spacing: -0.01em;
+}
+.subtitle { margin: 0; font-size: 13px; color: var(--muted); }
+.page-meta { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.refresh-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--panel-alt); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text); font-weight: 500;
+}
+.refresh-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.refresh-dot.on  { background: var(--green); box-shadow: 0 0 6px rgba(34, 197, 94, 0.6); }
+.refresh-dot.off { background: var(--muted); }
+.refresh-label { font-size: 11px; letter-spacing: 0.02em; }
+.last-loaded { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.muted-label {
+  font-size: 9px; color: var(--muted);
+  letter-spacing: 0.12em; text-transform: uppercase; font-weight: 600;
+}
+.time {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 11px; color: var(--text);
+  font-feature-settings: "tnum";
+}
 
-.site-block { margin-bottom: 24px; padding: 16px; border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
-.site-block h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; }
-.hub-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; margin-right: 4px; }
-.hub-badge.yes { background: #14532d; color: #bbf7d0; }
-.hub-badge.no  { background: #1e293b; color: var(--muted); }
-.region { color: var(--muted); font-size: 12px; }
-.dc-count { color: var(--muted); font-size: 12px; margin-left: auto; }
-.hub-mini { font-size: 10px; padding: 1px 6px; margin-left: 6px; border-radius: 999px; background: #14532d; color: #bbf7d0; }
+/* ===== Fleet health ribbon (signature element) ========================= */
+.fleet-ribbon {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 1px; margin-bottom: 24px;
+  background: var(--border); border: 1px solid var(--border); border-radius: 4px;
+  overflow: hidden;
+}
+.ribbon-tile {
+  background: var(--panel); padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.ribbon-tile.ribbon-ok   { background: linear-gradient(180deg, rgba(34, 197, 94, 0.08), var(--panel)); }
+.ribbon-tile.ribbon-warn { background: linear-gradient(180deg, rgba(234, 179, 8, 0.12), var(--panel)); }
+.ribbon-tile.ribbon-err  { background: linear-gradient(180deg, rgba(239, 68, 68, 0.14), var(--panel)); }
+.ribbon-num {
+  font-size: 22px; font-weight: 600; line-height: 1;
+  font-feature-settings: "tnum"; letter-spacing: -0.01em;
+  color: var(--text);
+}
+.ribbon-tile.ribbon-warn .ribbon-num { color: var(--yellow); }
+.ribbon-tile.ribbon-err  .ribbon-num { color: var(--red); }
+.ribbon-label {
+  font-size: 11px; color: var(--muted);
+  letter-spacing: 0.06em; margin-top: 4px; font-weight: 500;
+}
 
-.dc-block { margin-bottom: 18px; padding: 10px 12px;
-            border: 1px solid #1e293b; border-radius: 4px; background: var(--panel); }
-.dc-block:last-child { margin-bottom: 0; }
-.dc-block h4 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 8px;
-              font-size: 13px; color: var(--text); font-weight: 600; }
-.dc-name { font-family: ui-monospace, monospace; font-weight: 600; font-size: 14px; color: var(--text); }
+/* ===== Error / empty states ============================================ */
+.error-banner {
+  background: var(--red-bg); color: var(--red);
+  padding: 10px 14px; border-radius: 4px; margin-bottom: 16px;
+  border: 1px solid rgba(239, 68, 68, 0.3); font-size: 13px;
+}
+.empty { text-align: center; color: var(--muted); padding: 28px; font-size: 13px; }
+.loading { text-align: center; color: var(--muted); padding: 16px; font-size: 12px; }
+
+/* ===== Site section ==================================================== */
+.site-block {
+  margin-bottom: 24px;
+  background: var(--panel);
+  border: 1px solid var(--border); border-radius: 4px;
+  overflow: hidden;
+}
+.site-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 16px;
+  background: var(--panel-alt);
+  border-bottom: 1px solid var(--border);
+}
+.site-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.site-title h3 {
+  margin: 0; font-size: 15px; font-weight: 600; color: var(--text);
+  letter-spacing: -0.005em;
+  display: inline-flex; align-items: baseline; gap: 10px;
+}
+.hub-badge {
+  padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.hub-badge.yes { background: rgba(56, 189, 248, 0.15); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.3); }
+.hub-badge.no  { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+.site-region {
+  font-size: 11px; color: var(--muted);
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.04em;
+}
+.site-stats { display: flex; gap: 18px; flex-shrink: 0; }
+.stat { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.stat-num {
+  font-size: 14px; font-weight: 600; color: var(--text);
+  font-feature-settings: "tnum"; letter-spacing: -0.01em;
+}
+.stat-error .stat-num { color: var(--red); }
+.stat-label {
+  font-size: 10px; color: var(--muted);
+  letter-spacing: 0.06em; font-weight: 500;
+}
+
+/* ===== DC block ======================================================== */
+.dc-block { border-top: 1px solid var(--border); }
+.dc-block:first-child { border-top: 0; }
+.dc-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px;
+  background: var(--panel);
+  font-size: 13px;
+}
+.dc-name {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-weight: 600; font-size: 13px; color: var(--text);
+  letter-spacing: 0.02em;
+}
 .dc-roles-inline { display: inline-flex; flex-wrap: wrap; gap: 3px; }
-.role-badge { font-size: 10px; padding: 1px 6px; border-radius: 999px;
-              font-family: ui-monospace, monospace; letter-spacing: 0.04em; }
-.role-badge.fsmo { background: #14532d; color: #bbf7d0; border: 1px solid #166534; }
-.role-badge.bridgehead { background: #0e7490; color: #cffafe; font-weight: 600; }
-.role-badge.none { background: #1e293b; color: var(--muted); }
-.dc-os-inline { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
-.dc-partner-count { color: var(--muted); font-size: 11px; margin-left: auto; }
-.legend { display: flex; gap: 12px; margin: 0 0 16px; font-size: 12px; color: var(--muted); }
-.legend-item { display: inline-flex; gap: 6px; align-items: center; }
-.legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border); }
-.swatch-primary { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.swatch-bridgehead { border-color: #0e7490; }
-.swatch-member { border-color: #1e293b; background: var(--panel); }
+.role-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, monospace; letter-spacing: 0.04em; font-weight: 500;
+}
+.role-badge.fsmo {
+  background: rgba(34, 197, 94, 0.10); color: var(--green);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.role-badge.bridgehead {
+  background: rgba(14, 116, 144, 0.18); color: #0e7490;
+  border: 1px solid rgba(14, 116, 144, 0.4); font-weight: 600;
+}
+.dc-os-inline {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+.dc-partner-count {
+  margin-left: auto;
+  color: var(--muted); font-size: 11px;
+  font-feature-settings: "tnum"; letter-spacing: 0.02em;
+}
 
+/* ===== Partner matrix ================================================== */
 .matrix { border-collapse: collapse; background: var(--panel); width: 100%; }
-.matrix th, .matrix td { border: 1px solid #1e293b; padding: 6px 10px; text-align: center; font-size: 13px; }
-.matrix th { background: #0b1220; color: var(--muted); font-size: 12px; font-weight: 600; }
-.matrix tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
-.caret-col { width: 36px; padding: 4px; }
-.caret-btn { background: transparent; border: 1px solid var(--border); border-radius: 3px;
-             width: 28px; height: 24px; padding: 0; cursor: pointer; color: var(--text);
-             font-family: ui-monospace, monospace; font-size: 11px; line-height: 1; }
-.caret-btn:hover { background: var(--border); color: var(--accent); }
-.last-success-col { min-width: 140px; }
-.last-success-cell { color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+.matrix th, .matrix td {
+  padding: 9px 12px; text-align: left; font-size: 13px;
+  color: var(--text); vertical-align: middle;
+  border-top: 1px solid rgba(51, 65, 81, 0.4);
+}
+.matrix tbody tr:first-child td { border-top: 0; }
+.matrix th {
+  background: var(--panel-alt); color: var(--muted); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.10em; text-transform: uppercase;
+  padding: 8px 12px; border-top: 0;
+  font-family: ui-monospace, monospace;
+}
+.partner-row td { transition: background-color 0.1s ease; }
+.partner-row:hover td { background: var(--panel-alt); }
+/* Subtle 2px left edge tint signals row severity without flooding the
+  whole row with color. */
+.partner-row td:first-child {
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+}
+.partner-row.status-warn td:first-child { border-left-color: var(--yellow); }
+.partner-row.status-err  td:first-child { border-left-color: var(--red); }
 
-.partner-row.status-ok .status { color: var(--text); }
-.partner-row.status-warn .status { color: var(--text); }
-.partner-row.status-err .status { color: var(--text); }
-.peer-site { font-weight: 500; }
+.caret-col { width: 36px; padding: 4px 8px; text-align: center; }
+.caret-btn {
+  background: transparent; border: 1px solid var(--border); border-radius: 3px;
+  width: 26px; height: 22px; padding: 0; cursor: pointer; color: var(--muted);
+  font-size: 11px; line-height: 1; transition: all 0.1s ease;
+}
+.caret-btn:hover { background: var(--panel-alt); color: var(--accent); border-color: var(--accent); }
+.caret-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.last-success-col { min-width: 150px; }
+.last-success-cell {
+  color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px;
+  white-space: nowrap; font-feature-settings: "tnum";
+}
 .peer-dc { font-family: ui-monospace, monospace; font-size: 12px; }
-.peer-type { white-space: nowrap; }
-.peer-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
-            font-family: ui-monospace, monospace; font-weight: 600; letter-spacing: 0.04em; }
-.peer-tag-within     { background: #1e293b; color: var(--text); border: 1px solid #334155; }
-.peer-tag-bridgehead { background: #0e7490; color: #cffafe; }
-.peer-tag-unknown    { background: #1e293b; color: var(--muted); }
+.peer-site { font-weight: 500; }
+.hub-mini {
+  font-size: 9px; padding: 1px 5px; margin-left: 6px; border-radius: 2px;
+  background: rgba(56, 189, 248, 0.15); color: var(--accent);
+  letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600;
+}
+.peer-tag {
+  display: inline-block; font-size: 10px; padding: 1px 7px; border-radius: 2px;
+  font-family: ui-monospace, monospace; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.peer-tag-within {
+  background: var(--panel-alt); color: var(--muted);
+  border: 1px solid var(--border);
+}
+.peer-tag-bridgehead {
+  background: rgba(14, 116, 144, 0.18); color: #0e7490;
+  border: 1px solid rgba(14, 116, 144, 0.4);
+}
+.peer-tag-unknown {
+  background: var(--panel-alt); color: var(--muted);
+}
 
-.status-pill { display: inline-block; font-size: 11px; padding: 2px 10px;
-               border-radius: 999px; font-weight: 600; letter-spacing: 0.02em; }
-.status-pill-ok   { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid #166534; }
-.status-pill-warn { background: rgba(234,179,8,0.18);  color: #f59e0b; border: 1px solid #92400e; }
-.status-pill-err  { background: rgba(239,68,68,0.18);  color: #ef4444; border: 1px solid #991b1b; }
-.err-msg { color: var(--red); font-size: 11px; margin-left: 6px; }
-.err-meta { color: var(--muted); font-size: 11px; margin-left: 6px; }
+/* ===== Status pill ===================================================== */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; padding: 2px 8px; border-radius: 2px;
+  font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  font-family: ui-monospace, monospace;
+}
+.status-pill::before {
+  content: ''; display: inline-block;
+  width: 5px; height: 5px; border-radius: 50%;
+}
+.status-pill-ok {
+  background: rgba(34, 197, 94, 0.10); color: var(--green);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.status-pill-ok::before   { background: var(--green); }
+.status-pill-warn {
+  background: rgba(234, 179, 8, 0.10); color: var(--yellow);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+}
+.status-pill-warn::before { background: var(--yellow); }
+.status-pill-err {
+  background: rgba(239, 68, 68, 0.10); color: var(--red);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.status-pill-err::before  { background: var(--red); }
+.err-msg {
+  display: block; margin-top: 4px;
+  color: var(--red); font-size: 11px;
+  font-family: ui-monospace, monospace;
+  line-height: 1.4;
+}
 
-.attempts-row td { background: rgba(255,255,255,0.02); padding: 8px 12px; }
+/* ===== Attempts (history) ============================================== */
+.attempts-row td {
+  background: var(--bg); padding: 0;
+  border-top: 1px solid var(--border);
+}
+.attempts-container { padding: 14px 18px 16px; }
+.err-banner {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 10px 12px; margin-bottom: 12px;
+  background: var(--red-bg); border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 3px;
+}
+.err-banner-icon {
+  flex: 0 0 22px; height: 22px; border-radius: 50%;
+  background: var(--red); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; line-height: 1;
+}
+.err-banner-body { flex: 1; min-width: 0; font-size: 12px; }
+.err-banner-title { color: var(--text); line-height: 1.5; }
+.err-banner-title strong { color: var(--red); margin-right: 4px; font-weight: 600; }
+.err-banner-meta {
+  color: var(--muted); font-size: 11px; margin-top: 3px;
+  font-family: ui-monospace, monospace; font-feature-settings: "tnum";
+}
 .attempts-table { width: 100%; border-collapse: collapse; }
-.attempts-table th, .attempts-table td { border: 1px solid #1e293b; padding: 4px 8px;
-                                         text-align: center; font-size: 12px; }
-.attempts-table th { background: #0b1220; color: var(--muted); font-weight: 600; }
+.attempts-table th, .attempts-table td {
+  border: 0; border-top: 1px solid rgba(51, 65, 81, 0.3);
+  padding: 5px 8px; text-align: left; font-size: 11px;
+  font-family: ui-monospace, monospace; font-feature-settings: "tnum";
+}
+.attempts-table th {
+  background: transparent; color: var(--muted); font-weight: 600;
+  font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 4px 8px; border-top: 0;
+}
+.attempts-table tbody tr:first-child td { border-top: 1px solid var(--border); }
 .att-row-ok   { color: var(--text); }
-.att-row-warn { color: var(--yellow); }
-.att-row-err  { color: var(--red); }
-.att-row .glyph { font-family: ui-monospace, monospace; font-weight: 700; margin-right: 4px; }
+.att-row-warn { color: var(--text); }
+.att-row-err  { color: var(--text); }
+.att-row .glyph {
+  font-family: ui-monospace, monospace; font-weight: 700; margin-right: 4px;
+  display: inline-block; width: 8px;
+}
 .att-row-ok   .glyph { color: var(--green); }
 .att-row-warn .glyph { color: var(--yellow); }
 .att-row-err  .glyph { color: var(--red); }
-.empty-row { color: var(--muted); padding: 16px; }
+.empty-row { color: var(--muted); padding: 18px; text-align: center; font-size: 12px; }
 </style>
