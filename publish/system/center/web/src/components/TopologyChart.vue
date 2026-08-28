@@ -1,4 +1,13 @@
 <template>
+  <!-- 2026-08-29 round-61: 3-color legend (green/yellow/red) so the
+       operator can map edge color → health state at a glance. Lives
+       above the side-by-side panels so it's visible regardless of
+       which lens the operator is reading. -->
+  <div class="color-legend" data-test="color-legend">
+    <span class="color-legend-item"><span class="color-swatch swatch-ok"></span>正常 (statusCode 0)</span>
+    <span class="color-legend-item"><span class="color-swatch swatch-warn"></span>部分失败 (statusCode 1)</span>
+    <span class="color-legend-item"><span class="color-swatch swatch-err"></span>断开/失败 (statusCode 2+)</span>
+  </div>
   <div class="topology-split">
     <section class="structure outbound" data-test="outbound-structure">
       <header class="structure-header">
@@ -36,6 +45,14 @@ let inboundChart = null;
 // 的父级 (sites-as-parents of DCs),入站和出战链路分成两个独立的结构
 // 展示 (inbound + outbound links as TWO separate visual structures).
 //
+// 2026-08-29 round-61 (operator directive "复制拓扑 改成左右结构 左边是
+// 出站 右边是入站...也是绿色 黄色 红色 展现连接效果"): change the
+// panel layout from vertical stack to horizontal side-by-side (left =
+// 出战 outbound, right = 入站 inbound) and add YELLOW for partial-
+// failure edges (statusCode === 1), so the topology now matches the
+// R60 matrix's 3-color health vocabulary: green (OK), yellow (warn),
+// red (err).
+//
 // Why two structures (not one merged canvas with arrow direction):
 //   - Operator reads "出战" naturally as "from this DC's POV, who do I
 //     push to?" and "入站" as "into this DC, who pushes to me?". A
@@ -53,9 +70,10 @@ let inboundChart = null;
 //     (mass: 8); DCs are light (mass: 1) and settle around their parent.
 //   - Edge `symbol: ['none', 'arrow']` puts an arrow at target — direction
 //     is unambiguous regardless of which panel you're reading.
-//   - Edge color = green (OK) / red (err).
+//   - Edge color = green (statusCode 0) / yellow (statusCode 1) / red
+//     (statusCode 2+). Matches R60 复制状态概览 vocabulary.
 //   - Edge label = "SourceSite→DestSite" in 出战, "DestSite←SourceSite"
-//     in 入战 — same edge, different reading lens.
+//     in 入站 — same edge, different reading lens.
 const siteOrder = computed(() => {
   const seen = new Set();
   const out = [];
@@ -137,22 +155,33 @@ function buildOption({ lens }) {
       const ds = shortSite(destSite);
       labelText = `${ds}←${ss}`;
     }
+    // 2026-08-29 round-61: 3-color health vocabulary to match R60
+    // 复制状态概览 — green (statusCode 0), yellow (1 = partial),
+    // red (2+ = failure). Used by both lineStyle + edgeLabel text.
+    const edgeColor =
+      l.statusCode === 0 ? '#22c55e' :
+      l.statusCode === 1 ? '#eab308' :
+      '#ef4444';
+    const edgeTextColor =
+      l.statusCode === 0 ? '#86efac' :
+      l.statusCode === 1 ? '#fde68a' :
+      '#fca5a5';
     return {
       source: l.source,
       target: l.target,
       symbol: ['none', 'arrow'],
       symbolSize: 8,
       lineStyle: {
-        color: l.statusCode === 0 ? '#22c55e' : '#ef4444',
+        color: edgeColor,
         width: 1.5,
         curveness: 0.08,
         type: 'solid',
-        opacity: l.statusCode === 0 ? 0.7 : 0.9
+        opacity: 0.85
       },
       edgeLabel: {
         show: true,
         formatter: () => labelText,
-        color: l.statusCode === 0 ? '#86efac' : '#fca5a5',
+        color: edgeTextColor,
         fontSize: 9,
         backgroundColor: 'rgba(15, 23, 42, 0.7)',
         padding: [2, 4]
@@ -177,7 +206,12 @@ function buildOption({ lens }) {
           const dir = isIntra
             ? 'intra-site (内)'
             : `${sourceSite || '?'} ${dirWord} ${destSite || '?'}`;
-          const status = (l.lineStyle && l.lineStyle.color === '#22c55e') ? '复制成功' : '失败/部分失败';
+          // 2026-08-29 round-61: 3-state status word matches the 3 colors.
+          const c = l.lineStyle && l.lineStyle.color;
+          const status =
+            c === '#22c55e' ? '✓ 复制成功' :
+            c === '#eab308' ? '! 部分失败' :
+            '✕ 失败/断开';
           return `<b>${l.source} → ${l.target}</b><br/>视角: ${lens === 'outbound' ? '出战复制结构' : '入站复制结构'}<br/>方向: ${dir}<br/>状态: ${status}`;
         }
         if (p.dataType === 'node') {
@@ -244,12 +278,19 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 2026-08-29 round-61: operator directive "复制拓扑 改成左右结构 左边是
+   出站 右边是入站". The two panels sit side-by-side, not stacked.
+   On narrow viewports (<900px) they collapse back to vertical stack
+   so the canvas stays usable. */
 .topology-split {
   display: flex;
-  flex-direction: column;
-  gap: 18px;
+  flex-direction: row;
+  gap: 14px;
+  align-items: stretch;
 }
 .structure {
+  flex: 1 1 50%;
+  min-width: 0;
   background: #0f172a;
   border: 1px solid #1e293b;
   border-radius: 8px;
@@ -260,6 +301,7 @@ onUnmounted(() => {
   align-items: baseline;
   gap: 10px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 .structure-header h3 {
   margin: 0;
@@ -292,5 +334,28 @@ onUnmounted(() => {
   width: 100%;
   height: 460px;
   border-radius: 6px;
+}
+/* Compact legend (3 colors) shown at the top of the page header so
+   the operator can map edge color → health state at a glance. */
+.color-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.color-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.color-swatch {
+  display: inline-block;
+  width: 14px; height: 4px; border-radius: 2px;
+}
+.swatch-ok   { background: #22c55e; }
+.swatch-warn { background: #eab308; }
+.swatch-err  { background: #ef4444; }
+
+@media (max-width: 900px) {
+  .topology-split { flex-direction: column; }
+  .structure { flex: 1 1 100%; }
 }
 </style>

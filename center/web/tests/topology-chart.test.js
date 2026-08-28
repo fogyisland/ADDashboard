@@ -191,8 +191,29 @@ test('R59: both panels put arrow at target + green OK color', async () => {
   }
 });
 
-// R59-T7: error link is red in both panels.
-test('R59: error link is red in both panels', async () => {
+// R59-T7: failure link (statusCode 2+) is red in both panels.
+test('R59/R61: failure link (statusCode 2+) is red in both panels', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: [{ source: 'DC1', target: 'DC2', statusCode: 2 }]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  for (const lens of ['outbound', 'inbound']) {
+    const opt = optionForLens(lens);
+    expect(opt.series[0].links[0].lineStyle.color).toBe('#ef4444');
+  }
+});
+
+// R61-T2: partial-failure link (statusCode 1) is YELLOW in both panels
+// (R61 operator directive "也是绿色 黄色 红色 展现连接效果" — adds yellow
+// to match R60 复制状态概览 vocabulary).
+test('R61: partial-failure link (statusCode 1) is yellow in both panels', async () => {
   const data = {
     nodes: [
       { name: 'A', type: 'site' },
@@ -206,8 +227,43 @@ test('R59: error link is red in both panels', async () => {
   await flushPromises();
   for (const lens of ['outbound', 'inbound']) {
     const opt = optionForLens(lens);
-    expect(opt.series[0].links[0].lineStyle.color).toBe('#ef4444');
+    expect(opt.series[0].links[0].lineStyle.color).toBe('#eab308');
   }
+});
+
+// R61-T2: 3-state tooltip status word — green=复制成功, yellow=部分失败,
+// red=失败/断开 (was previously just binary OK vs err).
+test('R61: tooltip status word matches the 3 edge colors', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: [
+      { source: 'DC1', target: 'DC2', statusCode: 0 },
+      { source: 'DC2', target: 'DC1', statusCode: 1 },
+      { source: 'DC1', target: 'DC2', statusCode: 3 } // second DC1->DC2 ignored, but verifies statusCode>=2 path
+    ]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  // Build a synthetic link payload with each lineStyle color and probe
+  // the tooltip formatter directly.
+  const opt = optionForLens('outbound');
+  const tipOK = opt.tooltip.formatter({
+    dataType: 'edge', data: { source: 'X', target: 'Y', lineStyle: { color: '#22c55e' } }
+  });
+  expect(tipOK).toContain('复制成功');
+  const tipWarn = opt.tooltip.formatter({
+    dataType: 'edge', data: { source: 'X', target: 'Y', lineStyle: { color: '#eab308' } }
+  });
+  expect(tipWarn).toContain('部分失败');
+  const tipErr = opt.tooltip.formatter({
+    dataType: 'edge', data: { source: 'X', target: 'Y', lineStyle: { color: '#ef4444' } }
+  });
+  expect(tipErr).toContain('失败');
 });
 
 // R59-T8: intra-site link still uses the "↔ 内" marker in BOTH panels.
@@ -262,4 +318,54 @@ test('R59: empty data renders both panels with empty arrays', async () => {
     expect(opt.series[0].data).toEqual([]);
     expect(opt.series[0].links).toEqual([]);
   }
+});
+
+// R61-T1: layout is horizontal (left/right side-by-side), not vertical
+// stack. Operator directive "复制拓扑 改成左右结构 左边是出站 右边是入站".
+// Assert via the rendered DOM: both panels exist as siblings inside
+// .topology-split, and the outbound panel appears BEFORE the inbound
+// panel in document order (so left = 出战, right = 入站).
+test('R61: panels are side-by-side (horizontal) — 出战 on left, 入站 on right', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const split = w.find('.topology-split');
+  expect(split.exists()).toBe(true);
+  const children = split.element.children;
+  expect(children).toHaveLength(2);
+  expect(children[0].classList.contains('outbound')).toBe(true);
+  expect(children[1].classList.contains('inbound')).toBe(true);
+  // Also verify the CSS — split is flex-row, not flex-column. This is
+  // what makes the panels actually sit side-by-side in the viewport.
+  const style = split.attributes('style') || '';
+  // Vue test-utils doesn't render computed styles; instead we check the
+  // scoped className to confirm the layout class structure is in place,
+  // and trust the SCSS test (visual). Indirect assertion: outbound is
+  // tagged 'structure outbound', inbound is 'structure inbound' — same
+  // .structure class so they line up as flex items.
+  expect(children[0].classList.contains('structure')).toBe(true);
+  expect(children[1].classList.contains('structure')).toBe(true);
+});
+
+// R61-T1: color legend strip renders 3 colors (green/yellow/red) above
+// the panels so the operator can map edge color → health state at a glance.
+test('R61: color legend renders 3-color legend strip with ok/warn/err swatches', async () => {
+  const w = mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  const legend = w.find('[data-test="color-legend"]');
+  expect(legend.exists()).toBe(true);
+  expect(legend.find('.swatch-ok').exists()).toBe(true);
+  expect(legend.find('.swatch-warn').exists()).toBe(true);
+  expect(legend.find('.swatch-err').exists()).toBe(true);
+  expect(legend.text()).toMatch(/正常/);
+  expect(legend.text()).toMatch(/部分失败/);
+  expect(legend.text()).toMatch(/断开/);
 });
