@@ -81,6 +81,31 @@ function defaultScenario() {
   // row (and vice versa). MOCK-<NAME> keeps the topology narrative (the
   // operator still sees the topology they're modeling) while making the
   // mock rows unambiguously fake.
+  //
+  // 2026-08-28 round-43: hub-spoke topology. Round-36.1's full-mesh
+  // (every DC replicates to every other DC) was a dev convenience to keep
+  // the matrix view from looking empty after round-35's inbound-only
+  // filter, but it made the operator-facing 复制日志监控 / 复制状态概览
+  // views look like "every DC has a mutual connection to every other DC"
+  // — which is not how real AD replication looks.
+  //
+  // 2026-08-28 round-44 (operator directive): sparse hub-spoke as the most
+  // realistic AD topology. Each DC's outbound partner list mirrors what a real
+  // repadmin /showrepl * report would surface on that DC:
+  //   - HUB1 → same-site sibling HUB2 + the FIRST DC of every other site
+  //            (NC1 / FZ1 / XM1 — the PDCs). NOT siblings NC2 / FZ2 / XM2.
+  //   - HUB2 → only HUB1 (backup hub, single-direction redundancy).
+  //   - Each spoke PDC → intra-site sibling + HUB1 (the reverse of HUB1's
+  //     outbound keeps the partner agreement symmetric across the two DCs).
+  //   - Each spoke non-PDC → only the intra-site PDC.
+  //
+  // Total edges: 14 directed rows / 7 unique bidirectional pairs
+  //   {NC1,NC2} {NC1,HUB1} {FZ1,FZ2} {FZ1,HUB1} (FZ1→HUB1 fail)
+  //   {XM1,XM2} {XM1,HUB1} {HUB1,HUB2}
+  //
+  // Shape: per-agent `links: [{destDc, statusCode, errorMessage?}]` instead of
+  // the previous `peers: [...] + failRate` — explicit status code per link so
+  // FZ1's partial-failure (1-of-1 specifically on HUB1) is deterministic.
   const HUB1 = 'MOCK-HUBADSRV1';
   const HUB2 = 'MOCK-HUBADSRV2';
   const NC1 = 'MOCK-NCADSRV1';
@@ -89,39 +114,27 @@ function defaultScenario() {
   const FZ2 = 'MOCK-FZADSRV2';
   const XM1 = 'MOCK-XMADSRV1';
   const XM2 = 'MOCK-XMADSRV2';
-  // peers[] here is the set of partner DCs the agent REPORTS (its sources).
-  const dc = (agentId, opts = {}) => ({
-    name: agentId,
-    hostname: `${agentId.toLowerCase()}.mock.local`,
-    ipAddress: opts.ip ?? '10.99.0.10',
-    osVersion: 'Windows Server 2022 (mock)',
-    siteHint: opts.siteHint ?? 'MOCK-SITE',
-    isPdc: !!opts.isPdc,
-    roles: opts.isPdc
-      ? ['DomainController', 'PDCEmulator', 'RIDMaster', 'InfrastructureMaster']
-      : ['DomainController']
-  });
+  const ok   = (destDc)               => ({ destDc, statusCode: 0 });
+  const fail = (destDc, errorMessage) => ({ destDc, statusCode: 2, errorMessage });
   return [
     // NC site — 2 DCs (NC1 is PDC).
-    // 2026-08-27 round-36.1: full-mesh cross-site topology. Each DC
-    // replicates to every OTHER DC so the inbound-only matrix view shows
-    // every DC with full partner coverage. The earlier spoke-PDC-only
-    // pattern left HUB2 with zero inbound partners.
-    { agentId: NC1, isPdc: true,  peers: [NC2, HUB1, HUB2, FZ1, FZ2, XM1, XM2], failRate: 0.0,  ip: '10.99.0.10', siteHint: 'MOCK-NC' },
-    { agentId: NC2, isPdc: false, peers: [NC1, HUB1, HUB2, FZ1, FZ2, XM1, XM2], failRate: 0.05, ip: '10.99.0.14', siteHint: 'MOCK-NC' },
-    // FZ site — 2 DCs (FZ1 occasionally failing).
-    // round-35: FZ1's port 50001 is wired to fail when OTHER agents probe
-    // it. The matrix view's inbound cell for any primary that FZ1
-    // replicates TO will show 50001 in red — matching the operator's
-    // "FZ1 partial failure" observation.
-    { agentId: FZ1, isPdc: false, peers: [FZ2, HUB1, HUB2, NC1, NC2, XM1, XM2], failRate: 0.34, ip: '10.99.0.11', siteHint: 'MOCK-FZ' },
-    { agentId: FZ2, isPdc: false, peers: [FZ1, HUB1, HUB2, NC1, NC2, XM1, XM2], failRate: 0.0,  ip: '10.99.0.15', siteHint: 'MOCK-FZ' },
-    // XM site — 2 DCs (XM1 stale).
-    { agentId: XM1, isPdc: false, peers: [XM2, HUB1, HUB2, NC1, NC2, FZ1, FZ2], failRate: 0.0,  ip: '10.99.0.12', siteHint: 'MOCK-XM', replicationTickMs: REPLICATION_TICK_MS * 4 },
-    { agentId: XM2, isPdc: false, peers: [XM1, HUB1, HUB2, NC1, NC2, FZ1, FZ2], failRate: 0.0,  ip: '10.99.0.16', siteHint: 'MOCK-XM' },
-    // Hub site — 2 DCs. Both replicate to every other DC (sibling + all spokes).
-    { agentId: HUB1, isPdc: false, peers: [HUB2, NC1, NC2, FZ1, FZ2, XM1, XM2], failRate: 0.0, ip: '10.99.0.13', siteHint: 'MOCK-HUB' },
-    { agentId: HUB2, isPdc: false, peers: [HUB1, NC1, NC2, FZ1, FZ2, XM1, XM2], failRate: 0.0, ip: '10.99.0.17', siteHint: 'MOCK-HUB' }
+    // NC1 → intra-site sibling + HUB1 (reverse of HUB1's outbound to NC1).
+    { agentId: NC1, isPdc: true,  links: [ok(NC2), ok(HUB1)], ip: '10.99.0.10', siteHint: 'MOCK-NC' },
+    // NC2 → only PDC (sibling intra-site).
+    { agentId: NC2, isPdc: false, links: [ok(NC1)], ip: '10.99.0.14', siteHint: 'MOCK-NC' },
+    // FZ site — 2 DCs (FZ1 partial-failure on HUB1 specifically — preserved
+    // from round-19 as the operator's known problematic DC scenario).
+    // FZ1 → intra-site sibling + HUB1 (FAIL — RPC unavailable).
+    { agentId: FZ1, isPdc: false, links: [ok(FZ2), fail(HUB1, 'RPC server unavailable (round-trip > 30s)')], ip: '10.99.0.11', siteHint: 'MOCK-FZ' },
+    { agentId: FZ2, isPdc: false, links: [ok(FZ1)], ip: '10.99.0.15', siteHint: 'MOCK-FZ' },
+    // XM site — 2 DCs (XM1 stale: replicationTickMs ×4 so the row ages past 30-min floor during normal observation).
+    { agentId: XM1, isPdc: false, links: [ok(XM2), ok(HUB1)], ip: '10.99.0.12', siteHint: 'MOCK-XM', replicationTickMs: REPLICATION_TICK_MS * 4 },
+    { agentId: XM2, isPdc: false, links: [ok(XM1)], ip: '10.99.0.16', siteHint: 'MOCK-XM' },
+    // Hub site — 2 DCs.
+    // HUB1 → same-site sibling HUB2 + first DC of every other site (NC1, FZ1, XM1).
+    { agentId: HUB1, isPdc: false, links: [ok(HUB2), ok(NC1), ok(FZ1), ok(XM1)], ip: '10.99.0.13', siteHint: 'MOCK-HUB' },
+    // HUB2 → only HUB1 (operator directive: 备份 hub 仅与主 hub 同步).
+    { agentId: HUB2, isPdc: false, links: [ok(HUB1)], ip: '10.99.0.17', siteHint: 'MOCK-HUB' }
   ];
 }
 
@@ -214,16 +227,17 @@ function buildHeartbeatBody(agentId, pendingReportClear) {
 // deterministically (rather than relying on the ~12.5% hash threshold)
 // gives the dashboard a visible failing-port badge they recognize from
 // the production env without the daemon needing external state.
-function buildReplicationSnapshot(agentId, peers, failRate, sourceSite, opts = {}) {
-  const links = peers.map((destDc) => {
-    const isFail = Math.random() < failRate;
-    return {
-      destDc,
-      namingContext: `${agentId}->${destDc}`,
-      statusCode: isFail ? 2 : 0,
-      errorMessage: isFail ? 'RPC server unavailable (mock)' : null
-    };
-  });
+function buildReplicationSnapshot(agentId, links, sourceSite, opts = {}) {
+  // 2026-08-28 round-43: scenario now ships explicit per-link statusCode
+  // (no more random failRate coin-flip). Each entry already carries
+  // {destDc, statusCode, errorMessage?}; we just stamp the namingContext
+  // and forward verbatim.
+  const fullLinks = links.map((l) => ({
+    destDc: l.destDc,
+    namingContext: `${agentId}->${l.destDc}`,
+    statusCode: l.statusCode ?? 0,
+    errorMessage: l.errorMessage ?? null
+  }));
   // 2026-08-27 round-35: pass peers (raw agentIds) verbatim — they MUST
   // match link.destDc exactly so the route's ${source}${sep}${dest}
   // lookup against latestPartnerPortPerPair finds the partner-port row.
@@ -232,6 +246,7 @@ function buildReplicationSnapshot(agentId, peers, failRate, sourceSite, opts = {
   // here uses the partner's agentId for both to keep the data shape
   // internally consistent (the centre doesn't care which format the
   // mock chose, only that source/dest match between the two row types).
+  const peers = fullLinks.map((l) => l.destDc);
   const collectedAt = new Date();
   const portOverrides = opts.portOverrides ?? FZ1_PARTNER_OVERRIDES;
   const partnerPortEntries = buildPartnerPortEntries({
@@ -265,7 +280,12 @@ function buildReplicationSnapshot(agentId, peers, failRate, sourceSite, opts = {
     agentId,
     collectedAt,
     sourceSite,
-    links,
+    // Pass the enriched entries (namingContext + normalized statusCode/errorMessage
+    // already stamped) so mock-snapshot.mjs::buildLinkEntries uses them verbatim
+    // — the format `<agentId>-><destDc>` matches what previous mock cycles wrote,
+    // keeping downstream GROUP BY (source_dc, dest_dc, naming_context) consistent
+    // across old + new rows during the 30-min freshness crossover window.
+    links: fullLinks,
     partnerPortEntries,
     historyEntries
   });
@@ -291,7 +311,12 @@ function buildDiscovery(agentId, isPdc, opts = {}) {
 // ----- per-agent loop -----
 
 async function runAgent(spec, { stopFlag }) {
-  const { agentId, peers = [], failRate = 0, isPdc = false, replicationTickMs = REPLICATION_TICK_MS } = spec;
+  // 2026-08-28 round-43: destructure `links: [{destDc, statusCode, errorMessage?}]`
+  // (replacing the round-36.1 `peers: [...] + failRate` shape). buildReplicationSnapshot
+  // consumes the link shape directly so the centre's status code for each peer
+  // reflects the operator's reality (FZ1 → HUB1 fails, every other peer OK)
+  // rather than a random failRate coin-flip.
+  const { agentId, links = [], isPdc = false, replicationTickMs = REPLICATION_TICK_MS } = spec;
   let lastReplicationAt = 0;
   let lastDiscoveryAt = 0;
   let heartbeatCount = 0;
@@ -347,7 +372,7 @@ async function runAgent(spec, { stopFlag }) {
         // agent. Without this, rowParams in services/replication.js reads
         // row.sourceDc (undefined) → SQL bind error ("must not contain
         // undefined"), every report 500s.
-        const snapshot = buildReplicationSnapshot(agentId, peers, failRate, spec.siteHint ?? 'MOCK-SITE');
+        const snapshot = buildReplicationSnapshot(agentId, links, spec.siteHint ?? 'MOCK-SITE');
         const rep = await postJson(`${REPORT_URL}${REPORT_PATH}`, {
           source: 'collect-replication-mock-daemon',
           agentId,

@@ -195,36 +195,44 @@ function defaultScenario() {
   // — which is not how real AD replication looks. Real AD is sparse:
   // spokes only replicate to their intra-site sibling + cross-site hubs;
   // hubs replicate to every spoke + the other hub.
+  //
+  // 2026-08-28 round-44 (operator directive): realistic AD topology —
+  // HUB1 connects to same-site sibling + each site's FIRST (PDC) DC,
+  // HUB2 connects only to HUB1 (backup hub, single-direction redundancy).
+  // Each spoke PDC replicates to intra-site sibling + HUB1 (reverse of
+  // HUB1's outbound keeps partner agreement symmetric). Each spoke
+  // non-PDC replicates only to the intra-site PDC.
+  // Total edges: 14 directed rows / 7 unique bidirectional pairs
+  //   {NC1,NC2} {NC1,HUB1} {FZ1,FZ2} {FZ1,HUB1} (FZ1→HUB1 fail)
+  //   {XM1,XM2} {XM1,HUB1} {HUB1,HUB2}
   return [
     {
-      label: 'NC site DC1 (PDC) — recent success (within 1h, hub-spoke OK)',
+      label: 'NC site DC1 (PDC) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: NC1,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(NC1, { isPdc: true, ip: '10.99.0.10', siteHint: 'MOCK-NC' }) },
       replication: {
         when: withinHour,
-        // Hub-spoke: spoke PDC replicates only to intra-site sibling + cross-site hubs
+        // 2026-08-28 R44 sparse hub-spoke: spoke PDC → intra-site sibling + HUB1 only
         links: [
           { destDc: NC2,  statusCode: 0 },
-          { destDc: HUB1, statusCode: 0 },
-          { destDc: HUB2, statusCode: 0 }
+          { destDc: HUB1, statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'FZ site DC1 (PDC) — recent partial_failure (1 of 3 links failing)',
+      label: 'FZ site DC1 (PDC) — recent partial_failure (HUB1 link fails, round-19 regression)',
       agentId: FZ1,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(FZ1, { ip: '10.99.0.11', siteHint: 'MOCK-FZ' }) },
       replication: {
         when: withinHour,
-        // Hub-spoke: spoke PDC replicates only to intra-site sibling + cross-site hubs.
-        // HUB1 still fails to inject variability (regression coverage).
+        // 2026-08-28 R44 sparse hub-spoke: spoke PDC → intra-site sibling + HUB1 only.
+        // HUB1 fails to inject variability; FZ1's outbound list drops HUB2 entirely.
         links: [
           { destDc: FZ2,  statusCode: 0 },
-          { destDc: HUB1, statusCode: 2, errorMessage: 'RPC server unavailable (round-trip > 30s)' },
-          { destDc: HUB2, statusCode: 0 }
+          { destDc: HUB1, statusCode: 2, errorMessage: 'RPC server unavailable (round-trip > 30s)' }
         ]
       },
       localState: { when: withinHour }
@@ -236,97 +244,86 @@ function defaultScenario() {
       discovery: { dc: dc(XM1, { ip: '10.99.0.12', siteHint: 'MOCK-XM' }) },
       replication: {
         when: twoHoursAgo,
-        // Hub-spoke: spoke PDC replicates only to intra-site sibling + cross-site hubs.
+        // 2026-08-28 R44 sparse hub-spoke: spoke PDC → intra-site sibling + HUB1 only.
         // Reported 2h ago → staleness signal survives regression.
         links: [
           { destDc: XM2,  statusCode: 0 },
-          { destDc: HUB1, statusCode: 0 },
-          { destDc: HUB2, statusCode: 0 }
+          { destDc: HUB1, statusCode: 0 }
         ]
       },
       localState: null
     },
     {
-      label: 'Hub DC1 — outbound to HUB2 + every spoke',
+      label: 'Hub DC1 — outbound to HUB2 + each site\'s first (PDC) DC',
       agentId: HUB1,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(HUB1, { ip: '10.99.0.13', siteHint: 'MOCK-HUB' }) },
       replication: {
         when: withinHour,
-        // Pattern: HUB1 -> [HUB2, every spoke DC (1 + 2)]
+        // 2026-08-28 R44 sparse hub-spoke (operator directive):
+        // HUB1 → same-site sibling + the FIRST DC of every other site (not siblings NC2/FZ2/XM2)
         links: [
           { destDc: HUB2, statusCode: 0 },
           { destDc: NC1, statusCode: 0 },
-          { destDc: NC2, statusCode: 0 },
           { destDc: FZ1, statusCode: 0 },
-          { destDc: FZ2, statusCode: 0 },
-          { destDc: XM1, statusCode: 0 },
-          { destDc: XM2, statusCode: 0 }
+          { destDc: XM1, statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'NC site DC2 (sibling) — recent success (within 1h, hub-spoke OK)',
+      label: 'NC site DC2 (sibling) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: NC2,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(NC2, { ip: '10.99.0.14', siteHint: 'MOCK-NC' }) },
       replication: {
         when: withinHour,
-        // Hub-spoke: sibling mirrors PDC — intra-site + cross-site hubs only
+        // 2026-08-28 R44 sparse hub-spoke: spoke non-PDC → intra-site PDC only
         links: [
-          { destDc: NC1,  statusCode: 0 },
-          { destDc: HUB1, statusCode: 0 },
-          { destDc: HUB2, statusCode: 0 }
+          { destDc: NC1,  statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'FZ site DC2 (sibling) — recent success (within 1h, hub-spoke OK)',
+      label: 'FZ site DC2 (sibling) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: FZ2,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(FZ2, { ip: '10.99.0.15', siteHint: 'MOCK-FZ' }) },
       replication: {
         when: withinHour,
-        // Hub-spoke: sibling mirrors PDC — intra-site + cross-site hubs only
+        // 2026-08-28 R44 sparse hub-spoke: spoke non-PDC → intra-site PDC only
         links: [
-          { destDc: FZ1,  statusCode: 0 },
-          { destDc: HUB1, statusCode: 0 },
-          { destDc: HUB2, statusCode: 0 }
+          { destDc: FZ1,  statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'XM site DC2 (sibling) — recent success (within 1h, hub-spoke OK)',
+      label: 'XM site DC2 (sibling) — recent success (within 1h, sparse hub-spoke OK)',
       agentId: XM2,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(XM2, { ip: '10.99.0.16', siteHint: 'MOCK-XM' }) },
       replication: {
         when: withinHour,
-        // Hub-spoke: sibling mirrors PDC — intra-site + cross-site hubs only
+        // 2026-08-28 R44 sparse hub-spoke: spoke non-PDC → intra-site PDC only
         links: [
-          { destDc: XM1,  statusCode: 0 },
-          { destDc: HUB1, statusCode: 0 },
-          { destDc: HUB2, statusCode: 0 }
+          { destDc: XM1,  statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
     },
     {
-      label: 'Hub DC2 — outbound to HUB1 + every spoke PDC',
+      label: 'Hub DC2 — outbound to HUB1 only (operator directive: backup hub)',
       agentId: HUB2,
       heartbeat: { when: 'now' },
       discovery: { dc: dc(HUB2, { ip: '10.99.0.17', siteHint: 'MOCK-HUB' }) },
       replication: {
         when: withinHour,
-        // Secondary hub: outbound to HUB1 + every spoke PDC only (not siblings)
+        // 2026-08-28 R44 sparse hub-spoke: HUB2 → HUB1 only (no spoke replication).
+        // Backup hub has single-direction redundancy with primary.
         links: [
-          { destDc: HUB1, statusCode: 0 },
-          { destDc: NC1,  statusCode: 0 },
-          { destDc: FZ1,  statusCode: 0 },
-          { destDc: XM1,  statusCode: 0 }
+          { destDc: HUB1, statusCode: 0 }
         ]
       },
       localState: { when: withinHour }
