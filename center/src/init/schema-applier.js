@@ -68,21 +68,28 @@ export function splitSqlStatements(sql) {
       if (blockDepth > 0) blockDepth--; buf += sql.slice(i, i + 3); i += 3; continue;
     }
     // Statement terminator: matches the current delimiter (default ';').
-    // Single-char delimiter (e.g. ';'): split when next char is \n, \r, another terminator, or end-of-string.
-    // Multi-char delimiter (e.g. '$$'): split on exact match followed by \n, \r, or end-of-string.
-    if (currentDelim.length === 1 && c === currentDelim[0] && blockDepth === 0 &&
-        (i + 1 >= sql.length || sql[i + 1] === '\n' || sql[i + 1] === '\r' || sql[i + 1] === currentDelim[0])) {
+    // Single-char delimiter (e.g. ';'): at top level (blockDepth=0, not in
+    // string/comment), `;` is ALWAYS a terminator regardless of what
+    // character follows. Previously this branch only split when the next
+    // char was \n / \r / another terminator / EOF — that over-restrictive
+    // check caused `PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE
+    // stmt;` (inline multi-statement chains) to be bundled into one
+    // mega-statement, which MySQL then rejected with a syntax error
+    // (round-50 migration 021 failure). The line comment and string-literal
+    // branches above this point already prevent us from mis-splitting
+    // inside `--` comments or `'...'` literals, so no extra guard is needed.
+    if (currentDelim.length === 1 && c === currentDelim[0] && blockDepth === 0) {
       const stmt = buf.trim();
       if (stmt.length > 0) out.push(stmt);
       buf = '';
       i++;
       continue;
     }
+    // Multi-char delimiter (e.g. '$$'): split on exact match. Same logic as
+    // the single-char case — at top level, the delimiter is always terminal.
+    // (MySQL DELIMITER is only legal at the top level anyway.)
     if (currentDelim.length > 1 && c === currentDelim[0] && blockDepth === 0 &&
-        sql.slice(i, i + currentDelim.length) === currentDelim &&
-        (i + currentDelim.length >= sql.length ||
-         sql[i + currentDelim.length] === '\n' ||
-         sql[i + currentDelim.length] === '\r')) {
+        sql.slice(i, i + currentDelim.length) === currentDelim) {
       const stmt = buf.trim();
       if (stmt.length > 0) out.push(stmt);
       buf = '';

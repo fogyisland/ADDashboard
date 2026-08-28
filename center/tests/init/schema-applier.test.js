@@ -18,6 +18,33 @@ test('splitSqlStatements splits on ; followed by newline', () => {
   ]);
 });
 
+test('splitSqlStatements splits on ; even when followed by space (round-50 regression: PREPARE/EXECUTE inline chain)', () => {
+  // Round-50: migration 021 used `PREPARE stmt FROM @sql; EXECUTE stmt;
+  // DEALLOCATE PREPARE stmt;` on a single line. The old splitter only
+  // treated `;` as a terminator when followed by \n/\r/`;`/EOF, so `; `
+  // got bundled into the same statement — MySQL then rejected the
+  // bundle with `near 'EXECUTE stmt; DEALLOCATE PREPARE stmt'`. The fix:
+  // always split `;` at top level (blockDepth=0, not in string/comment).
+  // The current migration 021 puts each statement on its own line, but
+  // the splitter must also tolerate the inline form so future migrations
+  // (and rolled-back imports) don't reintroduce the same failure.
+  const sql = 'PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;';
+  const out = splitSqlStatements(sql);
+  assert.deepStrictEqual(out, [
+    'PREPARE stmt FROM @sql',
+    'EXECUTE stmt',
+    'DEALLOCATE PREPARE stmt'
+  ]);
+});
+
+test('splitSqlStatements handles inline multi-statement chain at top level', () => {
+  // Wider coverage: any `;` at top level is a terminator, regardless of
+  // what follows. This matches how the MySQL CLI's --multi-statements mode
+  // parses input and how `db.execute()` sends each statement.
+  const sql = 'SELECT 1; SELECT 2; SELECT 3';
+  assert.deepStrictEqual(splitSqlStatements(sql), ['SELECT 1', 'SELECT 2', 'SELECT 3']);
+});
+
 test('splitSqlStatements ignores semicolons inside single-quoted strings', () => {
   const sql = "INSERT INTO t (v) VALUES ('a;b');\nINSERT INTO t (v) VALUES ('c');";
   assert.deepStrictEqual(splitSqlStatements(sql), [

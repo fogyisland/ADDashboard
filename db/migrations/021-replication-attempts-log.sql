@@ -1,3 +1,6 @@
+-- verify: columns ad_replication_history.last_attempt_time, attempt_duration_ms, objects_transferred
+-- verify: index ad_replication_history.ix_hist_pair_time
+
 -- 021-replication-attempts-log.sql
 -- 2026-08-27 round-42 (复制日志监控): turn ad_replication_history into a
 -- per-attempt log with enough fields to render a "latest 10 connection
@@ -17,43 +20,69 @@
 --      not full-table-scan. Pre-feature ix_hist_time(collected_at) is
 --      kept (audit/retention jobs still scan by collected_at).
 --
--- Idempotent on rerun via information_schema.COLUMNS / STATISTICS guard
--- pattern (same approach as migration 016/020). Pre-feature rows stay
--- valid: the new columns are NULL-able.
+-- Idempotent on rerun via information_schema.COLUMNS / STATISTICS guards.
+-- Pre-feature rows stay valid: the new columns are NULL-able.
 --
 -- This migration does NOT flip history_enabled from 0 to 1; that change
 -- is applied at runtime via a separate system_config UPSERT so an
 -- existing operator who explicitly disabled history can stay disabled.
+--
+-- IMPORTANT (round-50): the previous version of this file used a
+-- MySQL DELIMITER block + stored procedure to add each column. That
+-- pattern collided with `center/src/init/schema-applier.js`'s
+-- `splitSqlStatements()` — the splitter only treats `;` as a
+-- statement terminator when followed by `\n`/`\r`/`;`/EOF, so the
+-- inline `PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;`
+-- inside the procedure body got bundled into a single mega-statement
+-- and MySQL rejected it with `near 'EXECUTE stmt; DEALLOCATE PREPARE
+-- stmt'`. The fix is to drop the procedure entirely and emit each
+-- statement on its own line, where the splitter handles `;` followed
+-- by `\n` correctly.
 
-DELIMITER $$
+-- ----- Column 1: last_attempt_time -----
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'ad_replication_history'
+    AND COLUMN_NAME = 'last_attempt_time'
+);
+SET @sql := IF(@col_exists = 0,
+  'ALTER TABLE ad_replication_history ADD COLUMN last_attempt_time DATETIME NULL AFTER last_success_time',
+  'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-DROP PROCEDURE IF EXISTS migrate_021_add_column_if_missing$$
-CREATE PROCEDURE migrate_021_add_column_if_missing(
-  IN p_table VARCHAR(64), IN p_column VARCHAR(64), IN p_definition VARCHAR(255)
-)
-BEGIN
-  DECLARE v_exists INT DEFAULT 0;
-  SELECT COUNT(*) INTO v_exists FROM information_schema.COLUMNS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table AND COLUMN_NAME = p_column;
-  IF v_exists = 0 THEN
-    SET @sql = CONCAT('ALTER TABLE ', p_table, ' ADD COLUMN ', p_column, ' ', p_definition);
-    PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-  END IF;
-END$$
+-- ----- Column 2: attempt_duration_ms -----
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'ad_replication_history'
+    AND COLUMN_NAME = 'attempt_duration_ms'
+);
+SET @sql := IF(@col_exists = 0,
+  'ALTER TABLE ad_replication_history ADD COLUMN attempt_duration_ms INT NULL AFTER last_attempt_time',
+  'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-DELIMITER ;
+-- ----- Column 3: objects_transferred -----
+SET @col_exists := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'ad_replication_history'
+    AND COLUMN_NAME = 'objects_transferred'
+);
+SET @sql := IF(@col_exists = 0,
+  'ALTER TABLE ad_replication_history ADD COLUMN objects_transferred INT NULL AFTER attempt_duration_ms',
+  'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-CALL migrate_021_add_column_if_missing('ad_replication_history', 'last_attempt_time',
-  'DATETIME NULL AFTER last_success_time');
-CALL migrate_021_add_column_if_missing('ad_replication_history', 'attempt_duration_ms',
-  'INT NULL AFTER last_attempt_time');
-CALL migrate_021_add_column_if_missing('ad_replication_history', 'objects_transferred',
-  'INT NULL AFTER attempt_duration_ms');
-
-DROP PROCEDURE migrate_021_add_column_if_missing;
-
--- Composite index for the per-pair "last N attempts" query. The view
--- (services/replication-log-all.js) issues:
+-- ----- Composite index for the per-pair "last N attempts" query -----
+-- The view (services/replication-log-all.js) issues:
 --   SELECT ... FROM ad_replication_history
 --   WHERE source_dc = ? AND dest_dc = ? AND naming_context = ?
 --   ORDER BY collected_at DESC LIMIT 10
@@ -71,4 +100,6 @@ SET @idx_exists := (
 SET @sql := IF(@idx_exists = 0,
   'CREATE INDEX ix_hist_pair_time ON ad_replication_history (source_dc, dest_dc, naming_context, collected_at)',
   'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
