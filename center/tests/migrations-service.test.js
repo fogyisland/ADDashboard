@@ -60,6 +60,13 @@ function buildMockDb({ initialRows = [], executeImpl } = {}) {
 // can resolve files. Returns { repoRoot, addFile, removeFile }.
 function buildFakeRepo(files) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'migrations-svc-'));
+  // Without a package.json nearer than the repoRoot, Node parses .js as
+  // CommonJS by default. The R66 wiring dynamically imports a sibling
+  // `<version>-*.js` migration helper (ESM in the real project), so the
+  // fake repo needs to declare module type explicitly — otherwise the
+  // tests get "Unexpected token 'export'" instead of the expected
+  // helper execution.
+  writeFileSync(join(repoRoot, 'package.json'), '{"type":"module"}');
   const mysqlDir = join(repoRoot, 'db/migrations');
   const mssqlDir = join(repoRoot, 'db/migrations/mssql');
   mkdirSync(mssqlDir, { recursive: true });
@@ -476,6 +483,85 @@ describe('migrationsService.upgrade', () => {
     assert.equal(r.migrations.failed.length, 2);
     assert.equal(r.ok, false);
     assert.match(r.message, /失败/);
+    repo.cleanup();
+  });
+});
+
+// 2026-08-29 R66 — the applier now optionally invokes a sibling
+// `<version>-*.js` file alongside the SQL. These tests pin the new
+// contract: type='sql' for .sql-only migrations; type='sql+js' +
+// dynamic-import call when a sibling .js exists; status='failed' with
+// the JS error message when the JS helper throws.
+describe('migrationsService.applyMigration — JS data-migration step (R66)', () => {
+  test('sql-only migration keeps type=sql in schema_migrations.upsert', async () => {
+    const repo = buildFakeRepo({
+      '008-lockout-events.sql': 'CREATE TABLE ad_lockout_events (id INT);'
+    });
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.applyMigration('008', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    const upsert = calls.execute.find(c => c.sql === 'UPSERT_PLACEHOLDER');
+    assert.ok(upsert, 'expected upsert');
+    // Param 2 (after version + description) is the `type` column.
+    assert.equal(upsert.params[2], 'sql', 'sql-only migration must keep type=sql');
+    repo.cleanup();
+  });
+
+  test('sql+js migration: .js sidecar is dynamic-imported + invoked after SQL tx, type=sql+js in upsert', async () => {
+    // Create a sibling .js sidecar that exports migrateInstalledPackagesToTwoTable.
+    // The helper just records being called; no DB access happens during the test.
+    const repo = buildFakeRepo({
+      '023-package-scripts-policies-split.sql': 'CREATE TABLE package_scripts (name VARCHAR(64));'
+    });
+    const jsPath = join(repo.repoRoot, 'db/migrations/023-package-scripts-policies-split.js');
+    writeFileSync(jsPath, `export const migrateInstalledPackagesToTwoTable = async ({ db, dataDir, writeAudit }) => {
+      return { migrated: 0 };
+    };`);
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.applyMigration('023', { appliedBy: 'admin' });
+    assert.equal(r.ok, true);
+    const upsert = calls.execute.find(c => c.sql === 'UPSERT_PLACEHOLDER');
+    assert.ok(upsert, 'expected upsert');
+    assert.equal(upsert.params[2], 'sql+js', 'sql+js migration must record type=sql+js');
+    repo.cleanup();
+  });
+
+  test('sql+js migration: when JS helper throws, status=failed + errorMessage prefixed js:', async () => {
+    const repo = buildFakeRepo({
+      '023-package-scripts-policies-split.sql': 'CREATE TABLE package_scripts (name VARCHAR(64));'
+    });
+    const jsPath = join(repo.repoRoot, 'db/migrations/023-package-scripts-policies-split.js');
+    writeFileSync(jsPath, `export const migrateInstalledPackagesToTwoTable = async () => {
+      throw new Error('data migration blew up');
+    };`);
+    const { db, calls } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.applyMigration('023', { appliedBy: 'admin' });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 'failed');
+    assert.match(r.errorMessage, /^js: data migration blew up$/);
+    const upsert = calls.execute.find(c => c.sql === 'UPSERT_PLACEHOLDER');
+    assert.ok(upsert);
+    // Status param index is params.length - 2 (matches the convention
+    // asserted in the existing describe('applyMigration') block above).
+    const statusIdx = upsert.params.length - 2;
+    assert.equal(upsert.params[statusIdx], 'failed');
+    repo.cleanup();
+  });
+
+  test('sql+js migration without migrateInstalledPackagesToTwoTable export → status=failed (defensive)', async () => {
+    const repo = buildFakeRepo({
+      '023-package-scripts-policies-split.sql': 'CREATE TABLE package_scripts (name VARCHAR(64));'
+    });
+    const jsPath = join(repo.repoRoot, 'db/migrations/023-package-scripts-policies-split.js');
+    writeFileSync(jsPath, `export const unrelated = 1;`); // no migrateInstalledPackagesToTwoTable
+    const { db } = buildMockDb({ initialRows: [] });
+    const svc = createMigrationsService({ db, logger: { warn() {}, error() {} }, getRepoRoot: () => repo.repoRoot });
+    const r = await svc.applyMigration('023', { appliedBy: 'admin' });
+    assert.equal(r.ok, false);
+    assert.match(r.errorMessage, /did not export migrateInstalledPackagesToTwoTable/);
     repo.cleanup();
   });
 });

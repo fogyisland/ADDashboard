@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { splitSqlStatements } from '../init/schema-applier.js';
 import { verifyMarkers, parseVerifyMarker } from '../init/verify-marker.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
@@ -48,6 +49,23 @@ function resolveFile(repoRoot, dialect, version) {
   return match ? join(dir, match) : null;
 }
 
+// 2026-08-29 R66 — pair resolver. The migration applier now optionally
+// invokes a sibling `<version>-*.js` file alongside the SQL when one is
+// present (e.g. 023's data migration that needs fs reads + sha256
+// computation + DROP-after-migrate, neither of which is expressible in
+// raw SQL). Returns the absolute path of the .js file, or null when the
+// migration has no JS step (the existing .sql-only path used by
+// 001..022). Resolution mirrors `resolveFile` exactly — same dir,
+// same `version-` prefix, .js extension.
+function resolveJsFile(repoRoot, dialect, version) {
+  const dir = dialect === 'mssql'
+    ? join(repoRoot, 'db/migrations/mssql')
+    : join(repoRoot, 'db/migrations');
+  if (!existsSync(dir)) return null;
+  const match = readdirSync(dir).find(f => f.startsWith(version + '-') && f.endsWith('.js'));
+  return match ? join(dir, match) : null;
+}
+
 function parseFileMeta(filePath) {
   const fileName = filePath.split(/[/\\]/).pop();
   const m = fileName.match(/^(\d{3})-([a-z0-9-]+)\.sql$/);
@@ -75,7 +93,7 @@ function rowToCamel(r) {
   };
 }
 
-export function createMigrationsService({ db, logger, getRepoRoot }) {
+export function createMigrationsService({ db, logger, getRepoRoot, writeAudit, getDataDir }) {
   async function listMigrations(dialect) {
     const repoRoot = getRepoRoot();
     const dir = dialect === 'mssql'
@@ -129,6 +147,7 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     const repoRoot = getRepoRoot();
     const filePath = resolveFile(repoRoot, db.dialect, version);
     if (!filePath) throw new MigrationFileMissingError(version);
+    const jsFilePath = resolveJsFile(repoRoot, db.dialect, version);
     const content = readFileSync(filePath, 'utf8');
     const meta = parseFileMeta(filePath);
     const fileName = filePath.split(/[/\\]/).pop();
@@ -142,14 +161,46 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     const stmts = splitSqlStatements(content);
     const t0 = Date.now();
     let status, errorMessage;
+    let jsRan = false;
     try {
       await db.transaction(async (tx) => {
         for (const s of stmts) {
           await tx.execute(s, []);
         }
       });
-      status = 'applied';
-      errorMessage = null;
+      // 2026-08-29 R66 — JS data-migration step. Only runs when a sibling
+      // `<version>-*.js` exists alongside the SQL (e.g. migration 023
+      // splits installed_packages into package_scripts +
+      // package_policies). The .sql tx already committed; if the JS step
+      // fails we still record the migration as 'failed' so the operator
+      // can retry (the SQL files start with DROP TABLE IF EXISTS, so a
+      // retry cleanly re-creates the new tables and re-runs the data
+      // migration). `jsRan` flips the schema_migrations.type column from
+      // 'sql' to 'sql+js' so the admin UI surfaces the migration as
+      // having both steps.
+      if (jsFilePath) {
+        try {
+          const jsUrl = pathToFileURL(jsFilePath).href;
+          const mod = await import(jsUrl);
+          const fn = mod.migrateInstalledPackagesToTwoTable ?? mod.default;
+          if (typeof fn !== 'function') {
+            throw new Error(`migration ${version} JS helper did not export migrateInstalledPackagesToTwoTable`);
+          }
+          const dataDir = (getDataDir ? getDataDir() : null) || `${process.cwd()}/data/packages`;
+          await fn({ db, dataDir, writeAudit });
+          jsRan = true;
+        } catch (jsErr) {
+          logger.warn({ err: jsErr.message, version }, 'migration JS step failed');
+          status = 'failed';
+          errorMessage = `js: ${jsErr.message}`;
+          // Don't fall through to status='applied' — surface as failed so
+          // the operator can retry. SQL changes are NOT rolled back (the
+          // tx already committed); retry re-runs DROP+CREATE + the data
+          // migration.
+        }
+      }
+      if (!status) status = 'applied';
+      if (errorMessage == null) errorMessage = null;
     } catch (e) {
       logger.warn({ err: e.message, version }, 'migration apply failed');
       status = 'failed';
@@ -162,7 +213,7 @@ export function createMigrationsService({ db, logger, getRepoRoot }) {
     await db.execute(db.sql.schemaMigrations.upsert, [
       version,
       meta.description,
-      'sql',
+      jsRan ? 'sql+js' : 'sql',
       fileName,                              // script = filename, NOT description
       checksum,
       appliedAtIso,
