@@ -15,6 +15,7 @@ export class PkgError extends Error {
   }
   static statusFor(code) {
     return {
+      // Legacy ZIP-installer codes (PKG_ prefix).
       PKG_INVALID_MANIFEST: 400,
       PKG_VALIDATION_FAILED: 400,
       PKG_UNSUPPORTED_TYPE: 400,
@@ -36,6 +37,21 @@ export class PkgError extends Error {
       PKG_METRIC_TYPE_MISMATCH: 400,
       PKG_METRIC_REQUIRED: 400,
       PKG_BUILTIN: 400,
+      // 2026-08-29 R66 — script-service codes (unprefixed; see
+      // src/packages/script-service.js). Routers consume e.status for HTTP
+      // mapping; without these entries validation errors fall back to 500
+      // instead of the correct 400/404/409.
+      INVALID_NAME: 400,
+      INVALID_CONTENT: 400,
+      SCRIPT_TOO_LARGE: 413,
+      INVALID_TYPE: 400,
+      INVALID_AGENT_TYPE: 400,
+      INVALID_INTERVAL: 400,
+      INVALID_TIMEOUT: 400,
+      INVALID_SCOPE: 400,
+      EMPTY_POLICY: 400,
+      PACKAGE_EXISTS: 409,
+      PACKAGE_NOT_FOUND: 404,
     }[code] || 500;
   }
 }
