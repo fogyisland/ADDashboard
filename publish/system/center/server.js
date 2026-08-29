@@ -19,7 +19,7 @@ import { createAlertEvaluationLoop } from './src/services/alert-engine.js';
 import { createEmailDeliveryLoop } from './src/services/email.js';
 import { createAuditRetentionLoop } from './src/services/audit.js';
 import { initRouter } from './src/init/router.js';
-import { packageRouter, createPackagesRouter } from './src/packages/router.js';
+import { createPackagesRouter } from './src/packages/router.js';
 import { orphanRouter } from './src/packages/orphan-router.js';
 import { packageRunner } from './src/packages/runner.js';
 import { memberRouter } from './src/routes/member-servers.js';
@@ -428,38 +428,25 @@ await ((async () => {
     // sibling Router, so we wire the auth inside each package router
     // factory and pass the config through.
     const pkgDb = getDb();
-    // R66 Task 7 — the new script-service surface is mounted FIRST so its
-    // GET /api/admin/packages ({items}) and DELETE /api/admin/packages/:name
-    // take precedence over the V0 ZIP equivalents below. The remaining V0
-    // paths (/install, /:name/upgrade, /:name/ddl-preview, /params,
-    // /registry/*) don't overlap and still fall through to packageRouter.
-    // Task 10 deletes the V0 mount entirely.
+    // R66 Task 13 — V0 ZIP wrapper is gone (packages/installer.js +
+    // installed-packages.js SQL helper were dropped). Only the script-
+    // service-backed V1 router remains. writeAudit is now passed through
+    // directly because script-service emits the real audit.js shape
+    // ({action, target, payload}) — closes the T7 adapter TODO.
     //
     // `adminAuth` is ONE composed thunk (R7-2): the router applies it once
     // via r.use() instead of accepting an array of middlewares. Permission
     // is admin:users — the standard admin perm used by dcsRouter /
     // lockoutRouter / schemaMigrationsRouter (only the `admin` role holds
     // it, via the '*' grant, so this is not a widening).
-    //
-    // writeAudit adapter: script-service emits the R66 audit shape
-    // ({action, targetType, targetId, details}); services/audit.js writes
-    // ({userId, action, target, payload}). Map here so the audit row keeps
-    // its target/payload fidelity instead of landing with NULL columns.
     app.use(createPackagesRouter({
       db: pkgDb,
-      writeAudit: ({ action, targetType, targetId, details }) =>
-        writeAudit({ action, target: targetType, payload: { targetId, ...details } }, logger),
+      writeAudit: ({ userId, action, target, payload }, tx) => writeAudit({ userId, action, target, payload }, logger, tx),
       adminAuth: (req, res, next) =>
         userAuth({ db: getDb(), logger })(req, res, () =>
           requirePerm('admin:users')(req, res, next)
         ),
       getLogger: () => logger
-    }));
-    app.use(packageRouter({
-      db: pkgDb,
-      getLogger: () => logger,
-      getRegistryUrl,
-      config: finalConfig
     }));
     app.use(orphanRouter({
       db: pkgDb,

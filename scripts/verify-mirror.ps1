@@ -47,6 +47,19 @@ $roots = @(
   'db/migrations'
 )
 
+# Single-file roots: top-level files that ship alongside the mirrored
+# subtree but aren't inside any of the $roots directories. `center/server.js`
+# is the center entry point and the operator's green-package installer
+# copies it to the production install target; if it drifts from the source
+# the shipped center will fail to boot (T13 R=1 lesson: packageRouter
+# import was retired in T13 but the mirror wasn't synced, so the shipped
+# server.js still imported a deleted export and `npm start` blew up).
+# The loop below processes these as if they were one-element roots so they
+# get the same hash check + orphan detection as $roots entries.
+$rootFiles = @(
+  'center/server.js'
+)
+
 # Source file extensions. Excludes README.md / package.json / *.json config /
 # etc — only code we actually ship to users.
 $extensions = @('*.js', '*.vue', '*.sql')
@@ -100,58 +113,76 @@ if (-not (Test-Path -LiteralPath $shippedDist)) {
 # Build a set of all source files for orphan-detection later.
 $sourceRelSet = @{}
 
+# Process a single source file: hash-check it against its mirror, add to the
+# source-rel set, and tally pass/drift/missing. Reused by both the directory-
+# root loop and the single-file loop ($rootFiles) so both go through identical
+# skip/hash logic.
+function Process-SourceFile($f) {
+  $relPath = $f.FullName.Substring($projectRoot.Length).TrimStart('\', '/').Replace('\', '/')
+  # Skip files under configured skip-subdirs (dist/, tests/, node_modules/).
+  # These are either built (mirrored via a separate path), in-repo only, or
+  # dev-only and never ship to runtime users. The check uses word-boundary
+  # segments to avoid matching e.g. `dist` as part of another folder name.
+  $skip = $false
+  foreach ($sub in $skipSubdirs) {
+    if ($relPath -match ("(?:^|/){0}/" -f [regex]::Escape($sub))) {
+      $skip = $true
+      break
+    }
+  }
+  # Also skip test-related filenames (vitest.config.js, etc). Same rationale
+  # as $skipSubdirs: never mirrored to publish/system/. Matching is by
+  # basename, so the skip applies regardless of how deep the file lives in
+  # the source tree.
+  if (-not $skip) {
+    $fileName = Split-Path -Path $relPath -Leaf
+    if ($skipFiles -contains $fileName) {
+      $skip = $true
+    }
+  }
+  if ($skip) { return }
+  $sourceRelSet[$relPath] = $true
+
+  $mirrorRel = "publish/system/$relPath"
+  $mirrorAbs = Join-Path $projectRoot $mirrorRel
+
+  if (-not (Test-Path -LiteralPath $mirrorAbs)) {
+    Pair-Line $relPath $false 'mirror missing'
+    $script:missing++
+    return
+  }
+
+  $leftHash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash
+  $rightHash = (Get-FileHash -Algorithm SHA256 -Path $mirrorAbs).Hash
+
+  if ($leftHash -eq $rightHash) {
+    Pair-Line $relPath $true ''
+    $script:pass++
+  } else {
+    Pair-Line $relPath $false "hash mismatch ($leftHash vs $rightHash)"
+    $script:drift++
+  }
+}
+
 foreach ($root in $roots) {
   $srcAbs = Join-Path $projectRoot $root
   if (-not (Test-Path -LiteralPath $srcAbs)) { continue }
 
   $files = Get-ChildItem -Path $srcAbs -Recurse -File -Include $extensions -ErrorAction SilentlyContinue
   foreach ($f in $files) {
-    # Normalize to forward-slash relative path from project root.
-    $relPath = $f.FullName.Substring($projectRoot.Length).TrimStart('\', '/').Replace('\', '/')
-    # Skip files under configured skip-subdirs (dist/, tests/, node_modules/).
-    # These are either built (mirrored via a separate path), in-repo only, or
-    # dev-only and never ship to runtime users. The check uses word-boundary
-    # segments to avoid matching e.g. `dist` as part of another folder name.
-    $skip = $false
-    foreach ($sub in $skipSubdirs) {
-      if ($relPath -match ("(?:^|/){0}/" -f [regex]::Escape($sub))) {
-        $skip = $true
-        break
-      }
-    }
-    # Also skip test-related filenames (vitest.config.js, etc). Same rationale
-    # as $skipSubdirs: never mirrored to publish/system/. Matching is by
-    # basename, so the skip applies regardless of how deep the file lives in
-    # the source tree.
-    if (-not $skip) {
-      $fileName = Split-Path -Path $relPath -Leaf
-      if ($skipFiles -contains $fileName) {
-        $skip = $true
-      }
-    }
-    if ($skip) { continue }
-    $sourceRelSet[$relPath] = $true
-
-    $mirrorRel = "publish/system/$relPath"
-    $mirrorAbs = Join-Path $projectRoot $mirrorRel
-
-    if (-not (Test-Path -LiteralPath $mirrorAbs)) {
-      Pair-Line $relPath $false 'mirror missing'
-      $missing++
-      continue
-    }
-
-    $leftHash = (Get-FileHash -Algorithm SHA256 -Path $f.FullName).Hash
-    $rightHash = (Get-FileHash -Algorithm SHA256 -Path $mirrorAbs).Hash
-
-    if ($leftHash -eq $rightHash) {
-      Pair-Line $relPath $true ''
-      $pass++
-    } else {
-      Pair-Line $relPath $false "hash mismatch ($leftHash vs $rightHash)"
-      $drift++
-    }
+    Process-SourceFile $f
   }
+}
+
+# Single-file roots: process each as a one-file root so it gets the same
+# hash + skip + orphan treatment as the directory roots. This is what
+# caught the T13 R=1 server.js drift — without this, top-level files like
+# center/server.js silently fall outside the mirror scan and a stale mirror
+# ships with the next green-package install.
+foreach ($rootFile in $rootFiles) {
+  $srcAbs = Join-Path $projectRoot $rootFile
+  if (-not (Test-Path -LiteralPath $srcAbs)) { continue }
+  Process-SourceFile (Get-Item -LiteralPath $srcAbs)
 }
 
 # Orphan check: any file under publish/system/<root>/ that has no source
