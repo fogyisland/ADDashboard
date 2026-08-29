@@ -1,21 +1,23 @@
 // seedBuiltinPackages — copies bundled built-in packages from the
 // publish/ directory into the runtime data/ tree on first normal-mode
-// start AND registers them in the installed_packages DB table so the
-// agent's /api/agent/packages endpoint serves them. The center and agent
-// share a single data/packages/<name>/<version>/ layout (see
-// center/src/packages/installer.js — same path used for downloaded +
-// cached packages), so seeding the built-in here makes the
-// runner/router code path completely uniform across all install sources.
+// start AND registers them via the script-service (package_scripts +
+// package_policies tables) so the agent's /api/agent/packages endpoint
+// serves them. The center and agent share a single
+// data/packages/<name>/<version>/ layout (see center/src/packages/
+// installer.js — same path used for downloaded + cached packages), so
+// seeding the built-in here makes the runner/router code path completely
+// uniform across all install sources.
 //
 // Idempotency:
 //   - File copy: skipped when <dataDir>/<name>/<version>/manifest.json
 //     already exists. Operator can delete that file to force a re-seed.
-//   - DB upsert: re-runs on every call when `db` is provided. The upsert
-//     itself is idempotent (INSERT ... ON DUPLICATE KEY UPDATE / MERGE),
-//     and re-running recovers the round-12 runAllNow count:0 bug —
-//     installs that pre-date the DB-registration step left files on
-//     disk but no installed_packages row, so the agent sync returned []
-//     and runAllNow() always emitted `count: 0`.
+//   - DB registration (R66): pre-check via packageScripts.get(db, name)
+//     before calling installScript — skips the script INSERT when the
+//     script row already exists. setPolicy({enabled:true}) always fires
+//     to re-apply the built-in enable contract (see below). Re-running
+//     recovers the round-12 runAllNow count:0 bug — installs that pre-date
+//     the DB-registration step left files on disk but no DB row, so the
+//     agent sync returned [] and runAllNow() always emitted `count: 0`.
 //   - DDL apply: re-runs on every call when `db` is provided, with the
 //     same idempotency strategy as installer.upgradePackage — read
 //     pkg_<name>.schema_migrations, skip filenames already recorded,
@@ -26,18 +28,23 @@
 //     DDL, so metricstore v2 INSERT failed with "Table
 //     'pkg_<name>.metrics' doesn't exist" forever.
 //
-// Audit: emits `seed_builtin_<name>` (with hyphens → underscores) on
-// successful file copy only (not on idempotent re-runs). target='packages',
-// payload={name,version}. Best-effort: writeAudit failures don't block
-// startup (matches writeAudit's own best-effort contract).
+// Audit: emits three actions on first install (upload_script + set_policy
+// from script-service internals, plus seed_builtin_<name> from the
+// seeder itself), and just set_policy + seed_builtin_<name> on
+// subsequent restarts (idempotent skips for the script INSERT). The
+// seeder's own seed_builtin_<name> audit fires only on the first file
+// copy (not on idempotent re-runs), target='packages', payload=
+// {name,version}. Best-effort: writeAudit failures don't block startup
+// (matches writeAudit's own best-effort contract).
 //
 // Built-in enable contract: registered with enabled=true. Operator-driven
 // disable via UI does not persist across restarts — the seeder re-enables
-// on every normal-mode start. That's the documented built-in contract:
-// built-ins are center-managed, like system packages. If you want to
-// keep a built-in permanently disabled, delete <InstallPath>/data/packages/<name>/
-// before restart and the seeder will copy + re-enable it; future admin
-// work will add a per-package "sticky disabled" flag.
+// on every normal-mode start via setPolicy({enabled:true}). That's the
+// documented built-in contract: built-ins are center-managed, like
+// system packages. If you want to keep a built-in permanently disabled,
+// delete <InstallPath>/data/packages/<name>/ before restart and the
+// seeder will copy + re-enable it; future admin work will add a
+// per-package "sticky disabled" flag.
 //
 // Source dir layout (bundled in publish/center/data/packages/):
 //   <name>/<version>/manifest.json
@@ -66,6 +73,8 @@ import {
   listAppliedMigrations,
   schemaExists
 } from '../packages/ddl-apply.js';
+import { installScript, setPolicy } from '../packages/script-service.js';
+import { packageScripts } from '../db/sql/package-scripts.js';
 
 export const BUILTIN_PACKAGES = [
   { name: 'ad_os_baseline', version: '1.0.0' },
@@ -133,14 +142,6 @@ export async function seedBuiltinPackages({ dataDir, sourceDir, writeAudit, db }
   if (!dataDir) throw new Error('seedBuiltinPackages: dataDir required');
   if (!sourceDir) throw new Error('seedBuiltinPackages: sourceDir required');
 
-  // Lazy-load installedPackages so unit tests that don't pass `db`
-  // (and therefore don't pull in DB code) keep working without a live
-  // DB. Production always passes `db`.
-  let installedPackages = null;
-  if (db) {
-    ({ installedPackages } = await import('../db/sql/installed-packages.js'));
-  }
-
   for (const pkg of BUILTIN_PACKAGES) {
     const target = path.join(dataDir, pkg.name, pkg.version);
     fs.mkdirSync(target, { recursive: true });
@@ -159,9 +160,9 @@ export async function seedBuiltinPackages({ dataDir, sourceDir, writeAudit, db }
       copyDirSync(src, target);
     }
 
-    // Read manifest once for both the installed_packages upsert and the
+    // Read manifest once for both the script-service registration and the
     // DDL apply — the manifest's `database.schemaName` is what we key
-    // both the upsert and the migration apply on.
+    // both the script insert and the migration apply on.
     const manifestRaw = fs.readFileSync(manifestPath, 'utf8');
     // Defensive BOM strip — packaged manifest.json files from a Windows
     // build pipeline occasionally carry a UTF-8 BOM, which JSON.parse
@@ -169,26 +170,42 @@ export async function seedBuiltinPackages({ dataDir, sourceDir, writeAudit, db }
     // manifests.
     const manifest = JSON.parse(manifestRaw.replace(/^﻿/, ''));
 
-    // DB registration: when db is provided, upsert the installed_packages
-    // row so the agent's GET /api/agent/packages endpoint returns this
-    // built-in. Runs on every normal-mode restart (idempotent at the DB
-    // layer), which is what fixes round-12 runAllNow count:0 — pre-fix
-    // installs seeded files but never wrote the row, so /api/agent/packages
-    // returned [] and runAllNow() logged `count: 0`.
-    if (db && installedPackages) {
-      await installedPackages.upsert(db, {
-        name: pkg.name,
-        version: pkg.version,
-        type: manifest.type || 'gauge',
-        manifest,
-        enabled: true,
-        params: null,
-        source: 'builtin-seed'
-      });
+    // R66 DB registration: when db is provided, write through
+    // script-service.installScript + setPolicy (V1 two-table path).
+    // installScript seeds the script as DISABLED (its default), then
+    // setPolicy flips enabled=true — the audit log captures both actions.
+    //
+    // Idempotency: pre-check via packageScripts.get; skip installScript
+    // when the script row already exists, then always re-apply
+    // enabled=true. The enabled=true re-apply is the built-in enable
+    // contract — operator-driven disable via UI does not persist across
+    // restarts. Runs on every normal-mode restart, which is what fixes
+    // round-12 runAllNow count:0 — pre-fix installs seeded files but
+    // never wrote the row, so /api/agent/packages returned [] and
+    // runAllNow() logged `count: 0`.
+    if (db) {
+      const existing = await packageScripts.get(db, pkg.name);
+      if (!existing) {
+        await installScript({
+          db, writeAudit,
+          name: pkg.name,
+          content: fs.readFileSync(path.join(target, 'collect.ps1'), 'utf8'),
+          type: manifest.type || 'gauge',
+          agentType: manifest.agent?.type || 'ad',
+          description: manifest.description || '',
+          intervalSec: manifest.agent?.intervalSec ?? 3600,
+          timeoutMs: manifest.agent?.timeoutMs ?? 30000,
+          source: 'builtin-seed'
+        });
+      }
+      // Always apply enabled=true so the operator-driven disable doesn't
+      // persist across restarts (matches V0 built-in contract documented
+      // in the module docstring at the top of this file).
+      await setPolicy({ db, writeAudit, name: pkg.name, enabled: true });
     }
 
-    // Round-13 fix: DDL apply. After installed_packages row exists, run
-    // the package migrations so metricstore v2 INSERT has a target table.
+    // Round-13 fix: DDL apply. After script row exists, run the package
+    // migrations so metricstore v2 INSERT has a target table.
     // Idempotent: schema_migrations tracks applied filenames, and the
     // per-package SQL files are CREATE TABLE IF NOT EXISTS so a missing
     // schema_migrations row still produces a safe second apply (the table

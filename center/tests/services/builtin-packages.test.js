@@ -233,54 +233,94 @@ test('seedBuiltinPackages: partial state re-seeds only the missing built-ins', a
 });
 
 // --- Round-12 runAllNow count:0 fix: seedBuiltinPackages must also register
-// each built-in in the installed_packages DB table so the agent's
-// /api/agent/packages endpoint serves them. Pre-fix installs seeded files
-// but never wrote the DB row → agent saw [] → runAllNow logged count:0. ---
+// each built-in via the script-service (package_scripts + package_policies)
+// so the agent's /api/agent/packages endpoint serves them. Pre-fix installs
+// seeded files but never wrote the DB row → agent saw [] → runAllNow
+// logged count:0. R66 T9 retargeted the seeder from the legacy single-table
+// installed_packages upsert to the script-service.installScript + setPolicy
+// two-table path. ---
 
-// Build a mock db that captures every INSERT INTO installed_packages call.
-// We don't exercise the real driver — we only assert that seedBuiltinPackages
-// passes the right (name, version, type, manifest, enabled, params, source)
-// tuple to the upsert helper, and that it does so once per built-in.
+// Build a mock db that captures every package_scripts + package_policies
+// write the seeder makes through script-service. We don't exercise the real
+// driver — we only assert that seedBuiltinPackages passes the right
+// payload to installScript + setPolicy and that it does so once per
+// built-in.
 function makeMockDb() {
-  const upserts = [];
+  const scriptInserts = [];
+  const policyInserts = [];
+  const policyUpdates = [];
   const mock = {
     dialect: 'mysql',
     async execute(sql, params) {
-      if (typeof sql === 'string' && sql.includes('INSERT INTO installed_packages')) {
-        upserts.push({ sql, params });
+      const t = sql.trim();
+      // installScript's packageScripts.upsert → INSERT INTO package_scripts ...
+      if (t.startsWith('INSERT INTO package_scripts')) {
+        scriptInserts.push({ sql, params });
       }
+      // installScript's packagePolicies.upsert → INSERT INTO package_policies ...
+      if (t.startsWith('INSERT INTO package_policies')) {
+        policyInserts.push({ sql, params });
+      }
+      // setPolicy's packagePolicies.updatePartial → UPDATE package_policies SET ...
+      if (t.startsWith('UPDATE package_policies SET')) {
+        policyUpdates.push({ sql, params });
+      }
+      // packageScripts.get / packagePolicies.getByName → SELECT * FROM package_<x> WHERE name = ?
+      // Default to empty rows so installScript's pre-check sees "not found"
+      // on first run, mimicking a fresh DB.
       return { rows: [] };
     }
   };
-  return { mock, upserts };
+  return { mock, scriptInserts, policyInserts, policyUpdates };
 }
 
-test('seedBuiltinPackages: upserts installed_packages row for every built-in when db is provided', async () => {
+test('seedBuiltinPackages: writes via script-service.installScript + setPolicy (V1 two-table path)', async () => {
   const tmp = makeTmpDir();
   try {
-    const { mock, upserts } = makeMockDb();
+    const { mock, scriptInserts, policyInserts, policyUpdates } = makeMockDb();
     await seedBuiltinPackages({
       dataDir: tmp,
       sourceDir: SOURCE_DIR,
       db: mock
     });
 
-    assert.strictEqual(upserts.length, BUILTIN_PACKAGES.length,
-      `expected one upsert per built-in (${BUILTIN_PACKAGES.length}), got ${upserts.length}`);
+    // One installScript write per built-in (INSERT INTO package_scripts +
+    // INSERT INTO package_policies from installScript, plus one UPDATE
+    // package_policies SET from setPolicy).
+    assert.strictEqual(scriptInserts.length, BUILTIN_PACKAGES.length,
+      `expected one INSERT INTO package_scripts per built-in (${BUILTIN_PACKAGES.length}), got ${scriptInserts.length}`);
+    assert.strictEqual(policyInserts.length, BUILTIN_PACKAGES.length,
+      `expected one INSERT INTO package_policies per built-in (${BUILTIN_PACKAGES.length}), got ${policyInserts.length}`);
+    assert.strictEqual(policyUpdates.length, BUILTIN_PACKAGES.length,
+      `expected one UPDATE package_policies SET per built-in (${BUILTIN_PACKAGES.length}), got ${policyUpdates.length}`);
 
-    const upsertedNames = upserts.map(u => u.params[0]).sort();
+    const insertedNames = scriptInserts.map(u => u.params[0]).sort();
     const expectedNames = BUILTIN_PACKAGES.map(p => p.name).sort();
-    assert.deepStrictEqual(upsertedNames, expectedNames,
-      'every built-in should appear in the upsert list');
+    assert.deepStrictEqual(insertedNames, expectedNames,
+      'every built-in should appear in the script INSERT list');
+
+    // setPolicy({enabled:true}) must flip enabled=1 — the built-in enable
+    // contract. Assert the UPDATE carries `enabled = ?` (the 1/0 bit set
+    // by packagePolicies.updatePartial).
+    for (const u of policyUpdates) {
+      assert.match(u.sql, /enabled\s*=\s*\?/i,
+        'setPolicy UPDATE should set enabled');
+    }
+    // Last param is the WHERE name= ? key — assert it matches one of the built-ins.
+    for (const u of policyUpdates) {
+      const lastParam = u.params[u.params.length - 1];
+      assert.ok(BUILTIN_PACKAGES.some(p => p.name === lastParam),
+        `setPolicy UPDATE name param '${lastParam}' should match a built-in`);
+    }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('seedBuiltinPackages: upserted row carries correct (name, version, type, enabled, source) shape', async () => {
+test('seedBuiltinPackages: installScript write carries correct name + type + manifest shape', async () => {
   const tmp = makeTmpDir();
   try {
-    const { mock, upserts } = makeMockDb();
+    const { mock, scriptInserts } = makeMockDb();
     await seedBuiltinPackages({
       dataDir: tmp,
       sourceDir: SOURCE_DIR,
@@ -289,55 +329,124 @@ test('seedBuiltinPackages: upserted row carries correct (name, version, type, en
 
     // Find the row for ad_os_baseline — its manifest has type=gauge and a
     // known intervalSec; use it as the shape anchor.
-    const baseline = upserts.find(u => u.params[0] === 'ad_os_baseline');
-    assert.ok(baseline, 'ad_os_baseline should be upserted');
+    const baseline = scriptInserts.find(u => u.params[0] === 'ad_os_baseline');
+    assert.ok(baseline, 'ad_os_baseline should have a script INSERT');
 
-    // Params order per UPSERT_MYSQL: name, version, type, manifest_json,
-    // enabled, params_json, interval_override_sec, installed_at, updated_at, source.
-    // (round-19 follow-up: interval_override_sec inserted at params[6], so
-    // installed_at/updated_at/source shifted to [7,8,9].)
+    // Params order per UPSERT_MYSQL: name, version, script_content,
+    // script_sha256, manifest_json, source, created_at, updated_at.
     assert.strictEqual(baseline.params[0], 'ad_os_baseline');
     assert.strictEqual(baseline.params[1], '1.0.0');
-    assert.strictEqual(baseline.params[2], 'gauge', 'type should come from manifest.type');
-    const manifest = JSON.parse(baseline.params[3]);
-    assert.strictEqual(manifest.name, 'ad-os-baseline', 'manifest_json should round-trip');
+    assert.strictEqual(baseline.params[5], 'builtin-seed', 'source should mark the install provenance');
+    // manifest_json is the 5th param (index 4) — round-trip and verify the
+    // script-service contract (name + version + type + description +
+    // schemaVersion + agent.type without intervalSec/timeoutMs).
+    const manifest = JSON.parse(baseline.params[4]);
+    assert.strictEqual(manifest.name, 'ad_os_baseline');
     assert.strictEqual(manifest.version, '1.0.0');
-    assert.strictEqual(baseline.params[4], 1, 'enabled should be 1 (built-ins auto-enable)');
-    assert.strictEqual(baseline.params[5], null, 'params_json should be null for built-ins');
-    assert.strictEqual(baseline.params[6], null, 'interval_override_sec should be null when not provided');
-    assert.strictEqual(baseline.params[9], 'builtin-seed', 'source should mark the upsert provenance');
-    // installed_at / updated_at (params[7,8]) are Date objects — just verify
-    // they're recent (within the last minute) to confirm they're stamped now.
-    const installedAt = new Date(baseline.params[7]).getTime();
-    const updatedAt = new Date(baseline.params[8]).getTime();
-    const now = Date.now();
-    assert.ok(Math.abs(now - installedAt) < 60_000, 'installed_at should be ~now');
-    assert.ok(Math.abs(now - updatedAt) < 60_000, 'updated_at should be ~now');
+    assert.strictEqual(manifest.type, 'gauge', 'type should come from manifest.type');
+    assert.strictEqual(manifest.agent.type, 'non-ad',
+      'agentType should come from manifest.agent.type (non-ad for ad_os_baseline)');
+    // R66 contract: manifest.agent no longer carries intervalSec/timeoutMs —
+    // those live in package_policies so the operator can retune them.
+    assert.strictEqual(manifest.agent.intervalSec, undefined);
+    assert.strictEqual(manifest.agent.timeoutMs, undefined);
+    // sha256 should be a 64-char hex string.
+    assert.match(baseline.params[3], /^[0-9a-f]{64}$/);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
-test('seedBuiltinPackages: idempotent restart upserts all 3 again (recovers DB-empty installs)', async () => {
-  // The bug we're fixing: pre-fix installs left files on disk but no
-  // installed_packages row. On first restart after this fix ships, the
-  // seeder must upsert every built-in even though the files were copied
-  // in a previous run. The upsert is idempotent at the DB layer (INSERT
-  // ... ON DUPLICATE KEY UPDATE), so a second pass is safe.
+test('seedBuiltinPackages: setPolicy({enabled:true}) UPDATE carries correct name + enabled=1', async () => {
   const tmp = makeTmpDir();
   try {
-    const { mock, upserts } = makeMockDb();
+    const { mock, policyInserts, policyUpdates } = makeMockDb();
+    await seedBuiltinPackages({
+      dataDir: tmp,
+      sourceDir: SOURCE_DIR,
+      db: mock
+    });
 
-    // First run: files copy + DB upsert.
-    await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, db: mock });
-    assert.strictEqual(upserts.length, BUILTIN_PACKAGES.length);
+    // setPolicy's policy INSERT (from installScript) carries enabled=0 (the
+    // script-service default — operator reviews before running).
+    // setPolicy's UPDATE then flips enabled=1.
+    // We assert the UPDATE: enabled param = 1 (enabled column is TINYINT),
+    // last param = name (WHERE clause).
+    for (const u of policyUpdates) {
+      // updatePartial params order: enabled, updated_at, _name (last).
+      // enabled=1 + updated_at(Date) + name(string).
+      const enabledIdx = 0;
+      const nameIdx = u.params.length - 1;
+      assert.strictEqual(u.params[enabledIdx], 1,
+        'setPolicy UPDATE should set enabled=1 (built-in enable contract)');
+      assert.ok(BUILTIN_PACKAGES.some(p => p.name === u.params[nameIdx]),
+        `WHERE name param '${u.params[nameIdx]}' should match a built-in`);
+    }
 
-    // Second run: file copy skipped (manifest.json exists), but DB upsert
-    // still runs for every built-in. Simulates the recovery case where
-    // files were seeded by an old binary that didn't touch the DB.
+    // The policy INSERT from installScript must carry enabled=0 — the
+    // default before setPolicy flips it. Verifies the two-step path.
+    const baselinePolicyInsert = policyInserts.find(u => u.params[0] === 'ad_os_baseline');
+    assert.ok(baselinePolicyInsert, 'ad_os_baseline should have a policy INSERT from installScript');
+    // UPSERT_MYSQL params order: name, interval_sec, timeout_ms, enabled,
+    // params_json, scope, created_at, updated_at.
+    assert.strictEqual(baselinePolicyInsert.params[3], 0,
+      'installScript should write enabled=0 (default — operator reviews before running)');
+    // interval_sec / timeout_ms come from manifest.agent; ad_os_baseline has 60 / 20000.
+    assert.strictEqual(baselinePolicyInsert.params[1], 60);
+    assert.strictEqual(baselinePolicyInsert.params[2], 20000);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('seedBuiltinPackages: idempotent restart — 2nd run skips installScript but always fires setPolicy', async () => {
+  // The bug round-12 was fixing: pre-fix installs left files on disk but
+  // no DB row. R66 T9 keeps the recovery semantics — the seeder's
+  // pre-check via packageScripts.get lets installScript skip when the
+  // script row already exists, but setPolicy always fires to re-apply
+  // the built-in enable contract.
+  const tmp = makeTmpDir();
+  try {
+    const { mock, scriptInserts, policyUpdates } = makeMockDb();
+
+    // First run: installScript fires once per built-in, setPolicy fires
+    // once per built-in.
     await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, db: mock });
-    assert.strictEqual(upserts.length, BUILTIN_PACKAGES.length * 2,
-      'DB upsert must run on every restart to recover installs where files were seeded without a DB row');
+    const firstScriptInserts = scriptInserts.length;
+    const firstPolicyUpdates = policyUpdates.length;
+    assert.strictEqual(firstScriptInserts, BUILTIN_PACKAGES.length);
+    assert.strictEqual(firstPolicyUpdates, BUILTIN_PACKAGES.length);
+
+    // Second run on the same tmp (file copy is idempotent at the file
+    // layer — manifest.json exists). The mock returns empty rows for
+    // package_scripts SELECT, so packageScripts.get returns null and
+    // installScript would proceed AGAIN — that's the recovery path. To
+    // simulate "already seeded" state, switch the mock to return the
+    // existing row on subsequent SELECTs.
+    mock.execute = async (sql, params) => {
+      const t = sql.trim();
+      if (t.startsWith('SELECT * FROM package_scripts WHERE name = ?')) {
+        // After the first run installed everything, packageScripts.get
+        // returns the row on subsequent calls.
+        return { rows: [{ name: params[0] }] };
+      }
+      if (t.startsWith('INSERT INTO package_scripts')) {
+        scriptInserts.push({ sql, params });
+      }
+      if (t.startsWith('UPDATE package_policies SET')) {
+        policyUpdates.push({ sql, params });
+      }
+      return { rows: [] };
+    };
+
+    await seedBuiltinPackages({ dataDir: tmp, sourceDir: SOURCE_DIR, db: mock });
+    // 2nd run: no NEW script INSERTs (pre-check found the existing row,
+    // installScript was skipped), but ONE MORE setPolicy UPDATE per
+    // built-in (built-in enable contract re-applied).
+    assert.strictEqual(scriptInserts.length, firstScriptInserts,
+      'no new INSERT INTO package_scripts on 2nd run (pre-check skipped installScript)');
+    assert.strictEqual(policyUpdates.length, firstPolicyUpdates + BUILTIN_PACKAGES.length,
+      'one more UPDATE package_policies SET per built-in on 2nd run (built-in enable contract re-applied)');
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -644,5 +753,161 @@ test('seedBuiltinPackages: mssql dialect picks migrations/mssql/*.sql when prese
     }
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+// --- R66 T9: synthetic-source regression tests for the script-service
+// two-table path. The tests above rely on the real bundled source dir
+// (publish/system/center/data/packages/...). These two tests use a
+// minimal tmp source layout so they isolate the installScript +
+// setPolicy contract from the bundled built-in shape (no migrations,
+// no content.sha256, no agent.database block). They guard the V1
+// path itself — if a future change to the seeder accidentally
+// reverts to installedPackages.upsert, these fail. ---
+
+// Helper: build a synthetic source tree containing all 5 built-ins
+// with stub manifest.json + collect.ps1 (no migrations, no database
+// block) so the seeder iterates BUILTIN_PACKAGES without throwing on
+// file copy. The DDL-apply block is skipped because the synthetic
+// manifests omit manifest.database.
+function buildSyntheticSourceDir(src) {
+  for (const pkg of BUILTIN_PACKAGES) {
+    const dir = path.join(src, pkg.name, pkg.version);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
+      name: pkg.name.replace(/_/g, '-'),
+      version: pkg.version,
+      type: 'gauge',
+      description: `synthetic stub for ${pkg.name}`,
+      agent: { type: 'ad', script: 'collect.ps1', intervalSec: 60, timeoutMs: 30000 }
+    }));
+    fs.writeFileSync(path.join(dir, 'collect.ps1'), 'Write-Output "{}"');
+  }
+}
+
+test('seedBuiltinPackages: uses script-service.installScript + setPolicy (two-table path)', async () => {
+  // Brief-mandated synthetic regression test. The mock records every
+  // SQL statement so we can assert that for each built-in:
+  //   1. installScript fired (INSERT INTO package_scripts + INSERT
+  //      INTO package_policies, in that order)
+  //   2. setPolicy fired afterwards (UPDATE package_policies SET
+  //      enabled = ?)
+  //   3. The setPolicy UPDATE carries enabled=1 (built-in enable contract)
+  const tmp = makeTmpDir();
+  const src = makeTmpDir();
+  try {
+    buildSyntheticSourceDir(src);
+
+    const writes = { scripts: [], policies: [], setPolicies: [] };
+    const fakeDb = {
+      dialect: 'mysql',
+      execute: async (sql, params) => {
+        const t = sql.trim();
+        if (t.startsWith('SELECT * FROM package_scripts WHERE name = ?')) {
+          // 1st call: pre-check (returns nothing → installScript will fire).
+          return { rows: [] };
+        }
+        if (t.startsWith('INSERT INTO package_scripts')) {
+          writes.scripts.push(params[0]);  // params[0] = name
+          return { rows: [] };
+        }
+        if (t.startsWith('INSERT INTO package_policies')) {
+          writes.policies.push(params[0]);
+          return { rows: [] };
+        }
+        if (t.startsWith('UPDATE package_policies SET')) {
+          writes.setPolicies.push({ name: params[params.length - 1], fields: t });
+          return { rows: [] };
+        }
+        return { rows: [] };
+      }
+    };
+
+    await seedBuiltinPackages({
+      dataDir: tmp, sourceDir: src,
+      writeAudit: async () => {}, db: fakeDb
+    });
+
+    assert.equal(writes.scripts.length, BUILTIN_PACKAGES.length,
+      `expected ${BUILTIN_PACKAGES.length} installScript script INSERTs, got ${writes.scripts.length}`);
+    assert.equal(writes.policies.length, BUILTIN_PACKAGES.length,
+      `expected ${BUILTIN_PACKAGES.length} installScript policy INSERTs, got ${writes.policies.length}`);
+    assert.equal(writes.setPolicies.length, BUILTIN_PACKAGES.length,
+      `expected ${BUILTIN_PACKAGES.length} setPolicy UPDATEs, got ${writes.setPolicies.length}`);
+    assert.match(writes.setPolicies[0].fields, /enabled\s*=\s*\?/i,
+      'setPolicy UPDATE must set enabled');
+    const setPolicyNames = writes.setPolicies.map(s => s.name).sort();
+    assert.deepEqual(setPolicyNames, BUILTIN_PACKAGES.map(p => p.name).sort(),
+      'every built-in must appear in the setPolicy UPDATE list');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test('seedBuiltinPackages: 2nd run is idempotent (no installScript INSERT, just setPolicy)', async () => {
+  // Brief-mandated synthetic regression test. After the first run
+  // seeds every built-in, the 2nd run's pre-check returns the existing
+  // row for each package, so installScript is skipped and only
+  // setPolicy fires to re-apply the built-in enable contract.
+  const tmp = makeTmpDir();
+  const src = makeTmpDir();
+  try {
+    buildSyntheticSourceDir(src);
+
+    const writes = { scripts: [], setPolicies: [] };
+    let precheckCallCount = 0;
+    const fakeDb = {
+      dialect: 'mysql',
+      execute: async (sql, params) => {
+        const t = sql.trim();
+        if (t.startsWith('SELECT * FROM package_scripts WHERE name = ?')) {
+          precheckCallCount++;
+          // installScript internally calls packageScripts.get too —
+          // both prechecks see the same DB state, so the first 2*N
+          // calls (seeder pre-check + installScript internal pre-check
+          // for N=5 packages) return empty rows (not found) on the
+          // first run, and the calls on subsequent runs return the
+          // existing row (found).
+          return precheckCallCount <= BUILTIN_PACKAGES.length * 2
+            ? { rows: [] }
+            : { rows: [{ name: params[0] }] };
+        }
+        if (t.startsWith('INSERT INTO package_scripts')) {
+          writes.scripts.push(params[0]);
+          return { rows: [] };
+        }
+        if (t.startsWith('INSERT INTO package_policies')) {
+          return { rows: [] };
+        }
+        if (t.startsWith('UPDATE package_policies SET')) {
+          writes.setPolicies.push(params[params.length - 1]);
+          return { rows: [] };
+        }
+        return { rows: [] };
+      }
+    };
+
+    // 1st run on fresh tmp — file copy happens for all 5 packages,
+    // installScript fires per built-in, setPolicy fires per built-in.
+    await seedBuiltinPackages({ dataDir: tmp, sourceDir: src, writeAudit: async () => {}, db: fakeDb });
+    const firstScripts = writes.scripts.length;
+    const firstSetPolicies = writes.setPolicies.length;
+    assert.equal(firstScripts, BUILTIN_PACKAGES.length,
+      `1st run: ${BUILTIN_PACKAGES.length} installScript script INSERTs`);
+    assert.equal(firstSetPolicies, BUILTIN_PACKAGES.length,
+      `1st run: ${BUILTIN_PACKAGES.length} setPolicy UPDATEs`);
+
+    // 2nd run on same tmp — file copy idempotent (manifest.json
+    // exists), pre-check finds the script row, installScript is
+    // skipped, setPolicy still fires.
+    await seedBuiltinPackages({ dataDir: tmp, sourceDir: src, writeAudit: async () => {}, db: fakeDb });
+    assert.equal(writes.scripts.length, firstScripts,
+      '2nd run: no new installScript script INSERTs (pre-check skipped installScript)');
+    assert.equal(writes.setPolicies.length, firstSetPolicies + BUILTIN_PACKAGES.length,
+      `2nd run: ${BUILTIN_PACKAGES.length} more setPolicy UPDATEs (built-in enable contract re-applied)`);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(src, { recursive: true, force: true });
   }
 });
