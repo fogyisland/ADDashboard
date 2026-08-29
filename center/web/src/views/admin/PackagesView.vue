@@ -1,281 +1,307 @@
+<!--
+  R66 T10 — 包管理 (PackagesView)
+
+  Operator can:
+   - see all installed scripts (rows from GET /api/admin/packages, new
+     envelope {items: [...]})
+   - upload raw PS1 scripts via UploadScriptModal
+   - edit a script body via EditScriptModal (PUT .../script)
+   - edit a script's policy via EditPolicyModal (PUT .../policy)
+   - toggle enabled (PUT .../enable / disable)
+   - delete with confirm (DELETE .../:name)
+
+  The view talks directly to packagesApi (no Pinia store). The legacy
+  Pinia store at src/stores/packages.js is intentionally kept alive for
+  PackageEditView / RegistryView / MetricDashboardView — T13 cleans them
+  up.
+
+  Visual language matches R49 ops-console: dimmer L1 title, status-pill
+  3-color, tnum on numbers, 2px left rail on row hover.
+
+  data-test contract (matched by tests/packages-view.test.js):
+    upload-btn                 — "+ 上传脚本" toolbar button
+    refresh-btn                — "↻ 刷新" toolbar button
+    row-${name}                — table row
+    script-row                 — table row class
+    edit-script-${name}        — per-row 脚本 button
+    edit-policy-${name}        — per-row 策略 button
+    toggle-${name}             — per-row 启用/禁用 button
+    delete-${name}             — per-row 删除 button
+-->
 <template>
   <AdminLayout>
-    <div class="packages-view">
-      <header class="toolbar">
-        <h2>包管理</h2>
-        <div class="actions">
-          <label class="upload-btn">
-            + 上传本地包
-            <input type="file" accept=".zip,.json" @change="handleUpload" />
-          </label>
-          <router-link to="/admin/packages/registry" class="link-btn">
-            从 Registry 导入
-          </router-link>
-          <button @click="refreshRegistry">刷新 Registry</button>
-        </div>
-      </header>
+    <header class="page-header">
+      <div class="page-titles">
+        <div class="eyebrow">OPERATIONS · 脚本与策略</div>
+        <h2 class="page-title">包管理</h2>
+        <p class="subtitle">上传脚本并配置执行策略;支持启用/禁用、按间隔与超时自动执行。</p>
+      </div>
+      <div class="page-meta">
+        <button class="btn-secondary" data-test="refresh-btn" @click="refresh" :disabled="loading">
+          {{ loading ? '加载中…' : '↻ 刷新' }}
+        </button>
+        <button class="btn-primary" data-test="upload-btn" @click="openUpload">+ 上传脚本</button>
+      </div>
+    </header>
 
-      <p v-if="store.error" class="error">{{ store.error }}</p>
+    <div v-if="error" class="error-banner">{{ error }}</div>
 
-      <table class="t">
-        <thead>
-          <tr>
-            <th>名称</th>
-            <th>版本</th>
-            <th>类型</th>
-            <th>启用</th>
-            <th>执行间隔</th>
-            <th>来源</th>
-            <th>安装时间</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="row in store.installed" :key="row.name">
-            <td>
-              <router-link :to="`/admin/packages/${row.name}`">{{ row.name }}</router-link>
-            </td>
-            <td>{{ row.version }}</td>
-            <td><span class="tag" :class="`tag-${row.type}`">{{ row.type }}</span></td>
-            <td>
-              <span class="tag" :class="row.enabled ? 'tag-on' : 'tag-off'">
-                {{ row.enabled ? '是' : '否' }}
-              </span>
-            </td>
-            <td class="interval-cell">
-              <div class="interval-display">
-                <span class="interval-current">{{ formatInterval(row.intervalOverrideSec) }}</span>
-                <span class="interval-default">默认 {{ formatInterval(row.manifest?.agent?.intervalSec) }}</span>
-              </div>
-              <div class="interval-editor">
-                <input
-                  type="number"
-                  min="5"
-                  max="86400"
-                  step="1"
-                  :placeholder="String(row.manifest?.agent?.intervalSec ?? '')"
-                  v-model.number="drafts[row.name]"
-                  :disabled="saving[row.name]"
-                  @keyup.enter="saveInterval(row)"
-                  data-testid="interval-input"
-                />
-                <span class="interval-unit">秒</span>
-                <button
-                  class="small"
-                  :disabled="saving[row.name] || !isDirty(row)"
-                  @click="saveInterval(row)"
-                  data-testid="interval-save"
-                >保存</button>
-                <button
-                  class="small"
-                  :disabled="saving[row.name] || row.intervalOverrideSec == null"
-                  @click="clearInterval(row)"
-                  data-testid="interval-clear"
-                >清除覆盖</button>
-              </div>
-              <p v-if="intervalErrors[row.name]" class="interval-error">{{ intervalErrors[row.name] }}</p>
-            </td>
-            <td>{{ row.source }}</td>
-            <td>{{ formatDate(row.installed_at) }}</td>
-            <td class="row-actions">
-              <router-link :to="`/admin/packages/${row.name}`" class="link-btn small">查看</router-link>
-              <button class="small" @click="upgrade(row)">升级</button>
-              <button class="small" @click="toggle(row)">
-                {{ row.enabled ? '停用' : '启用' }}
-              </button>
-              <button class="small danger" @click="uninstall(row)">卸载</button>
-            </td>
-          </tr>
-          <tr v-if="!store.installed.length">
-            <td colspan="8" class="empty">尚未安装任何包 — 点击"上传本地包"或"从 Registry 导入"</td>
-          </tr>
-        </tbody>
-      </table>
+    <table v-if="items.length" class="t">
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>版本</th>
+          <th>类型</th>
+          <th>启用</th>
+          <th class="num">间隔(s)</th>
+          <th class="num">超时(ms)</th>
+          <th>来源</th>
+          <th>最后修改</th>
+          <th class="actions-col">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="it in items"
+          :key="it.name"
+          class="script-row"
+          :data-test="`row-${it.name}`"
+        >
+          <td class="name-cell">
+            <span class="name">{{ it.name }}</span>
+            <span v-if="it.source === 'builtin-seed'" class="source-tag builtin">内置</span>
+          </td>
+          <td><code class="version">{{ it.version }}</code></td>
+          <td><span class="type-tag" :class="`type-${it.type}`">{{ it.type || '—' }}</span></td>
+          <td>
+            <span :class="['status-pill', it.enabled ? 'ok' : 'off']">
+              <span class="dot"></span>{{ it.enabled ? '已启用' : '已禁用' }}
+            </span>
+          </td>
+          <td class="num">{{ it.intervalSec ?? '—' }}</td>
+          <td class="num">{{ it.timeoutMs ?? '—' }}</td>
+          <td><code class="source">{{ it.source }}</code></td>
+          <td>{{ fmt(it.updatedAt) }}</td>
+          <td class="row-actions">
+            <button :data-test="`edit-script-${it.name}`" @click="openEditScript(it)">脚本</button>
+            <button :data-test="`edit-policy-${it.name}`" @click="openEditPolicy(it)">策略</button>
+            <button :data-test="`toggle-${it.name}`" @click="toggleEnabled(it)">
+              {{ it.enabled ? '禁用' : '启用' }}
+            </button>
+            <button class="danger" :data-test="`delete-${it.name}`" @click="confirmDelete(it)">删除</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else-if="!loading && !error" class="empty">
+      暂无脚本。点 + 上传脚本 添加。
     </div>
+
+    <UploadScriptModal
+      v-if="showUpload"
+      @close="showUpload = false"
+      @uploaded="refresh"
+    />
+    <EditScriptModal
+      v-if="editingScript"
+      :item="editingScript"
+      @close="editingScript = null"
+      @saved="refresh"
+    />
+    <EditPolicyModal
+      v-if="editingPolicy"
+      :item="editingPolicy"
+      @close="editingPolicy = null"
+      @saved="refresh"
+    />
   </AdminLayout>
 </template>
 
 <script setup>
-import { onMounted, reactive } from 'vue';
+import { ref, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
-import { usePackagesStore } from '../../stores/packages.js';
+import UploadScriptModal from '../../components/admin/UploadScriptModal.vue';
+import EditScriptModal from '../../components/admin/EditScriptModal.vue';
+import EditPolicyModal from '../../components/admin/EditPolicyModal.vue';
+import { packagesApi } from '../../api/packages.js';
 
-const store = usePackagesStore();
+const items = ref([]);
+const error = ref('');
+const loading = ref(false);
 
-// 2026-08-26 T4: per-row draft state for the interval override editor.
-// We keep a draft string per package so the operator can type freely
-// without forcing immediate save; Save is enabled when the draft differs
-// from the persisted override (or when there's no override and the draft
-// is non-empty). `saving` flags disable the input + buttons during the
-// PATCH round-trip; `intervalErrors` holds transient validation messages
-// shown below the editor (range check is also enforced server-side).
-const drafts = reactive({});
-const saving = reactive({});
-const intervalErrors = reactive({});
+const showUpload = ref(false);
+const editingScript = ref(null);
+const editingPolicy = ref(null);
 
-function isDirty(row) {
-  const draft = drafts[row.name];
-  if (draft == null || draft === '') return false;
-  const numeric = Number(draft);
-  if (!Number.isFinite(numeric)) return false;
-  return numeric !== (row.intervalOverrideSec ?? null);
-}
-
-function formatInterval(value) {
-  if (value == null) return '—';
-  return `${value} 秒`;
-}
-
-onMounted(() => store.fetchInstalled());
-
-async function handleUpload(ev) {
-  const file = ev.target.files?.[0];
-  if (!file) return;
-  const buffer = await fileToBase64(file);
+async function refresh() {
+  loading.value = true;
+  error.value = '';
   try {
-    await store.install({ source: 'local', packageRef: file.name, buffer });
+    const r = await packagesApi.list();
+    items.value = Array.isArray(r.data?.items) ? r.data.items : [];
   } catch (e) {
-    store.error = e.response?.data?.error?.message || e.message;
+    // T7's router returns `{ error: "..." }` directly on validation
+    // failures and `{ error: "internal" }` on 500 — both shapes are a
+    // single string, not the legacy `{ error: { message } }` wrapper.
+    error.value = e?.response?.data?.error || '加载失败';
   } finally {
-    // Reset the input so the same file can be re-uploaded.
-    ev.target.value = '';
+    loading.value = false;
   }
 }
 
-async function toggle(row) {
+function openUpload() { showUpload.value = true; }
+function openEditScript(it) { editingScript.value = it; }
+function openEditPolicy(it) { editingPolicy.value = it; }
+
+async function toggleEnabled(it) {
+  error.value = '';
   try {
-    if (row.enabled) await store.disable(row.name);
-    else await store.enable(row.name);
+    if (it.enabled) await packagesApi.disable(it.name);
+    else await packagesApi.enable(it.name);
+    await refresh();
   } catch (e) {
-    store.error = e.response?.data?.error?.message || e.message;
+    error.value = e?.response?.data?.error || '操作失败';
   }
 }
 
-async function uninstall(row) {
-  if (!confirm(`确认卸载 ${row.name}？`)) return;
+async function confirmDelete(it) {
+  if (!window.confirm(`确认删除脚本 ${it.name}?该操作不可恢复。`)) return;
+  error.value = '';
   try {
-    await store.uninstall(row.name, false);
+    await packagesApi.deleteScript(it.name);
+    await refresh();
   } catch (e) {
-    store.error = e.response?.data?.error?.message || e.message;
+    error.value = e?.response?.data?.error || '删除失败';
   }
 }
 
-async function upgrade(row) {
-  try {
-    await store.upgrade(row.name);
-  } catch (e) {
-    store.error = e.response?.data?.error?.message || e.message;
-  }
+function fmt(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return String(s);
+  return d.toLocaleString('zh-CN', { hour12: false });
 }
 
-async function refreshRegistry() {
-  try {
-    await store.refreshRegistry();
-  } catch (e) {
-    store.error = e.response?.data?.error?.message || e.message;
-  }
-}
-
-async function saveInterval(row) {
-  intervalErrors[row.name] = null;
-  const draft = drafts[row.name];
-  if (draft == null || draft === '') return;
-  const n = Number(draft);
-  if (!Number.isInteger(n) || n < 5 || n > 86400) {
-    intervalErrors[row.name] = 'intervalSec 必须是 5..86400 的整数';
-    return;
-  }
-  saving[row.name] = true;
-  try {
-    await store.setIntervalOverride(row.name, n);
-    drafts[row.name] = n;
-  } catch (e) {
-    intervalErrors[row.name] = e.response?.data?.error?.message || e.message;
-  } finally {
-    saving[row.name] = false;
-  }
-}
-
-async function clearInterval(row) {
-  intervalErrors[row.name] = null;
-  saving[row.name] = true;
-  try {
-    await store.setIntervalOverride(row.name, null);
-    drafts[row.name] = '';
-  } catch (e) {
-    intervalErrors[row.name] = e.response?.data?.error?.message || e.message;
-  } finally {
-    saving[row.name] = false;
-  }
-}
-
-function formatDate(s) {
-  if (!s) return '-';
-  try { return new Date(s).toLocaleString('zh-CN', { hour12: false }); }
-  catch { return s; }
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      // reader.result is "data:<mime>;base64,<data>"
-      const idx = String(reader.result).indexOf(',');
-      resolve(idx >= 0 ? String(reader.result).slice(idx + 1) : '');
-    };
-    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
-    reader.readAsDataURL(file);
-  });
-}
+onMounted(refresh);
 </script>
 
 <style scoped>
-.packages-view { display: flex; flex-direction: column; gap: 12px; }
-.toolbar { display: flex; justify-content: space-between; align-items: center; }
-.toolbar h2 { margin: 0; }
-.actions { display: flex; gap: 8px; align-items: center; }
-.upload-btn {
-  display: inline-block; padding: 6px 12px; background: var(--accent); color: white;
-  border-radius: 4px; cursor: pointer; font-size: 14px;
+/* ===== Page header ===================================================== */
+.page-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 24px; margin-bottom: 18px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
 }
-.upload-btn input[type=file] { display: none; }
-.link-btn {
-  display: inline-block; padding: 6px 12px; background: #1e293b; color: var(--text);
-  border-radius: 4px; text-decoration: none; font-size: 14px; border: 1px solid #334155;
+.page-titles { display: flex; flex-direction: column; gap: 4px; }
+.eyebrow {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.14em;
+  color: var(--muted); text-transform: uppercase;
 }
-.link-btn.small { padding: 3px 8px; font-size: 12px; }
-.error { color: var(--red); margin: 0; }
-
-.t { width: 100%; border-collapse: collapse; background: var(--panel); }
-.t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1e293b; vertical-align: top; }
-.t th { background: #0b1220; color: var(--muted); font-size: 12px; }
-.empty { text-align: center; color: var(--muted); padding: 24px; }
-
-.interval-cell { min-width: 220px; }
-.interval-display { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
-.interval-current { font-weight: 600; }
-.interval-default { color: var(--muted); font-size: 12px; }
-.interval-editor { display: flex; gap: 4px; align-items: center; }
-.interval-editor input[type=number] {
-  width: 90px; padding: 3px 6px; background: #0b1220; color: var(--text);
-  border: 1px solid #334155; border-radius: 4px; font-size: 12px;
+.page-title {
+  margin: 0; font-size: 20px; font-weight: 600; color: var(--text);
+  letter-spacing: -0.01em;
 }
-.interval-editor input[type=number]:disabled { opacity: 0.5; }
-.interval-unit { color: var(--muted); font-size: 12px; }
-.interval-error { color: var(--red); font-size: 12px; margin: 4px 0 0; }
-
-.tag {
-  display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px;
-  background: #1e293b; color: var(--muted);
+.subtitle { margin: 0; font-size: 13px; color: var(--muted); }
+.page-meta { display: flex; gap: 8px; align-items: center; }
+.btn-primary, .btn-secondary {
+  padding: 6px 14px; border-radius: 3px; cursor: pointer;
+  font-size: 13px; border: 1px solid #1e293b;
 }
-.tag-gauge { background: #0e3a2f; color: #67c23a; }
-.tag-counter { background: #3a2f0e; color: #e6a23c; }
-.tag-timeseries { background: #0e2a3a; color: #409eff; }
-.tag-status { background: #2f1e3a; color: #909399; }
-.tag-on { background: #0e3a2f; color: #67c23a; }
-.tag-off { background: #1e293b; color: var(--muted); }
+.btn-primary {
+  background: var(--accent); color: #0b1220; border-color: var(--accent); font-weight: 600;
+}
+.btn-secondary { background: #0b1220; color: var(--text); }
+.btn-primary:disabled, .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* ===== Error / empty states ============================================ */
+.error-banner {
+  background: var(--red-bg); color: var(--red);
+  padding: 10px 14px; border-radius: 4px; margin-bottom: 16px;
+  border: 1px solid rgba(239, 68, 68, 0.3); font-size: 13px;
+}
+.empty {
+  text-align: center; color: var(--muted);
+  padding: 48px 16px; font-size: 13px;
+  background: var(--panel); border: 1px dashed var(--border); border-radius: 4px;
+}
+
+/* ===== Table =========================================================== */
+.t { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.t th, .t td {
+  padding: 9px 12px; text-align: left; font-size: 13px;
+  color: var(--text); vertical-align: middle;
+  border-top: 1px solid rgba(51, 65, 85, 0.4);
+}
+.t tbody tr:first-child td { border-top: 0; }
+.t th {
+  background: var(--panel-alt); color: var(--muted);
+  font-size: 10px; font-weight: 600; letter-spacing: 0.10em;
+  text-transform: uppercase; padding: 8px 12px; border-top: 0;
+  font-family: ui-monospace, monospace;
+}
+.t th.num, .t td.num { text-align: right; font-feature-settings: "tnum"; }
+.t th.actions-col, .t td.row-actions { width: 220px; }
+
+/* Row hover: 2px left rail tint (R49 vocabulary). The default tint is
+   accent so enabled rows still feel "active" on hover, with no other
+   state-driven color to avoid clashing with status pills. */
+.script-row td:first-child {
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+}
+.script-row:hover td:first-child { border-left-color: var(--accent); }
+
+/* Name + built-in badge in the first column */
+.name-cell { display: flex; align-items: center; gap: 8px; }
+.name { font-weight: 500; }
+.source-tag.builtin {
+  font-size: 9px; padding: 1px 5px; border-radius: 2px;
+  background: rgba(56, 189, 248, 0.15); color: var(--accent);
+  letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+/* Metric type tag */
+.type-tag {
+  font-size: 10px; padding: 2px 7px; border-radius: 2px;
+  font-family: ui-monospace, monospace; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.type-gauge     { background: rgba(34, 197, 94, 0.10); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.3); }
+.type-counter   { background: rgba(234, 179, 8, 0.10); color: var(--yellow); border: 1px solid rgba(234, 179, 8, 0.3); }
+.type-status    { background: rgba(168, 85, 247, 0.10); color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.3); }
+.type-timeseries{ background: rgba(56, 189, 248, 0.10); color: var(--accent); border: 1px solid rgba(56, 189, 248, 0.3); }
+
+/* Status pill — R49 3-color (green on, gray off) */
+.status-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; padding: 2px 8px; border-radius: 2px;
+  font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  font-family: ui-monospace, monospace;
+}
+.status-pill .dot { width: 5px; height: 5px; border-radius: 50%; }
+.status-pill.ok   { background: rgba(34, 197, 94, 0.10); color: var(--green); border: 1px solid rgba(34, 197, 94, 0.3); }
+.status-pill.ok .dot   { background: var(--green); }
+.status-pill.off  { background: var(--panel-alt); color: var(--muted); border: 1px solid var(--border); }
+.status-pill.off .dot  { background: var(--muted); }
+
+/* Code-style cells */
+.version, .source {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px; background: var(--panel-alt);
+  padding: 1px 6px; border-radius: 2px; border: 1px solid var(--border);
+  color: var(--text);
+}
+.source { color: var(--muted); }
+
+/* Row action buttons */
 .row-actions { display: flex; gap: 4px; flex-wrap: wrap; }
-button.small { padding: 3px 8px; font-size: 12px; }
-button.danger { background: var(--red); color: white; }
+.row-actions button {
+  padding: 3px 9px; font-size: 12px;
+  background: var(--panel-alt); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px;
+  cursor: pointer; font-family: inherit;
+}
+.row-actions button:hover { background: var(--bg); border-color: var(--accent); color: var(--accent); }
+.row-actions button.danger:hover { background: rgba(239, 68, 68, 0.10); border-color: var(--red); color: var(--red); }
 </style>
