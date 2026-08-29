@@ -246,7 +246,12 @@ await ((async () => {
   if (!needsInit && db) {
     try {
       const { createMigrationsService } = await import('./src/services/migrations.js');
-      const migrationService = createMigrationsService({ db, logger, getRepoRoot: () => repoRoot });
+      const migrationService = createMigrationsService({
+        db, logger,
+        getRepoRoot: () => repoRoot,
+        writeAudit, // 2026-08-29 R66 — bulk_migrate audit row on data-migration JS sidecar
+        getDataDir: () => join(repoRoot, 'data', 'packages') // matches seedBuiltinPackages dataDir convention
+      });
       const migrationResult = await migrationService.upgrade({ appliedBy: 'startup' });
       if (migrationResult.migrations.applied.length > 0 || migrationResult.seed.ran) {
         logger.info({
