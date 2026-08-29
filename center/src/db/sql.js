@@ -476,6 +476,26 @@ const VARIANTS = {
       delete: `DELETE FROM package_scripts WHERE name = ?`,
       updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`
     },
+    // R66 split: package_policies holds execution policy (migration 023).
+    // Five ops: upsert (by name) / list / listEnabled / getByName / delete.
+    // updatePartial is exposed via the helper in center/src/db/sql/package-policies.js
+    // (db.execute is called directly because the SET clause is field-dependent).
+    packagePolicies: {
+      upsert: `INSERT INTO package_policies
+        (name, interval_sec, timeout_ms, enabled, params_json, scope, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          interval_sec = VALUES(interval_sec),
+          timeout_ms = VALUES(timeout_ms),
+          enabled = VALUES(enabled),
+          params_json = VALUES(params_json),
+          scope = VALUES(scope),
+          updated_at = VALUES(updated_at)`,
+      list: `SELECT * FROM package_policies ORDER BY name`,
+      listEnabled: `SELECT * FROM package_policies WHERE enabled = 1 ORDER BY name`,
+      getByName: `SELECT * FROM package_policies WHERE name = ?`,
+      delete: `DELETE FROM package_policies WHERE name = ?`
+    },
     // Drop-failure tracking (migration 013). Records pkg_<name> schemas
     // left behind when DROP SCHEMA fails (FKs, perms, transient DB errors)
     // so admin can manually clean up. T7 writes, T10 reads+deletes,
@@ -1169,6 +1189,34 @@ const VARIANTS = {
       get: `SELECT * FROM package_scripts WHERE name = ?`,
       delete: `DELETE FROM package_scripts WHERE name = ?`,
       updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`
+    },
+    // R66 split: package_policies holds execution policy (migration 023).
+    // Five ops: upsert (by name) / list / listEnabled / getByName / delete.
+    // updatePartial is exposed via the helper in center/src/db/sql/package-policies.js
+    // (db.execute is called directly because the SET clause is field-dependent).
+    packagePolicies: {
+      upsert: `MERGE INTO package_policies AS t
+        USING (SELECT
+          ? AS name, ? AS interval_sec, ? AS timeout_ms, ? AS enabled,
+          ? AS params_json, ? AS scope, ? AS created_at, ? AS updated_at
+        ) AS s
+        ON t.name = s.name
+        WHEN MATCHED THEN UPDATE SET
+          interval_sec = s.interval_sec,
+          timeout_ms = s.timeout_ms,
+          enabled = s.enabled,
+          params_json = s.params_json,
+          scope = s.scope,
+          updated_at = s.updated_at
+        WHEN NOT MATCHED THEN INSERT
+          (name, interval_sec, timeout_ms, enabled, params_json, scope, created_at, updated_at)
+          VALUES
+          (s.name, s.interval_sec, s.timeout_ms, s.enabled, s.params_json,
+           s.scope, s.created_at, s.updated_at);`,
+      list: `SELECT * FROM package_policies ORDER BY name`,
+      listEnabled: `SELECT * FROM package_policies WHERE enabled = 1 ORDER BY name`,
+      getByName: `SELECT * FROM package_policies WHERE name = ?`,
+      delete: `DELETE FROM package_policies WHERE name = ?`
     },
     // Drop-failure tracking (migration 013). See mysql counterpart.
     orphanSchemas: {
