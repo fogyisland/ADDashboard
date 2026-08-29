@@ -13,6 +13,7 @@ import AuditView from './views/admin/AuditView.vue';
 import SitesCatalogView from './views/admin/SitesCatalogView.vue';
 import DcsCatalogView from './views/admin/DcsCatalogView.vue';
 import SiteReplicationMatrixAllView from './views/admin/SiteReplicationMatrixAllView.vue';
+import SiteMatrixView from './views/admin/SiteMatrixView.vue';
 // 2026-08-28 round-47: 复制伙伴端口健康监控 — per-site/DC port-health
 // surface. Replaces the standalone ReplicationLogMonitorView (which
 // listed replication-attempt history). Operator directive "在这边不叫
@@ -39,16 +40,18 @@ const routes = [
   { path: '/init', component: InitWizardView, meta: { public: true } },
   { path: '/login', component: LoginView, meta: { public: true } },
   { path: '/', component: DashboardView },
-  // 2026-08-29 round-59.1: /matrix redirected to the canonical R36
-  // 复制状态概览 view (per-primary-DC replication overview). The
-  // previous /matrix route mounted a 1032-byte stub (SiteMatrixView.vue)
-  // that called the deleted /api/dashboard/site-matrix endpoint (R36
-  // deletion in round-33) — empty UI since the deletion. Redirect
-  // preserves any saved bookmarks from the old /matrix page and keeps
-  // the AppLayout's "站点矩阵" sidebar entry useful. The stub view +
-  // its SiteMatrixChart component + their tests are deleted; the
-  // canonical view lives at /admin/site-replication-matrix/all.
-  { path: '/matrix', redirect: '/admin/site-replication-matrix/all' },
+  // 2026-08-29 round-64: /matrix is now its own 站点矩阵 page (the
+  // R60 N×N matrix). It used to redirect to the R36 复制状态概览 view
+  // (R59.1 redirect cleanup), but the operator directive "复制状态概览
+  // 和 站点矩阵 是两个页面" makes them separate surfaces:
+  //   /matrix                              → 站点矩阵 (this route)
+  //   /admin/site-replication-matrix/all   → 复制状态概览 (per-DC
+  //                                          partner tables, R49
+  //                                          ops-console style restored
+  //                                          on R64)
+  // Both pages consume the same /api/dashboard/site-replication-matrix/all
+  // payload — different lenses on the same data.
+  { path: '/matrix', component: SiteMatrixView },
   { path: '/topology', component: TopologyView },
   { path: '/errors', component: ErrorsView },
   { path: '/agents', component: AgentsView },

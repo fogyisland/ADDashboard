@@ -60,15 +60,25 @@ describe('init bootstrap guard', () => {
     expect(router.currentRoute.value.path).toBe('/agents');
   });
 
-  // 2026-08-29 round-59.1: /matrix was an empty stub that called the
-  // deleted /api/dashboard/site-matrix endpoint (R36 cleanup). We made
-  // it a redirect to the canonical /admin/site-replication-matrix/all
-  // (复制状态概览) so any saved bookmark from the old /matrix page
-  // auto-resolves to the right view.
-  it('/matrix redirects to canonical /admin/site-replication-matrix/all', async () => {
+  // 2026-08-29 round-64: /matrix is no longer a redirect — it's a real
+  // route that mounts SiteMatrixView (the R60 N×N 站点矩阵, frontend
+  // operator-facing view). /admin/site-replication-matrix/all is now
+  // a separate route for the R49 ops-console 复制状态概览 (admin backend).
+  // The two pages share the same /api/dashboard/site-replication-matrix/all
+  // payload but render different lenses (per-DC partner tables vs N×N
+  // site grid).
+  it('/matrix resolves to its own path (SiteMatrixView component, not redirect)', async () => {
     api.get.mockResolvedValue({ data: { needsInit: false } });
     localStorage.setItem('ad_token', 'fake-token');
     await router.push('/matrix');
+    await router.isReady();
+    expect(router.currentRoute.value.path).toBe('/matrix');
+  });
+
+  it('/admin/site-replication-matrix/all resolves to its own path (R49 复制状态概览)', async () => {
+    api.get.mockResolvedValue({ data: { needsInit: false } });
+    localStorage.setItem('ad_token', 'fake-token');
+    await router.push('/admin/site-replication-matrix/all');
     await router.isReady();
     expect(router.currentRoute.value.path).toBe('/admin/site-replication-matrix/all');
   });
