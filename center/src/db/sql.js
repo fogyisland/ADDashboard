@@ -12,6 +12,7 @@ import { alertRules } from './sql/alert-rules.js';
 import { alertEvents } from './sql/alert-events.js';
 import { alertOutbox } from './sql/alert-outbox.js';
 import { alertMetrics } from './sql/alert-metrics.js';
+import { packageScripts } from './sql/package-scripts.js';
 
 const VARIANTS = {
   mysql: {
@@ -457,6 +458,24 @@ const VARIANTS = {
       listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
       get: `SELECT * FROM installed_packages WHERE name = ?`,
       delete: `DELETE FROM installed_packages WHERE name = ?`
+    },
+    // R66 split: installed_packages -> package_scripts + package_policies.
+    // package_scripts holds script content + sha256 + manifest (migration 023).
+    packageScripts: {
+      upsert: `INSERT INTO package_scripts
+        (name, version, script_content, script_sha256, manifest_json, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          version = VALUES(version),
+          script_content = VALUES(script_content),
+          script_sha256 = VALUES(script_sha256),
+          manifest_json = VALUES(manifest_json),
+          source = VALUES(source),
+          updated_at = VALUES(updated_at)`,
+      list: `SELECT * FROM package_scripts ORDER BY name`,
+      get: `SELECT * FROM package_scripts WHERE name = ?`,
+      delete: `DELETE FROM package_scripts WHERE name = ?`,
+      updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`
     },
     // Drop-failure tracking (migration 013). Records pkg_<name> schemas
     // left behind when DROP SCHEMA fails (FKs, perms, transient DB errors)
@@ -1125,6 +1144,32 @@ const VARIANTS = {
       listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
       get: `SELECT * FROM installed_packages WHERE name = ?`,
       delete: `DELETE FROM installed_packages WHERE name = ?`
+    },
+    // R66 split: installed_packages -> package_scripts + package_policies.
+    // package_scripts holds script content + sha256 + manifest (migration 023).
+    packageScripts: {
+      upsert: `MERGE INTO package_scripts AS t
+        USING (SELECT
+          ? AS name, ? AS version, ? AS script_content, ? AS script_sha256,
+          ? AS manifest_json, ? AS source, ? AS created_at, ? AS updated_at
+        ) AS s
+        ON t.name = s.name
+        WHEN MATCHED THEN UPDATE SET
+          version = s.version,
+          script_content = s.script_content,
+          script_sha256 = s.script_sha256,
+          manifest_json = s.manifest_json,
+          source = s.source,
+          updated_at = s.updated_at
+        WHEN NOT MATCHED THEN INSERT
+          (name, version, script_content, script_sha256, manifest_json, source, created_at, updated_at)
+          VALUES
+          (s.name, s.version, s.script_content, s.script_sha256,
+           s.manifest_json, s.source, s.created_at, s.updated_at);`,
+      list: `SELECT * FROM package_scripts ORDER BY name`,
+      get: `SELECT * FROM package_scripts WHERE name = ?`,
+      delete: `DELETE FROM package_scripts WHERE name = ?`,
+      updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`
     },
     // Drop-failure tracking (migration 013). See mysql counterpart.
     orphanSchemas: {
