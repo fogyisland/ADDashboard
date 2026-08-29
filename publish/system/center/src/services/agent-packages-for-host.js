@@ -1,7 +1,7 @@
 // mergePackagesForHost — pure function that combines the global
-// `installed_packages` list with the per-host `ad_member_server_packages`
-// rows to produce the final manifest list served to a non-AD agent on
-// heartbeat.
+// `package_scripts + package_policies` (T14) list with the per-host
+// `ad_member_server_packages` rows to produce the final manifest list
+// served to a non-AD agent on heartbeat.
 //
 // Spec contract (Task 8 of the non-AD server management plan):
 //   - Member-server rows win over global rows (same package name in both
@@ -11,15 +11,20 @@
 //   - A package in member_server_packages whose global manifest has
 //     agent.type='ad' is dropped (type mismatch — DCs and member-servers
 //     don't share packages).
-//   - A package only in installed_packages (no member row) is treated
-//     as AD type (global) and surfaces for AD hosts.
+//   - A package only in package_scripts+package_policies (no member row)
+//     is treated as AD type (global) and surfaces for AD hosts.
 //   - A package referenced only in ad_member_server_packages but missing
-//     from installed_packages is dropped (no script to run — the agent
+//     from the global tables is dropped (no script to run — the agent
 //     loop relies on the manifest for collection shape).
 //
 // All inputs are defensive: missing/empty arrays are equivalent to "no
 // rows". The function is pure (no side effects, no DB calls) so it stays
 // unit-testable without harness.
+//
+// R66 T14: the global list source moved from `installed_packages` (V0) to
+// `package_scripts + package_policies` JOIN (V1). The pure-function
+// signature is unchanged — the route hydrates the JOIN rows into manifest
+// objects via bakeManifest (see runner.js:65) before passing them in.
 //
 // Exports a single named function `mergePackagesForHost` so the route
 // handler can compose it after the two DB queries.
@@ -27,12 +32,13 @@
 /**
  * @param {object} args
  * @param {Array<{name: string, agent?: {type?: string}}>} [args.installedGlobal]
- *   The hydrated rows from `installed_packages` (enabled=1). The `agent`
- *   field is the parsed manifest's agent block; only `agent.type` is read.
+ *   The hydrated manifests from `package_scripts + package_policies`
+ *   (enabled=1, JOIN row hydrated via bakeManifest). The `agent` field is
+ *   the parsed manifest's agent block; only `agent.type` is read.
  * @param {Array<{package_name: string, enabled: number|boolean}>} [args.memberServerPackages]
  *   The rows from `ad_member_server_packages` for the host.
  * @returns {Array<object>} The merged manifests (same shapes as
- *   `installedPackages[].manifest`); only the manifest objects are returned,
+ *   `installedGlobal[]`); only the manifest objects are returned,
  *   not the DB rows.
  */
 export function mergePackagesForHost({ installedGlobal, memberServerPackages } = {}) {
@@ -55,11 +61,11 @@ export function mergePackagesForHost({ installedGlobal, memberServerPackages } =
     }
   }
 
-  // Global packages are always ad (the global `installed_packages` table
-  // only contains AD-typed — non-ad runtimes have their own per-host bind
-  // layer). Skip globals that a member row already claimed (enabled OR
-  // disabled — the disabled block is what makes the per-host opt-out
-  // work).
+  // Global packages are always ad (the V1 global
+  // `package_scripts + package_policies` tables only contain AD-typed —
+  // non-ad runtimes have their own per-host bind layer). Skip globals
+  // that a member row already claimed (enabled OR disabled — the disabled
+  // block is what makes the per-host opt-out work).
   for (const p of global) {
     if (!p || !p.name) continue;
     if (byName.has(p.name)) continue;

@@ -757,6 +757,9 @@ export function dashboardRouter({ config, logger, db }) {
         // R66 T13 — read the V1 package_scripts row (the script row
         // carries the manifest with the metrics array; the legacy
         // installedPackages.get helper was retired with the V0 wrapper).
+        // R66 T14 — the V0 SQL string registry `db.sql.installedPackages`
+        // was retired alongside the table itself (migration 023 drops
+        // installed_packages).
         const { packageScripts } = await import('../db/sql/package-scripts.js');
         const script = await packageScripts.get(db, packageName);
         if (script && Array.isArray(script.manifest?.metrics)) {

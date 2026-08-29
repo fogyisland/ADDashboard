@@ -94,7 +94,7 @@ describe('mergePackagesForHost', () => {
 
   test('member bind to a non-installed package is dropped (no global manifest → not surfaced)', () => {
     // member-server_packages references a package that has no row in
-    // installed_packages (e.g. uninstalled). merge must not surface it,
+    // the global tables (e.g. uninstalled). merge must not surface it,
     // because the agent has no script to run.
     const r = mergePackagesForHost({
       installedGlobal: [],
@@ -104,8 +104,8 @@ describe('mergePackagesForHost', () => {
   });
 
   test('member bind wins over global even when global is also referenced', () => {
-    // Both installed_packages and ad_member_server_packages reference the
-    // same name. The member row "owns" — but since the global manifest
+    // Both the V1 global tables and ad_member_server_packages reference
+    // the same name. The member row "owns" — but since the global manifest
     // is non-ad (the only legal type for member-server binds), the
     // non-ad type survives and the package is returned.
     const r = mergePackagesForHost({
@@ -146,11 +146,11 @@ describe('GET /api/admin/agent/packages-for-host', () => {
   });
 
   test('200 returns merged items array (global-only host)', async () => {
-    // installed_packages → 1 enabled row of ad type; member_server_packages
-    // → empty. Expect the 1 global manifest back.
+    // package_scripts+package_policies JOIN → 1 enabled row of ad type;
+    // member_server_packages → empty. Expect the 1 global manifest back.
     _setDbForTest(withTokenBundle([
-      { match: /FROM\s+installed_packages/i, rows: [
-        { name: 'x', version: '1.0.0', type: 'timeseries', manifest_json: JSON.stringify({ name: 'x', agent: { type: 'ad' }, platforms: ['windows'] }), enabled: 1 }
+      { match: /FROM\s+package_scripts\s+ps\s+INNER\s+JOIN\s+package_policies\s+pp/i, rows: [
+        { name: 'x', version: '1.0.0', script_sha256: 'sha', manifest_json: JSON.stringify({ name: 'x', agent: { type: 'ad' }, platforms: ['windows'] }), interval_sec: 60, timeout_ms: 30000, enabled: 1, params_json: null, source: 'seed', created_at: '', updated_at: '' }
       ] },
       { match: /FROM\s+ad_member_server_packages/i, rows: [] }
     ]));
@@ -163,12 +163,15 @@ describe('GET /api/admin/agent/packages-for-host', () => {
     assert.ok(Array.isArray(r.body.items));
     assert.equal(r.body.items.length, 1);
     assert.equal(r.body.items[0].name, 'x');
+    // T14: policy values baked into manifest.agent.*
+    assert.equal(r.body.items[0].agent.intervalSec, 60);
+    assert.equal(r.body.items[0].agent.timeoutMs, 30000);
   });
 
   test('200 returns merged items array (member bind present, non-ad type)', async () => {
     _setDbForTest(withTokenBundle([
-      { match: /FROM\s+installed_packages/i, rows: [
-        { name: 'ad-os-baseline', version: '1.0.0', type: 'status', manifest_json: JSON.stringify({ name: 'ad-os-baseline', agent: { type: 'non-ad' }, platforms: ['windows'] }), enabled: 1 }
+      { match: /FROM\s+package_scripts\s+ps\s+INNER\s+JOIN\s+package_policies\s+pp/i, rows: [
+        { name: 'ad-os-baseline', version: '1.0.0', script_sha256: 'sha', manifest_json: JSON.stringify({ name: 'ad-os-baseline', agent: { type: 'non-ad' }, platforms: ['windows'] }), interval_sec: 900, timeout_ms: 60000, enabled: 1, params_json: null, source: 'seed', created_at: '', updated_at: '' }
       ] },
       { match: /FROM\s+ad_member_server_packages/i, rows: [
         { hostname: 'SRV-A', package_name: 'ad-os-baseline', enabled: 1 }
@@ -183,12 +186,14 @@ describe('GET /api/admin/agent/packages-for-host', () => {
     assert.equal(r.body.items.length, 1);
     assert.equal(r.body.items[0].name, 'ad-os-baseline');
     assert.equal(r.body.items[0].agent.type, 'non-ad');
+    assert.equal(r.body.items[0].agent.intervalSec, 900);
+    assert.equal(r.body.items[0].agent.timeoutMs, 60000);
   });
 
   test('200 with disabled member row → package is excluded (per-host opt-out blocks global)', async () => {
     _setDbForTest(withTokenBundle([
-      { match: /FROM\s+installed_packages/i, rows: [
-        { name: 'ad-os-baseline', version: '1.0.0', type: 'status', manifest_json: JSON.stringify({ name: 'ad-os-baseline', agent: { type: 'non-ad' }, platforms: ['windows'] }), enabled: 1 }
+      { match: /FROM\s+package_scripts\s+ps\s+INNER\s+JOIN\s+package_policies\s+pp/i, rows: [
+        { name: 'ad-os-baseline', version: '1.0.0', script_sha256: 'sha', manifest_json: JSON.stringify({ name: 'ad-os-baseline', agent: { type: 'non-ad' }, platforms: ['windows'] }), interval_sec: 900, timeout_ms: 60000, enabled: 1, params_json: null, source: 'seed', created_at: '', updated_at: '' }
       ] },
       { match: /FROM\s+ad_member_server_packages/i, rows: [
         { hostname: 'SRV-A', package_name: 'ad-os-baseline', enabled: 0 }
@@ -205,7 +210,7 @@ describe('GET /api/admin/agent/packages-for-host', () => {
     assert.equal(r.body.items.length, 0);
   });
 
-  test('issues 2 queries: installed_packages SELECT + ad_member_server_packages SELECT, with hostname bound', async () => {
+  test('issues 2 queries: package_scripts+package_policies JOIN + ad_member_server_packages, with hostname bound', async () => {
     const records = [];
     const db = buildMockDb([TOKEN_BUNDLE_SCRIPT]).withRecording(records);
     _setDbForTest(db);
@@ -213,11 +218,15 @@ describe('GET /api/admin/agent/packages-for-host', () => {
       .get('/api/admin/agent/packages-for-host?hostname=SRV-A')
       .set('X-Agent-Token', AGENT_TOKEN);
 
-    const installedQ = records.find(r => /FROM\s+installed_packages/i.test(r.sql));
-    assert.ok(installedQ, 'installed_packages SELECT should be issued');
+    const joinQ = records.find(r => /FROM\s+package_scripts\s+ps\s+INNER\s+JOIN\s+package_policies\s+pp/i.test(r.sql));
+    assert.ok(joinQ, 'package_scripts+package_policies JOIN SELECT should be issued');
     const memberQ = records.find(r => /FROM\s+ad_member_server_packages/i.test(r.sql));
     assert.ok(memberQ, 'ad_member_server_packages SELECT should be issued');
     // hostname bound to the member-server query
     assert.deepEqual(memberQ.params, ['SRV-A']);
+    // T14: V0 installed_packages SELECT is gone — no query should reference
+    // installed_packages after this commit.
+    const staleQ = records.find(r => /FROM\s+installed_packages/i.test(r.sql));
+    assert.equal(staleQ, undefined, 'V0 installed_packages SELECT must NOT be issued');
   });
 });

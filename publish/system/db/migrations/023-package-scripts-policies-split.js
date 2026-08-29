@@ -125,7 +125,26 @@ export async function migrateInstalledPackagesToTwoTable({ db, dataDir, writeAud
     count++;
   }
 
-  // 3. DROP installed_packages. MySQL: DROP TABLE IF EXISTS is
+  // 3. Drop the V0 FK from ad_member_server_packages.package_name →
+  //    installed_packages.name (defined by migration 014 as `fk_msp_pkg`).
+  //    Must run BEFORE `DROP TABLE installed_packages` — otherwise the FK
+  //    blocks the DROP. MySQL: `ALTER TABLE ... DROP FOREIGN KEY` is
+  //    non-idempotent (throws if FK absent), but the applier only runs
+  //    this sidecar once per migration version, so the throw path is
+  //    unreachable in practice. MSSQL: probe sys.foreign_keys first so a
+  //    re-apply is a safe no-op.
+  if (db.dialect === 'mysql') {
+    await db.execute('ALTER TABLE ad_member_server_packages DROP FOREIGN KEY fk_msp_pkg', []);
+  } else {
+    const fkProbe = await db.execute(
+      "SELECT 1 AS x FROM sys.foreign_keys WHERE name = 'fk_msp_pkg'", []
+    );
+    if (fkProbe.rows.length > 0) {
+      await db.execute('ALTER TABLE ad_member_server_packages DROP CONSTRAINT fk_msp_pkg', []);
+    }
+  }
+
+  // 4. DROP installed_packages. MySQL: DROP TABLE IF EXISTS is
   //    idempotent. MSSQL: no IF EXISTS, so probe sys.tables first and
   //    only drop when the table still exists (re-runs are no-ops).
   if (db.dialect === 'mysql') {
@@ -137,7 +156,7 @@ export async function migrateInstalledPackagesToTwoTable({ db, dataDir, writeAud
     }
   }
 
-  // 4. One audit summary row. Best-effort: caller may pass writeAudit
+  // 5. One audit summary row. Best-effort: caller may pass writeAudit
   //    as null/undefined; skip silently.
   if (writeAudit) {
     await writeAudit({

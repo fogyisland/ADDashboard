@@ -59,7 +59,11 @@ test('serverGroups: package upsert (MySQL) keyed on (hostname, package_name) dou
   assert.match(serverGroups.mysql.touchPackageRun, /SET last_run_at = UTC_TIMESTAMP\(\)/i);
   assert.match(serverGroups.mysql.removePackage, /DELETE FROM ad_member_server_packages WHERE hostname = \? AND package_name = \?/i);
   assert.match(serverGroups.mysql.listPackagesForHost, /WHERE msp\.hostname = \?/i);
-  assert.match(serverGroups.mysql.listPackagesForHost, /LEFT JOIN installed_packages/i);
+  // T14: listPackagesForHost now JOINs package_scripts + package_policies
+  // (the V1 schema). V0 LEFT JOIN installed_packages is gone.
+  assert.match(serverGroups.mysql.listPackagesForHost, /LEFT JOIN package_scripts\s+ps/i);
+  assert.match(serverGroups.mysql.listPackagesForHost, /LEFT JOIN package_policies\s+pp/i);
+  assert.doesNotMatch(serverGroups.mysql.listPackagesForHost, /LEFT JOIN installed_packages/i);
   assert.match(serverGroups.mysql.listHostsForPackage, /WHERE msp\.package_name = \?/i);
 });
 
@@ -68,6 +72,10 @@ test('serverGroups: package upsert (MSSQL) keyed on (hostname, package_name) dou
   assert.match(serverGroups.mssql.upsertPackage, /ON t\.hostname = s\.hostname AND t\.package_name = s\.package_name/i);
   assert.strictEqual((serverGroups.mssql.upsertPackage.match(/\?/g) || []).length, 3);
   assert.match(serverGroups.mssql.touchPackageRun, /SET last_run_at = SYSUTCDATETIME\(\)/i);
+  // T14: listPackagesForHost MSSQL mirrors the MySQL JOIN rewrite.
+  assert.match(serverGroups.mssql.listPackagesForHost, /LEFT JOIN package_scripts\s+ps/i);
+  assert.match(serverGroups.mssql.listPackagesForHost, /LEFT JOIN package_policies\s+pp/i);
+  assert.doesNotMatch(serverGroups.mssql.listPackagesForHost, /LEFT JOIN installed_packages/i);
 });
 
 // ---- Bulk operations added in Task 7 (server-groups admin routes) ----

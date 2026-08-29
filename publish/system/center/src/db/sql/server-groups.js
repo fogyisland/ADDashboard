@@ -46,9 +46,10 @@ export const serverGroups = {
     removePackage: `DELETE FROM ad_member_server_packages WHERE hostname = ? AND package_name = ?`,
     listPackagesForHost: `SELECT msp.hostname, msp.package_name, msp.enabled,
                                  msp.installed_at, msp.last_run_at,
-                                 ip.version, ip.type, ip.enabled AS pkg_enabled
+                                 ps.version, pp.enabled AS pkg_enabled
                           FROM ad_member_server_packages msp
-                          LEFT JOIN installed_packages ip ON ip.name = msp.package_name
+                          LEFT JOIN package_scripts ps ON ps.name = msp.package_name
+                          LEFT JOIN package_policies pp ON pp.name = msp.package_name
                           WHERE msp.hostname = ?
                           ORDER BY msp.package_name`,
     listHostsForPackage: `SELECT msp.hostname, msp.enabled, msp.installed_at, msp.last_run_at
@@ -112,9 +113,10 @@ export const serverGroups = {
     removePackage: `DELETE FROM ad_member_server_packages WHERE hostname = CAST(? AS VARCHAR(128)) AND package_name = ?`,
     listPackagesForHost: `SELECT msp.hostname, msp.package_name, msp.enabled,
                                  msp.installed_at, msp.last_run_at,
-                                 ip.version, ip.type, ip.enabled AS pkg_enabled
+                                 ps.version, pp.enabled AS pkg_enabled
                           FROM ad_member_server_packages msp
-                          LEFT JOIN installed_packages ip ON ip.name = msp.package_name
+                          LEFT JOIN package_scripts ps ON ps.name = msp.package_name
+                          LEFT JOIN package_policies pp ON pp.name = msp.package_name
                           WHERE msp.hostname = CAST(? AS VARCHAR(128))
                           ORDER BY msp.package_name`,
     listHostsForPackage: `SELECT msp.hostname, msp.enabled, msp.installed_at, msp.last_run_at

@@ -7,42 +7,18 @@
 // rule with userAuth and is the same gate as agentRouter's `packages`
 // subpath and the self-register endpoint.
 //
-// SQL: dual-dialect via db.sql.installedPackages.listEnabled and
+// SQL: dual-dialect via db.sql.packageScripts.listEnabledGlobal and
 // db.sql.serverGroups.listPackagesForHost — never hardcode
-// `sql.mysql.foo` here.
+// `sql.mysql.foo` here. R66 T14 switched the global-list source from
+// `installed_packages` to a JOIN of `package_scripts + package_policies`
+// so the agent wire format is driven by the V1 schema (migration 023).
+// Policy interval_sec/timeout_ms is baked into manifest.agent.* at
+// hydration time, matching the bakeManifest shape from runner.js:65.
 
 import { Router } from 'express';
 import { agentToken } from '../auth/agent-token.js';
 import { getDb } from '../db/index.js';
 import { mergePackagesForHost } from '../services/agent-packages-for-host.js';
-
-// Hydrate a raw `installed_packages` row: parse `manifest_json` (JSON
-// string in mssql, already-parsed object in mysql2) into the manifest
-// field. The mysql2 driver returns json columns as JS objects; mssql
-// returns them as JSON strings. Same approach as the inline `hydrate()`
-// inside src/db/sql/installed-packages.js — duplicated here so this
-// route doesn't have to import a service-of-services helper.
-function hydrateInstalledRow(row) {
-  if (!row) return row;
-  // The column is `manifest_json` (string) in the DB schema. mysql2 may
-  // have already auto-parsed it to `row.manifest` — fall back to that
-  // when the column-shaped key isn't a string.
-  let manifest = row.manifest_json;
-  if (typeof manifest !== 'string') {
-    manifest = row.manifest;
-  }
-  if (typeof manifest === 'string') {
-    try { manifest = JSON.parse(manifest); } catch { manifest = null; }
-  }
-  return {
-    ...row,
-    manifest,
-    // mysql2 returns INT columns as JS numbers; mssql returns them as
-    // numbers too. Either way, surface as `intervalOverrideSec` (camelCase)
-    // matching the rest of the admin API's shape.
-    intervalOverrideSec: row.interval_override_sec == null ? null : Number(row.interval_override_sec)
-  };
-}
 
 export function agentPackagesRouter({ config, logger }) {
   const r = Router();
@@ -65,51 +41,51 @@ export function agentPackagesRouter({ config, logger }) {
     }
     try {
       const db = getDb();
-      // List global enabled packages; the SQL string returns raw rows
-      // (manifest_json is a JSON string), so hydrate() parses the manifest
-      // before handing the rows to mergePackagesForHost. Same pattern as
-      // `installedPackages.list` in src/db/sql/installed-packages.js.
-      const [{ rows: installedRows }, { rows: memberRows }] = await Promise.all([
-        db.execute(db.sql.installedPackages.listEnabled, []),
+      // T14: JOIN helper reads from package_scripts + package_policies
+      // (the V1 schema); policy interval_sec/timeout_ms is then baked
+      // into manifest.agent.* at hydration time. Same pattern as
+      // runner.js:65 bakeManifest, so the agent wire shape is byte-
+      // identical to the /api/agent/packages endpoint.
+      const [{ rows: enabledRows }, { rows: memberRows }] = await Promise.all([
+        db.execute(db.sql.packageScripts.listEnabledGlobal, []),
         db.query(db.sql.serverGroups.listPackagesForHost, [hostname])
       ]);
-      // mergePackagesForHost expects manifest objects (it reads p.name
-      // and p.agent.type), not the raw DB rows. Map hydrated rows to
-      // their parsed manifest, dropping any row whose manifest failed
-      // to parse — a corrupted manifest_json column should not crash
+      // parseManifest — handle both shapes:
+      //   mysql2 (json column): already a JS object
+      //   mssql (NVARCHAR): JSON string
+      // Defensive: a corrupt JSON string should drop the row, not crash
       // the agent's package fetch.
-      const hydrated = installedRows.map(hydrateInstalledRow);
-      const installedGlobal = hydrated
-        .filter(r => r && r.manifest && r.manifest.name)
-        .map(r => r.manifest);
+      const parseManifest = (v) => {
+        if (v == null) return null;
+        if (typeof v === 'string') {
+          try { return JSON.parse(v); } catch { return null; }
+        }
+        return v;
+      };
+      const installedGlobal = enabledRows
+        .map((r) => {
+          const manifest = parseManifest(r.manifest_json);
+          if (!manifest || !manifest.name) return null;
+          // JSON.parse(JSON.stringify(...)) is a cheap deep clone so the
+          // upstream DB row's manifest object is never shared/mutated
+          // (matches runner.js:73).
+          const baked = JSON.parse(JSON.stringify(manifest));
+          baked.agent = baked.agent || {};
+          baked.agent.intervalSec = Number(r.interval_sec);
+          baked.agent.timeoutMs = Number(r.timeout_ms);
+          return baked;
+        })
+        .filter(Boolean);
       const merged = mergePackagesForHost({
         installedGlobal,
         memberServerPackages: memberRows
       });
-      // 2026-08-26 round-19 follow-up: apply per-package operator
-      // interval overrides. The agent's setInterval is keyed on the
-      // resolved interval (agent/src/non-ad-scheduler.js:32), so writing
-      // a different intervalSec here causes the next applyPackageList
-      // poll to clearInterval + start a fresh timer with the new
-      // cadence. NULL overrides fall through to the manifest default,
-      // which is what the manifest-validation minimum=5 already guards.
-      // We mutate a shallow copy so the upstream DB row's manifest object
-      // is never shared / mutated.
-      const overridesByName = new Map(
-        hydrated
-          .filter(r => r && r.manifest && r.intervalOverrideSec != null)
-          .map(r => [r.manifest.name, r.intervalOverrideSec])
-      );
-      const items = merged.map((m) => {
-        if (!m || !m.agent) return m;
-        const override = overridesByName.get(m.name);
-        if (override == null) return m;
-        return {
-          ...m,
-          agent: { ...m.agent, intervalSec: override }
-        };
-      });
-      res.json({ items });
+      // T14: R66 bakes policy interval_sec/timeout_ms into the manifest
+      // at hydration time. No more per-row override — the agent wire-format
+      // reads pkg.manifest.agent.intervalSec directly. The V0
+      // `installed_packages.interval_override_sec` column is gone
+      // (migration 023 collapsed V0→V1 precedence at migration time).
+      res.json({ items: merged });
     } catch (e) {
       // Route is unaudited by design — agents retry on 5xx, no operator
       // action needed. Surface a stable shape so agent tests can match.

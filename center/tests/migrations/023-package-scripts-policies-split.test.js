@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 // shape + bound params without driving a real DB. The fake returns
 // `installed_packages` rows on the first SELECT and {} for everything
 // else, so the helper runs end-to-end against a deterministic dataset.
-function makeFakeDb({ installedRows = defaultInstalledRows(), dropGuardRows = [] } = {}) {
+function makeFakeDb({ installedRows = defaultInstalledRows(), dropGuardRows = [], fkGuardRows = [] } = {}) {
   const calls = [];
   let selectCount = 0;
   const fake = {
@@ -39,6 +39,12 @@ function makeFakeDb({ installedRows = defaultInstalledRows(), dropGuardRows = []
       }
       if (trimmed.startsWith('SELECT 1 AS x FROM sys.tables')) {
         return { rows: dropGuardRows };
+      }
+      // T14: MSSQL FK probe (sys.foreign_keys) — return rows when FK
+      // is present so the FK DROP fires; empty rows to test the
+      // skip-the-drop-FK re-apply path.
+      if (trimmed.startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
+        return { rows: fkGuardRows };
       }
       return { rows: [] };
     }
@@ -94,6 +100,18 @@ test('migrates each installed_packages row to package_scripts + package_policies
     assert.equal(insertScriptCalls.length, 2, 'two scripts written');
     assert.equal(insertPolicyCalls.length, 2, 'two policies written');
     assert.equal(dropCalls.length, 1, 'installed_packages dropped once');
+
+    // T14: FK fk_msp_pkg must be dropped exactly once, BEFORE the DROP TABLE.
+    const fkDropCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP FOREIGN KEY') ||
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
+    assert.equal(fkDropCalls.length, 1, 'FK fk_msp_pkg dropped exactly once');
+    const fkIdx = calls.findIndex(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP FOREIGN KEY') ||
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
+    const dropIdx = calls.findIndex(c => c.sql.startsWith('DROP TABLE'));
+    assert.ok(fkIdx >= 0 && dropIdx >= 0, 'both FK drop and TABLE drop present');
+    assert.ok(fkIdx < dropIdx, 'FK drop must run before TABLE drop');
   } finally {
     cleanup();
   }
@@ -234,6 +252,10 @@ test('MSSQL dialect uses sys.tables guard before DROP', async () => {
         // Simulate "installed_packages already gone"
         return { rows: [] };
       }
+      // T14: MSSQL FK probe — return "FK present" so the FK DROP fires.
+      if (sql.trim().startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
+        return { rows: [{ x: 1 }] };
+      }
       return { rows: [] };
     }
   };
@@ -245,7 +267,76 @@ test('MSSQL dialect uses sys.tables guard before DROP', async () => {
     assert.equal(guardCalls.length, 1, 'sys.tables guard queried once');
     const drops = calls.filter(c => c.sql.startsWith('DROP TABLE'));
     assert.equal(drops.length, 0, 'no DROP issued when sys.tables says installed_packages is gone');
+    // T14: MSSQL FK probe + DROP CONSTRAINT fired
+    const fkProbeCalls = calls.filter(c => c.sql.startsWith('SELECT 1 AS x FROM sys.foreign_keys'));
+    assert.equal(fkProbeCalls.length, 1, 'sys.foreign_keys guard queried once');
+    const fkDropCalls = calls.filter(c => c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
+    assert.equal(fkDropCalls.length, 1, 'FK fk_msp_pkg dropped once via DROP CONSTRAINT');
   } finally {
     cleanup();
+  }
+});
+
+test('T14: MSSQL re-apply with FK already gone skips the FK DROP', async () => {
+  // Re-running migration 023 on a DB where the FK is already gone (e.g.
+  // previous run + manual DROP CONSTRAINT) must be a safe no-op for the
+  // FK drop — no error from a missing FK.
+  const calls = [];
+  let selectCount = 0;
+  const fake = {
+    dialect: 'mssql',
+    execute: async (sql, params) => {
+      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 80), params: params ? [...params] : [] });
+      if (sql.trim().startsWith('SELECT name, version, type, manifest_json')) {
+        selectCount++;
+        if (selectCount === 1) return { rows: defaultInstalledRows() };
+        return { rows: [] };
+      }
+      if (sql.trim().startsWith('SELECT 1 AS x FROM sys.tables')) {
+        return { rows: [{ x: 1 }] };
+      }
+      if (sql.trim().startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
+        // Simulate "FK already gone"
+        return { rows: [] };
+      }
+      return { rows: [] };
+    }
+  };
+  const { dataDir, cleanup } = makeFakeDataDir();
+  try {
+    const { migrateInstalledPackagesToTwoTable } = await importHelper();
+    await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
+    const fkProbeCalls = calls.filter(c => c.sql.startsWith('SELECT 1 AS x FROM sys.foreign_keys'));
+    assert.equal(fkProbeCalls.length, 1, 'sys.foreign_keys guard queried once');
+    const fkDropCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP FOREIGN KEY') ||
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
+    assert.equal(fkDropCalls.length, 0, 'no FK DROP issued when sys.foreign_keys says FK is gone');
+    // DROP TABLE still fires
+    const dropCalls = calls.filter(c => c.sql.startsWith('DROP TABLE'));
+    assert.equal(dropCalls.length, 1, 'DROP TABLE installed_packages fired');
+  } finally {
+    cleanup();
+  }
+});
+
+test('T14: empty installed_packages short-circuits before FK drop + DROP TABLE', async () => {
+  // The early-return path (`if (rows.length === 0) return { migrated: 0 }`)
+  // must skip the FK drop AND the DROP TABLE — there's no FK to drop and
+  // no installed_packages to drop on a clean V1 schema.
+  const { fake, calls } = makeFakeDb({ installedRows: [] });
+  const dataDir = mkdtempSync(join(tmpdir(), 'r66-023-t14-empty-'));
+  try {
+    const { migrateInstalledPackagesToTwoTable } = await importHelper();
+    const r = await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
+    assert.equal(r.migrated, 0);
+    const fkDropCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP FOREIGN KEY') ||
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
+    assert.equal(fkDropCalls.length, 0, 'no FK drop on empty installed_packages');
+    const drops = calls.filter(c => c.sql.startsWith('DROP TABLE'));
+    assert.equal(drops.length, 0, 'no DROP TABLE on empty installed_packages');
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
   }
 });

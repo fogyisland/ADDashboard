@@ -440,26 +440,10 @@ const VARIANTS = {
         WHERE aps.agent_id IN (${placeholders})
         ORDER BY sp.sort_order, sp.port`
     },
-    installedPackages: {
-      // Plugin system registry (migration 004). Upsert by `name`.
-      upsert: `INSERT INTO installed_packages
-        (name, version, type, manifest_json, enabled, params_json, installed_at, updated_at, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          version = VALUES(version),
-          type = VALUES(type),
-          manifest_json = VALUES(manifest_json),
-          enabled = VALUES(enabled),
-          params_json = VALUES(params_json),
-          updated_at = VALUES(updated_at),
-          source = VALUES(source)`,
-      list: `SELECT * FROM installed_packages ORDER BY name`,
-      listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
-      get: `SELECT * FROM installed_packages WHERE name = ?`,
-      delete: `DELETE FROM installed_packages WHERE name = ?`
-    },
     // R66 split: installed_packages -> package_scripts + package_policies.
     // package_scripts holds script content + sha256 + manifest (migration 023).
+    // The legacy db.sql.installedPackages SQL string registry was retired in
+    // T14 — migration 023 drops the table itself, so no live caller remains.
     packageScripts: {
       upsert: `INSERT INTO package_scripts
         (name, version, script_content, script_sha256, manifest_json, source, created_at, updated_at)
@@ -474,7 +458,18 @@ const VARIANTS = {
       list: `SELECT * FROM package_scripts ORDER BY name`,
       get: `SELECT * FROM package_scripts WHERE name = ?`,
       delete: `DELETE FROM package_scripts WHERE name = ?`,
-      updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`
+      updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`,
+      // T14: JOIN helper for the cross-package agent view. Used by
+      // routes/agent-packages.js to replace db.sql.installedPackages.listEnabled.
+      // Filter on package_policies.enabled=1 so the agent never sees a
+      // disabled package — matches runner.js JOIN_SELECT_MYSQL.
+      listEnabledGlobal: `SELECT ps.name, ps.version, ps.script_sha256, ps.manifest_json,
+                                 pp.interval_sec, pp.timeout_ms, pp.enabled, pp.params_json,
+                                 ps.source, ps.created_at, ps.updated_at
+                          FROM package_scripts ps
+                          INNER JOIN package_policies pp ON ps.name = pp.name
+                          WHERE pp.enabled = 1
+                          ORDER BY ps.name`
     },
     // R66 split: package_policies holds execution policy (migration 023).
     // Five ops: upsert (by name) / list / listEnabled / getByName / delete.
@@ -1139,33 +1134,10 @@ const VARIANTS = {
         WHERE aps.agent_id IN (${placeholders})
         ORDER BY sp.sort_order, sp.port`
     },
-    installedPackages: {
-      upsert: `MERGE INTO installed_packages AS t
-        USING (SELECT
-          ? AS name, ? AS version, ? AS type, ? AS manifest_json, ? AS enabled,
-          ? AS params_json, ? AS installed_at, ? AS updated_at, ? AS source
-        ) AS s
-        ON t.name = s.name
-        WHEN MATCHED THEN UPDATE SET
-          version = s.version,
-          type = s.type,
-          manifest_json = s.manifest_json,
-          enabled = s.enabled,
-          params_json = s.params_json,
-          updated_at = s.updated_at,
-          source = s.source
-        WHEN NOT MATCHED THEN INSERT
-          (name, version, type, manifest_json, enabled, params_json, installed_at, updated_at, source)
-          VALUES
-          (s.name, s.version, s.type, s.manifest_json, s.enabled, s.params_json,
-           s.installed_at, s.updated_at, s.source);`,
-      list: `SELECT * FROM installed_packages ORDER BY name`,
-      listEnabled: `SELECT * FROM installed_packages WHERE enabled = 1 ORDER BY name`,
-      get: `SELECT * FROM installed_packages WHERE name = ?`,
-      delete: `DELETE FROM installed_packages WHERE name = ?`
-    },
     // R66 split: installed_packages -> package_scripts + package_policies.
     // package_scripts holds script content + sha256 + manifest (migration 023).
+    // The legacy db.sql.installedPackages SQL string registry was retired in
+    // T14 — migration 023 drops the table itself, so no live caller remains.
     packageScripts: {
       upsert: `MERGE INTO package_scripts AS t
         USING (SELECT
@@ -1188,7 +1160,17 @@ const VARIANTS = {
       list: `SELECT * FROM package_scripts ORDER BY name`,
       get: `SELECT * FROM package_scripts WHERE name = ?`,
       delete: `DELETE FROM package_scripts WHERE name = ?`,
-      updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`
+      updateScript: `UPDATE package_scripts SET script_content = ?, script_sha256 = ?, updated_at = ? WHERE name = ?`,
+      // T14: JOIN helper for the cross-package agent view. Same SQL as
+      // the MySQL helper — `?` placeholders are dialect-portable via the
+      // mssql driver wrapper. Mirrors runner.js JOIN_SELECT_MSSQL.
+      listEnabledGlobal: `SELECT ps.name, ps.version, ps.script_sha256, ps.manifest_json,
+                                 pp.interval_sec, pp.timeout_ms, pp.enabled, pp.params_json,
+                                 ps.source, ps.created_at, ps.updated_at
+                          FROM package_scripts ps
+                          INNER JOIN package_policies pp ON ps.name = pp.name
+                          WHERE pp.enabled = 1
+                          ORDER BY ps.name`
     },
     // R66 split: package_policies holds execution policy (migration 023).
     // Five ops: upsert (by name) / list / listEnabled / getByName / delete.
