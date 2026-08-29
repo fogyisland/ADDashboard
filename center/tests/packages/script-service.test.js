@@ -78,7 +78,10 @@ test('installScript writes script + default policy + audit row', async () => {
   assert.equal(scriptRows[0].source, 'admin-upload');
   assert.equal(policyRows[0].interval_sec, 3600);
   assert.equal(auditCalls[0].action, 'upload_script');
-  assert.match(auditCalls[0].details.scriptSha, /^[0-9a-f]{8}$/);
+  // R66 T13 — script-service now emits the real audit.js shape
+  // ({action, target, payload}) directly; the T7 adapter was retired.
+  assert.equal(auditCalls[0].target, 'packages');
+  assert.match(auditCalls[0].payload.scriptSha, /^[0-9a-f]{8}$/);
 });
 
 test('installScript rejects duplicate name', async () => {
@@ -143,7 +146,8 @@ test('setPolicy partial body writes only present fields + audit', async () => {
   const auditCalls = [];
   await setPolicy({ db, name: 'pkg-a', intervalSec: 60, writeAudit: async (a) => auditCalls.push(a) });
   assert.equal(auditCalls[0].action, 'set_policy');
-  assert.deepEqual(auditCalls[0].details.fields, ['intervalSec']);
+  assert.equal(auditCalls[0].target, 'packages');
+  assert.deepEqual(auditCalls[0].payload.fields, ['intervalSec']);
 });
 
 test('setPolicy rejects intervalSec < 5', async () => {

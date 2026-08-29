@@ -285,7 +285,13 @@ const TARGET_LABEL = Object.freeze(new Map([
   ['system_config',     '系统配置'],
   ['ad_sites',          '站点目录'],
   ['ad_dcs',            '域控目录'],
-  ['schema_migrations', '迁移管理']
+  ['schema_migrations', '迁移管理'],
+  // 2026-08-29 R66 — package management replace. script-service
+  // emits target='packages' on the 4 R66 actions
+  // (upload/edit/set_policy/delete_script) — the legacy adapter used to
+  // spread targetId + details into payload, so the audit row's target
+  // column now reads 'packages' directly.
+  ['packages',          '脚本包']
 ]));
 
 function groupByValue(map) {

@@ -754,11 +754,14 @@ export function dashboardRouter({ config, logger, db }) {
       if (metricId) {
         rows = await metricstore.summary(db, { metricId, agentId: agentId || undefined });
       } else if (packageName) {
-        const { installedPackages } = await import('../db/sql/installed-packages.js');
-        const pkg = await installedPackages.get(db, packageName);
-        if (pkg && Array.isArray(pkg.manifest?.metrics)) {
+        // R66 T13 — read the V1 package_scripts row (the script row
+        // carries the manifest with the metrics array; the legacy
+        // installedPackages.get helper was retired with the V0 wrapper).
+        const { packageScripts } = await import('../db/sql/package-scripts.js');
+        const script = await packageScripts.get(db, packageName);
+        if (script && Array.isArray(script.manifest?.metrics)) {
           const all = await Promise.all(
-            pkg.manifest.metrics.map((m) =>
+            script.manifest.metrics.map((m) =>
               metricstore.summary(db, { metricId: `${packageName}.${m.key}`, agentId: agentId || undefined })
             )
           );

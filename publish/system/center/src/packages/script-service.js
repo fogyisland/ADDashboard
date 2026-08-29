@@ -1,5 +1,5 @@
-// Script + Policy service — used by the admin router (task 7) and the
-// builtin seeder (task 9).
+// Script + Policy service — used by the admin router (T7) and the
+// builtin seeder (T9).
 //
 // R66 split: the legacy `installed_packages` single table becomes
 // `package_scripts` (immutable-ish content: script body + sha256 +
@@ -8,16 +8,15 @@
 // write surface over that pair — routes and the seeder call these four
 // functions instead of touching SQL directly.
 //
-// Replaces center/src/packages/installer.js for V1 (installer.js keeps its
-// legacy ZIP install path around for the V1 transition; it is removed in
-// task 10 once router + seeder migrate).
-//
 // Audit: `writeAudit` is injected by the caller as a plain function
 // parameter — the service never imports an audit module. That keeps the
 // module graph acyclic (script-service is strictly downstream of db/sql)
-// and makes the tests trivial (assert the recorder array).
+// and makes the tests trivial (assert the recorder array). T13 retired
+// the T7 server.js adapter — script-service now emits the real
+// audit.js shape ({action, target, payload}) directly.
 //
 // 2026-08-29: initial implementation for R66 task-5.
+// 2026-08-29: T13 — emit real audit.js shape directly (T7 adapter retired).
 
 import crypto from 'node:crypto';
 import { packageScripts } from '../db/sql/package-scripts.js';
@@ -115,9 +114,8 @@ export async function installScript({
   if (writeAudit) {
     await writeAudit({
       action: 'upload_script',
-      targetType: 'packages',
-      targetId: name,
-      details: { name, scriptSha: scriptSha.slice(0, 8), source: resolvedSource }
+      target: 'packages',
+      payload: { name, scriptSha: scriptSha.slice(0, 8), source: resolvedSource }
     });
   }
   return { name, version: manifest.version, scriptSha };
@@ -144,9 +142,8 @@ export async function editScript({ db, name, content, writeAudit }) {
   if (writeAudit) {
     await writeAudit({
       action: 'edit_script',
-      targetType: 'packages',
-      targetId: name,
-      details: { name, oldSha: oldSha.slice(0, 8), newSha: newSha.slice(0, 8) }
+      target: 'packages',
+      payload: { name, oldSha: oldSha.slice(0, 8), newSha: newSha.slice(0, 8) }
     });
   }
   return { name, oldSha, newSha, updatedAt: new Date(), noOp: false };
@@ -187,9 +184,8 @@ export async function setPolicy({ db, name, intervalSec, timeoutMs, enabled, par
   if (writeAudit) {
     await writeAudit({
       action: 'set_policy',
-      targetType: 'packages',
-      targetId: name,
-      details: { name, fields: Object.keys(fields) }
+      target: 'packages',
+      payload: { name, fields: Object.keys(fields) }
     });
   }
   return { name, fields, updatedAt: new Date() };
@@ -210,9 +206,8 @@ export async function deleteScript({ db, name, writeAudit }) {
   if (writeAudit) {
     await writeAudit({
       action: 'delete_script',
-      targetType: 'packages',
-      targetId: name,
-      details: { name, deleted: { script: true, policy: true } }
+      target: 'packages',
+      payload: { name, deleted: { script: true, policy: true } }
     });
   }
   return { name, deleted: { script: true, policy: true } };

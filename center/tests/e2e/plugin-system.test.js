@@ -116,26 +116,28 @@ describe('GET /api/dashboard/metrics/summary', () => {
     assert.ok(hasStatus, 'status row present');
   });
 
-  test('packageName filter uses installed_packages to expand to metricIds', async () => {
-    // When packageName is given, the route fetches installed_packages to
-    // enumerate metric IDs and calls the helper per metric. We mock
-    // installed_packages.get + the metric_* SELECTs.
+  test('packageName filter uses package_scripts to expand to metricIds', async () => {
+    // R66 T13 — when packageName is given, the route fetches the V1
+    // package_scripts row to enumerate metric IDs and calls the helper
+    // per metric. We mock package_scripts.get + the metric_* SELECTs.
     const manifest = {
       name: 'cpu-monitor',
+      version: '1.0.0',
       type: 'gauge',
+      description: 'cpu-monitor fixture',
+      agent: { type: 'ad', script: 'collect.ps1' },
       metrics: [{ key: 'm1', label: 'M1' }, { key: 'm2', label: 'M2' }]
     };
     const db = buildMockDb([
-      { match: /FROM\s+installed_packages/i, rows: [{
+      { match: /FROM\s+package_scripts/i, rows: [{
           name: 'cpu-monitor',
           version: '1.0.0',
-          type: 'gauge',
+          script_sha256: 'a'.repeat(64),
           manifest_json: JSON.stringify(manifest),
-          enabled: 1,
-          params_json: null,
-          installed_at: new Date('2026-08-01'),
+          source: 'admin-upload',
+          created_at: new Date('2026-08-01'),
           updated_at: new Date('2026-08-01'),
-          source: 'local'
+          script_content: 'Write-Host hi'
         }] },
       { match: /FROM\s+metric_gauge/i,   rows: [] },
       { match: /FROM\s+metric_counter/i, rows: [] },

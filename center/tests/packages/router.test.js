@@ -249,13 +249,6 @@ test('Auth: each new endpoint requires admin (returns 401/403 without auth)', as
   assert.equal(r2.status, 403);
 });
 
-test('Legacy packageRouter wrapper still delegates to createPackagesRouter (T10 cleanup target)', async () => {
-  const { packageRouter } = await import('../../src/packages/router.js');
-  const db = { dialect: 'mysql', async execute() { return { rows: [] }; } };
-  const r = packageRouter({ db, writeAudit: async () => {}, adminAuth: (q, s, n) => n() });
-  assert.equal(typeof r, 'function'); // express Router is a function
-});
-
 test('GET /packages returns merged items joined on name (policy fields default when missing)', async () => {
   const { app, scripts } = buildApp();
   scripts.set('pkg-x', {
@@ -287,8 +280,12 @@ test('POST /upload-script emits exactly one upload_script audit row with 8-char 
   await uploadPkg(app, 'pkg-a');
   const upload = auditCalls.find((c) => c.action === 'upload_script');
   assert.ok(upload, 'upload_script audit must be emitted');
-  assert.equal(upload.targetType, 'packages');
-  assert.equal(upload.targetId, 'pkg-a');
-  assert.equal(upload.details.source, 'admin-upload');
-  assert.match(upload.details.scriptSha, /^[0-9a-f]{8}$/);
+  // R66 T13 — script-service now emits the real audit.js shape
+  // ({action, target, payload}) directly. The T7 server.js adapter
+  // was retired; assertion moved from targetType/targetId/details to
+  // target/payload.
+  assert.equal(upload.target, 'packages');
+  assert.equal(upload.payload.name, 'pkg-a');
+  assert.equal(upload.payload.source, 'admin-upload');
+  assert.match(upload.payload.scriptSha, /^[0-9a-f]{8}$/);
 });

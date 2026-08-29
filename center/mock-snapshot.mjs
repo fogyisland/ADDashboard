@@ -63,8 +63,7 @@ export function buildDcCounters(agentId) {
 // locked_count column in the SQL schema (and the centre's latestSummaryPerDc
 // still reads it), but the agent stops setting it to non-null here.
 // Mock mirrors that — LockedCount: null — so the operator sees the same
-// shape they'd see from a real agent. To exercise the lockedCount path,
-// run the ad_lockout_summary package (mock-package-report.mjs).
+// shape they'd see from a real agent.
 export function buildSummaryEntry(agentId, collectedAt, sourceSite = null) {
   const counters = buildDcCounters(agentId);
   return {

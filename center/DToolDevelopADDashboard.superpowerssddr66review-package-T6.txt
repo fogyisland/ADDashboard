@@ -1,0 +1,184 @@
+diff --git a/center/src/services/audit-classifier.js b/center/src/services/audit-classifier.js
+index 0873049..3af410b 100644
+--- a/center/src/services/audit-classifier.js
++++ b/center/src/services/audit-classifier.js
+@@ -84,10 +84,21 @@ const ACTION_CATEGORY = Object.freeze(new Map([
+   // ad_agent_heartbeat / ad_replication_status / ad_dcs / package_runs);
+   // severity is 'medium' because a wrong click wipes real history.
+   ['delete_agent_heartbeat',          'changes'],
+-  ['delete_dc',                       'changes']
++  ['delete_dc',                       'changes'],
+   // 2026-08-26 round-17: update_replication_port_config was retired with the
+   // probe-port rewrite — operators now edit ports via the standard
+   // create_port / update_port / delete_port audit actions on system_ports.
++  // 2026-08-29 R66 — package management replace. The 4 main actions
++  // (upload/edit/set_policy/delete_script) are operator-initiated
++  // changes to either the script body or execution policy; bulk_migrate
++  // is a one-time migration row emitted by the data-migration step.
++  // All are 'changes' because they mutate package_scripts /
++  // package_policies rows.
++  ['upload_script',   'changes'],
++  ['edit_script',     'changes'],
++  ['set_policy',      'changes'],
++  ['delete_script',   'changes'],
++  ['bulk_migrate',    'changes']
+ ]));
+ 
+ const ACTION_SEVERITY = Object.freeze(new Map([
+@@ -168,8 +179,17 @@ const ACTION_SEVERITY = Object.freeze(new Map([
+   // because a mis-click drops real replication history; same shape as
+   // delete_server_group.
+   ['delete_agent_heartbeat',          'medium'],
+-  ['delete_dc',                       'medium']
++  ['delete_dc',                       'medium'],
+   // 2026-08-26 round-17: update_replication_port_config retired (see above).
++  // 2026-08-29 R66 — severity mirrors delete-server-group pattern.
++  // delete_script is 'medium' (mis-click wipes script + history);
++  // the others are 'low' (data-bearing but recoverable — old sha is
++  // in audit details); bulk_migrate is 'info' (one-time migration step).
++  ['upload_script',   'low'],
++  ['edit_script',     'low'],
++  ['set_policy',      'low'],
++  ['delete_script',   'medium'],
++  ['bulk_migrate',    'info']
+ ]));
+ 
+ const ACTION_LABEL = Object.freeze(new Map([
+@@ -244,12 +264,21 @@ const ACTION_LABEL = Object.freeze(new Map([
+   // 中文 label names the operator's mental model — "删除 Agent 记录"
+   // captures both tables because they share row identity.
+   ['delete_agent_heartbeat',          '删除 Agent 心跳记录'],
+-  ['delete_dc',                       '删除 DC 记录']
++  ['delete_dc',                       '删除 DC 记录'],
+   // 2026-08-26 round-17: update_replication_port_config was removed when the
+   // probe-port list moved into the system_ports table (same source as the
+   // port-health-check page). Operators now edit ports via the existing
+   // create_port / update_port / delete_port audit actions; no separate
+   // action needed.
++  // 2026-08-29 R66 — Chinese labels matching the surrounding taxonomy
++  // (verb + object). upload/edit/set_policy/delete follow the
++  // create/update/configure/delete shape already used by sites/server
++  // groups; bulk_migrate labels the one-time data migration step.
++  ['upload_script',   '上传脚本'],
++  ['edit_script',     '编辑脚本'],
++  ['set_policy',      '设置执行策略'],
++  ['delete_script',   '删除脚本'],
++  ['bulk_migrate',    '批量迁移脚本']
+ ]));
+ 
+ const TARGET_LABEL = Object.freeze(new Map([
+diff --git a/center/tests/audit-classifier.test.js b/center/tests/audit-classifier.test.js
+index eebabfa..9337f72 100644
+--- a/center/tests/audit-classifier.test.js
++++ b/center/tests/audit-classifier.test.js
+@@ -56,6 +56,9 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
+     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
+     'commit_agent_token', 'commit_jwt_secret',
+     'delete_agent_heartbeat', 'delete_alert_rule', 'delete_dc',
++    // 2026-08-29 R66: delete_script joins the medium tier (mis-click wipes
++    // the script + its history) — same shape as delete_server_group.
++    'delete_script',
+     'delete_server_group', 'delete_site', 'mark_applied',
+     'replace_server_group_members', 'reset_failed_migration',
+     'update_config', 'update_user', 'upgrade_db'
+@@ -190,3 +193,31 @@ test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 4 schema-migra
+     assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
+   }
+ });
++
++// 2026-08-29 R66 — script-service (T5) emits 4 actions; migration-023
++// data-migration step (T1) emits the 5th. All 5 must be mapped in the
++// three classifier maps or audit rows fall through to the ops/low/raw
++// fallback (silent UX regression on the 操作日志 view).
++test('classifier: R66 package actions resolve to non-default categories', () => {
++  const cases = [
++    { action: 'upload_script',   category: 'changes', severity: 'low',    label: '上传脚本' },
++    { action: 'edit_script',     category: 'changes', severity: 'low',    label: '编辑脚本' },
++    { action: 'set_policy',      category: 'changes', severity: 'low',    label: '设置执行策略' },
++    { action: 'delete_script',   category: 'changes', severity: 'medium', label: '删除脚本' },
++    { action: 'bulk_migrate',    category: 'changes', severity: 'info',   label: '批量迁移脚本' }
++  ];
++  for (const c of cases) {
++    const r = classifyAction(c.action);
++    assert.equal(r.category, c.category, `${c.action} should map to category ${c.category}`);
++    assert.equal(r.severity, c.severity, `${c.action} should map to severity ${c.severity}`);
++    assert.equal(r.label,    c.label,    `${c.action} should map to label "${c.label}"`);
++  }
++});
++
++test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 5 R66 entries', () => {
++  for (const a of ['upload_script', 'edit_script', 'set_policy', 'delete_script', 'bulk_migrate']) {
++    assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
++    assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
++    assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
++  }
++});
+diff --git a/publish/system/center/src/services/audit-classifier.js b/publish/system/center/src/services/audit-classifier.js
+index 0873049..3af410b 100644
+--- a/publish/system/center/src/services/audit-classifier.js
++++ b/publish/system/center/src/services/audit-classifier.js
+@@ -84,10 +84,21 @@ const ACTION_CATEGORY = Object.freeze(new Map([
+   // ad_agent_heartbeat / ad_replication_status / ad_dcs / package_runs);
+   // severity is 'medium' because a wrong click wipes real history.
+   ['delete_agent_heartbeat',          'changes'],
+-  ['delete_dc',                       'changes']
++  ['delete_dc',                       'changes'],
+   // 2026-08-26 round-17: update_replication_port_config was retired with the
+   // probe-port rewrite — operators now edit ports via the standard
+   // create_port / update_port / delete_port audit actions on system_ports.
++  // 2026-08-29 R66 — package management replace. The 4 main actions
++  // (upload/edit/set_policy/delete_script) are operator-initiated
++  // changes to either the script body or execution policy; bulk_migrate
++  // is a one-time migration row emitted by the data-migration step.
++  // All are 'changes' because they mutate package_scripts /
++  // package_policies rows.
++  ['upload_script',   'changes'],
++  ['edit_script',     'changes'],
++  ['set_policy',      'changes'],
++  ['delete_script',   'changes'],
++  ['bulk_migrate',    'changes']
+ ]));
+ 
+ const ACTION_SEVERITY = Object.freeze(new Map([
+@@ -168,8 +179,17 @@ const ACTION_SEVERITY = Object.freeze(new Map([
+   // because a mis-click drops real replication history; same shape as
+   // delete_server_group.
+   ['delete_agent_heartbeat',          'medium'],
+-  ['delete_dc',                       'medium']
++  ['delete_dc',                       'medium'],
+   // 2026-08-26 round-17: update_replication_port_config retired (see above).
++  // 2026-08-29 R66 — severity mirrors delete-server-group pattern.
++  // delete_script is 'medium' (mis-click wipes script + history);
++  // the others are 'low' (data-bearing but recoverable — old sha is
++  // in audit details); bulk_migrate is 'info' (one-time migration step).
++  ['upload_script',   'low'],
++  ['edit_script',     'low'],
++  ['set_policy',      'low'],
++  ['delete_script',   'medium'],
++  ['bulk_migrate',    'info']
+ ]));
+ 
+ const ACTION_LABEL = Object.freeze(new Map([
+@@ -244,12 +264,21 @@ const ACTION_LABEL = Object.freeze(new Map([
+   // 中文 label names the operator's mental model — "删除 Agent 记录"
+   // captures both tables because they share row identity.
+   ['delete_agent_heartbeat',          '删除 Agent 心跳记录'],
+-  ['delete_dc',                       '删除 DC 记录']
++  ['delete_dc',                       '删除 DC 记录'],
+   // 2026-08-26 round-17: update_replication_port_config was removed when the
+   // probe-port list moved into the system_ports table (same source as the
+   // port-health-check page). Operators now edit ports via the existing
+   // create_port / update_port / delete_port audit actions; no separate
+   // action needed.
++  // 2026-08-29 R66 — Chinese labels matching the surrounding taxonomy
++  // (verb + object). upload/edit/set_policy/delete follow the
++  // create/update/configure/delete shape already used by sites/server
++  // groups; bulk_migrate labels the one-time data migration step.
++  ['upload_script',   '上传脚本'],
++  ['edit_script',     '编辑脚本'],
++  ['set_policy',      '设置执行策略'],
++  ['delete_script',   '删除脚本'],
++  ['bulk_migrate',    '批量迁移脚本']
+ ]));
+ 
+ const TARGET_LABEL = Object.freeze(new Map([
