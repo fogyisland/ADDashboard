@@ -56,6 +56,9 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',
     'commit_agent_token', 'commit_jwt_secret',
     'delete_agent_heartbeat', 'delete_alert_rule', 'delete_dc',
+    // 2026-08-29 R66: delete_script joins the medium tier (mis-click wipes
+    // the script + its history) — same shape as delete_server_group.
+    'delete_script',
     'delete_server_group', 'delete_site', 'mark_applied',
     'replace_server_group_members', 'reset_failed_migration',
     'update_config', 'update_user', 'upgrade_db'
@@ -185,6 +188,34 @@ test('classifier: schema-migrations-upgrade actions resolve to non-default categ
 
 test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 4 schema-migrations-upgrade entries', () => {
   for (const a of ['mark_applied', 'baseline', 'apply_up_to', 'upgrade_db']) {
+    assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
+    assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
+    assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
+  }
+});
+
+// 2026-08-29 R66 — script-service (T5) emits 4 actions; migration-023
+// data-migration step (T1) emits the 5th. All 5 must be mapped in the
+// three classifier maps or audit rows fall through to the ops/low/raw
+// fallback (silent UX regression on the 操作日志 view).
+test('classifier: R66 package actions resolve to non-default categories', () => {
+  const cases = [
+    { action: 'upload_script',   category: 'changes', severity: 'low',    label: '上传脚本' },
+    { action: 'edit_script',     category: 'changes', severity: 'low',    label: '编辑脚本' },
+    { action: 'set_policy',      category: 'changes', severity: 'low',    label: '设置执行策略' },
+    { action: 'delete_script',   category: 'changes', severity: 'medium', label: '删除脚本' },
+    { action: 'bulk_migrate',    category: 'changes', severity: 'info',   label: '批量迁移脚本' }
+  ];
+  for (const c of cases) {
+    const r = classifyAction(c.action);
+    assert.equal(r.category, c.category, `${c.action} should map to category ${c.category}`);
+    assert.equal(r.severity, c.severity, `${c.action} should map to severity ${c.severity}`);
+    assert.equal(r.label,    c.label,    `${c.action} should map to label "${c.label}"`);
+  }
+});
+
+test('classifier: ACTION_CATEGORY and ACTION_SEVERITY contain all 5 R66 entries', () => {
+  for (const a of ['upload_script', 'edit_script', 'set_policy', 'delete_script', 'bulk_migrate']) {
     assert.ok(ACTION_CATEGORY.has(a), `${a} must be in ACTION_CATEGORY`);
     assert.ok(ACTION_SEVERITY.has(a), `${a} must be in ACTION_SEVERITY`);
     assert.ok(ACTION_LABEL.has(a),    `${a} must be in ACTION_LABEL`);
