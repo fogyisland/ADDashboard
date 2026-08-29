@@ -47,12 +47,14 @@ function mountLayout() {
 //   /admin/member-file-push     (成员服务器 文件推送)
 //   /admin/member-command-exec  (成员服务器 执行命令)
 //
-// 2026-08-29 R64: 站点矩阵 extracted as a separate page in 监控与诊断
-// (was a redirect on /matrix, now mounts SiteMatrixView directly).
-// Per operator directive "复制状态概览和站点矩阵是两个页面" — both
-// pages consume the same /api/dashboard/site-replication-matrix/all
-// payload but render different lenses (R49 ops-console per-DC tables
-// vs R60 N×N matrix).
+// 2026-08-29 R64: 复制状态概览 restored to R49 ops-console per-DC tables
+// at /admin/site-replication-matrix/all. /matrix mounts SiteMatrixView
+// (R60 N×N matrix) — both pages share the same payload, different lens.
+//
+// 2026-08-29 R64.1: operator directive "站点矩阵 只在前台展现,后台不需要".
+// /matrix removed from AdminLayout sidebar. The page still exists in
+// AppLayout (frontend) for operators — admin sidebar goes back to
+// 4 items in 监控与诊断 (was 5 with 站点矩阵).
 //
 // 2026-08-28 round-54 visual hierarchy (operator: 一级分类和二级子菜单左对齐齐平):
 //   - .nav-group-title = Group Header: 11px / uppercase / letter-spacing 0.06em
@@ -64,9 +66,8 @@ function mountLayout() {
 //     border-left accent + font-weight 600
 //   - .nav-link:hover = bg var(--border) + color var(--accent)
 const EXPECTED_PATHS = [
-  // 监控与诊断 (5)
+  // 监控与诊断 (4 — R64.1 drops 站点矩阵, frontend-only per operator)
   '/admin/site-replication-matrix/all',
-  '/matrix',                                  // R64: standalone 站点矩阵 page
   '/admin/replication-log/monitor',
   '/admin/heartbeat-report',
   '/admin/packages',
@@ -119,22 +120,20 @@ test('R53: emoji icons match group titles', () => {
   expect(icons).toEqual(['📊', '🛡️', '💻', '👥', '📋', '🛠️']);
 });
 
-test('R53: 监控与诊断 contains 5 items in operator order (R64 adds 站点矩阵)', () => {
+test('R53: 监控与诊断 contains 4 items in operator order (R64.1 drops 站点矩阵, frontend-only)', () => {
   const w = mountLayout();
   const monitorGroup = w.findAll('.nav-group')[0];
   const links = monitorGroup.findAll('a.nav-link').map(a => a.attributes('href'));
   expect(links).toEqual([
     '/admin/site-replication-matrix/all',
-    '/matrix',                              // R64: standalone 站点矩阵 page
     '/admin/replication-log/monitor',
     '/admin/heartbeat-report',
     '/admin/packages'
   ]);
-  // Verify label renames from R52 → R53 + R64
+  // Verify label renames from R52 → R53 + R64 + R64.1
   const labels = monitorGroup.findAll('a.nav-link').map(a => a.text());
   expect(labels).toEqual([
     '复制状态概览',
-    '站点矩阵',                              // R64: split from 复制状态概览
     '复制伙伴端口监控',     // was 复制伙伴端口健康监控
     '心跳与状态报告',        // was 心跳与告警
     '包管理'
@@ -196,10 +195,10 @@ test('R53: Schema 与清理 DELETED (no /admin/orphan-schemas in any nav-link)',
   expect(allLinks).not.toContain('/admin/orphan-schemas');
 });
 
-test('R53: total 20 nav-links in operator-specified order (R64 adds 站点矩阵)', () => {
+test('R53: total 19 nav-links in operator-specified order (R64.1 removes 站点矩阵 from admin)', () => {
   const w = mountLayout();
   const allLinks = w.findAll('a.nav-link').map(a => a.attributes('href'));
-  expect(allLinks.length).toBe(20);
+  expect(allLinks.length).toBe(19);
   expect(allLinks).toEqual(EXPECTED_PATHS);
 });
 
@@ -334,9 +333,10 @@ test('R54: nav-links sit inside a .nav-group-items wrapper (provides left rail)'
   const w = mountLayout();
   const itemsContainers = w.findAll('.nav-group-items');
   expect(itemsContainers.length).toBe(6);
-  // All 20 nav-links live inside these containers — none loose at nav level
+  // All 19 nav-links live inside these containers — none loose at nav level
+  // (R64.1 removed 站点矩阵 from admin — 19 total, was 20)
   const linksInsideItems = itemsContainers.reduce((acc, c) => acc + c.findAll('a.nav-link').length, 0);
-  expect(linksInsideItems).toBe(20);
+  expect(linksInsideItems).toBe(19);
 });
 
 test('R54: source CSS defines caret rotation rule (.nav-group:not([open]) > .nav-group-title .nav-group-caret)', () => {

@@ -92,15 +92,15 @@ onMounted(loadSidebarVisible);
 //   权限与账号 > 包管理                →  监控与诊断 > 包管理
 //   系统运维 > 审计日志                →  运维日志 > 系统运维日志
 //   系统运维 > 操作日志 (事件与日志)   →  运维日志 > 心跳与状态执行日志
+//
+// 2026-08-29 R64.1: 站点矩阵 removed from admin sidebar — frontend-only
+// per operator directive "站点矩阵 只在前台展现,后台不需要".
+// The /matrix route + SiteMatrixView component still exist (AppLayout
+// page in the frontend), but admin (AdminLayout) no longer surfaces it.
 const groups = [
   { icon: '📊', title: '监控与诊断', items: [
     // R64: 复制状态概览 restored to R49 ops-console (per-DC partner tables).
     { label: '复制状态概览',         path: '/admin/site-replication-matrix/all' },
-    // R64: 站点矩阵 — N×N matrix, the R60 simplified surface, extracted
-    // into its own page. Both pages render the same
-    // /api/dashboard/site-replication-matrix/all payload, but with
-    // different lenses (per-DC tables vs N×N site grid).
-    { label: '站点矩阵',             path: '/matrix' },
     { label: '复制伙伴端口监控',     path: '/admin/replication-log/monitor' },
     { label: '心跳与状态报告',       path: '/admin/heartbeat-report' },
     // R53: 包管理 moved here from 权限与账号 (operator's spec).
