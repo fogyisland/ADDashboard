@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { packageScripts, packageScriptsSql } from '../../../src/db/sql/package-scripts.js';
+import { packageScripts, packageScriptsSql } from '../../src/db/sql/package-scripts.js';
 
 test('upsert preserves sha256 + manifest shape', async () => {
   const calls = [];

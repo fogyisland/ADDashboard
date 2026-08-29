@@ -12,7 +12,6 @@ import { alertRules } from './sql/alert-rules.js';
 import { alertEvents } from './sql/alert-events.js';
 import { alertOutbox } from './sql/alert-outbox.js';
 import { alertMetrics } from './sql/alert-metrics.js';
-import { packageScripts } from './sql/package-scripts.js';
 
 const VARIANTS = {
   mysql: {

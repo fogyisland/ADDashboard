@@ -115,7 +115,7 @@ export const packageScripts = {
       scriptContent,
       scriptSha256,
       JSON.stringify(manifest),
-      source,
+      source ?? '',
       now,
       now
     ]);
