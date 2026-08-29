@@ -24,6 +24,7 @@ import { orphanRouter } from './src/packages/orphan-router.js';
 import { packageRunner } from './src/packages/runner.js';
 import { memberRouter } from './src/routes/member-servers.js';
 import { agentPackagesRouter } from './src/routes/agent-packages.js';
+import { agentToken } from './src/auth/agent-token.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
@@ -467,8 +468,13 @@ await ((async () => {
     }));
     app.use(packageRunner({
       db: pkgDb,
-      getLogger: () => logger,
-      config: finalConfig
+      // R66 Task 8 — build the agentToken middleware outside the runner
+      // so the test harness can inject its own (the V0 runner did this
+      // internally and read config.agentToken, which silently 503'd
+      // because the bundle lives in DB only). The runner now expects a
+      // pre-built middleware thunk.
+      agentMw: agentToken({ db: pkgDb, logger }),
+      getLogger: () => logger
     }));
     // Member-server admin routes (Task 6): non-AD inventory CRUD, per-host
     // package bind, and the agent-token self-register endpoint. Lives in a
