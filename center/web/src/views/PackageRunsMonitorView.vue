@@ -247,9 +247,13 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 }
 
 .card-grid {
+  /* 2026-08-30 R67-T2: 强制 3 列 × 2 行 固定 6 格布局
+   * (operator: "forge 行采用 3X2" — 两端对齐, 5 个包时第 6 格留空) */
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(2, auto);
   gap: 14px;
+  justify-content: stretch;
 }
 
 .card {
