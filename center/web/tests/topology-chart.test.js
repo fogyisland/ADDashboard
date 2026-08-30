@@ -30,6 +30,11 @@ function getFinishedHandler() {
   const call = onMock.mock.calls.find(c => c[0] === 'finished');
   return call ? call[1] : null;
 }
+// R69: capture the 'click' handler for the node drill-down modal.
+function getClickHandler() {
+  const call = onMock.mock.calls.find(c => c[0] === 'click');
+  return call ? call[1] : null;
+}
 function setupPixelCoords(map) {
   convertToPixelMock.mockImplementation((find, dc) => {
     if (dc && dc.name && map[dc.name]) return map[dc.name];
@@ -693,4 +698,143 @@ test('R68: intra-site edges are preserved regardless of isHub', async () => {
   expect(opt.series[0].links).toHaveLength(1);
   expect(opt.series[0].links[0].edgeLabel.formatter({ data: opt.series[0].links[0] }))
     .toMatch(/↔/);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// 2026-08-30 round-69 (operator: "你来定" → TopologyChart 节点钻取):
+// clicking a site or DC node opens a local modal with the node's detail.
+// Modal derives from props.data (no new backend endpoint).
+// ────────────────────────────────────────────────────────────────────────
+
+// R69: chart.on('click') is registered alongside 'finished'.
+test('R69: registers chart.on(click) handler for node drill-down', async () => {
+  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  const events = onMock.mock.calls.map(c => c[0]);
+  expect(events).toContain('click');
+});
+
+// R69: click a site node → modal renders with Hub badge + DC list + partner counts.
+test('R69: clicking a site node opens modal with Hub badge + DC list', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-1', type: 'dc', site: 'HUB-A', isBridgehead: true, isPdc: true },
+      { name: 'DC-2', type: 'dc', site: 'HUB-A', isGc: true },
+      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: [
+      { source: 'DC-1', target: 'DC-2', statusCode: 0 }, // intra
+      { source: 'DC-1', target: 'DC-S1', statusCode: 1 } // cross
+    ]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const handler = getClickHandler();
+  expect(handler).toBeDefined();
+  handler({ dataType: 'node', data: { name: 'HUB-A', type: 'site', isHub: true } });
+  await flushPromises();
+  const modal = w.find('[data-test="node-detail-modal"]');
+  expect(modal.exists()).toBe(true);
+  expect(w.find('[data-test="node-detail-title"]').text()).toBe('HUB-A');
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/承载层 Hub/);
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/2 DC/);
+  const dcRows = w.findAll('[data-test="node-detail-dc-row"]');
+  expect(dcRows).toHaveLength(2);
+  // First DC row should show DC-1 + 桥头 badge
+  expect(dcRows[0].text()).toContain('DC-1');
+  expect(dcRows[0].text()).toContain('桥头');
+  expect(dcRows[0].text()).toContain('主控');
+  expect(dcRows[0].text()).toContain('2 复制伙伴'); // DC-1 has 2 links
+});
+
+// R69: click a Spoke site → meta shows 分支 + 1 DC.
+test('R69: clicking a Spoke site shows 分支 Spoke badge', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: [{ source: 'DC-1', target: 'DC-S1', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getClickHandler()({ dataType: 'node', data: { name: 'SPOKE-B', type: 'site', isHub: false } });
+  await flushPromises();
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/分支 Spoke/);
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/1 DC/);
+});
+
+// R69: click a DC node → modal shows the DC's partners (intra/out/in).
+test('R69: clicking a DC node opens modal with partner list', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'HUB-B', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A', isBridgehead: true },
+      { name: 'DC-A2', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-B1', type: 'dc', site: 'HUB-B' }
+    ],
+    links: [
+      { source: 'DC-A1', target: 'DC-A2', statusCode: 0 }, // intra (both HUB-A)
+      { source: 'DC-A1', target: 'DC-B1', statusCode: 1 }  // cross
+    ]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getClickHandler()({ dataType: 'node', data: { name: 'DC-A1', type: 'dc', site: 'HUB-A', isBridgehead: true } });
+  await flushPromises();
+  const modal = w.find('[data-test="node-detail-modal"]');
+  expect(modal.exists()).toBe(true);
+  expect(w.find('[data-test="node-detail-title"]').text()).toBe('DC-A1');
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/HUB-A/);
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/桥头/);
+  // No DC list for DC node (only sites show their DCs)
+  expect(w.findAll('[data-test="node-detail-dc-row"]')).toHaveLength(0);
+  // 2 partners: DC-A2 (intra) + DC-B1 (out)
+  const partners = w.findAll('[data-test="node-detail-partner"]');
+  expect(partners).toHaveLength(2);
+  // intra partner should be sorted first
+  expect(partners[0].text()).toContain('站内');
+  expect(partners[0].text()).toContain('DC-A2');
+  expect(partners[1].text()).toContain('出战');
+  expect(partners[1].text()).toContain('DC-B1');
+});
+
+// R69: close button resets clickedNode (modal disappears).
+test('R69: close button dismisses the modal', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'DC-1', type: 'dc', site: 'HUB-A' }
+    ],
+    links: []
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getClickHandler()({ dataType: 'node', data: { name: 'HUB-A', type: 'site', isHub: true } });
+  await flushPromises();
+  expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(true);
+  await w.find('[data-test="node-detail-close"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(false);
+});
+
+// R69: edge click is ignored (v1 only handles node drill-down).
+test('R69: edge click does NOT open the modal', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: [{ source: 'DC1', target: 'DC1', statusCode: 0 }] // self-link edge
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getClickHandler()({ dataType: 'edge', data: { source: 'DC1', target: 'DC1' } });
+  await flushPromises();
+  expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(false);
 });
