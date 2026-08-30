@@ -152,11 +152,95 @@
       </footer>
     </div>
   </div>
+
+  <!-- R70: edge-click drill-down modal. Renders the pair's last 10
+       replication attempts (24h window) via the R45 `/pair-history`
+       endpoint. data-test contract:
+         edge-detail-modal      — modal root
+         edge-detail-title      — header title (sourceDc → destDc)
+         edge-detail-meta       — site→site · direction meta line
+         edge-detail-summary    — 24h summary stats line (when loaded)
+         edge-detail-loading    — loading state (visible while fetch in flight)
+         edge-detail-error      — fetch error message
+         edge-detail-attempts   — attempts table tbody container
+         edge-detail-attempt    — single attempt row
+         edge-detail-empty      — empty state (no entries)
+         edge-detail-close      — close button
+  -->
+  <div v-if="clickedEdge" class="modal-bg" @click.self="closeEdgeModal" data-test="edge-detail-modal">
+    <div class="modal edge-detail-modal">
+      <header>
+        <h3 data-test="edge-detail-title">{{ edgeDetail.title }}</h3>
+        <p v-if="edgeDetail.meta" class="meta" data-test="edge-detail-meta">{{ edgeDetail.meta }}</p>
+      </header>
+      <section class="form-body">
+        <div v-if="edgeLoading" class="loading" data-test="edge-detail-loading">
+          正在加载最近 10 条复制尝试…
+        </div>
+        <div v-else-if="edgeError" class="error-banner" data-test="edge-detail-error">
+          加载失败 — {{ edgeError }}
+        </div>
+        <div v-else-if="edgeDetail.summary" class="detail-section">
+          <span class="label">24h 摘要</span>
+          <p class="summary-line" data-test="edge-detail-summary">{{ edgeDetail.summary }}</p>
+        </div>
+
+        <div v-if="!edgeLoading && !edgeError && edgeDetail.entries.length" class="detail-section">
+          <span class="label">最近 {{ edgeDetail.entries.length }} 条尝试</span>
+          <table class="attempts-table" data-test="edge-detail-attempts">
+            <thead>
+              <tr>
+                <th>尝试时间</th>
+                <th>结果</th>
+                <th>耗时 (ms)</th>
+                <th>传输对象</th>
+                <th>最近成功</th>
+                <th>错误/详情</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(a, i) in edgeDetail.entries"
+                :key="i"
+                class="attempt-row"
+                :class="`attempt-row-${attemptStatusClass(a.statusCode)}`"
+                data-test="edge-detail-attempt"
+              >
+                <td>{{ fmtTs(a.attemptAt) }}</td>
+                <td>
+                  <span class="glyph">{{ attemptGlyph(a.statusCode) }}</span>
+                  {{ attemptLabel(a.statusCode) }}
+                </td>
+                <td>{{ a.durationMs ?? '—' }}</td>
+                <td>{{ a.objectsTransferred ?? '—' }}</td>
+                <td>{{ fmtTs(a.lastSuccessTime) }}</td>
+                <td class="error-cell">{{ a.errorMessage || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p v-else-if="!edgeLoading && !edgeError && !edgeDetail.entries.length" class="empty" data-test="edge-detail-empty">
+          暂无 24h 内的复制尝试数据
+        </p>
+      </section>
+      <footer>
+        <button type="button" data-test="edge-detail-close" @click="closeEdgeModal">关闭</button>
+      </footer>
+    </div>
+  </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue';
 import * as echarts from 'echarts';
+// R70: edge-click drill-down modal. Reuses the per-pair pair-history
+// endpoint already implemented by R45 (see center/web/src/api/dashboard.js
+// `getSiteReplicationMatrixPairHistory` + center/src/routes/dashboard.js
+// `GET /api/dashboard/site-replication-matrix/pair-history`). The endpoint
+// returns the last N replication attempts FROM `source` DC TO `dest` DC
+// within the past 24h.
+import { dashboardApi } from '../api/dashboard.js';
 
 const props = defineProps({
   data: { type: Object, default: () => ({ nodes: [], links: [] }) }
@@ -515,6 +599,114 @@ function anyRole(dc) {
   return dc.isBridgehead || dc.isPdc || dc.isGc || dc.isRid || dc.isInfra || dc.isNaming;
 }
 function closeModal() { clickedNode.value = null; }
+
+// ─────────────────────────────────────────────────────────────────────
+// 2026-08-30 round-70 (continuation of R69 drillability):
+// clicking an EDGE opens a separate modal showing the pair's last 10
+// replication attempts (per R45's `/pair-history` endpoint). Independent
+// of the node-detail modal — both can be open sequentially but never
+// simultaneously (clicking any element while the other is open closes
+// the previous one and opens the new one).
+// ─────────────────────────────────────────────────────────────────────
+const clickedEdge = ref(null);     // { source, target, sourceSite, destSite, direction, statusCode } | null
+const edgeHistory = ref([]);       // fetched entries: [{ attemptAt, statusCode, ... }]
+const edgeLoading = ref(false);    // fetch in flight
+const edgeError = ref('');         // fetch error message
+
+function closeEdgeModal() {
+  clickedEdge.value = null;
+  edgeHistory.value = [];
+  edgeError.value = '';
+  edgeLoading.value = false;
+}
+
+// R70: derive edge-detail payload for the modal template.
+//   - title:     sourceDc → destDc
+//   - meta:      sourceSite → destSite · direction (intra / 出战 / 入站)
+//   - summary:   24h 内 N 次尝试 · 成功 X · 部分失败 Y · 断开 Z
+//   - entries:   attempts[] from API (rendered as table rows)
+const edgeDetail = computed(() => {
+  if (!clickedEdge.value) {
+    return { title: '', meta: '', summary: '', entries: [] };
+  }
+  const e = clickedEdge.value;
+  const dirText = e.direction === 'intra' ? '站内' : (e.direction === 'out' ? '出战' : '入站');
+  const ok = edgeHistory.value.filter(a => a.statusCode === 0).length;
+  const warn = edgeHistory.value.filter(a => a.statusCode === 1).length;
+  const err = edgeHistory.value.filter(a => a.statusCode >= 2).length;
+  const summary = edgeHistory.value.length
+    ? `24h 内 ${edgeHistory.value.length} 次尝试 · 成功 ${ok} · 部分失败 ${warn} · 断开 ${err}`
+    : '';
+  return {
+    title: `${e.source} → ${e.target}`,
+    meta: `${e.sourceSite} → ${e.destSite} · ${dirText}`,
+    summary,
+    entries: edgeHistory.value
+  };
+});
+
+function attemptGlyph(code) {
+  if (code === 0) return '●';
+  if (code === 1) return '▲';
+  return '✕';
+}
+function attemptLabel(code) {
+  if (code === 0) return '成功';
+  if (code === 1) return '部分失败';
+  return '断开/失败';
+}
+function attemptStatusClass(code) {
+  if (code === 0) return 'ok';
+  if (code === 1) return 'warn';
+  return 'err';
+}
+function fmtTs(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+
+// R70: handle ECharts edge click. params.dataType === 'edge' gives us
+// the wrapped link object ({ source, target, lineStyle, ... }). We
+// resolve to the ORIGINAL props.data link so statusCode is the
+// source-of-truth (the wrapper's `lineStyle.color` is a hex code, not
+// a numeric status, so we don't use it).
+function handleEdgeClick(params) {
+  if (!params || params.dataType !== 'edge') return;
+  const edge = params.data;
+  if (!edge || !edge.source || !edge.target) return;
+  // Resolve source/target to ORIGINAL props.data links[] entries.
+  const original = (props.data?.links || []).find(
+    l => l.source === edge.source && l.target === edge.target
+  ) || { source: edge.source, target: edge.target, statusCode: 0 };
+  // Close the node modal if open — only one drill-down at a time.
+  clickedNode.value = null;
+  // Determine direction via site lookup.
+  const dcSites = dcSiteLookup();
+  const sourceSite = dcSites.get(original.source) || '?';
+  const destSite = dcSites.get(original.target) || '?';
+  const isIntra = sourceSite !== '?' && destSite !== '?' && sourceSite === destSite;
+  // For the API contract: query param `source` = the reporting DC,
+  // `dest` = the peer. With ECharts edge convention source→target,
+  // source = original.source, dest = original.target.
+  clickedEdge.value = {
+    source: original.source,
+    target: original.target,
+    sourceSite,
+    destSite,
+    direction: isIntra ? 'intra' : 'out', // operator's POV: this site reports outbound
+    statusCode: original.statusCode
+  };
+  // Reset state for the new fetch.
+  edgeHistory.value = [];
+  edgeError.value = '';
+  edgeLoading.value = true;
+  dashboardApi.getSiteReplicationMatrixPairHistory(original.target, original.source, 10)
+    .then(r => {
+      edgeHistory.value = Array.isArray(r?.data?.entries) ? r.data.entries : [];
+    })
+    .catch(e => {
+      edgeError.value = e?.response?.data?.error || e?.message || '加载失败';
+      edgeHistory.value = [];
+    })
+    .finally(() => { edgeLoading.value = false; });
+}
 // R69: handle ECharts click. ECharts passes { dataType, data } where
 //   dataType === 'node' → data = node object (with name, type, site, isHub, ...)
 //   dataType === 'edge' → ignore for v1 (edge-click is a future feature).
@@ -634,6 +826,10 @@ onMounted(async () => {
     chart.on('finished', renderSiteBoxes);
     // R69: node-click drill-down modal.
     chart.on('click', handleNodeClick);
+    // R70: edge-click drill-down modal (independent of node-click).
+    // Both handlers early-return based on params.dataType, so registering
+    // them both is safe — only one fires for any given click target.
+    chart.on('click', handleEdgeClick);
     render();
   }
 });
@@ -779,4 +975,63 @@ onUnmounted(() => { chart?.dispose(); });
 }
 .node-detail-modal footer button:hover { background: #1e293b; }
 .empty { color: #94a3b8; font-size: 12px; text-align: center; padding: 12px 0; }
+
+/* ===== R70: edge-detail modal ===================================== */
+.edge-detail-modal {
+  background: #0f172a; border: 1px solid #1e293b; border-radius: 6px;
+  min-width: 720px; max-width: 880px; max-height: 90vh;
+  display: flex; flex-direction: column;
+}
+.edge-detail-modal header { padding: 14px 18px; border-bottom: 1px solid #1e293b; }
+.edge-detail-modal header h3 {
+  margin: 0; font-size: 15px; font-weight: 600; color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.edge-detail-modal .meta {
+  margin: 6px 0 0; color: #94a3b8; font-size: 12px;
+}
+.edge-detail-modal .form-body {
+  padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+}
+.summary-line {
+  margin: 0; padding: 6px 10px; background: #0b1220;
+  border: 1px solid #1e293b; border-radius: 3px;
+  color: #cbd5e1; font-size: 12px;
+}
+.attempts-table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.attempts-table th, .attempts-table td {
+  padding: 6px 10px; text-align: left;
+  border-bottom: 1px solid #1e293b;
+}
+.attempts-table th {
+  color: #94a3b8; font-weight: 500; font-size: 11px;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.attempts-table td { color: #e2e8f0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.attempts-table td .glyph { margin-right: 6px; font-size: 10px; }
+.attempts-table td.error-cell {
+  color: #fca5a5; max-width: 280px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: inherit;
+}
+.attempt-row-ok    td .glyph { color: #22c55e; }
+.attempt-row-warn  td .glyph { color: #eab308; }
+.attempt-row-err   td .glyph { color: #ef4444; }
+.attempt-row-err   td:first-child { color: #fca5a5; }
+.loading { color: #94a3b8; font-size: 12px; text-align: center; padding: 18px 0; }
+.error-banner {
+  background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5; padding: 8px 12px; border-radius: 3px; font-size: 12px;
+}
+.edge-detail-modal footer {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 12px 18px; border-top: 1px solid #1e293b;
+}
+.edge-detail-modal footer button {
+  padding: 6px 14px; border: 1px solid #1e293b;
+  background: #0b1220; color: #e2e8f0; border-radius: 3px;
+  cursor: pointer; font-size: 13px;
+}
+.edge-detail-modal footer button:hover { background: #1e293b; }
 </style>

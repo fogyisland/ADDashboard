@@ -3,11 +3,14 @@ import { mount, flushPromises } from '@vue/test-utils';
 
 // vi.mock factory is hoisted to top of file; reference hoisted vars to avoid TDZ errors.
 // R63: chart.on('finished', ...) + chart.convertToPixel(...) need mockable methods.
-const { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock } = vi.hoisted(() => {
+// R70: dashboardApi.getSiteReplicationMatrixPairHistory needs to be
+// mockable for edge-click drill-down tests.
+const { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock, getPairHistoryMock } = vi.hoisted(() => {
   const setOptionMock = vi.fn();
   const disposeMock = vi.fn();
   const onMock = vi.fn();
   const convertToPixelMock = vi.fn();
+  const getPairHistoryMock = vi.fn(() => Promise.resolve({ data: { entries: [] } }));
   const initMock = vi.fn(() => ({
     setOption: setOptionMock,
     dispose: disposeMock,
@@ -15,12 +18,18 @@ const { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock } = vi.
     convertToPixel: convertToPixelMock,
     resize: vi.fn()
   }));
-  return { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock };
+  return { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock, getPairHistoryMock };
 });
 
 vi.mock('echarts', () => ({
   default: { init: initMock },
   init: initMock
+}));
+
+vi.mock('../src/api/dashboard.js', () => ({
+  dashboardApi: {
+    getSiteReplicationMatrixPairHistory: getPairHistoryMock
+  }
 }));
 
 import TopologyChart from '../src/components/TopologyChart.vue';
@@ -48,6 +57,10 @@ beforeEach(() => {
   initMock.mockReset();
   onMock.mockReset();
   convertToPixelMock.mockReset();
+  getPairHistoryMock.mockReset();
+  // Default pair-history response: empty entries (tests that need real
+  // entries override per-call with mockResolvedValueOnce).
+  getPairHistoryMock.mockResolvedValue({ data: { entries: [] } });
   initMock.mockImplementation(() => ({
     setOption: setOptionMock,
     dispose: disposeMock,
@@ -56,6 +69,12 @@ beforeEach(() => {
     resize: vi.fn()
   }));
 });
+
+// R70 helper: capture ALL 'click' handlers so tests can dispatch
+// edge clicks separately from node clicks (R69 + R70 each register one).
+function getAllClickHandlers() {
+  return onMock.mock.calls.filter(c => c[0] === 'click').map(c => c[1]);
+}
 
 // 2026-08-29 round-62 (operator directive "复制拓扑去掉两个图表 集合成
 // 一个图标"): the dual-panel layout (R59 outbound + inbound, R61
@@ -837,4 +856,174 @@ test('R69: edge click does NOT open the modal', async () => {
   getClickHandler()({ dataType: 'edge', data: { source: 'DC1', target: 'DC1' } });
   await flushPromises();
   expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(false);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// 2026-08-30 round-70 (continuation of R69 drillability):
+// clicking an EDGE opens a separate modal showing the pair's last 10
+// replication attempts (per R45's `/pair-history` endpoint). Independent
+// of the node-detail modal — only one drill-down surface open at a time.
+// ────────────────────────────────────────────────────────────────────────
+
+// R70: registers BOTH a node click handler (R69) and an edge click
+// handler. Both handlers early-return on the wrong dataType, so the
+// double registration is safe.
+test('R70: registers TWO click handlers (node + edge)', async () => {
+  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  const clickEvents = onMock.mock.calls.filter(c => c[0] === 'click');
+  expect(clickEvents.length).toBeGreaterThanOrEqual(2);
+});
+
+// R70: clicking an edge opens the edge-detail modal with source→dest title.
+test('R70: clicking an edge opens modal with source → dest title', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'HUB-B', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-B1', type: 'dc', site: 'HUB-B' }
+    ],
+    links: [{ source: 'DC-A1', target: 'DC-B1', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  // Dispatch to ALL click handlers (mirrors ECharts behavior).
+  const handlers = getAllClickHandlers();
+  handlers.forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-B1' } }));
+  await flushPromises();
+  const modal = w.find('[data-test="edge-detail-modal"]');
+  expect(modal.exists()).toBe(true);
+  expect(w.find('[data-test="edge-detail-title"]').text()).toBe('DC-A1 → DC-B1');
+  expect(w.find('[data-test="edge-detail-meta"]').text()).toContain('HUB-A');
+  expect(w.find('[data-test="edge-detail-meta"]').text()).toContain('HUB-B');
+});
+
+// R70: intra-site edge → meta shows 站内 direction.
+test('R70: clicking an intra-site edge shows 站内 direction', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-A2', type: 'dc', site: 'HUB-A' }
+    ],
+    links: [{ source: 'DC-A1', target: 'DC-A2', statusCode: 0 }] // intra-site
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getAllClickHandlers().forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-A2' } }));
+  await flushPromises();
+  expect(w.find('[data-test="edge-detail-modal"]').exists()).toBe(true);
+  expect(w.find('[data-test="edge-detail-meta"]').text()).toMatch(/站内/);
+});
+
+// R70: cross-site edge → meta shows 出战 direction (source DC reports outbound).
+test('R70: clicking a cross-site edge shows 出战 direction', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-B1', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: [{ source: 'DC-A1', target: 'DC-B1', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getAllClickHandlers().forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-B1' } }));
+  await flushPromises();
+  expect(w.find('[data-test="edge-detail-meta"]').text()).toMatch(/出战/);
+});
+
+// R70: edge click fetches history via getSiteReplicationMatrixPairHistory
+// and renders the attempts table + summary.
+test('R70: edge click lazy-fetches history and renders attempts + summary', async () => {
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: {
+      source: 'DC-A1', dest: 'DC-B1', limit: 10,
+      entries: [
+        { attemptAt: '2026-08-30T10:00:00Z', statusCode: 0,
+          durationMs: 120, objectsTransferred: 5,
+          lastSuccessTime: '2026-08-30T10:00:00Z', errorMessage: null },
+        { attemptAt: '2026-08-30T09:55:00Z', statusCode: 1,
+          durationMs: 80, objectsTransferred: 3,
+          lastSuccessTime: '2026-08-30T09:00:00Z', errorMessage: 'partial replication' },
+        { attemptAt: '2026-08-30T09:50:00Z', statusCode: 2,
+          durationMs: null, objectsTransferred: null,
+          lastSuccessTime: null, errorMessage: 'RPC server unavailable' }
+      ]
+    }
+  });
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'HUB-B', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-B1', type: 'dc', site: 'HUB-B' }
+    ],
+    links: [{ source: 'DC-A1', target: 'DC-B1', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getAllClickHandlers().forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-B1' } }));
+  await flushPromises();
+  // API client was called with (destDc='DC-B1', sourceDc='DC-A1', limit=10)
+  expect(getPairHistoryMock).toHaveBeenCalledWith('DC-B1', 'DC-A1', 10);
+  // Summary line: 24h 内 3 · 成功 1 · 部分失败 1 · 断开 1
+  const summary = w.find('[data-test="edge-detail-summary"]');
+  expect(summary.exists()).toBe(true);
+  expect(summary.text()).toMatch(/24h 内 3/);
+  expect(summary.text()).toMatch(/成功 1/);
+  expect(summary.text()).toMatch(/部分失败 1/);
+  expect(summary.text()).toMatch(/断开 1/);
+  // 3 attempt rows
+  const rows = w.findAll('[data-test="edge-detail-attempt"]');
+  expect(rows).toHaveLength(3);
+  expect(rows[0].text()).toContain('成功');
+  expect(rows[0].classes()).toContain('attempt-row-ok');
+  expect(rows[1].text()).toContain('部分失败');
+  expect(rows[1].classes()).toContain('attempt-row-warn');
+  expect(rows[2].text()).toContain('断开/失败');
+  expect(rows[2].classes()).toContain('attempt-row-err');
+});
+
+// R70: close button resets clickedEdge (modal disappears).
+test('R70: close button dismisses the edge modal', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-A2', type: 'dc', site: 'HUB-A' }
+    ],
+    links: [{ source: 'DC-A1', target: 'DC-A2', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getAllClickHandlers().forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-A2' } }));
+  await flushPromises();
+  expect(w.find('[data-test="edge-detail-modal"]').exists()).toBe(true);
+  await w.find('[data-test="edge-detail-close"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="edge-detail-modal"]').exists()).toBe(false);
+});
+
+// R70: clicking a node opens ONLY the node modal — edge modal stays closed.
+test('R70: node click does NOT open the edge modal (independence)', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' }
+    ],
+    links: [{ source: 'DC-A1', target: 'DC-A1', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  // Dispatch a NODE click to all click handlers (mirrors ECharts).
+  getAllClickHandlers().forEach(h => h({
+    dataType: 'node',
+    data: { name: 'HUB-A', type: 'site', isHub: true }
+  }));
+  await flushPromises();
+  expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(true);
+  expect(w.find('[data-test="edge-detail-modal"]').exists()).toBe(false);
 });
