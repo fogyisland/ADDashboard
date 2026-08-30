@@ -1,17 +1,23 @@
 import { test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, flushPromises } from '@vue/test-utils';
+
+// vi.mock factory is hoisted to top of file; reference hoisted vars to avoid TDZ errors.
+// R72: dashboardApi.getSiteReplicationMatrixPairHistory needs to be
+// mockable for the cell-modal pair expand tests (mirrors R70's pattern in
+// topology-chart.test.js — see line 8 there).
+const { getPairHistoryMock } = vi.hoisted(() => ({
+  getPairHistoryMock: vi.fn(() => Promise.resolve({ data: { entries: [] } }))
+}));
 
 vi.mock('../src/api/dashboard.js', () => ({
   dashboardApi: {
     getSiteReplicationMatrixAll: vi.fn(() => Promise.resolve({
-      data: {
-        siteRefreshSeconds: 10,
-        primaries: []
-      }
-    }))
+      data: { siteRefreshSeconds: 10, primaries: [] }
+    })),
+    getSiteReplicationMatrixPairHistory: getPairHistoryMock
   }
 }));
 
+import { mount, flushPromises } from '@vue/test-utils';
 import SiteMatrixView from '../src/views/admin/SiteMatrixView.vue';
 import { dashboardApi } from '../src/api/dashboard.js';
 
@@ -82,7 +88,17 @@ const basePayload = () => ({
 
 beforeEach(() => {
   dashboardApi.getSiteReplicationMatrixAll.mockReset();
-  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValue({ data: basePayload() });
+  // Use mockImplementation (not mockResolvedValue) so each call returns a
+  // fresh object — the view assigns `primaries.value = r.data.primaries`
+  // and a same-reference reassignment would skip Vue's `watch` callback,
+  // breaking any test that simulates a poll refresh (R72 poll-refresh test).
+  dashboardApi.getSiteReplicationMatrixAll.mockImplementation(
+    () => Promise.resolve({ data: basePayload() })
+  );
+  // R72: pair-history default = empty entries (tests that need real
+  // entries override per-call with mockResolvedValueOnce).
+  getPairHistoryMock.mockReset();
+  getPairHistoryMock.mockResolvedValue({ data: { entries: [] } });
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -626,4 +642,224 @@ test('R71: empty cell (no partner link) opens modal with empty state', async () 
   expect(modal.find('[data-test="cell-detail-empty"]').exists()).toBe(true);
   // And no pair rows.
   expect(modal.findAll('[data-test^="cell-detail-pair-"]').length).toBe(0);
+});
+
+// ── R72: pair-row drill-down → inline 24h attempts sub-table ─────────
+// Closes the per-pair deep-dive loop: R69 made topology nodes clickable,
+// R70 made edges clickable, R71 made site-matrix cells clickable. R72
+// makes the per-(sourceDc → destDc) pair rows inside the cell-detail
+// modal clickable too — operator can drill from site → cell → pair →
+// last 10 attempts without leaving the modal.
+//
+// The pair-history endpoint already exists from R45; the API client
+// method already exists (getSiteReplicationMatrixPairHistory). R72 only
+// wires the frontend lazy-fetch + render + cache + stale-data guard.
+
+test('R72: pair rows show caret indicator + expandable class', async () => {
+  const w = mountView();
+  await flushPromises();
+  // Open 核心 → 厦门 modal (2 pair rows in basePayload)
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  const rows = w.findAll('[data-test^="cell-detail-pair-"]');
+  expect(rows.length).toBe(2);
+  // Every pair row should be marked expandable + carry a caret button.
+  for (const r of rows) {
+    expect(r.classes()).toContain('pair-row-expandable');
+    expect(r.find('[data-test^="pair-caret-"]').exists()).toBe(true);
+  }
+});
+
+test('R72: clicking a pair row opens the inline attempts sub-table', async () => {
+  // Pre-stub a real 3-row history response so the table has data to render.
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: {
+      source: 'DC-BJ-01', dest: 'MOCK-XMADSRV1', limit: 10,
+      entries: [
+        { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0,
+          durationMs: 120, objectsTransferred: 5,
+          lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: null },
+        { attemptAt: '2026-08-30T00:55:00Z', statusCode: 1,
+          durationMs: 8000, objectsTransferred: 2,
+          lastSuccessTime: '2026-08-30T00:50:00Z',
+          errorMessage: 'partial: 2 objects pending' },
+        { attemptAt: '2026-08-30T00:50:00Z', statusCode: 2,
+          durationMs: null, objectsTransferred: null,
+          lastSuccessTime: null,
+          errorMessage: 'RPC server unavailable' }
+      ]
+    }
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  // Click pair row 0 (DC-BJ-01 → MOCK-XMADSRV1)
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  // Sub-row + sub-table should render.
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-attempts-table-0"]').exists()).toBe(true);
+  const attRows = w.findAll('[data-test^="pair-attempt-0-"]');
+  expect(attRows.length).toBe(3);
+});
+
+test('R72: pair click calls getSiteReplicationMatrixPairHistory with the right args', async () => {
+  // API contract: getSiteReplicationMatrixPairHistory(destDc, sourceDc, limit).
+  // The pair row "DC-BJ-01 → MOCK-XMADSRV1" should be called as
+  // getSiteReplicationMatrixPairHistory('MOCK-XMADSRV1', 'DC-BJ-01', 10).
+  getPairHistoryMock.mockResolvedValueOnce({ data: { entries: [] } });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(getPairHistoryMock).toHaveBeenCalledWith('MOCK-XMADSRV1', 'DC-BJ-01', 10);
+});
+
+test('R72: attempts sub-table renders 6 columns + correct glyphs/labels', async () => {
+  // One ok + one warn + one err attempt → 3 rows, with glyph + label.
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: {
+      source: 'DC-BJ-01', dest: 'MOCK-XMADSRV1', limit: 10,
+      entries: [
+        { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0,
+          durationMs: 120, objectsTransferred: 5,
+          lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: null },
+        { attemptAt: '2026-08-30T00:55:00Z', statusCode: 1,
+          durationMs: 8000, objectsTransferred: 2,
+          lastSuccessTime: '2026-08-30T00:50:00Z',
+          errorMessage: 'partial: 2 objects pending' },
+        { attemptAt: '2026-08-30T00:50:00Z', statusCode: 2,
+          durationMs: null, objectsTransferred: null,
+          lastSuccessTime: null,
+          errorMessage: 'RPC server unavailable' }
+      ]
+    }
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  // 6 columns per attempt row.
+  const table = w.find('[data-test="pair-attempts-table-0"]');
+  const headers = table.findAll('thead th');
+  expect(headers.length).toBe(6);
+  expect(headers[0].text()).toContain('尝试时间');
+  expect(headers[1].text()).toContain('结果');
+  expect(headers[2].text()).toContain('耗时');
+  expect(headers[3].text()).toContain('传输对象');
+  expect(headers[4].text()).toContain('最近成功');
+  expect(headers[5].text()).toContain('错误');
+  // Status class + glyph on each row (ok/warn/err).
+  const rows = w.findAll('[data-test^="pair-attempt-0-"]');
+  expect(rows[0].classes()).toContain('att-row-ok');
+  expect(rows[1].classes()).toContain('att-row-warn');
+  expect(rows[2].classes()).toContain('att-row-err');
+  // Glyph + label inside row 1 (warn): ▲ 部分失败
+  expect(rows[1].find('.glyph').text()).toBe('▲');
+  expect(rows[1].text()).toContain('部分失败');
+  expect(rows[1].find('.glyph').classes()).toContain('glyph-warn');
+  // Row 2 (err): ✕ 失败 + error msg
+  expect(rows[2].find('.glyph').text()).toBe('✕');
+  expect(rows[2].text()).toContain('失败');
+  expect(rows[2].text()).toContain('RPC server unavailable');
+});
+
+test('R72: empty 24h attempts show inline empty state (no table rendered)', async () => {
+  // Default mock returns { entries: [] } — operator gets the empty hint,
+  // not a 0-row table.
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="pair-attempts-empty-0"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-attempts-table-0"]').exists()).toBe(false);
+});
+
+test('R72: closing a pair row collapses the sub-table; re-opening does NOT re-fetch', async () => {
+  // After first fetch the result is cached — collapsing + re-expanding
+  // must NOT trigger a second API call. (The Map is the cache; collapse
+  // removes from Set, expand adds back, but the Map persists.)
+  getPairHistoryMock.mockResolvedValueOnce({ data: { entries: [] } });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  // First open → fetch
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(getPairHistoryMock).toHaveBeenCalledTimes(1);
+  // Collapse
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(false);
+  // Re-open → no new fetch
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(getPairHistoryMock).toHaveBeenCalledTimes(1);
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(true);
+});
+
+test('R72: load error renders inline error state (no crash)', async () => {
+  getPairHistoryMock.mockRejectedValueOnce({
+    response: { data: { error: 'server boom' } }
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="pair-attempts-error-0"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-attempts-error-0"]').text()).toContain('server boom');
+});
+
+test('R72: poll refresh clears expanded pair state (no stale data)', async () => {
+  // Expand a pair row, then simulate a poll-cycle refresh — the modal +
+  // expanded pairs should reset. Prevents stale history showing after a
+  // data refresh.
+  getPairHistoryMock.mockResolvedValueOnce({ data: { entries: [] } });
+  // Fake timers BEFORE mount so the view's setInterval registers on the
+  // mocked clock — otherwise vi.advanceTimersByTimeAsync below has no
+  // effect on the already-scheduled real-time interval.
+  vi.useFakeTimers();
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(true);
+  // Simulate poll refresh by advancing one timer cycle (the view re-loads
+  // via setInterval(load, refreshSeconds*1000)).
+  await vi.advanceTimersByTimeAsync(10000);
+  await flushPromises();
+  // Modal + sub-row should be cleared.
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(false);
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(false);
+  vi.useRealTimers();
+});
+
+test('R72: multiple pair rows can be expanded simultaneously', async () => {
+  // basePayload 核心 → 厦门 = 2 pairs. Both should be expandable in
+  // parallel — operator doesn't have to close one to see the other.
+  getPairHistoryMock.mockResolvedValue({ data: { entries: [] } });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-1"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-attempts-1"]').exists()).toBe(true);
+  // Both should have triggered their own API call (one per pair).
+  expect(getPairHistoryMock).toHaveBeenCalledTimes(2);
 });

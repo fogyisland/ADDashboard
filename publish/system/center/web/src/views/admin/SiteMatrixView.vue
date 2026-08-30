@@ -20,6 +20,11 @@
     pair in the site-pair with status pill + last success + error
     message (R71 — drillability round 3; complements R69 node-modal +
     R70 edge-modal). Self cells (srcSite === dstSite) are NOT clickable.
+  - Click a DC pair row inside the modal → inline expand to the last 10
+    replication attempts for that (sourceDc → destDc) pair, lazy-
+    fetched from /api/dashboard/site-replication-matrix/pair-history
+    (R72 — reuses the R45 endpoint; closes the per-pair deep-dive loop
+    after R70's edge-modal).
   - Legend strip (3 colored squares + labels) at the top + a one-line
     summary of total link counts.
   - The data contract is unchanged from R60 — same
@@ -276,6 +281,7 @@
         <table v-else class="pair-table" data-test="cell-detail-table">
           <thead>
             <tr>
+              <th class="pair-caret-col"></th>
               <th>DC 链路</th>
               <th>当前状态</th>
               <th>最近成功</th>
@@ -284,22 +290,91 @@
             </tr>
           </thead>
           <tbody>
-            <tr
+            <template
               v-for="(p, i) in cellDetail.pairs"
               :key="`${p.sourceDc}-${p.destDc}`"
-              :class="['pair-row', `pair-row-${p.statusClass}`]"
-              :data-test="`cell-detail-pair-${i}`"
             >
-              <td class="pair-dcs">{{ p.sourceDc }} → {{ p.destDc }}</td>
-              <td>
-                <span class="status-pill" :class="`status-pill-${p.statusClass}`">
-                  {{ p.statusLabel }}
-                </span>
-              </td>
-              <td>{{ fmt(p.lastSuccessTime) }}</td>
-              <td>{{ fmt(p.lastAttemptTime) }}</td>
-              <td class="pair-error">{{ p.errorMessage || '—' }}</td>
-            </tr>
+              <tr
+                :class="['pair-row', `pair-row-${p.statusClass}`, 'pair-row-expandable', isPairExpanded(p.sourceDc, p.destDc) ? 'pair-row-open' : '']"
+                :data-test="`cell-detail-pair-${i}`"
+                @click="togglePairExpansion(p.sourceDc, p.destDc)"
+              >
+                <td class="pair-caret-col">
+                  <button
+                    class="pair-caret-btn"
+                    :data-test="`pair-caret-${i}`"
+                    :aria-label="isPairExpanded(p.sourceDc, p.destDc) ? '收起历史' : '展开历史'"
+                    type="button"
+                  >{{ isPairExpanded(p.sourceDc, p.destDc) ? '▾' : '▸' }}</button>
+                </td>
+                <td class="pair-dcs">{{ p.sourceDc }} → {{ p.destDc }}</td>
+                <td>
+                  <span class="status-pill" :class="`status-pill-${p.statusClass}`">
+                    {{ p.statusLabel }}
+                  </span>
+                </td>
+                <td>{{ fmt(p.lastSuccessTime) }}</td>
+                <td>{{ fmt(p.lastAttemptTime) }}</td>
+                <td class="pair-error">{{ p.errorMessage || '—' }}</td>
+              </tr>
+              <tr
+                v-if="isPairExpanded(p.sourceDc, p.destDc)"
+                class="pair-row-attempts"
+                :data-test="`pair-attempts-${i}`"
+              >
+                <td colspan="6">
+                  <!-- Loading state (only first time we open this pair) -->
+                  <div
+                    v-if="pairLoading === pairExpandKey(p.sourceDc, p.destDc)"
+                    class="attempts-loading"
+                    :data-test="`pair-attempts-loading-${i}`"
+                  >加载中…</div>
+                  <!-- Error state (rare — backend 500 or network) -->
+                  <div
+                    v-else-if="pairErrorFor(p.sourceDc, p.destDc)"
+                    class="attempts-error"
+                    :data-test="`pair-attempts-error-${i}`"
+                  >{{ pairErrorFor(p.sourceDc, p.destDc) }}</div>
+                  <!-- Empty state (no 24h attempts) -->
+                  <div
+                    v-else-if="!pairAttemptsBy(p.sourceDc, p.destDc).length"
+                    class="attempts-empty"
+                    :data-test="`pair-attempts-empty-${i}`"
+                  >24h 内暂无复制尝试记录</div>
+                  <!-- Attempts sub-table (happy path) -->
+                  <table v-else class="attempts-table" :data-test="`pair-attempts-table-${i}`">
+                    <thead>
+                      <tr>
+                        <th>尝试时间</th>
+                        <th>结果</th>
+                        <th>耗时 (ms)</th>
+                        <th>传输对象</th>
+                        <th>最近成功</th>
+                        <th>错误/详情</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="(a, j) in pairAttemptsBy(p.sourceDc, p.destDc)"
+                        :key="j"
+                        :class="['att-row', `att-row-${pairStatusClass(a)}`]"
+                        :data-test="`pair-attempt-${i}-${j}`"
+                      >
+                        <td class="att-time">{{ fmt(a.attemptAt) }}</td>
+                        <td class="att-result">
+                          <span class="glyph" :class="`glyph-${pairStatusClass(a)}`">{{ pairGlyph(a) }}</span>
+                          {{ pairLabel(a) }}
+                        </td>
+                        <td class="att-dur">{{ a.durationMs ?? '—' }}</td>
+                        <td class="att-objects">{{ a.objectsTransferred ?? '—' }}</td>
+                        <td>{{ fmt(a.lastSuccessTime) }}</td>
+                        <td class="att-error">{{ a.errorMessage || '—' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
 
@@ -330,6 +405,17 @@ const polling = ref(false);
 // ref because that data lives in cellMap (a computed) and re-deriving it
 // every render is cheaper than caching — small payload.
 const clickedCell = ref(null);
+
+// ── R72: per-pair history expansion (inside the cell-detail modal). ────
+// `expandedPairs` is the set of `${srcDc}|${dstDc}` keys that the operator
+// has clicked open. `pairAttempts` is a Map of the same key → entries[]
+// already fetched from `/pair-history`. `pairLoading` holds the single
+// currently-fetching key (or null) so we can show a spinner inline. The
+// Map is reset on primaries refresh so we never display stale history.
+const expandedPairs = ref(new Set());
+const pairAttempts  = ref(new Map());
+const pairLoading   = ref(null);
+const pairErrors    = ref(new Map());
 
 let timerHandle = null;
 
@@ -523,12 +609,79 @@ function closeCellModal() {
   clickedCell.value = null;
 }
 
-// Reset the modal when the underlying payload refreshes — keeps the modal
-// consistent with the data the user is looking at. Without this the modal
-// would show stale rows after a poll cycle, which is a classic dashboard
-// bug. (R69/R70 modals don't have this risk because they read live data
-// only on click.)
-watch(primaries, () => { clickedCell.value = null; });
+// ── R72: pair expand / collapse + lazy history fetch. ──────────────────
+// Operator clicks a pair row in the cell-detail modal → togglePairExpansion
+// adds the key to expandedPairs and (if not already cached) lazy-fetches
+// /pair-history for that (sourceDc, destDc) pair. Second click collapses
+// without re-fetching; re-open after collapse reads the cached map.
+function pairExpandKey(srcDc, dstDc) { return `${srcDc}|${dstDc}`; }
+function isPairExpanded(srcDc, dstDc) {
+  return expandedPairs.value.has(pairExpandKey(srcDc, dstDc));
+}
+function pairAttemptsBy(srcDc, dstDc) {
+  return pairAttempts.value.get(pairExpandKey(srcDc, dstDc)) || [];
+}
+function pairErrorFor(srcDc, dstDc) {
+  return pairErrors.value.get(pairExpandKey(srcDc, dstDc)) || '';
+}
+
+// Attempt-rendering helpers — same vocabulary as R70's edge-detail modal
+// (● 成功 / ▲ 部分失败 / ✕ 失败). Keeping the glyph + class names
+// consistent across R70 + R72 means operators recognise the patterns.
+function pairStatusClass(a) {
+  if (a.statusCode === 0) return 'ok';
+  if (a.statusCode === 1) return 'warn';
+  return 'err';
+}
+function pairGlyph(a) {
+  if (a.statusCode === 0) return '●';
+  if (a.statusCode === 1) return '▲';
+  return '✕';
+}
+function pairLabel(a) {
+  if (a.statusCode === 0) return '成功';
+  if (a.statusCode === 1) return '部分失败';
+  return '失败';
+}
+
+async function togglePairExpansion(srcDc, dstDc) {
+  const key = pairExpandKey(srcDc, dstDc);
+  if (expandedPairs.value.has(key)) {
+    expandedPairs.value.delete(key);
+    return;
+  }
+  expandedPairs.value.add(key);
+  // Lazy fetch — only if we haven't already cached attempts for this pair.
+  // Avoids re-hitting the DB when the operator collapses + re-opens within
+  // the same poll cycle. The Map is reset on primaries refresh so the
+  // cache stays fresh across data updates.
+  if (!pairAttempts.value.has(key)) {
+    pairLoading.value = key;
+    pairErrors.value.delete(key);
+    try {
+      const r = await dashboardApi.getSiteReplicationMatrixPairHistory(dstDc, srcDc, 10);
+      pairAttempts.value.set(key, Array.isArray(r.data?.entries) ? r.data.entries : []);
+    } catch (e) {
+      pairAttempts.value.set(key, []);
+      pairErrors.value.set(key, e?.response?.data?.error || '加载历史失败');
+    } finally {
+      pairLoading.value = null;
+    }
+  }
+}
+
+// Reset the modal AND any expanded pairs when the underlying payload
+// refreshes — keeps the modal consistent with the data the user is
+// looking at. Without this the modal would show stale rows after a poll
+// cycle, which is a classic dashboard bug. (R69/R70 modals don't have
+// this risk because they read live data only on click.)
+watch(primaries, () => {
+  clickedCell.value = null;
+  expandedPairs.value = new Set();
+  pairAttempts.value = new Map();
+  pairLoading.value = null;
+  pairErrors.value = new Map();
+});
 
 async function load() {
   polling.value = true;
@@ -977,4 +1130,113 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
   background: rgba(239, 68, 68, 0.20);
   border: 1px solid rgba(239, 68, 68, 0.5);
 }
+
+/* ===== R72: pair-row expandability + inline attempts sub-table ========
+   The drillability family continues: each pair row in the cell-detail
+   modal is now clickable. Click → inline expand shows the last 10
+   replication attempts for that (sourceDc → destDc) pair. Reuses the
+   R70 attempts vocabulary (●/▲/✕ glyphs + ok/warn/err class) so
+   operators recognise the pattern across all three modals (node/edge/
+   cell-pair). */
+.cell-detail-modal .pair-row-expandable {
+  cursor: pointer;
+  transition: background 0.08s ease;
+}
+.cell-detail-modal .pair-row-expandable:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+.cell-detail-modal .pair-row-open {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.cell-detail-modal .pair-caret-col {
+  width: 28px;
+  padding: 0 !important;
+  text-align: center;
+}
+.cell-detail-modal .pair-caret-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  width: 24px; height: 24px;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.08s ease, color 0.08s ease;
+}
+.cell-detail-modal .pair-caret-btn:hover {
+  background: var(--panel-alt);
+  color: var(--text);
+}
+.cell-detail-modal .pair-row-open .pair-caret-btn {
+  color: #6366f1;
+}
+
+.cell-detail-modal .pair-row-attempts td {
+  padding: 0;
+  background: var(--panel-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.cell-detail-modal .attempts-loading,
+.cell-detail-modal .attempts-empty,
+.cell-detail-modal .attempts-error {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.cell-detail-modal .attempts-error { color: var(--red); }
+
+.cell-detail-modal .attempts-table {
+  width: 100%;
+  border-collapse: separate; border-spacing: 0;
+  font-size: 11px;
+  margin: 0;
+}
+.cell-detail-modal .attempts-table thead th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: var(--panel-alt);
+}
+.cell-detail-modal .attempts-table tbody td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+.cell-detail-modal .attempts-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.cell-detail-modal .att-time,
+.cell-detail-modal .att-dur,
+.cell-detail-modal .att-objects {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-feature-settings: "tnum";
+}
+.cell-detail-modal .att-row-ok   { background: rgba(34, 197, 94, 0.04); }
+.cell-detail-modal .att-row-warn { background: rgba(234, 179, 8, 0.06); }
+.cell-detail-modal .att-row-err  { background: rgba(239, 68, 68, 0.06); }
+.cell-detail-modal .att-error {
+  color: var(--muted);
+  max-width: 220px;
+  word-break: break-word;
+}
+.cell-detail-modal .glyph {
+  display: inline-block;
+  width: 12px;
+  font-weight: 700;
+  margin-right: 4px;
+}
+.cell-detail-modal .glyph-ok   { color: #15803d; }
+.cell-detail-modal .glyph-warn { color: #a16207; }
+.cell-detail-modal .glyph-err  { color: #b91c1c; }
 </style>
