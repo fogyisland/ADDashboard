@@ -60,6 +60,11 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
     // the script + its history) — same shape as delete_server_group.
     'delete_script',
     'delete_server_group', 'delete_site', 'mark_applied',
+    // 2026-08-30 R65 followup — 文件推送 push_file_failed lands in the
+    // medium tier (file-write failure on the agent is operator-actionable
+    // but not high-severity; consistent with bulk_install_package_to_group
+    // — both signal "operator-driven flow that did not complete as expected").
+    'push_file_failed',
     'replace_server_group_members', 'reset_failed_migration',
     'update_config', 'update_user', 'upgrade_db'
   ]);

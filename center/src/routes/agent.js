@@ -12,6 +12,7 @@ import { upsertPortStatuses } from '../services/port-status.js';
 import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 import { getAgentTokenState } from '../services/agent-token.js';
+import { writeAudit } from '../services/audit.js';
 
 export function agentRouter({ config, logger, mount = 'full' }) {
   const r = Router();
@@ -415,6 +416,68 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     // partner TCP ports (see collect-replication.ps1). Operator-side
     // /api/admin/replication-port-config routes stay (separate UI backed
     // by services/ports.js — explicitly preserved per round-45 plan).
+  }
+
+  // 2026-08-30 R65 followup — file-push poll endpoint. Agents call this
+  // on their normal report cadence (or in a dedicated long-poll loop)
+  // to find tasks targeted at their hostname. Mounted on both 'web'
+  // and 'report' so agents on either port can poll — heartbeat port
+  // (8081) is intentionally excluded because that path is for
+  // high-frequency small payloads and shouldn't carry multi-MB file
+  // push responses.
+  if (mount === 'web' || mount === 'report' || mount === 'full') {
+    r.get('/api/agent/file-push', agentMw, async (req, res) => {
+      const hostname = String(req.query.hostname || '').trim();
+      const agentId  = String(req.query.agentId  || req.body?.agentId || '').trim();
+      if (!hostname) return res.status(400).json({ error: 'hostname required' });
+      try {
+        const { claimForAgent } = await import('../services/file-push.js');
+        const tasks = await claimForAgent(agentId || 'unknown', hostname);
+        // 'claimed' audit row per poll that finds a new task. We only
+        // emit on the FIRST claim — re-polls don't re-audit, so an
+        // operator scanning the audit log doesn't see 200 copies of
+        // "push_file_claimed" per task.
+        for (const t of tasks) {
+          await writeAudit({
+            action: 'push_file_claimed',
+            target: t.taskId,
+            payload: { taskId: t.taskId, hostname, agentId, filename: t.filename, targetType: t.targetType },
+            logger
+          });
+        }
+        res.json({ tasks });
+      } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        logger.error({ err: e }, 'agent file-push poll failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
+
+    // Agent-side file download (matches the admin /file endpoint but
+    // gated by agentToken instead of userAuth). Same path used by the
+    // admin route — the agent's token grants them read access to any
+    // task whose `targets` includes their hostname (enforced upstream
+    // in claimForAgent).
+    r.get('/api/agent/file-push/:id/file', agentMw, async (req, res) => {
+      const hostname = String(req.query.hostname || '').trim();
+      if (!hostname) return res.status(400).json({ error: 'hostname required' });
+      try {
+        const { getTask, getTaskFile } = await import('../services/file-push.js');
+        const t = await getTask(req.params.id);
+        if (!t.targets.includes(hostname)) {
+          return res.status(403).json({ error: 'hostname not a target of this task' });
+        }
+        const buf = await getTaskFile(req.params.id);
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${t.filename}"`);
+        res.setHeader('X-File-Sha256', t.sha256);
+        res.send(buf);
+      } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        logger.error({ err: e }, 'agent file-push download failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
   }
 
   // Web mount: stable bootstrap endpoint for agents. Lives on the web port

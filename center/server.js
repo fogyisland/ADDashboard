@@ -9,6 +9,7 @@ import { authRouter } from './src/routes/auth.js';
 import { agentRouter } from './src/routes/agent.js';
 import { dashboardRouter } from './src/routes/dashboard.js';
 import { adminRouter } from './src/routes/admin.js';
+import { filePushRouter } from './src/routes/file-push.js';
 import { dcsRouter } from './src/routes/dcs.js';
 import { lockoutRouter } from './src/routes/lockout.js';
 import { schemaMigrationsRouter } from './src/routes/schema-migrations.js';
@@ -393,6 +394,12 @@ await ((async () => {
     app.use(agentRouter({ config: finalConfig, logger, mount: 'web' }));
     app.use(dashboardRouter({ config: finalConfig, logger, db: getDb() }));
     app.use(adminRouter({ config: finalConfig, logger, db: getDb() }));
+    // 2026-08-30 R65 followup — file push (upload → agent pull → ack).
+    // Lives on the web app because operators interact with it from the
+    // admin UI; agents pull from /api/agent/file-push which lives in
+    // agentRouter mounted above (web mount also exposes it). Both
+    // surface the same JSON envelope + audit trail.
+    app.use(filePushRouter({ logger, db: getDb() }));
     // DC summary endpoint (Task 4). Mirrors the adminRouter's per-route
     // [userAuth, requirePerm('admin:users')] middleware — the router
     // factory accepts the same auth deps so the per-route chain is
