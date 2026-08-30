@@ -121,4 +121,23 @@ export const adminApi = {
   // means still on the old token (heartbeat hasn't fired, or offline).
   getAgentTokenDelivery: () => api.get('/api/admin/agent-token/delivery'),
 
+  // ---- File push (2026-08-30 R65 followup — operator-driven file
+  //      distribution to DCs / member servers). Center stages the
+  //      bytes; agents pull on their next heartbeat and ack per-target.
+  //      Mock-first: server keeps the file on local disk
+  //      (data/file-push/) + JSON index, no DB table yet.
+  uploadFile: ({ filename, contentB64, sha256, targetType, targets, targetPath }) =>
+    api.post('/api/admin/file-push', { filename, contentB64, sha256, targetType, targets, targetPath }),
+  listFilePushTasks: () => api.get('/api/admin/file-push'),
+  getFilePushTask: (id) => api.get(`/api/admin/file-push/${id}`),
+  // getFilePushFileBlob returns the raw bytes (octet-stream). The
+  // router sets X-File-Sha256 so the operator UI can sanity-check
+  // downloads. We return the blob and let the caller drive UI.
+  getFilePushFileBlob: async (id) => {
+    const { data, headers } = await api.get(`/api/admin/file-push/${id}/file`, { responseType: 'blob' });
+    return { blob: data, sha256: headers['x-file-sha256'] };
+  },
+  ackFilePushTask: (id, { hostname, agentId, ok, errorMessage }) =>
+    api.post(`/api/admin/file-push/${id}/ack`, { hostname, agentId, ok, errorMessage }),
+
 };
