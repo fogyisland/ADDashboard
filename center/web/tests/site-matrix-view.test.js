@@ -501,3 +501,129 @@ test('R68: full-panel preserves the original N×N grid (R60/R64 contract)', asyn
   expect(panel.find('[data-test="cell-核心站点-厦门站点"]').exists()).toBe(true);
   expect(panel.find('[data-test="cell-上海站点-核心站点"]').exists()).toBe(true);
 });
+
+// ── R71: cell-detail modal (click cell → list of DC pairs) ─────────────
+// R69 made every topology node drillable, R70 made every edge drillable;
+// R71 makes every cell in the SiteMatrixView drillable. Clicking a cell
+// opens a modal that lists every (sourceDc → destDc) link between the
+// two sites with status pill + last success + error. The data is already
+// in cellMap — no new fetch, no new endpoint (R45's /pair-history is
+// still the per-pair deep-dive if/when we want it).
+
+test('R71: cells are clickable (cursor: pointer) for non-self cells', async () => {
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-clickable');
+  // Self cells get a different class so cursor stays default.
+  const self = fullPanel(w).find('[data-test="cell-核心站点-核心站点"]');
+  expect(self.classes()).toContain('cell-disabled');
+});
+
+test('R71: clicking a non-self cell opens the cell-detail modal', async () => {
+  const w = mountView();
+  await flushPromises();
+  // Click the green/yellow cross-site cell 核心 → 厦门.
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  const modal = w.find('[data-test="cell-detail-modal"]');
+  expect(modal.exists()).toBe(true);
+  const title = w.find('[data-test="cell-detail-title"]');
+  expect(title.text()).toBe('核心站点 → 厦门站点');
+});
+
+test('R71: modal lists every (sourceDc → destDc) pair in the cell', async () => {
+  const w = mountView();
+  await flushPromises();
+  // basePayload 核心 → 厦门 has 2 partner links (DC-BJ-01 + DC-BJ-02).
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  const rows = w.findAll('[data-test^="cell-detail-pair-"]');
+  expect(rows.length).toBe(2);
+  // First row should be DC-BJ-01 → MOCK-XMADSRV1 (alphabetical sourceDc).
+  expect(rows[0].text()).toContain('DC-BJ-01');
+  expect(rows[0].text()).toContain('MOCK-XMADSRV1');
+  expect(rows[1].text()).toContain('DC-BJ-02');
+});
+
+test('R71: status pill renders the right color/label per statusCode', async () => {
+  const w = mountView();
+  await flushPromises();
+  // basePayload 厦门 → 核心 = statusCode=2 (err), red pill, "断开失败" label.
+  await fullPanel(w).find('[data-test="cell-厦门站点-核心站点"]').trigger('click');
+  await flushPromises();
+  const row = w.findAll('[data-test^="cell-detail-pair-"]')[0];
+  expect(row.classes()).toContain('pair-row-err');
+  const pill = row.find('.status-pill');
+  expect(pill.classes()).toContain('status-pill-err');
+  expect(pill.text()).toBe('断开失败');
+  // Error message is forwarded into the row.
+  expect(row.text()).toContain('RPC server unavailable');
+});
+
+test('R71: Hub↔Hub cell shows 核心层 layer tag in modal meta', async () => {
+  // multiHubPayload has 2 Hubs; clicking core↔dr 核心 ↔ 灾备 should show
+  // the "核心层 Hub↔Hub" tag in the modal meta.
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValueOnce({
+    data: multiHubPayload()
+  });
+  const w = mountView();
+  await flushPromises();
+  // Hub panel cell selector
+  const cell = w.find('[data-test="cell-核心站点-灾备站点"]');
+  expect(cell.exists()).toBe(true);
+  await cell.trigger('click');
+  await flushPromises();
+  const meta = w.find('[data-test="cell-detail-meta"]');
+  expect(meta.text()).toContain('核心层');
+  expect(meta.text()).toContain('Hub↔Hub');
+  // 1 link (DC-BJ-01 → DC-BJ-02) in multiHubPayload
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(1);
+});
+
+test('R71: Spoke→Hub cell shows 接入层 layer tag in modal meta', async () => {
+  // basePayload 厦门 (spoke) → 核心 (hub) → 接入层 Spoke→Hub tag.
+  // We click 厦门 row × 核心 column from the Spoke attachment panel.
+  const w = mountView();
+  await flushPromises();
+  const spokePanel = w.find('[data-test="spoke-panel"]');
+  expect(spokePanel.exists()).toBe(true);
+  await spokePanel.find('[data-test="cell-厦门站点-核心站点"]').trigger('click');
+  await flushPromises();
+  const meta = w.find('[data-test="cell-detail-meta"]');
+  expect(meta.text()).toContain('接入层');
+});
+
+test('R71: close button dismisses the modal', async () => {
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(true);
+  await w.find('[data-test="cell-detail-close"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(false);
+});
+
+test('R71: clicking a self cell does NOT open the modal', async () => {
+  const w = mountView();
+  await flushPromises();
+  // Self cells have cell-disabled class and the handler early-returns.
+  await fullPanel(w).find('[data-test="cell-核心站点-核心站点"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(false);
+});
+
+test('R71: empty cell (no partner link) opens modal with empty state', async () => {
+  // basePayload 核心 → 上海 has no partner link in either direction.
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-上海站点"]').trigger('click');
+  await flushPromises();
+  const modal = w.find('[data-test="cell-detail-modal"]');
+  expect(modal.exists()).toBe(true);
+  expect(modal.find('[data-test="cell-detail-empty"]').exists()).toBe(true);
+  // And no pair rows.
+  expect(modal.findAll('[data-test^="cell-detail-pair-"]').length).toBe(0);
+});

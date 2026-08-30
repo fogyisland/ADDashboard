@@ -16,6 +16,10 @@
   - Hover a cell → tooltip lists the individual partner links between
     those two sites (source DC, dest DC, statusCode, lastSuccessTime,
     errorMessage). No drill-down / lazy fetch — only the latest state.
+  - Click a cell → cell-detail modal listing every (sourceDc → destDc)
+    pair in the site-pair with status pill + last success + error
+    message (R71 — drillability round 3; complements R69 node-modal +
+    R70 edge-modal). Self cells (srcSite === dstSite) are NOT clickable.
   - Legend strip (3 colored squares + labels) at the top + a one-line
     summary of total link counts.
   - The data contract is unchanged from R60 — same
@@ -111,9 +115,10 @@
               <td
                 v-for="cs in hubSites"
                 :key="`hub-cell-${rs.siteName}-${cs.siteName}`"
-                :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`, 'cell-hub-pair']"
+                :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`, 'cell-hub-pair', cellClickableClass(rs.siteName, cs.siteName)]"
                 :data-test="`cell-${rs.siteName}-${cs.siteName}`"
                 :title="cellTooltip(rs.siteName, cs.siteName)"
+                @click="handleCellClick(rs.siteName, cs.siteName)"
               >
                 <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
                 <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
@@ -167,9 +172,10 @@
               <td
                 v-for="hub in hubSites"
                 :key="`spoke-cell-${sp.siteName}-${hub.siteName}`"
-                :class="['cell', `cell-${cellState(sp.siteName, hub.siteName)}`, 'cell-hub-spoke']"
+                :class="['cell', `cell-${cellState(sp.siteName, hub.siteName)}`, 'cell-hub-spoke', cellClickableClass(sp.siteName, hub.siteName)]"
                 :data-test="`cell-${sp.siteName}-${hub.siteName}`"
                 :title="cellTooltip(sp.siteName, hub.siteName)"
+                @click="handleCellClick(sp.siteName, hub.siteName)"
               >
                 <span class="cell-glyph">{{ cellGlyph(sp.siteName, hub.siteName) }}</span>
                 <span class="cell-num">{{ cellText(sp.siteName, hub.siteName) }}</span>
@@ -223,9 +229,10 @@
               <td
                 v-for="cs in sites"
                 :key="`cell-${rs.siteName}-${cs.siteName}`"
-                :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`]"
+                :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`, cellClickableClass(rs.siteName, cs.siteName)]"
                 :data-test="`cell-${rs.siteName}-${cs.siteName}`"
                 :title="cellTooltip(rs.siteName, cs.siteName)"
+                @click="handleCellClick(rs.siteName, cs.siteName)"
               >
                 <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
                 <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
@@ -235,11 +242,79 @@
         </table>
       </div>
     </section>
+
+    <!-- ── R71: cell-detail modal ───────────────────────────────────────
+         Click any non-self cell in any of the 3 panels to drill into the
+         underlying DC pairs of that site-pair. Lists every (sourceDc →
+         destDc) link with status pill + last success + error message.
+         Backdrop click (.self) closes; ESC support in the script. -->
+    <div
+      v-if="cellDetail"
+      class="modal-bg"
+      @click.self="closeCellModal"
+      data-test="cell-detail-modal"
+    >
+      <div class="modal cell-detail-modal" @keydown.esc="closeCellModal">
+        <header class="modal-header">
+          <h3 class="modal-title" data-test="cell-detail-title">
+            {{ cellDetail.srcSite }} → {{ cellDetail.dstSite }}
+          </h3>
+          <p class="modal-meta" data-test="cell-detail-meta">
+            <span class="layer-tag-inline" v-if="cellDetail.layerTag">{{ cellDetail.layerTag }}</span>
+            {{ cellDetail.pairs.length }} 条链路
+          </p>
+        </header>
+
+        <div
+          v-if="!cellDetail.pairs.length"
+          class="empty"
+          data-test="cell-detail-empty"
+        >
+          两站点之间暂无复制链路
+        </div>
+
+        <table v-else class="pair-table" data-test="cell-detail-table">
+          <thead>
+            <tr>
+              <th>DC 链路</th>
+              <th>当前状态</th>
+              <th>最近成功</th>
+              <th>最近尝试</th>
+              <th>错误/详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(p, i) in cellDetail.pairs"
+              :key="`${p.sourceDc}-${p.destDc}`"
+              :class="['pair-row', `pair-row-${p.statusClass}`]"
+              :data-test="`cell-detail-pair-${i}`"
+            >
+              <td class="pair-dcs">{{ p.sourceDc }} → {{ p.destDc }}</td>
+              <td>
+                <span class="status-pill" :class="`status-pill-${p.statusClass}`">
+                  {{ p.statusLabel }}
+                </span>
+              </td>
+              <td>{{ fmt(p.lastSuccessTime) }}</td>
+              <td>{{ fmt(p.lastAttemptTime) }}</td>
+              <td class="pair-error">{{ p.errorMessage || '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <footer class="modal-footer">
+          <button class="btn-close" @click="closeCellModal" data-test="cell-detail-close">
+            关闭
+          </button>
+        </footer>
+      </div>
+    </div>
   </AppLayout>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import AppLayout from '../../components/AppLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
 
@@ -248,6 +323,13 @@ const refreshSeconds = ref(10);
 const lastLoadedAt = ref(null);
 const error = ref('');
 const polling = ref(false);
+
+// ── R71: cell-detail modal state ────────────────────────────────────────
+// `clickedCell` is the (srcSite, dstSite) tuple of the currently open modal,
+// or null when closed. We avoid putting the partner list directly into the
+// ref because that data lives in cellMap (a computed) and re-deriving it
+// every render is cheaper than caching — small payload.
+const clickedCell = ref(null);
 
 let timerHandle = null;
 
@@ -381,6 +463,72 @@ const totals = computed(() => {
   }
   return { sites, dcs, links, ok, warn, err };
 });
+
+// ── R71: cell-detail modal (click cell → list of DC pairs). ────────────
+// Derives a modal payload from clickedCell + cellMap + Hub/Spoke partition.
+// `layerTag` enriches the meta line with the architectural layer (Hub↔Hub
+// / Spoke→Hub / Full matrix) when both endpoints share the same layer —
+// for the Full matrix panel we skip the tag (the cell is just one of N²
+// pairs and the layer doesn't carry extra meaning).
+const cellDetail = computed(() => {
+  if (!clickedCell.value) return null;
+  const { srcSite, dstSite } = clickedCell.value;
+  const parts = partners(srcSite, dstSite);
+  const isHubPairCell = isHubPair(srcSite, dstSite);
+  // Layer tag: only meaningful for Hub↔Hub or Spoke→Hub cells. We can't
+  // tell from cellMap alone which panel the user clicked — but we infer
+  // the layer from Hub/Spoke membership, which is what the panels use.
+  let layerTag = '';
+  if (isHubPairCell && srcSite !== dstSite) layerTag = '核心层 Hub↔Hub';
+  else if (hubSiteSet.value.has(dstSite) && !hubSiteSet.value.has(srcSite)) {
+    layerTag = '接入层 Spoke→Hub';
+  } else if (hubSiteSet.value.has(srcSite) && !hubSiteSet.value.has(dstSite)) {
+    // R68 notes: cellMap is keyed inbound-only by `(primary site → peer site)`,
+    // so Spoke→Hub direction is the only Spoke layer we surface. The reverse
+    // (Hub→Spoke) is the "designed absence" (Panel 3 only).
+    layerTag = '完整视图 Hub→Spoke (出战)';
+  }
+  return {
+    srcSite,
+    dstSite,
+    layerTag,
+    pairs: parts.map(p => ({
+      sourceDc: p.sourceDc,
+      destDc: p.destDc,
+      statusCode: p.statusCode,
+      statusClass: p.statusCode === 0 ? 'ok' : (p.statusCode === 1 ? 'warn' : 'err'),
+      statusLabel: p.statusCode === 0 ? '复制成功'
+                 : (p.statusCode === 1 ? '部分失败' : '断开失败'),
+      lastSuccessTime: p.lastSuccessTime,
+      lastAttemptTime: p.lastAttemptTime,
+      errorMessage: p.errorMessage
+    }))
+  };
+});
+
+// Self cells (srcSite === dstSite) are NOT clickable — there's nothing to
+// drill into. Returns 'cell-disabled' for the cursor + pointer-events hint;
+// the @click handler also early-returns so the click is a no-op regardless.
+function cellClickableClass(srcSite, dstSite) {
+  if (srcSite === dstSite) return 'cell-disabled';
+  return 'cell-clickable';
+}
+
+function handleCellClick(srcSite, dstSite) {
+  if (srcSite === dstSite) return;
+  clickedCell.value = { srcSite, dstSite };
+}
+
+function closeCellModal() {
+  clickedCell.value = null;
+}
+
+// Reset the modal when the underlying payload refreshes — keeps the modal
+// consistent with the data the user is looking at. Without this the modal
+// would show stale rows after a poll cycle, which is a classic dashboard
+// bug. (R69/R70 modals don't have this risk because they read live data
+// only on click.)
+watch(primaries, () => { clickedCell.value = null; });
 
 async function load() {
   polling.value = true;
@@ -700,5 +848,133 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
    environments can hit 15 spokes × 5 hubs = 75 cells). */
 .cell-hub-spoke {
   min-width: 70px;
+}
+
+/* ===== R71: cell-click affordance + cell-detail modal =================
+   The cell-detail modal is the third member of the drillability family
+   (R69 node-detail, R70 edge-detail, R71 cell-detail). It reuses the
+   shared modal vocabulary (.modal-bg / .modal / backdrop-click) and
+   introduces a per-pair table that lists every (sourceDc → destDc) link
+   in the clicked site-pair, with status pill + last success + error. */
+.cell-clickable { cursor: pointer; }
+.cell-disabled  { cursor: default; }
+
+.modal-bg {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.30);
+  max-width: 720px; width: 100%;
+  max-height: 80vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title {
+  margin: 0; font-size: 15px; font-weight: 600; color: var(--text);
+}
+.modal-meta {
+  margin: 4px 0 0; font-size: 11px; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.layer-tag-inline {
+  display: inline-block; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.04em; padding: 1px 6px; border-radius: 3px;
+  color: #b45309;
+  background: rgba(251, 191, 36, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.5);
+}
+.modal-footer {
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: flex-end;
+  background: var(--panel-alt);
+}
+.btn-close {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.btn-close:hover { background: var(--panel-alt); }
+
+.cell-detail-modal .pair-table {
+  width: 100%;
+  border-collapse: separate; border-spacing: 0;
+  font-size: 12px;
+  overflow: auto;
+}
+.cell-detail-modal .pair-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--panel-alt);
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.cell-detail-modal .pair-table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+.cell-detail-modal .pair-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.cell-detail-modal .pair-dcs {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-feature-settings: "tnum";
+  font-weight: 500;
+}
+.cell-detail-modal .pair-error {
+  color: var(--muted);
+  max-width: 240px;
+  word-break: break-word;
+}
+
+/* Per-row status tint (very subtle — the status-pill carries the heavy
+   color so the table body stays readable). */
+.cell-detail-modal .pair-row-ok   { background: rgba(34, 197, 94, 0.04); }
+.cell-detail-modal .pair-row-warn { background: rgba(234, 179, 8, 0.06); }
+.cell-detail-modal .pair-row-err  { background: rgba(239, 68, 68, 0.06); }
+
+/* Status pill — same vocabulary as cell states (green/yellow/red). */
+.status-pill {
+  display: inline-block;
+  font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+.status-pill-ok {
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.18);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+}
+.status-pill-warn {
+  color: #a16207;
+  background: rgba(234, 179, 8, 0.22);
+  border: 1px solid rgba(234, 179, 8, 0.5);
+}
+.status-pill-err {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.20);
+  border: 1px solid rgba(239, 68, 68, 0.5);
 }
 </style>
