@@ -89,8 +89,13 @@ afterEach(() => {
 });
 
 function mountView() {
+  // 2026-08-30 R64.2: SiteMatrixView is frontend-only (/matrix) and must
+  // wrap <AppLayout>, not <AdminLayout>. Stubs the layout component the
+  // view actually imports; if a future regression re-introduces AdminLayout
+  // here the stub name won't match and the layout will mount the real
+  // component (which has its own router-link + theme-toggle — detectable).
   return mount(SiteMatrixView, {
-    global: { stubs: { AdminLayout: { template: '<div><slot /></div>' } } }
+    global: { stubs: { AppLayout: { template: '<div><slot /></div>' } } }
   });
 }
 
@@ -277,4 +282,27 @@ test('R64: stops polling on unmount', async () => {
   w.unmount();
   await vi.advanceTimersByTimeAsync(10000);
   expect(dashboardApi.getSiteReplicationMatrixAll).toHaveBeenCalledTimes(2);
+});
+
+// ── R64.2: layout regression — 站点矩阵 必须前台 (AppLayout), 不能后台 (AdminLayout)
+// The bug was: R64.1 removed the nav-link from AdminLayout but the view
+// component itself still wrapped <AdminLayout>, so the frontend sidebar's
+// /matrix link mounted a page that looked like admin chrome. This test
+// fails loud if anyone re-imports AdminLayout into SiteMatrixView.
+test('R64.2: uses AppLayout (frontend chrome) — NOT AdminLayout', async () => {
+  const w = mountView();
+  await flushPromises();
+  // The stub we pass is `{ AppLayout: { template: '<div><slot /></div>' } }`.
+  // If the view imported AdminLayout instead, the stub wouldn't match and
+  // the real AdminLayout would mount (which renders its own <aside.sidebar>
+  // + nested <nav> with router-links). Either way the stub-rendered output
+  // has no <aside class="sidebar">. We assert both directions to be explicit:
+  const wrapperHtml = w.html();
+  // AppLayout stub renders as a plain <div> wrapping the slot — no <aside>.
+  expect(wrapperHtml).not.toContain('<aside class="sidebar">');
+  // And no admin-style nested nav structure (AdminLayout renders .nav-group
+  // containers with 6 collapsible groups — distinctive).
+  expect(wrapperHtml).not.toContain('class="nav-group"');
+  // Sanity: page-title still mounts (proves the view itself rendered).
+  expect(w.find('.page-title').text()).toBe('站点矩阵');
 });

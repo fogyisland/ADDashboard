@@ -23,7 +23,13 @@
     primaries[].dcPartners[].partners[] payload.
 -->
 <template>
-  <AdminLayout>
+  <!--
+    2026-08-30 R64.2 fix: 站点矩阵 前台专属 — 用 AppLayout 包 (不再用 AdminLayout).
+    R64 split 把 /matrix 拆成独立前台页面,R64.1 从 AdminLayout nav 删了链接,
+    但 SiteMatrixView.vue 组件本身还包着 AdminLayout → 前台点进来后渲染后台壳.
+    这里换成 AppLayout 才彻底脱离后台。
+  -->
+  <AppLayout>
     <header class="page-header">
       <div class="page-titles">
         <h2 class="page-title">站点矩阵</h2>
@@ -95,12 +101,12 @@
         </tbody>
       </table>
     </div>
-  </AdminLayout>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import AdminLayout from '../../components/AdminLayout.vue';
+import AppLayout from '../../components/AppLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
 
 const primaries = ref([]);
