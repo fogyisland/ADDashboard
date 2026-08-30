@@ -31,6 +31,12 @@ import InitWizardView from './views/init/InitWizardView.vue';
 import MetricDashboardView from './views/MetricDashboardView.vue';
 import ServersOverviewView from './views/ServersOverviewView.vue';
 import LockoutTroubleshootingView from './views/LockoutTroubleshootingView.vue';
+// 2026-08-30 R67-T2: 包执行状态监控 (frontend 监控指标). Read-only surface
+// that summarises the package_runs table per package (24h totals + last
+// 10 runs drill-down). Operator directive "监控指标点进去就进入包管理状态,
+// 我们是否可以监控包执行状态呢?" — fits the 监控指标 sidebar between
+// 指标看板 and 服务器总览.
+import PackageRunsMonitorView from './views/PackageRunsMonitorView.vue';
 import MemberServersView from './views/admin/MemberServersView.vue';
 import MemberServerDetailView from './views/admin/MemberServerDetailView.vue';
 import ServerGroupsView from './views/admin/ServerGroupsView.vue';
@@ -86,6 +92,7 @@ const routes = [
   { path: '/admin/packages/registry', component: RegistryView, meta: { perm: 'admin:packages' } },
   { path: '/admin/packages/:name', component: PackageEditView, meta: { perm: 'admin:packages' } },
   { path: '/dashboard/metrics', component: MetricDashboardView },
+  { path: '/packages-runs', component: PackageRunsMonitorView },
   { path: '/servers-overview', component: ServersOverviewView },
   { path: '/lockout-troubleshooting', component: LockoutTroubleshootingView },
   { path: '/admin/member-servers', component: MemberServersView, meta: { perm: 'admin:users' } },

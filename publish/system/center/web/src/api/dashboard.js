@@ -22,5 +22,10 @@ export const dashboardApi = {
   // Replication-attempt history is no longer served here — that surface
   // is exclusive to 复制状态概览 (R45 inline caret in
   // SiteReplicationMatrixAllView).
-  getPartnerPortHealthAll: () => api.get('/api/dashboard/partner-port-health/all')
+  getPartnerPortHealthAll: () => api.get('/api/dashboard/partner-port-health/all'),
+  // 2026-08-30 R67-T2: 包执行状态监控 — frontend AppLayout surface that
+  // summarises the package_runs table per package (24h totals + last 10
+  // runs as drill-down). Read-only; same /api/dashboard/* auth gate as
+  // the rest of the 监控指标 surfaces.
+  getPackagesRuns: () => api.get('/api/dashboard/packages-runs')
 };

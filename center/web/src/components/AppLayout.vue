@@ -9,6 +9,7 @@
         <router-link to="/errors">错误链路</router-link>
         <router-link to="/agents">Agent 列表</router-link>
         <router-link to="/dashboard/metrics">指标看板</router-link>
+        <router-link to="/packages-runs">包执行状态</router-link>
         <router-link to="/servers-overview">服务器总览</router-link>
       </nav>
     </aside>

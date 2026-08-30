@@ -32,6 +32,7 @@ test('renders sidebar nav links for the main pages', () => {
   expect(hrefs).toContain('/errors');
   expect(hrefs).toContain('/agents');
   expect(hrefs).toContain('/dashboard/metrics');
+  expect(hrefs).toContain('/packages-runs');
   expect(hrefs).toContain('/servers-overview');
 });
 

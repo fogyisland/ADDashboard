@@ -814,5 +814,105 @@ export function dashboardRouter({ config, logger, db }) {
     }
   });
 
+  // 2026-08-30 R67-T2: 包执行状态监控 (监控指标 AppLayout). Pure-read
+  // surface that surfaces what R66's package_runs table already captures.
+  // Each package gets a 24h summary (total / success / failure / partial)
+  // + the last 10 runs as a drill-down. The metric manifest comes from
+  // package_scripts (description, type, agentType) so the operator can
+  // tell what each row means without consulting the script body. The view
+  // is mounted at /packages-runs in the frontend AppLayout sidebar; this
+  // endpoint is mounted under the dashboardRouter auth gate so any logged
+  // user can see it (matches the rest of the frontend 监控指标 surfaces).
+  //
+  // Response envelope:
+  //   {
+  //     refreshSeconds: 10,
+  //     packages: [
+  //       {
+  //         name, version, type, agentType, description,
+  //         summary24h: { total, success, failure, partial, lastRunAt },
+  //         recent: [
+  //           { id, agentId, startedAt, finishedAt, exitCode,
+  //             durationMs, stdoutPreview, stderrPreview, error }
+  //         ]
+  //       }
+  //     ]
+  //   }
+  r.get('/api/dashboard/packages-runs', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      const { packageScripts } = await import('../db/sql/package-scripts.js');
+      const { packageRuns } = await import('../db/sql/package-runs.js');
+
+      // 1. Resolve the package manifest list once (sorted by name so the
+      // view's column order is stable across polls).
+      const scripts = await packageScripts.list(db);
+      scripts.sort((a, b) => a.name.localeCompare(b.name));
+
+      // 2. Pull recent runs (cap 200) once and group by package_name at the
+      // app layer — cheaper than N round-trips and the package_runs table
+      // is bounded by an agent's heartbeat/interval cadence so 200 rows is
+      // well below the worst-case.
+      const recentAll = await packageRuns.listRecent(db, { limit: 200 });
+      const runsByName = new Map();
+      for (const r of recentAll) {
+        if (!runsByName.has(r.package_name)) runsByName.set(r.package_name, []);
+        runsByName.get(r.package_name).push(r);
+      }
+
+      const cutoff24h = Date.now() - 24 * 3600 * 1000;
+      const packages = scripts.map((s) => {
+        const runs = runsByName.get(s.name) || [];
+        let total24h = 0, success24h = 0, failure24h = 0, partial24h = 0;
+        let lastRunAt = null;
+        for (const r of runs) {
+          const startedAt = r.started_at instanceof Date
+            ? r.started_at.getTime()
+            : new Date(r.started_at).getTime();
+          if (startedAt >= cutoff24h) {
+            total24h++;
+            if (r.exit_code === 0) success24h++;
+            else if (r.exit_code === null || r.exit_code === undefined) partial24h++;
+            else failure24h++;
+          }
+          if (!lastRunAt || startedAt > lastRunAt) lastRunAt = startedAt;
+        }
+        const manifest = s.manifest || {};
+        return {
+          name: s.name,
+          version: s.version,
+          type: manifest.type || 'gauge',
+          agentType: manifest.agent?.type || 'ad',
+          description: manifest.description || '',
+          summary24h: {
+            total: total24h,
+            success: success24h,
+            failure: failure24h,
+            partial: partial24h,
+            lastRunAt: lastRunAt ? new Date(lastRunAt).toISOString() : null
+          },
+          recent: runs.slice(0, 10).map((r) => ({
+            id: r.id,
+            agentId: r.agent_id,
+            startedAt: toIso(r.started_at),
+            finishedAt: toIso(r.finished_at),
+            exitCode: r.exit_code,
+            durationMs: (r.started_at && r.finished_at)
+              ? Math.max(0, new Date(r.finished_at).getTime() - new Date(r.started_at).getTime())
+              : null,
+            stdoutPreview: r.stdout_preview || null,
+            stderrPreview: r.stderr_preview || null,
+            error: r.error || null
+          }))
+        };
+      });
+
+      res.json({ refreshSeconds: 10, packages });
+    } catch (e) {
+      logger.error({ err: e }, 'packages-runs failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }

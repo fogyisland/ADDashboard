@@ -1168,3 +1168,141 @@ test("GET /api/dashboard/partner-port-health/all: R56 dedup — one partner per 
   assert.equal(partner.portHealth[0].statusCode, 1);
   assert.equal(partner.portHealth[0].ports.length, 1);
 });
+
+// ----- R67-T2: GET /api/dashboard/packages-runs (包执行状态监控) -----
+
+test('packages-runs: 401 when no token', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const app = buildApp();
+  const r = await supertest(app).get('/api/dashboard/packages-runs');
+  assert.equal(r.status, 401);
+});
+
+test('packages-runs: 200 + envelope with 24h breakdown + recent runs', async () => {
+  // Two built-in scripts; recent-runs rows include success / partial / failure
+  // spans to exercise the classifier. started_at must be recent (within 24h)
+  // for the 24h counters to count; the runner-side failure is older than 24h
+  // so the failure should NOT count toward the 24h summary (but should still
+  // surface in `recent`).
+  //
+  // The mock returns rows in declaration order (the db-mock helper does not
+  // actually run SQL ORDER BY), so we list rows in started_at DESC order to
+  // mirror what `packageRuns.listRecent` would surface in production.
+  const now = Date.now();
+  const minutesAgo = (n) => new Date(now - n * 60_000);
+  const hoursAgo = (n) => new Date(now - n * 3600_000);
+
+  _setDbForTest(buildMockDb([
+    {
+      match: /FROM\s+package_scripts\b/i,
+      rows: [
+        {
+          name: 'ad_os_baseline', version: '1.0.0',
+          script_content: '...', script_sha256: 'aaaa',
+          manifest_json: JSON.stringify({ type: 'gauge', agent: { type: 'ad' }, description: 'OS baseline check' }),
+          source: 'builtin', created_at: hoursAgo(48), updated_at: hoursAgo(1)
+        },
+        {
+          name: 'ad_local_port_check', version: '1.0.0',
+          script_content: '...', script_sha256: 'bbbb',
+          manifest_json: JSON.stringify({ type: 'gauge', agent: { type: 'ad' }, description: 'Local port probe' }),
+          source: 'builtin', created_at: hoursAgo(48), updated_at: hoursAgo(2)
+        }
+      ]
+    },
+    {
+      match: /FROM\s+package_runs\b/i,
+      // Recent LIMIT 200 — handler groups by package_name + computes 24h
+      // buckets + slices first 10 per package. Listed in started_at DESC.
+      rows: [
+        // ad_os_baseline — 3 rows, all within 24h. Listed newest first.
+        { id: 3, agent_id: 'MOCK-NCADSRV1', package_name: 'ad_os_baseline',
+          started_at: minutesAgo(10), finished_at: minutesAgo(9),
+          exit_code: null, stdout_preview: 'partial', stderr_preview: 'partial output', error: null },
+        { id: 2, agent_id: 'MOCK-NCADSRV1', package_name: 'ad_os_baseline',
+          started_at: minutesAgo(20), finished_at: minutesAgo(19),
+          exit_code: 0, stdout_preview: 'ok', stderr_preview: null, error: null },
+        { id: 1, agent_id: 'MOCK-HUBADSRV1', package_name: 'ad_os_baseline',
+          started_at: minutesAgo(30), finished_at: minutesAgo(29),
+          exit_code: 0, stdout_preview: 'ok', stderr_preview: null, error: null },
+        // ad_local_port_check — 3 rows: 1 success, 1 failure (24h), 1 old failure (>24h)
+        { id: 4, agent_id: 'MOCK-HUBADSRV1', package_name: 'ad_local_port_check',
+          started_at: minutesAgo(5), finished_at: minutesAgo(4),
+          exit_code: 0, stdout_preview: 'all reachable', stderr_preview: null, error: null },
+        { id: 5, agent_id: 'MOCK-NCADSRV1', package_name: 'ad_local_port_check',
+          started_at: minutesAgo(15), finished_at: minutesAgo(14),
+          exit_code: 2, stdout_preview: null, stderr_preview: 'port 88 unreachable', error: 'port 88 unreachable' },
+        { id: 6, agent_id: 'MOCK-NCADSRV1', package_name: 'ad_local_port_check',
+          started_at: hoursAgo(30), finished_at: hoursAgo(30),
+          exit_code: 2, stdout_preview: null, stderr_preview: 'old failure', error: 'old failure' }
+      ]
+    }
+  ]).standard());
+
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/packages-runs')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+
+  assert.equal(r.status, 200);
+  assert.equal(r.body.refreshSeconds, 10);
+  assert.equal(r.body.packages.length, 2);
+
+  const baseline = r.body.packages.find((p) => p.name === 'ad_os_baseline');
+  assert.ok(baseline, 'expected ad_os_baseline package');
+  assert.equal(baseline.summary24h.total, 3);
+  assert.equal(baseline.summary24h.success, 2);
+  assert.equal(baseline.summary24h.failure, 0);
+  assert.equal(baseline.summary24h.partial, 1);
+  // All 3 rows surface in `recent` (sliced to 10)
+  assert.equal(baseline.recent.length, 3);
+  // recent is sorted by started_at DESC — id=3 (10min ago) comes first
+  assert.equal(baseline.recent[0].id, 3);
+  // exit_code=null surfaced; durationMs computed from finished - started
+  assert.equal(baseline.recent[0].exitCode, null);
+  assert.equal(baseline.recent[0].durationMs, 60_000);
+
+  const port = r.body.packages.find((p) => p.name === 'ad_local_port_check');
+  assert.ok(port);
+  // Old failure (id=6) is outside the 24h window → does NOT count toward failure
+  assert.equal(port.summary24h.total, 2);
+  assert.equal(port.summary24h.success, 1);
+  assert.equal(port.summary24h.failure, 1);
+  // recent slice: handler does not filter by 24h, so all 3 rows surface
+  // but ordered by started_at DESC → newest first
+  assert.equal(port.recent.length, 3);
+  assert.equal(port.recent[0].id, 4); // most recent (5min ago)
+  assert.equal(port.recent[port.recent.length - 1].id, 6); // oldest (30h ago)
+  // Failure row carries the stderr_preview + error string
+  const failRow = port.recent.find((r) => r.id === 5);
+  assert.equal(failRow.stderrPreview, 'port 88 unreachable');
+  assert.equal(failRow.error, 'port 88 unreachable');
+  // Old failure (id=6) is outside 24h and stays in recent[] with same shape
+  const oldRow = port.recent.find((r) => r.id === 6);
+  assert.equal(oldRow.stderrPreview, 'old failure');
+});
+
+test('packages-runs: empty packages array when no scripts installed', async () => {
+  _setDbForTest(buildMockDb([
+    { match: /FROM\s+package_scripts\b/i, rows: [] },
+    { match: /FROM\s+package_runs\b/i, rows: [] }
+  ]).standard());
+
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/packages-runs')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.packages, []);
+  assert.equal(r.body.refreshSeconds, 10);
+});
+
+test('packages-runs: 500 on db error', async () => {
+  _setDbForTest(buildThrowingPool('packages-runs boom'));
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/packages-runs')
+    .set('Authorization', `Bearer ${adminToken(['read:dash'])}`);
+  assert.equal(r.status, 500);
+  assert.deepEqual(r.body, { error: 'internal' });
+});
