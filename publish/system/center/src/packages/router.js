@@ -10,6 +10,7 @@
 //
 // ── V1 endpoints (createPackagesRouter, perm admin:users via adminAuth) ──
 //   GET    /api/admin/packages                  → merged script+policy list
+//   GET    /api/admin/packages/:name/script     → getScript (R67-T1)
 //   POST   /api/admin/packages/upload-script    → installScript
 //   PUT    /api/admin/packages/:name/script     → editScript
 //   PUT    /api/admin/packages/:name/policy     → setPolicy (partial body)
@@ -25,7 +26,7 @@ import express from 'express';
 import Ajv from 'ajv';
 import { packageScripts } from '../db/sql/package-scripts.js';
 import { packagePolicies } from '../db/sql/package-policies.js';
-import { installScript, editScript, setPolicy, deleteScript } from './script-service.js';
+import { installScript, editScript, setPolicy, deleteScript, getScript } from './script-service.js';
 import { PkgError } from './errors.js';
 
 // ─────────────────────────────────────────────────────────────────────
@@ -137,6 +138,22 @@ export function createPackagesRouter({ db, writeAudit, adminAuth, getLogger }) {
       res.json({ items });
     } catch (e) {
       serverError(res, e, log);
+    }
+  });
+
+  // GET /api/admin/packages/:name/script — return the raw script body
+  // for view-mode (R67-T1). Returns 200 with JSON envelope
+  // { name, version, scriptContent, scriptSha256, source, updatedAt } so
+  // the frontend can render it in a read-only textarea. 404 if the
+  // package doesn't exist. Every successful call emits a `view_script`
+  // audit entry — the script body is admin-only, so reads are
+  // tracked with the same audit footprint as the 4 write actions.
+  r.get('/api/admin/packages/:name/script', async (req, res) => {
+    try {
+      const result = await getScript({ db, writeAudit, name: req.params.name });
+      res.json(result);
+    } catch (e) {
+      pkgError(res, e, log);
     }
   });
 

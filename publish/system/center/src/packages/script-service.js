@@ -8,6 +8,14 @@
 // write surface over that pair — routes and the seeder call these four
 // functions instead of touching SQL directly.
 //
+// R67-T1: added `getScript` — read-only view path that returns the
+// script body without exposing the surrounding `installed_packages`
+// row. Closes the R66-T10 data-loss pattern where the EditScriptModal
+// opened with an empty textarea (because the list endpoint doesn't
+// ship script_content) and the operator had no way to see what was
+// already there before pasting a replacement. The new `viewMode` in
+// the modal calls this and locks the textarea.
+//
 // Audit: `writeAudit` is injected by the caller as a plain function
 // parameter — the service never imports an audit module. That keeps the
 // module graph acyclic (script-service is strictly downstream of db/sql)
@@ -17,6 +25,7 @@
 //
 // 2026-08-29: initial implementation for R66 task-5.
 // 2026-08-29: T13 — emit real audit.js shape directly (T7 adapter retired).
+// 2026-08-30: R67-T1 — add getScript() + view_script audit.
 
 import crypto from 'node:crypto';
 import { packageScripts } from '../db/sql/package-scripts.js';
@@ -213,6 +222,41 @@ export async function deleteScript({ db, name, writeAudit }) {
   return { name, deleted: { script: true, policy: true } };
 }
 
+// Read-only view of the current script body. R67-T1 closes the
+// R66-T10 data-loss gap: the edit modal opens with an empty textarea
+// because the list endpoint intentionally omits script_content (LONGTEXT
+// would balloon the payload), and before this method there was no API
+// for the frontend to ask "what's currently installed?". The view-mode
+// of EditScriptModal calls this and locks the textarea so the operator
+// can read the script before choosing to edit.
+//
+// Returns ONLY the script-side fields (no policy). Audit is emitted
+// (low severity, category 'changes') because every view is an admin
+// read of the deployed PowerShell — same audit footprint as the 4
+// write actions, but no schema mutation.
+export async function getScript({ db, name, writeAudit }) {
+  validateName(name);
+  const existing = await packageScripts.get(db, name);
+  if (!existing) {
+    throw new PkgError('PACKAGE_NOT_FOUND', `package '${name}' not found`);
+  }
+  if (writeAudit) {
+    await writeAudit({
+      action: 'view_script',
+      target: 'packages',
+      payload: { name, scriptSha: existing.scriptSha256.slice(0, 8) }
+    });
+  }
+  return {
+    name: existing.name,
+    version: existing.version,
+    scriptContent: existing.scriptContent,
+    scriptSha256: existing.scriptSha256,
+    source: existing.source,
+    updatedAt: existing.updatedAt
+  };
+}
+
 export const __testHelpers = {
   buildManifest,
   validateName,
@@ -223,3 +267,7 @@ export const __testHelpers = {
   VALID_AGENT_TYPES,
   MAX_SCRIPT_BYTES
 };
+
+// Test-only constant used by router tests to assert the audit-action
+// emitted by getScript without re-importing the audit-classifier.
+export const VIEW_SCRIPT_AUDIT_ACTION = 'view_script';

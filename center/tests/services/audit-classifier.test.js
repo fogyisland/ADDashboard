@@ -1,4 +1,5 @@
-// Unit tests for audit-classifier.js — round-12 T4, round-19+ delete buttons.
+// Unit tests for audit-classifier.js — round-12 T4, round-19+ delete buttons,
+// R66 package-mgmt actions, R67-T1 view_script.
 //
 // classifyAction(action) must map every audit action used by the app to a
 // category / severity / label triple. When a new action is introduced, a
@@ -16,6 +17,9 @@
 //   - delete_dc — round-19+ delete buttons on the DC tab. Removes the row
 //     from ad_dcs only (other tab keeps heartbeat visibility). Category=
 //     changes, severity=medium, label=删除 DC 记录.
+//   - view_script — R67-T1. Read-only view path that returns the raw
+//     script body for the EditScriptModal's view-mode. Category=changes,
+//     severity=low (no mutation), label=查看脚本.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -40,4 +44,11 @@ test('classifyAction: delete_dc is classified as changes/medium/删除 DC 记录
   assert.equal(c.category, 'changes');
   assert.equal(c.severity, 'medium');
   assert.equal(c.label, '删除 DC 记录');
+});
+
+test('classifyAction: view_script is classified as changes/low/查看脚本 (R67-T1)', () => {
+  const c = classifyAction('view_script');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'low');
+  assert.equal(c.label, '查看脚本');
 });

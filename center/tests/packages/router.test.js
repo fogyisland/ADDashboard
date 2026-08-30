@@ -289,3 +289,44 @@ test('POST /upload-script emits exactly one upload_script audit row with 8-char 
   assert.equal(upload.payload.source, 'admin-upload');
   assert.match(upload.payload.scriptSha, /^[0-9a-f]{8}$/);
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// R67-T1 — read-only view path for the script body. Closes the R66-T10
+// data-loss pattern: the EditScriptModal used to open with an empty
+// textarea because the list endpoint omits LONGTEXT script_content.
+// The new GET /api/admin/packages/:name/script returns the full body
+// so the modal's view-mode can render it without any operator typing.
+// ─────────────────────────────────────────────────────────────────────
+
+test('GET /:name/script returns the script body for view-mode', async () => {
+  const { app } = buildApp();
+  await uploadPkg(app, 'pkg-a', { content: 'Write-Host view-me' });
+  const r = await request(app).get('/api/admin/packages/pkg-a/script');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.name, 'pkg-a');
+  assert.equal(r.body.scriptContent, 'Write-Host view-me');
+  assert.match(r.body.scriptSha256, /^[0-9a-f]{64}$/);
+  assert.equal(r.body.source, 'admin-upload');
+});
+
+test('GET /:name/script writes exactly one view_script audit row per call', async () => {
+  const { app, auditCalls } = buildApp();
+  await uploadPkg(app, 'pkg-a');
+  auditCalls.length = 0; // discard the upload audit, focus on the view
+  const r = await request(app).get('/api/admin/packages/pkg-a/script');
+  assert.equal(r.status, 200);
+  const views = auditCalls.filter((c) => c.action === 'view_script');
+  assert.equal(views.length, 1);
+  assert.equal(views[0].target, 'packages');
+  assert.equal(views[0].payload.name, 'pkg-a');
+  assert.match(views[0].payload.scriptSha, /^[0-9a-f]{8}$/);
+});
+
+test('GET /:name/script 404 when package missing (PkgError mapping)', async () => {
+  const { app, auditCalls } = buildApp();
+  const r = await request(app).get('/api/admin/packages/no-such/script');
+  assert.equal(r.status, 404);
+  assert.equal(r.body.error, "package 'no-such' not found");
+  // No view audit should be emitted for a 404 — we only audit successful reads.
+  assert.equal(auditCalls.filter((c) => c.action === 'view_script').length, 0);
+});

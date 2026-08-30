@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { installScript, editScript, setPolicy, deleteScript } from '../../src/packages/script-service.js';
+import { installScript, editScript, setPolicy, deleteScript, getScript } from '../../src/packages/script-service.js';
 
 // Helper: build a fake db + audit recorder
 function makeFakeDb({ existingScripts = [], existingPolicies = [] } = {}) {
@@ -197,4 +197,69 @@ test('SHA256 collision (different content → different hash)', () => {
   const a = crypto.createHash('sha256').update('hello').digest('hex');
   const b = crypto.createHash('sha256').update('world').digest('hex');
   assert.notEqual(a, b);
+});
+
+// R67-T1 — getScript (read-only view path).
+// Closes the R66-T10 data-loss pattern: the EditScriptModal used to
+// open with an empty textarea because the list endpoint omits the
+// LONGTEXT script_content. This view-mode API lets the operator see
+// what is installed before choosing to replace it.
+
+test('getScript returns script body + sha256 + source + updatedAt', async () => {
+  const sha = crypto.createHash('sha256').update('hello').digest('hex');
+  const { db } = makeFakeDb({
+    existingScripts: [{
+      name: 'pkg-a', script_sha256: sha, source: 'admin-upload',
+      script_content: 'hello'
+    }]
+  });
+  const r = await getScript({ db, name: 'pkg-a', writeAudit: async () => {} });
+  assert.equal(r.name, 'pkg-a');
+  assert.equal(r.scriptContent, 'hello');
+  assert.equal(r.scriptSha256, sha);
+  assert.equal(r.source, 'admin-upload');
+});
+
+test('getScript writes a view_script audit entry on success', async () => {
+  const sha = crypto.createHash('sha256').update('hello').digest('hex');
+  const { db } = makeFakeDb({
+    existingScripts: [{ name: 'pkg-a', script_sha256: sha, source: 'admin-upload', script_content: 'hello' }]
+  });
+  const auditCalls = [];
+  await getScript({ db, name: 'pkg-a', writeAudit: async (a) => auditCalls.push(a) });
+  assert.equal(auditCalls.length, 1);
+  assert.equal(auditCalls[0].action, 'view_script');
+  assert.equal(auditCalls[0].target, 'packages');
+  // payload.scriptSha is the truncated 8-char prefix used by the
+  // other 4 script-service audit entries — keeps the audit-log
+  // table narrow without losing readability.
+  assert.equal(auditCalls[0].payload.scriptSha, sha.slice(0, 8));
+});
+
+test('getScript throws PACKAGE_NOT_FOUND when missing', async () => {
+  const { db } = makeFakeDb();
+  await assert.rejects(
+    getScript({ db, name: 'no-such', writeAudit: async () => {} }),
+    /not found/i
+  );
+});
+
+test('getScript skips audit when no writeAudit is supplied (defensive)', async () => {
+  // The route layer always passes writeAudit, but service callers
+  // (tests, internal scripts) may not. The function must not throw
+  // when writeAudit is undefined — only the audit call is conditional.
+  const sha = crypto.createHash('sha256').update('hello').digest('hex');
+  const { db } = makeFakeDb({
+    existingScripts: [{ name: 'pkg-a', script_sha256: sha, source: 'admin-upload' }]
+  });
+  const r = await getScript({ db, name: 'pkg-a' });
+  assert.equal(r.name, 'pkg-a');
+});
+
+test('getScript rejects invalid name (same validator as write paths)', async () => {
+  const { db } = makeFakeDb();
+  await assert.rejects(
+    getScript({ db, name: 'A!', writeAudit: async () => {} }),
+    /invalid package name/i
+  );
 });

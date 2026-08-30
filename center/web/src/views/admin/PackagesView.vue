@@ -5,6 +5,7 @@
    - see all installed scripts (rows from GET /api/admin/packages, new
      envelope {items: [...]})
    - upload raw PS1 scripts via UploadScriptModal
+   - view the raw script body via EditScriptModal (viewMode, R67-T1)
    - edit a script body via EditScriptModal (PUT .../script)
    - edit a script's policy via EditPolicyModal (PUT .../policy)
    - toggle enabled (PUT .../enable / disable)
@@ -23,7 +24,8 @@
     refresh-btn                — "↻ 刷新" toolbar button
     row-${name}                — table row
     script-row                 — table row class
-    edit-script-${name}        — per-row 脚本 button
+    view-script-${name}        — per-row 查看 button (R67-T1, opens modal in viewMode)
+    edit-script-${name}        — per-row 脚本 button (opens EditScriptModal)
     edit-policy-${name}        — per-row 策略 button
     toggle-${name}             — per-row 启用/禁用 button
     delete-${name}             — per-row 删除 button
@@ -83,6 +85,13 @@
           <td><code class="source">{{ it.source }}</code></td>
           <td>{{ fmt(it.updatedAt) }}</td>
           <td class="row-actions">
+            <!-- R67-T1 — view-mode entry point. Opens EditScriptModal in
+                 readonly view, closing the R66-T10 data-loss gap (the
+                 edit modal opens empty because the list endpoint omits
+                 LONGTEXT script_content; this button gives operators a
+                 way to inspect the currently-installed body before
+                 deciding whether to replace). -->
+            <button :data-test="`view-script-${it.name}`" @click="openViewScript(it)">查看</button>
             <button :data-test="`edit-script-${it.name}`" @click="openEditScript(it)">脚本</button>
             <button :data-test="`edit-policy-${it.name}`" @click="openEditPolicy(it)">策略</button>
             <button :data-test="`toggle-${it.name}`" @click="toggleEnabled(it)">
@@ -105,7 +114,8 @@
     <EditScriptModal
       v-if="editingScript"
       :item="editingScript"
-      @close="editingScript = null"
+      :view-mode="viewingScript"
+      @close="closeScriptModal"
       @saved="refresh"
     />
     <EditPolicyModal
@@ -131,6 +141,10 @@ const loading = ref(false);
 
 const showUpload = ref(false);
 const editingScript = ref(null);
+// R67-T1 — distinguishes view-mode (true) from edit-mode (false) for the
+// shared EditScriptModal instance. Both flows set `editingScript`; this
+// flag tells the modal which mode to render in.
+const viewingScript = ref(false);
 const editingPolicy = ref(null);
 
 async function refresh() {
@@ -150,7 +164,11 @@ async function refresh() {
 }
 
 function openUpload() { showUpload.value = true; }
-function openEditScript(it) { editingScript.value = it; }
+function openEditScript(it) { editingScript.value = it; viewingScript.value = false; }
+// R67-T1 — view-only entry point. Same modal, but viewMode=true triggers
+// the GET /api/admin/packages/:name/script auto-fetch + readonly render.
+function openViewScript(it) { editingScript.value = it; viewingScript.value = true; }
+function closeScriptModal() { editingScript.value = null; viewingScript.value = false; }
 function openEditPolicy(it) { editingPolicy.value = it; }
 
 async function toggleEnabled(it) {

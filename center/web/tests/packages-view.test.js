@@ -12,6 +12,8 @@ import { mount, flushPromises } from '@vue/test-utils';
 vi.mock('../src/api/packages.js', () => ({
   packagesApi: {
     list: vi.fn(),
+    // R67-T1 — added for the view-mode entry point on the row.
+    getScript: vi.fn(),
     uploadScript: vi.fn(),
     editScript: vi.fn(),
     setPolicy: vi.fn(),
@@ -150,4 +152,60 @@ test('PackagesView toggle button calls enable or disable based on current enable
   await w.find('[data-test="toggle-pkg-off"]').trigger('click');
   await flushPromises();
   expect(packagesApi.enable).toHaveBeenCalledWith('pkg-off');
+});
+
+// 8. R67-T1 — 查看 (view) button on the row opens EditScriptModal in viewMode.
+//    Closes the R66-T10 data-loss gap: the edit modal opens with an empty
+//    textarea (the list endpoint omits LONGTEXT script_content), so the
+//    operator previously had no way to see the currently-installed body
+//    without re-uploading it.
+test('PackagesView view button opens EditScriptModal in viewMode (R67-T1)', async () => {
+  const items = makeItems(1, { name: 'pkg-a' });
+  packagesApi.list.mockResolvedValue({ data: { items } });
+  const w = mount(PackagesView, { global: globalStubs });
+  await flushPromises();
+  // Click the per-row 查看 button.
+  await w.find('[data-test="view-script-pkg-a"]').trigger('click');
+  await flushPromises();
+  // The shared EditScriptModal mounts with viewMode=true → view variant root.
+  const viewModal = w.find('[data-test="edit-script-modal-view"]');
+  expect(viewModal.exists()).toBe(true);
+  // The edit-mode root is NOT mounted.
+  expect(w.find('[data-test="edit-script-modal"]').exists()).toBe(false);
+});
+
+// 9. R67-T1 — clicking the existing 脚本 (edit) button still mounts the
+//    edit-mode variant (NOT the view variant). No regression for the
+//    original edit path.
+test('PackagesView edit button still opens EditScriptModal in edit-mode (no regression)', async () => {
+  const items = makeItems(1, { name: 'pkg-a' });
+  packagesApi.list.mockResolvedValue({ data: { items } });
+  const w = mount(PackagesView, { global: globalStubs });
+  await flushPromises();
+  await w.find('[data-test="edit-script-pkg-a"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="edit-script-modal"]').exists()).toBe(true);
+  expect(w.find('[data-test="edit-script-modal-view"]').exists()).toBe(false);
+});
+
+// 10. R67-T1 — switching between view and edit resets the shared modal
+//     cleanly. After view → close, the next edit click opens edit mode
+//     (not the leftover view variant).
+test('PackagesView view → close → edit cleanly toggles between modal variants', async () => {
+  const items = makeItems(1, { name: 'pkg-a' });
+  packagesApi.list.mockResolvedValue({ data: { items } });
+  const w = mount(PackagesView, { global: globalStubs });
+  await flushPromises();
+  // View, then close.
+  await w.find('[data-test="view-script-pkg-a"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="edit-script-modal-view"]').exists()).toBe(true);
+  await w.find('[data-test="edit-script-cancel"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="edit-script-modal-view"]').exists()).toBe(false);
+  // Edit next.
+  await w.find('[data-test="edit-script-pkg-a"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="edit-script-modal"]').exists()).toBe(true);
+  expect(w.find('[data-test="edit-script-modal-view"]').exists()).toBe(false);
 });

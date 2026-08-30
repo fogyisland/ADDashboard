@@ -1,50 +1,76 @@
 <!--
-  R66 T10 — EditScriptModal.vue
+  R66 T10 — EditScriptModal.vue (default mode = replace script body)
+  R67-T1    — viewMode prop (read-only view of the currently-installed body)
 
-  Single-textarea modal for replacing the body of an existing script.
-  Backend computes the new sha256; if it matches the existing one the
-  service returns noOp:true and we still close (the operator's intent
-  was "make this change" — even if the change is a no-op).
+  Default mode opens with an empty textarea (the list endpoint omits the
+  LONGTEXT script_content); the operator pastes the replacement body and
+  the backend computes the new sha256. If sha matches the existing one the
+  service returns noOp:true and we still close (operator intent was "make
+  this change" — even if it's a no-op).
 
-  data-test contract:
+  viewMode=true (R67-T1) auto-fetches the script body via
+  GET /api/admin/packages/:name/script on mount, renders it in a readonly
+  textarea, and exposes only the Close button — the operator can inspect
+  what is currently installed before deciding to replace it. Every
+  successful fetch emits a view_script audit row on the backend.
+
+  data-test contract (default mode):
     edit-script-modal      — modal root
     edit-script-name       — read-only name label
     edit-script-input      — textarea
     edit-script-submit     — submit button
     edit-script-cancel     — cancel button
     edit-script-error      — inline error display
+
+  data-test contract (viewMode=true):
+    edit-script-modal-view — modal root (variant)
+    edit-script-name       — read-only name label
+    edit-script-input      — readonly textarea (pre-filled)
+    edit-script-cancel     — close button (only footer action)
+    edit-script-error      — inline fetch-error display
 -->
 <template>
   <div class="modal-bg" @click.self="cancel">
-    <div class="modal" data-test="edit-script-modal">
-      <header><h3>编辑脚本</h3></header>
+    <div
+      class="modal"
+      :data-test="viewMode ? 'edit-script-modal-view' : 'edit-script-modal'"
+    >
+      <header><h3>{{ viewMode ? '查看脚本' : '编辑脚本' }}</h3></header>
       <section class="form-body">
         <div class="field">
           <span class="label">脚本名称</span>
           <code class="name-tag" data-test="edit-script-name">{{ item?.name }}</code>
         </div>
         <label class="field">
-          <span class="label">脚本内容 (collect.ps1) <em>*</em></span>
+          <span class="label">
+            脚本内容 (collect.ps1) <em v-if="!viewMode">*</em>
+            <span v-if="viewMode && scriptSha" class="sha-hint">sha256: {{ scriptSha.slice(0, 12) }}…</span>
+          </span>
           <textarea
             v-model="content"
             data-test="edit-script-input"
             rows="18"
-            required
+            :readonly="viewMode || loading"
+            :required="!viewMode"
             maxlength="1048576"
-            placeholder="粘贴替换后的 PowerShell 脚本"
+            :placeholder="viewMode ? '加载中…' : '粘贴替换后的 PowerShell 脚本'"
           />
         </label>
-        <p class="hint">后端会重新计算 sha256;若内容未变则审计日志会标记 noOp。</p>
+        <p class="hint" v-if="!viewMode">后端会重新计算 sha256;若内容未变则审计日志会标记 noOp。</p>
+        <p class="hint" v-else>只读视图 — 关闭后如需修改请点 脚本 进入编辑模式。每次查看均会写入审计日志(view_script)。</p>
         <p v-if="error" class="error" data-test="edit-script-error">{{ error }}</p>
       </section>
       <footer>
-        <button type="button" data-test="edit-script-cancel" @click="cancel" :disabled="submitting">取消</button>
+        <button type="button" data-test="edit-script-cancel" @click="cancel" :disabled="submitting">
+          {{ viewMode ? '关闭' : '取消' }}
+        </button>
         <button
+          v-if="!viewMode"
           type="button"
           data-test="edit-script-submit"
           class="primary"
           @click="submit"
-          :disabled="submitting"
+          :disabled="submitting || loading"
         >{{ submitting ? '保存中…' : '保存' }}</button>
       </footer>
     </div>
@@ -52,21 +78,25 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { packagesApi } from '../../api/packages.js';
 
 const props = defineProps({
-  item: { type: Object, required: true }
+  item: { type: Object, required: true },
+  // R67-T1 — when true, the modal becomes a read-only viewer:
+  // auto-fetches the script body, renders in readonly textarea,
+  // hides the Save button. Closes via the same `close` emit.
+  viewMode: { type: Boolean, default: false }
 });
 const emit = defineEmits(['close', 'saved']);
 
-// Initialize from the item's content if provided, otherwise empty. The
-// list endpoint (GET /api/admin/packages) does not include script_content
-// (it's LONGTEXT and would balloon the payload), so the modal typically
-// opens with an empty textarea and the operator pastes the new body.
-const content = ref(props.item?.scriptContent || '');
+// Default mode starts empty (list endpoint omits LONGTEXT script_content);
+// viewMode is filled in by the onMounted fetch below.
+const content = ref(props.viewMode ? '' : (props.item?.scriptContent || ''));
+const scriptSha = ref(props.item?.scriptSha256 || '');
 const error = ref('');
 const submitting = ref(false);
+const loading = ref(false);
 
 function validate() {
   if (!props.item?.name) return '缺少脚本名称';
@@ -92,6 +122,25 @@ async function submit() {
 }
 
 function cancel() { emit('close'); }
+
+// R67-T1 — viewMode path. Fetch the full script body once on mount so the
+// operator can see what is currently installed (the list endpoint's
+// `script_content` column is intentionally omitted to keep payloads small).
+// Every successful fetch is audit-trailed on the backend as `view_script`.
+onMounted(async () => {
+  if (!props.viewMode) return;
+  loading.value = true;
+  error.value = '';
+  try {
+    const r = await packagesApi.getScript(props.item.name);
+    content.value = r.data?.scriptContent || '';
+    scriptSha.value = r.data?.scriptSha256 || scriptSha.value;
+  } catch (e) {
+    error.value = e?.response?.data?.error || '加载脚本内容失败';
+  } finally {
+    loading.value = false;
+  }
+});
 </script>
 
 <style scoped>
@@ -108,8 +157,13 @@ function cancel() { emit('close'); }
 .modal header h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
 .form-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-.field .label { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.field .label { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; display: flex; gap: 8px; align-items: baseline; }
 .field .label em { color: var(--red); font-style: normal; margin-left: 2px; }
+.sha-hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px; letter-spacing: 0; text-transform: none;
+  color: var(--muted); font-weight: 400;
+}
 .name-tag {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px; padding: 6px 10px;
@@ -122,6 +176,11 @@ function cancel() { emit('close'); }
   padding: 6px 8px; font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   min-height: 280px; resize: vertical;
+}
+/* view-mode textarea: slightly muted so the readonly distinction reads */
+.field textarea[readonly] {
+  background: #060d18; color: var(--text); cursor: default;
+  border-color: #1e293b;
 }
 .field textarea:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
 .hint { color: var(--muted); font-size: 11px; margin: 0; }

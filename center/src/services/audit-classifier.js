@@ -98,7 +98,14 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['edit_script',     'changes'],
   ['set_policy',      'changes'],
   ['delete_script',   'changes'],
-  ['bulk_migrate',    'changes']
+  ['bulk_migrate',    'changes'],
+  // 2026-08-30 R67-T1 — view_script. Read-only path that returns the
+  // raw script body for the EditScriptModal's view-mode. Reads the
+  // deployed PowerShell (admin-only surface), so it earns the same
+  // audit footprint as the write actions. 'changes' because it
+  // reflects an admin interacting with the package catalog, not an
+  // ops action on the heartbeat/report side.
+  ['view_script',     'changes']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -189,7 +196,12 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['edit_script',     'low'],
   ['set_policy',      'low'],
   ['delete_script',   'medium'],
-  ['bulk_migrate',    'info']
+  ['bulk_migrate',    'info'],
+  // 2026-08-30 R67-T1 — view_script is read-only. Low severity
+  // (no mutation, no schema impact) but it IS an admin reading the
+  // deployed PowerShell — kept audit-trailed (not info) so the
+  // operations log surfaces "who looked at the script body".
+  ['view_script',     'low']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -278,7 +290,10 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['edit_script',     '编辑脚本'],
   ['set_policy',      '设置执行策略'],
   ['delete_script',   '删除脚本'],
-  ['bulk_migrate',    '批量迁移脚本']
+  ['bulk_migrate',    '批量迁移脚本'],
+  // 2026-08-30 R67-T1 — view_script label for the read-only path that
+  // returns the raw script body to EditScriptModal's view-mode.
+  ['view_script',     '查看脚本']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([
