@@ -142,10 +142,11 @@ const VARIANTS = {
       topologyNodes: `
         SELECT s.site_id   AS site_id,
                s.site_name AS site_name,
+               s.is_hub    AS is_hub,
                d.dc_name   AS dc_name
         FROM ad_sites s
         LEFT JOIN ad_dcs d ON d.site_id = s.site_id
-        ORDER BY s.site_name, d.dc_name
+        ORDER BY s.is_hub DESC, s.site_name, d.dc_name
       `,
       topologyLinks: `
         SELECT t1.source_dc, t1.dest_dc, t1.status_code, t1.last_success_time
@@ -863,10 +864,11 @@ const VARIANTS = {
       topologyNodes: `
         SELECT s.site_id   AS site_id,
                s.site_name AS site_name,
+               s.is_hub    AS is_hub,
                d.dc_name   AS dc_name
         FROM ad_sites s
         LEFT JOIN ad_dcs d ON d.site_id = s.site_id
-        ORDER BY s.site_name, d.dc_name
+        ORDER BY s.is_hub DESC, s.site_name, d.dc_name
       `,
       topologyLinks: `
         SELECT t1.source_dc, t1.dest_dc, t1.status_code, t1.last_success_time

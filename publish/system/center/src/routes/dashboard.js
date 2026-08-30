@@ -108,9 +108,21 @@ export function dashboardRouter({ config, logger, db }) {
       // the same site contribute DC children only.
       const nodes = [];
       const seenSites = new Set();
+      // 2026-08-30 R68: Hub-Spoke 拓扑分组 — 把 is_hub 标志从 SQL 一路
+      // 透传到 site 节点。TopologyChart.vue 据此:
+      //   - 把 Hub 站点画成大节点 (金色,加粗)
+      //   - 把 Spoke 站点画成小节点 (灰色,细体)
+      //   - 把 Hub-Hub 链路画成粗线 (核心层)
+      //   - 把 Spoke-Spoke 链路隐藏 (designed absence)
+      // ad_sites.is_hub 是 Operator 在 ad_sites 清单维护的权威标志
+      // (R53 已有 UI)。不需要额外字段。
       for (const row of nodesRes.rows) {
         if (row.site_name && !seenSites.has(row.site_name)) {
-          nodes.push({ name: row.site_name, type: 'site' });
+          nodes.push({
+            name: row.site_name,
+            type: 'site',
+            isHub: !!row.is_hub
+          });
           seenSites.add(row.site_name);
         }
         if (row.dc_name) {

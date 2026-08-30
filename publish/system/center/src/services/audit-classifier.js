@@ -105,7 +105,16 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   // audit footprint as the write actions. 'changes' because it
   // reflects an admin interacting with the package catalog, not an
   // ops action on the heartbeat/report side.
-  ['view_script',     'changes']
+  ['view_script',     'changes'],
+  // 2026-08-30 R65 followup — 文件推送 (file push). Operator-initiated
+  // upload + agent-side claim/deliver/fail. All 'changes' because they
+  // touch the file-push filesystem area + write audit rows on the
+  // agent boundary. Pairs of (center-side, agent-side) actions so the
+  // audit trail reads cleanly when an agent later reports failure.
+  ['push_file_uploaded',  'changes'],
+  ['push_file_claimed',   'changes'],
+  ['push_file_delivered', 'changes'],
+  ['push_file_failed',    'changes']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -201,7 +210,17 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   // (no mutation, no schema impact) but it IS an admin reading the
   // deployed PowerShell — kept audit-trailed (not info) so the
   // operations log surfaces "who looked at the script body".
-  ['view_script',     'low']
+  ['view_script',     'low'],
+  // 2026-08-30 R65 followup — 文件推送 severity. Upload is 'low' (operator
+  // initiates, data-bearing, fully recoverable). Agent-side claimed/
+  // delivered are 'low' (status flips, no destructive effect). Failed
+  // is 'medium' — same shape as delete_script's medium-on-failure
+  // pattern because operators scan the audit trail for failed pushes
+  // when diagnosing a partial rollout.
+  ['push_file_uploaded',  'low'],
+  ['push_file_claimed',   'low'],
+  ['push_file_delivered', 'low'],
+  ['push_file_failed',    'medium']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -293,7 +312,14 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['bulk_migrate',    '批量迁移脚本'],
   // 2026-08-30 R67-T1 — view_script label for the read-only path that
   // returns the raw script body to EditScriptModal's view-mode.
-  ['view_script',     '查看脚本']
+  ['view_script',     '查看脚本'],
+  // 2026-08-30 R65 followup — 文件推送 (file push) Chinese labels.
+  // Phrasing: 推送 + verb-object. uploaded is operator-side (上传);
+  // claimed/delivered/failed are agent-side (认领/送达/失败).
+  ['push_file_uploaded',  '推送文件上传'],
+  ['push_file_claimed',   '推送文件已认领'],
+  ['push_file_delivered', '推送文件已送达'],
+  ['push_file_failed',    '推送文件失败']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([

@@ -62,8 +62,8 @@ beforeEach(() => {
 test('R62: mounts ONE ECharts instance, not two', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
-      { name: 'B', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
     ],
@@ -82,8 +82,8 @@ test('R62: mounts ONE ECharts instance, not two', async () => {
 test('R62: renders single .topology-structure with chart', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
-      { name: 'B', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
     ],
@@ -103,8 +103,8 @@ test('R62: renders single .topology-structure with chart', async () => {
 test('R62: single chart applies per-site category index (site-as-parent)', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
-      { name: 'B', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
     ],
@@ -117,8 +117,9 @@ test('R62: single chart applies per-site category index (site-as-parent)', async
   const siteB = opt.series[0].data.find(n => n.name === 'B');
   const dc1 = opt.series[0].data.find(n => n.name === 'DC1');
   expect(siteA.category).toBe(0);
-  expect(siteA.symbolSize).toBe(38);
-  expect(siteA.mass).toBe(8);
+  // R68: Hub sites use bigger symbolSize (52) and heavier mass (12).
+  expect(siteA.symbolSize).toBe(52);
+  expect(siteA.mass).toBe(12);
   expect(siteB.category).toBe(1);
   expect(dc1.category).toBe(0);
   expect(dc1.symbolSize).toBe(16);
@@ -131,8 +132,8 @@ test('R62: single chart applies per-site category index (site-as-parent)', async
 test('R62: cross-site edge label uses HUB→XM (single unified direction)', async () => {
   const data = {
     nodes: [
-      { name: '核心站点', type: 'site' },
-      { name: '厦门站点', type: 'site' },
+      { name: '核心站点', type: 'site', isHub: true },
+      { name: '厦门站点', type: 'site', isHub: true },
       { name: 'MOCK-HUBADSRV1', type: 'dc', site: '核心站点' },
       { name: 'MOCK-XMADSRV1', type: 'dc', site: '厦门站点' }
     ],
@@ -180,7 +181,7 @@ test('R62: intra-site edge label uses ↔ 内', async () => {
 test('R62: edges put arrow at target + green OK color', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
@@ -199,7 +200,7 @@ test('R62: edges put arrow at target + green OK color', async () => {
 test('R62: partial-failure link (statusCode 1) is yellow', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
@@ -216,7 +217,7 @@ test('R62: partial-failure link (statusCode 1) is yellow', async () => {
 test('R62: failure link (statusCode 2+) is red', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
@@ -234,7 +235,7 @@ test('R62: failure link (statusCode 2+) is red', async () => {
 test('R62: tooltip status word matches the 3 edge colors; no lens mention', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
@@ -288,14 +289,14 @@ test('R62: color legend renders 3-color legend strip with ok/warn/err swatches',
 test('R62: prop change re-renders the chart', async () => {
   const data1 = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' }
     ],
     links: []
   };
   const data2 = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
@@ -479,7 +480,7 @@ test('R63: distinct sites use distinct palette colors', async () => {
 test('R63: convertToPixel is called once per DC', async () => {
   const data = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'A' },
@@ -501,14 +502,14 @@ test('R63: convertToPixel is called once per DC', async () => {
 test('R63: prop change re-renders boxes with the new site count', async () => {
   const data1 = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' }
     ],
     links: []
   };
   const data2 = {
     nodes: [
-      { name: 'A', type: 'site' },
+      { name: 'A', type: 'site', isHub: true },
       { name: 'B', type: 'site' },
       { name: 'DC1', type: 'dc', site: 'A' },
       { name: 'DC2', type: 'dc', site: 'B' }
@@ -559,4 +560,137 @@ test('R63: re-firing finished without data change does not redraw boxes', async 
   const countAfter2 = setOptionMock.mock.calls
     .filter(c => c[0].graphic !== undefined).length;
   expect(countAfter2).toBe(countAfter1);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// 2026-08-30 round-68 (Hub-Spoke architecture redesign for 40 DC / 20
+// site scale): site nodes carry an `isHub` flag from the backend. Hub
+// sites render bigger/golder with bolder edges; Spoke sites are smaller
+// and faded; Spoke-Spoke cross-site edges are hidden by default
+// (designed absence — Hub-Spoke compliance).
+// ────────────────────────────────────────────────────────────────────────
+
+// R68: Hub site renders bigger and gold (load-bearing layer).
+test('R68: Hub site node is bigger + gold + bold border', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-H1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: [{ source: 'DC-H1', target: 'DC-S1', statusCode: 0 }]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const hubNode = opt.series[0].data.find(n => n.name === 'HUB-A');
+  const spokeNode = opt.series[0].data.find(n => n.name === 'SPOKE-B');
+  // Hub: bigger, gold, bold border
+  expect(hubNode.symbolSize).toBeGreaterThan(spokeNode.symbolSize);
+  expect(hubNode.itemStyle.color).toBe('#fbbf24');
+  expect(hubNode.itemStyle.borderWidth).toBeGreaterThanOrEqual(2);
+  expect(hubNode.label.fontWeight).toBeGreaterThanOrEqual(700);
+  // Spoke: smaller, faded
+  expect(spokeNode.itemStyle.color).toBe('#94a3b8');
+});
+
+// R68: Hub site mass is heavier than Spoke site (anchors the layout).
+test('R68: Hub site has higher mass than Spoke site', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-H1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const hub = opt.series[0].data.find(n => n.name === 'HUB-A');
+  const spoke = opt.series[0].data.find(n => n.name === 'SPOKE-B');
+  expect(hub.mass).toBeGreaterThan(spoke.mass);
+});
+
+// R68: backward-compat — site nodes WITHOUT isHub fall back to Spoke styling.
+test('R68: site without isHub flag defaults to Spoke (smaller, faded)', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' }, // no isHub
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const node = opt.series[0].data.find(n => n.name === 'A');
+  expect(node._isHub).toBe(false);
+  expect(node.symbolSize).toBe(32);
+  expect(node.itemStyle.color).toBe('#94a3b8');
+});
+
+// R68: Hub↔Hub cross-site edge renders BOLDER (load-bearing layer).
+test('R68: Hub↔Hub edge is bolder than Hub↔Spoke edge', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'HUB-B', type: 'site', isHub: true },
+      { name: 'SPOKE-C', type: 'site', isHub: false },
+      { name: 'DC-HA', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-HB', type: 'dc', site: 'HUB-B' },
+      { name: 'DC-SC', type: 'dc', site: 'SPOKE-C' }
+    ],
+    links: [
+      { source: 'DC-HA', target: 'DC-HB', statusCode: 0 }, // hub-hub
+      { source: 'DC-HA', target: 'DC-SC', statusCode: 0 }  // hub-spoke
+    ]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const hubHub = opt.series[0].links.find(l => l.target === 'DC-HB');
+  const hubSpoke = opt.series[0].links.find(l => l.target === 'DC-SC');
+  expect(hubHub.lineStyle.width).toBe(2.5);
+  expect(hubSpoke.lineStyle.width).toBe(1.0);
+  expect(hubHub.lineStyle.width).toBeGreaterThan(hubSpoke.lineStyle.width);
+});
+
+// R68: Spoke↔Spoke cross-site edges are HIDDEN (Hub-Spoke compliance —
+// KCC should never produce these; the view filters them defensively).
+test('R68: Spoke↔Spoke cross-site edges are filtered out (designed absence)', async () => {
+  const data = {
+    nodes: [
+      { name: 'SPOKE-A', type: 'site', isHub: false },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-SA', type: 'dc', site: 'SPOKE-A' },
+      { name: 'DC-SB', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: [{ source: 'DC-SA', target: 'DC-SB', statusCode: 0 }]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  expect(opt.series[0].links).toHaveLength(0);
+});
+
+// R68: intra-site edges (within same site) are NOT filtered regardless
+// of isHub — they stay visible as the "站点内" replication layer.
+test('R68: intra-site edges are preserved regardless of isHub', async () => {
+  const data = {
+    nodes: [
+      { name: 'SPOKE-A', type: 'site', isHub: false },
+      { name: 'DC-1', type: 'dc', site: 'SPOKE-A' },
+      { name: 'DC-2', type: 'dc', site: 'SPOKE-A' }
+    ],
+    links: [{ source: 'DC-1', target: 'DC-2', statusCode: 0 }]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  expect(opt.series[0].links).toHaveLength(1);
+  expect(opt.series[0].links[0].edgeLabel.formatter({ data: opt.series[0].links[0] }))
+    .toMatch(/↔/);
 });

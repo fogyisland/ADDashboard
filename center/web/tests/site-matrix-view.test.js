@@ -99,6 +99,16 @@ function mountView() {
   });
 }
 
+// 2026-08-30 R68: Hub-Spoke layered matrix — `data-test="cell-X-Y"` may
+// resolve to multiple sections (Hub mesh + Spoke attachment + Full matrix
+// can all contain the same pair). Scope every cell-level assertion to the
+// Full matrix so the existing R60 expectations still target the original
+// N×N surface. Hub-Spoke-specific assertions live in their own R68 tests
+// below and scope to `[data-test="hub-panel"]` / `[data-test="spoke-panel"]`.
+function fullPanel(w) {
+  return w.find('[data-test="full-panel"]');
+}
+
 // ── R64: page-level skeleton ──────────────────────────────────────────
 
 test('R64: mounts and shows page title 站点矩阵', async () => {
@@ -135,8 +145,11 @@ test('R64: empty primaries renders the empty hint', async () => {
 test('R64: renders an N×N matrix (sites as rows × sites as columns)', async () => {
   const w = mountView();
   await flushPromises();
-  const cols = w.findAll('thead .col-head');
-  const rows = w.findAll('tbody tr');
+  // 2026-08-30 R68: scope to the Full matrix panel — Hub mesh + Spoke
+  // attachment panels also render <th class="col-head"> but with different
+  // site subsets, so a global findAll would over-count.
+  const cols = fullPanel(w).findAll('thead .col-head');
+  const rows = fullPanel(w).findAll('tbody tr');
   // 3 sites in basePayload → 3 col-heads + 3 body rows + 1 corner
   expect(cols.length).toBe(3);
   expect(rows.length).toBe(3);
@@ -145,10 +158,12 @@ test('R64: renders an N×N matrix (sites as rows × sites as columns)', async ()
 test('R64: row + col headers show site name + DC count', async () => {
   const w = mountView();
   await flushPromises();
-  const firstCol = w.find('thead .col-head');
+  // 2026-08-30 R68: scope to Full panel to avoid Hub-col-head matches.
+  const panel = fullPanel(w);
+  const firstCol = panel.find('thead .col-head');
   expect(firstCol.text()).toContain('核心站点');
   expect(firstCol.text()).toContain('2 DC');
-  const firstRow = w.find('tbody .row-head');
+  const firstRow = panel.find('tbody .row-head');
   expect(firstRow.text()).toContain('核心站点');
   expect(firstRow.text()).toContain('2 DC');
 });
@@ -184,7 +199,8 @@ test('R64: green cell renders when all partner links are statusCode=0', async ()
   });
   const w2 = mountView();
   await flushPromises();
-  const cell = w2.find('[data-test="cell-A站-B站"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w2).find('[data-test="cell-A站-B站"]');
   expect(cell.classes()).toContain('cell-ok');
   expect(cell.find('.cell-glyph').text()).toBe('✓');
   expect(cell.find('.cell-num').text()).toBe('1/1');
@@ -194,7 +210,8 @@ test('R64: yellow cell when worst status is statusCode=1', async () => {
   const w = mountView();
   await flushPromises();
   // basePayload 核心 → 厦门 = DC-BJ-01(0) + DC-BJ-02(1) → worst yellow
-  const cell = w.find('[data-test="cell-核心站点-厦门站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
   expect(cell.classes()).toContain('cell-warn');
   expect(cell.find('.cell-glyph').text()).toBe('!');
 });
@@ -203,7 +220,8 @@ test('R64: red cell when any partner link is statusCode=2+', async () => {
   const w = mountView();
   await flushPromises();
   // basePayload 厦门 → 核心 = statusCode=2 → red
-  const cell = w.find('[data-test="cell-厦门站点-核心站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-厦门站点-核心站点"]');
   expect(cell.classes()).toContain('cell-err');
   expect(cell.find('.cell-glyph').text()).toBe('✕');
 });
@@ -212,7 +230,8 @@ test('R64: empty cell (no partner link between two sites) renders gray', async (
   const w = mountView();
   await flushPromises();
   // 核心 → 上海 — no link in basePayload (上海 dcPartners=[])
-  const cell = w.find('[data-test="cell-核心站点-上海站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-上海站点"]');
   expect(cell.classes()).toContain('cell-none');
   expect(cell.find('.cell-glyph').text()).toBe('·');
   expect(cell.find('.cell-num').text()).toBe('—');
@@ -221,7 +240,8 @@ test('R64: empty cell (no partner link between two sites) renders gray', async (
 test('R64: self-loop cell (same site × same site) renders dashed', async () => {
   const w = mountView();
   await flushPromises();
-  const cell = w.find('[data-test="cell-核心站点-核心站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-核心站点"]');
   expect(cell.classes()).toContain('cell-self');
   expect(cell.find('.cell-glyph').text()).toBe('·');
   expect(cell.find('.cell-num').text()).toBe('—');
@@ -231,14 +251,16 @@ test('R64: cell text shows ok/total ratio (not raw counts)', async () => {
   const w = mountView();
   await flushPromises();
   // 核心 → 厦门 cell = DC-BJ-01(OK) + DC-BJ-02(partial) → 1/2
-  const cell = w.find('[data-test="cell-核心站点-厦门站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
   expect(cell.find('.cell-num').text()).toBe('1/2');
 });
 
 test('R64: cell tooltip lists each partner link', async () => {
   const w = mountView();
   await flushPromises();
-  const cell = w.find('[data-test="cell-核心站点-厦门站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
   const title = cell.attributes('title') || '';
   expect(title).toContain('核心站点 → 厦门站点');
   expect(title).toContain('2 条链路');
@@ -249,7 +271,8 @@ test('R64: cell tooltip lists each partner link', async () => {
 test('R64: error cell tooltip includes the error message', async () => {
   const w = mountView();
   await flushPromises();
-  const cell = w.find('[data-test="cell-厦门站点-核心站点"]');
+  // 2026-08-30 R68: scope to Full panel.
+  const cell = fullPanel(w).find('[data-test="cell-厦门站点-核心站点"]');
   const title = cell.attributes('title') || '';
   expect(title).toContain('RPC server unavailable');
 });
@@ -305,4 +328,176 @@ test('R64.2: uses AppLayout (frontend chrome) — NOT AdminLayout', async () => 
   expect(wrapperHtml).not.toContain('class="nav-group"');
   // Sanity: page-title still mounts (proves the view itself rendered).
   expect(w.find('.page-title').text()).toBe('站点矩阵');
+});
+
+// ── R68: Hub-Spoke layered panels ─────────────────────────────────────
+// 2026-08-30 R68 redesign: the R60 single N×N matrix becomes 3 stacked
+// sections — Hub mesh (load-bearing core layer), Spoke attachment
+// (Spoke → Hub), and the original Full N×N. Driven by the existing
+// `primaries[].isHub` flag from the backend (sourced from ad_sites.is_hub).
+//
+// basePayload has 1 Hub (核心站点) + 2 Spokes (厦门站点, 上海站点). So:
+//   - Hub mesh is HIDDEN (needs ≥ 2 Hubs — a 1-Hub matrix would be
+//     diagonal only)
+//   - Spoke attachment panel is VISIBLE (1 Hub col × 2 Spoke rows)
+//   - Full matrix is VISIBLE (3 × 3)
+//
+// We use a dedicated fixture for the Hub-mesh VISIBLE tests.
+
+const multiHubPayload = () => ({
+  siteRefreshSeconds: 10,
+  primaries: [
+    {
+      dcName: 'DC-BJ-01', siteId: 1, siteName: '核心站点',
+      regionCode: 'BJ', isHub: true,
+      dcs: [{ dcName: 'DC-BJ-01' }],
+      dcPartners: [{ dcName: 'DC-BJ-01', partners: [
+        { peerDc: 'DC-BJ-02', peerSite: '灾备站点', statusCode: 0,
+          errorMessage: null,
+          lastAttemptTime: '2026-08-30T01:00:00Z',
+          lastSuccessTime: '2026-08-30T01:00:00Z' }
+      ]}]
+    },
+    {
+      dcName: 'DC-BJ-02', siteId: 2, siteName: '灾备站点',
+      regionCode: 'BJ', isHub: true,
+      dcs: [{ dcName: 'DC-BJ-02' }],
+      dcPartners: [{ dcName: 'DC-BJ-02', partners: [
+        { peerDc: 'DC-BJ-01', peerSite: '核心站点', statusCode: 0,
+          errorMessage: null,
+          lastAttemptTime: '2026-08-30T01:00:00Z',
+          lastSuccessTime: '2026-08-30T01:00:00Z' }
+      ]}]
+    },
+    {
+      dcName: 'MOCK-XMADSRV1', siteId: 3, siteName: '厦门站点',
+      regionCode: 'XM', isHub: false,
+      dcs: [{ dcName: 'MOCK-XMADSRV1' }],
+      dcPartners: [{ dcName: 'MOCK-XMADSRV1', partners: [
+        { peerDc: 'DC-BJ-01', peerSite: '核心站点', statusCode: 0,
+          errorMessage: null,
+          lastAttemptTime: '2026-08-30T01:00:00Z',
+          lastSuccessTime: '2026-08-30T01:00:00Z' }
+      ]}]
+    }
+  ]
+});
+
+test('R68: legend totals include Hub / Spoke mini-tags', async () => {
+  // basePayload: 1 Hub + 2 Spokes → legend says "站点 3" with two mini-tags
+  const w = mountView();
+  await flushPromises();
+  const sitesItem = w.find('[data-test="legend-sites"]');
+  expect(sitesItem.exists()).toBe(true);
+  expect(sitesItem.text()).toContain('Hub 1');
+  expect(sitesItem.text()).toContain('Spoke 2');
+  expect(sitesItem.find('.hub-tag-mini').exists()).toBe(true);
+  expect(sitesItem.find('.spoke-tag-mini').exists()).toBe(true);
+});
+
+test('R68: Hub mesh panel is hidden when only 1 Hub exists', async () => {
+  // basePayload has 1 Hub → the panel must NOT render (it would be a
+  // 1×1 diagonal, useless to display).
+  const w = mountView();
+  await flushPromises();
+  expect(w.find('[data-test="hub-panel"]').exists()).toBe(false);
+});
+
+test('R68: Hub mesh panel renders when ≥ 2 Hubs exist', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValueOnce({
+    data: multiHubPayload()
+  });
+  const w = mountView();
+  await flushPromises();
+  const hubPanel = w.find('[data-test="hub-panel"]');
+  expect(hubPanel.exists()).toBe(true);
+  // 2 Hubs → 2 col-heads + 2 body rows
+  expect(hubPanel.findAll('thead .col-head').length).toBe(2);
+  expect(hubPanel.findAll('tbody tr').length).toBe(2);
+  // Hub↔Hub cells get the .cell-hub-pair modifier (load-bearing emphasis)
+  const cell = hubPanel.find('[data-test="cell-核心站点-灾备站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-hub-pair');
+  expect(cell.classes()).toContain('cell-ok');
+});
+
+test('R68: Hub mesh panel header carries the "承载层" tag', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValueOnce({
+    data: multiHubPayload()
+  });
+  const w = mountView();
+  await flushPromises();
+  const hubPanel = w.find('[data-test="hub-panel"]');
+  const tag = hubPanel.find('.hub-tag');
+  expect(tag.exists()).toBe(true);
+  expect(tag.text()).toMatch(/承载层/);
+  expect(tag.text()).toContain('2');
+});
+
+test('R68: Spoke attachment panel renders with Spoke rows × Hub cols', async () => {
+  // basePayload: 2 Spokes × 1 Hub → 1 col-head + 2 body rows
+  const w = mountView();
+  await flushPromises();
+  const spokePanel = w.find('[data-test="spoke-panel"]');
+  expect(spokePanel.exists()).toBe(true);
+  expect(spokePanel.findAll('thead .col-head').length).toBe(1);
+  expect(spokePanel.findAll('tbody tr').length).toBe(2);
+  // Spoke cells get the cell-hub-spoke modifier
+  const cell = spokePanel.find('[data-test="cell-厦门站点-核心站点"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-hub-spoke');
+});
+
+test('R68: Spoke attachment panel header carries the "分支 → 中心" tag', async () => {
+  const w = mountView();
+  await flushPromises();
+  const spokePanel = w.find('[data-test="spoke-panel"]');
+  const tag = spokePanel.find('.spoke-tag');
+  expect(tag.exists()).toBe(true);
+  expect(tag.text()).toMatch(/分支/);
+  expect(tag.text()).toMatch(/中心/);
+  expect(tag.text()).toContain('2');
+});
+
+test('R68: Spoke attachment panel hides when no Hubs', async () => {
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValueOnce({
+    data: {
+      siteRefreshSeconds: 10,
+      primaries: [
+        {
+          dcName: 'DC-X', siteId: 1, siteName: 'X站',
+          isHub: false, // no hubs at all
+          dcs: [{ dcName: 'DC-X' }],
+          dcPartners: [{ dcName: 'DC-X', partners: [] }]
+        }
+      ]
+    }
+  });
+  const w = mountView();
+  await flushPromises();
+  expect(w.find('[data-test="spoke-panel"]').exists()).toBe(false);
+  // Full matrix still renders.
+  expect(w.find('[data-test="full-panel"]').exists()).toBe(true);
+});
+
+test('R68: full-panel header carries the "完整视图" tag', async () => {
+  const w = mountView();
+  await flushPromises();
+  const fullPanelEl = w.find('[data-test="full-panel"]');
+  const tag = fullPanelEl.find('.layer-tag');
+  expect(tag.exists()).toBe(true);
+  expect(tag.text()).toMatch(/完整视图/);
+  expect(tag.text()).toContain('3');
+});
+
+test('R68: full-panel preserves the original N×N grid (R60/R64 contract)', async () => {
+  // The Full matrix must stay a complete N×N so deep-dive use is preserved.
+  const w = mountView();
+  await flushPromises();
+  const panel = fullPanel(w);
+  expect(panel.findAll('thead .col-head').length).toBe(3);
+  expect(panel.findAll('tbody tr').length).toBe(3);
+  // Original cell-X-Y selectors resolve inside Full panel
+  expect(panel.find('[data-test="cell-核心站点-厦门站点"]').exists()).toBe(true);
+  expect(panel.find('[data-test="cell-上海站点-核心站点"]').exists()).toBe(true);
 });

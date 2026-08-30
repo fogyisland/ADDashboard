@@ -124,11 +124,14 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
   const db = buildMockDb([
     {
       match: /FROM\s+ad_sites/i,
+      // 2026-08-30 R68: topologyNodes now SELECTs is_hub so the topology
+      // payload carries an isHub flag on every site node (TopologyChart.vue
+      // uses this to size + colour hub vs spoke nodes).
       rows: [
-        { site_id: 1, site_name: 'SITE-A', dc_name: 'DC-A1' },
-        { site_id: 1, site_name: 'SITE-A', dc_name: 'DC-A2' },
-        { site_id: 2, site_name: 'SITE-B', dc_name: 'DC-B1' },
-        { site_id: 2, site_name: 'SITE-B', dc_name: 'DC-B2' }
+        { site_id: 1, site_name: 'SITE-A', is_hub: 1, dc_name: 'DC-A1' },
+        { site_id: 1, site_name: 'SITE-A', is_hub: 1, dc_name: 'DC-A2' },
+        { site_id: 2, site_name: 'SITE-B', is_hub: 0, dc_name: 'DC-B1' },
+        { site_id: 2, site_name: 'SITE-B', is_hub: 0, dc_name: 'DC-B2' }
       ]
     },
     {
@@ -148,13 +151,18 @@ test('topology: returns nodes (site + dc) and links with source/target/statusCod
   assert.ok(Array.isArray(r.body.nodes));
   assert.ok(Array.isArray(r.body.links));
 
-  // Site nodes: only `name`
+  // Site nodes: name + isHub (R68)
   const siteNodes = r.body.nodes.filter(n => n.type === 'site');
   assert.equal(siteNodes.length, 2, 'expect 2 site nodes (SITE-A + SITE-B)');
   for (const n of siteNodes) {
     assert.ok(typeof n.name === 'string');
     assert.equal(n.site, undefined);
+    assert.ok(typeof n.isHub === 'boolean', `site node ${n.name} should expose isHub`);
   }
+  const hubNode = siteNodes.find(n => n.name === 'SITE-A');
+  const spokeNode = siteNodes.find(n => n.name === 'SITE-B');
+  assert.equal(hubNode.isHub, true, 'SITE-A was is_hub=1');
+  assert.equal(spokeNode.isHub, false, 'SITE-B was is_hub=0');
   // DC nodes: name + site
   const dcNodes = r.body.nodes.filter(n => n.type === 'dc');
   assert.equal(dcNodes.length, 4, 'expect 4 DC nodes (DC-A1, DC-A2, DC-B1, DC-B2)');

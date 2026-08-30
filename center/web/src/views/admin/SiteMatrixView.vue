@@ -41,7 +41,9 @@
       </div>
     </header>
 
-    <!-- Legend + 1-line totals — operator reads these in 1 second. -->
+    <!-- Legend + 1-line totals — operator reads these in 1 second. The
+         "站点 N (Hub X · Spoke Y)" item surfaces the Hub-Spoke split (R68)
+         so the operator sees the architecture shape at a glance. -->
     <div class="legend" data-test="legend">
       <span class="legend-item">
         <span class="swatch swatch-ok"></span>正常 <strong>{{ totals.ok }}</strong>
@@ -53,7 +55,11 @@
         <span class="swatch swatch-err"></span>断开 <strong>{{ totals.err }}</strong>
       </span>
       <span class="legend-divider"></span>
-      <span class="legend-item muted">站点 <strong>{{ totals.sites }}</strong></span>
+      <span class="legend-item muted" data-test="legend-sites">
+        站点 <strong>{{ totals.sites }}</strong>
+        <span class="hub-tag-mini">Hub {{ hubSites.length }}</span>
+        <span class="spoke-tag-mini">Spoke {{ spokeSites.length }}</span>
+      </span>
       <span class="legend-item muted">域控 <strong>{{ totals.dcs }}</strong></span>
       <span class="legend-item muted">链路 <strong>{{ totals.links }}</strong></span>
     </div>
@@ -62,45 +68,173 @@
 
     <div v-if="!primaries.length && !error" class="empty">暂无站点 — 请在 AD 站点清单添加</div>
 
-    <div v-if="sites.length" class="matrix-wrap" data-test="matrix">
-      <table class="matrix">
-        <thead>
-          <tr>
-            <th class="row-head-corner" scope="col"></th>
-            <th
-              v-for="s in sites"
-              :key="`col-${s.siteName}`"
-              scope="col"
-              class="col-head"
-              :title="`${s.siteName} · ${s.dcCount} DC`"
-            >
-              <div class="col-name">{{ s.siteName }}</div>
-              <div class="col-meta">{{ s.dcCount }} DC</div>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="rs in sites" :key="`row-${rs.siteName}`">
-            <th scope="row" class="row-head" :title="`${rs.siteName} · ${rs.dcCount} DC`">
-              <div class="row-name">{{ rs.siteName }}</div>
-              <div class="row-meta">
-                <span class="row-meta-num">{{ rs.dcCount }}</span><span class="row-meta-label"> DC</span>
-              </div>
-            </th>
-            <td
-              v-for="cs in sites"
-              :key="`cell-${rs.siteName}-${cs.siteName}`"
-              :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`]"
-              :data-test="`cell-${rs.siteName}-${cs.siteName}`"
-              :title="cellTooltip(rs.siteName, cs.siteName)"
-            >
-              <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
-              <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <!-- ── Panel 1: 核心层 Hub ↔ Hub (R68 layered matrix). ─────────────
+         Only renders when ≥ 2 Hubs (a single Hub would be a self-loop).
+         Hub↔Hub is the load-bearing layer: failures here fan out to every
+         Spoke. Cells get extra visual emphasis (gold tint + thicker border)
+         via the `.cell-hub-pair` modifier. -->
+    <section
+      v-if="hubSites.length >= 2"
+      class="layer-panel hub-panel"
+      data-test="hub-panel"
+    >
+      <header class="layer-header">
+        <h3 class="layer-title">核心层 (Hub ↔ Hub)</h3>
+        <span class="layer-tag hub-tag">承载层 · {{ hubSites.length }} 中心</span>
+      </header>
+      <p class="layer-sub">核心站点相互复制,这是 Hub-Spoke 架构的"承载层",故障会立即放大到所有分支。</p>
+      <div class="matrix-wrap">
+        <table class="matrix hub-matrix">
+          <thead>
+            <tr>
+              <th class="row-head-corner" scope="col"></th>
+              <th
+                v-for="s in hubSites"
+                :key="`hub-col-${s.siteName}`"
+                scope="col"
+                class="col-head hub-col-head"
+                :title="`${s.siteName} · ${s.dcCount} DC`"
+              >
+                <div class="col-name">{{ s.siteName }}</div>
+                <div class="col-meta">{{ s.dcCount }} DC</div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rs in hubSites" :key="`hub-row-${rs.siteName}`">
+              <th scope="row" class="row-head hub-row-head" :title="`${rs.siteName} · ${rs.dcCount} DC`">
+                <div class="row-name">{{ rs.siteName }}</div>
+                <div class="row-meta">
+                  <span class="row-meta-num">{{ rs.dcCount }}</span><span class="row-meta-label"> DC</span>
+                </div>
+              </th>
+              <td
+                v-for="cs in hubSites"
+                :key="`hub-cell-${rs.siteName}-${cs.siteName}`"
+                :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`, 'cell-hub-pair']"
+                :data-test="`cell-${rs.siteName}-${cs.siteName}`"
+                :title="cellTooltip(rs.siteName, cs.siteName)"
+              >
+                <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
+                <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Panel 2: 接入层 Spoke → Hub. ────────────────────────────────
+         Each Spoke row × each Hub col shows whether the Spoke is inbound-
+         replicating from each Hub. Inbound-only: cellState(src=Spoke, dst=Hub)
+         = is Spoke receiving from Hub. The reverse direction (Hub receiving
+         from Spoke) is the "designed absence" — only visible in panel 3. -->
+    <section
+      v-if="spokeSites.length && hubSites.length"
+      class="layer-panel spoke-panel"
+      data-test="spoke-panel"
+    >
+      <header class="layer-header">
+        <h3 class="layer-title">接入层 (Spoke → Hub)</h3>
+        <span class="layer-tag spoke-tag">分支 → 中心 · {{ spokeSites.length }} 分支</span>
+      </header>
+      <p class="layer-sub">每个分支站点到各 Hub 中心的复制状态。Spoke 应只向就近 Hub 复制,Spoke↔Spoke 不应有链路(违反 Hub-Spoke)。</p>
+      <div class="matrix-wrap">
+        <table class="matrix spoke-matrix">
+          <thead>
+            <tr>
+              <th class="row-head-corner" scope="col"></th>
+              <th
+                v-for="h in hubSites"
+                :key="`spoke-col-${h.siteName}`"
+                scope="col"
+                class="col-head hub-col-head"
+                :title="`${h.siteName} · ${h.dcCount} DC`"
+              >
+                <div class="col-name">{{ h.siteName }}</div>
+                <div class="col-meta">中心</div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="sp in spokeSites" :key="`spoke-row-${sp.siteName}`">
+              <th scope="row" class="row-head spoke-row-head" :title="`${sp.siteName} · ${sp.dcCount} DC`">
+                <div class="row-name">{{ sp.siteName }}</div>
+                <div class="row-meta">
+                  <span class="row-meta-num">{{ sp.dcCount }}</span><span class="row-meta-label"> DC</span>
+                </div>
+              </th>
+              <td
+                v-for="hub in hubSites"
+                :key="`spoke-cell-${sp.siteName}-${hub.siteName}`"
+                :class="['cell', `cell-${cellState(sp.siteName, hub.siteName)}`, 'cell-hub-spoke']"
+                :data-test="`cell-${sp.siteName}-${hub.siteName}`"
+                :title="cellTooltip(sp.siteName, hub.siteName)"
+              >
+                <span class="cell-glyph">{{ cellGlyph(sp.siteName, hub.siteName) }}</span>
+                <span class="cell-num">{{ cellText(sp.siteName, hub.siteName) }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Panel 3: 全矩阵 (所有站点). ──────────────────────────────────
+         The original R60 N×N matrix. Preserved verbatim for deep-dive use:
+         every site pair is visible, including Spoke↔Spoke (which R68 marks
+         as "designed absence" — these cells SHOULD be empty in Hub-Spoke
+         compliance). The view stays fully compatible with the existing
+         test selectors (`data-test="cell-X-Y"` resolves here). -->
+    <section
+      v-if="sites.length"
+      class="layer-panel full-panel"
+      data-test="full-panel"
+    >
+      <header class="layer-header">
+        <h3 class="layer-title">全矩阵 (所有站点)</h3>
+        <span class="layer-tag">完整视图 · {{ sites.length }} 站点 × {{ sites.length }} 站点</span>
+      </header>
+      <div class="matrix-wrap">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th class="row-head-corner" scope="col"></th>
+              <th
+                v-for="s in sites"
+                :key="`col-${s.siteName}`"
+                scope="col"
+                class="col-head"
+                :title="`${s.siteName} · ${s.dcCount} DC`"
+              >
+                <div class="col-name">{{ s.siteName }}</div>
+                <div class="col-meta">{{ s.dcCount }} DC</div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rs in sites" :key="`row-${rs.siteName}`">
+              <th scope="row" class="row-head" :title="`${rs.siteName} · ${rs.dcCount} DC`">
+                <div class="row-name">{{ rs.siteName }}</div>
+                <div class="row-meta">
+                  <span class="row-meta-num">{{ rs.dcCount }}</span><span class="row-meta-label"> DC</span>
+                </div>
+              </th>
+              <td
+                v-for="cs in sites"
+                :key="`cell-${rs.siteName}-${cs.siteName}`"
+                :class="['cell', `cell-${cellState(rs.siteName, cs.siteName)}`]"
+                :data-test="`cell-${rs.siteName}-${cs.siteName}`"
+                :title="cellTooltip(rs.siteName, cs.siteName)"
+              >
+                <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
+                <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </AppLayout>
 </template>
 
@@ -117,11 +251,32 @@ const polling = ref(false);
 
 let timerHandle = null;
 
-// ── Site list (preserves backend order). ───────────────────────────────
+// ── Site list (preserves backend order). Includes isHub so the Hub/Spoke
+//    partition (R68) can split sites into the two layered panels below. ──
 const sites = computed(() => primaries.value.map(p => ({
   siteName: p.siteName,
-  dcCount: (p.dcs || []).length
+  dcCount: (p.dcs || []).length,
+  isHub: !!p.isHub
 })));
+
+// ── Hub / Spoke partition (R68 Hub-Spoke layered matrix). ─────────────
+// Backend already tags each primary with isHub (= ad_sites.is_hub, sourced
+// from the SQL JOIN at /api/dashboard/site-replication-matrix/all).
+// Order is preserved (backend's allSitesOrdered helper) so Hubs lead the
+// panel 1 mesh; Spokes trail behind in panel 2.
+const hubSites   = computed(() => sites.value.filter(s => s.isHub));
+const spokeSites = computed(() => sites.value.filter(s => !s.isHub));
+
+// Set lookup so isHubPair is O(1) per call (cell renderers call it many
+// times per matrix). Recomputes only when hubSites changes.
+const hubSiteSet = computed(() => new Set(hubSites.value.map(s => s.siteName)));
+
+// Both endpoints are Hub? Used to apply the load-bearing visual emphasis
+// (gold-tinted background + thicker border) to Hub↔Hub cells.
+function isHubPair(siteA, siteB) {
+  const set = hubSiteSet.value;
+  return set.has(siteA) && set.has(siteB);
+}
 
 // ── Build (sourceSite|destSite) → partner[] from the loaded payload. ──
 // Single pass over the payload; cells look up their partner list from
@@ -429,5 +584,121 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
   background: var(--panel-alt);
   border: 1px dashed var(--border);
   color: var(--muted);
+}
+
+/* ===== R68: Hub-Spoke layered panels + Hub visual emphasis ===========
+   The page is now organised as 3 stacked sections (Panel 1 Hub mesh,
+   Panel 2 Spoke attachment, Panel 3 Full matrix). Each panel gets its
+   own header strip with a coloured tag so the operator can see at a
+   glance which layer they're reading. Hub↔Hub cells get a gold-tinted
+   background + thicker border so the load-bearing layer stands out. */
+.layer-panel {
+  margin-bottom: 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px 16px 16px;
+}
+.layer-panel:last-child { margin-bottom: 0; }
+.layer-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.layer-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.layer-sub {
+  margin: 0 0 10px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.layer-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+}
+.hub-tag {
+  color: #b45309;
+  background: rgba(251, 191, 36, 0.16);
+  border-color: rgba(251, 191, 36, 0.5);
+}
+.spoke-tag {
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+.hub-tag-mini,
+.spoke-tag-mini {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin: 0 2px;
+}
+.hub-tag-mini {
+  color: #b45309;
+  background: rgba(251, 191, 36, 0.16);
+}
+.spoke-tag-mini {
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.16);
+}
+
+/* ── Hub column / row header tinting ─────────────────────────────────── */
+.hub-col-head {
+  background: rgba(251, 191, 36, 0.10);
+  border-color: rgba(251, 191, 36, 0.5);
+  color: #fde68a;
+}
+.hub-row-head {
+  background: rgba(251, 191, 36, 0.10);
+  border-color: rgba(251, 191, 36, 0.5);
+  color: #fde68a;
+}
+.spoke-row-head {
+  color: var(--muted);
+}
+
+/* ── Cell layer modifiers ─────────────────────────────────────────────
+   .cell-hub-pair applies to Hub↔Hub cells (load-bearing layer):
+   thicker border + slightly tinted background so the operator's eye
+   lands on them first. State colours (ok/warn/err) win over the base. */
+.cell-hub-pair {
+  border-width: 2px;
+  font-weight: 600;
+}
+.cell-hub-pair.cell-ok {
+  background: rgba(251, 191, 36, 0.20);
+  border-color: rgba(251, 191, 36, 0.7);
+  color: #92400e;
+}
+.cell-hub-pair.cell-ok .cell-glyph { color: #92400e; }
+.cell-hub-pair.cell-warn {
+  background: rgba(251, 191, 36, 0.18);
+  border-color: rgba(234, 179, 8, 0.7);
+}
+.cell-hub-pair.cell-err {
+  background: rgba(251, 146, 60, 0.20);
+  border-color: rgba(239, 68, 68, 0.7);
+}
+
+/* Spoke↔Hub cells: normal weight, but slightly smaller to keep the
+   panel from dominating when there are many Spokes (40-DC / 20-site
+   environments can hit 15 spokes × 5 hubs = 75 cells). */
+.cell-hub-spoke {
+  min-width: 70px;
 }
 </style>

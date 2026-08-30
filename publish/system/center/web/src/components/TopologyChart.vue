@@ -20,6 +20,10 @@
     - R61 — change panels from vertical to horizontal + 3-color edges
     - R62 — collapse back to ONE chart; arrow direction is enough
     - R63 — wrap each site's DCs in a colored site bounding box
+    - R68 — Hub-Spoke visual emphasis: Hub sites rendered bigger/golder
+      with bold border; Spoke sites smaller/fainter; Hub↔Hub edges
+      rendered bolder (the load-bearing layer); Spoke→Spoke edges
+      hidden by default (designed absence — Hub-Spoke compliance).
 
   Layout choices (single canvas):
     - Sites get per-site category index → ECharts force layout clusters
@@ -31,6 +35,18 @@
       (statusCode 2+). Matches R60 复制状态概览 + R61 vocabulary.
     - Edge label = "SourceSite→DestSite" for cross-site links,
       "↔ 内" for intra-site links.
+
+  Hub-Spoke (R68):
+    - Hub site node: symbolSize 52, gold (#fbbf24) roundRect, mass 12,
+      bold border on bounding box. The "load-bearing" layer of the topology.
+    - Spoke site node: symbolSize 32, faded (#94a3b8) roundRect, mass 6,
+      thinner border on bounding box.
+    - Hub↔Hub edges: lineStyle.width 2.5 (visually heavier).
+    - Spoke→Hub / Hub→Spoke edges: lineStyle.width 1.0 (thinner).
+    - Spoke↔Spoke edges: hidden (filtered out before rendering — these
+      are designed absences per Hub-Spoke compliance).
+    - Visual is driven by `n.isHub` on each site node (sourced from
+      ad_sites.is_hub in the backend, exposed via /api/dashboard/topology).
 -->
 <template>
   <!-- 3-color legend (green/yellow/red) so the operator can map edge
@@ -118,23 +134,38 @@ function buildOption() {
   const siteIndex = new Map(siteOrder.value.map((s, i) => [s, i]));
   const dcSites = dcSiteLookup();
 
+  // R68: Hub set (sites flagged isHub=true). Drives node sizing, color,
+  // and edge-weight emphasis. Built once per render.
+  const hubSet = new Set();
+  for (const n of (props.data.nodes || [])) {
+    if (n.type === 'site' && n.isHub) hubSet.add(n.name);
+  }
+
   const nodes = (props.data.nodes || []).map(n => {
     const isSite = n.type === 'site';
+    const isHub = isSite && hubSet.has(n.name);
     return {
       name: n.name,
       // R63: remember site membership so renderSiteBoxes can group DCs
       // into per-site bounding boxes after force layout settles.
       _siteName: isSite ? n.name : (n.site || null),
+      _isHub: isHub,
       category: isSite ? (siteIndex.get(n.name) ?? 0) : (siteIndex.get(n.site) ?? 0),
-      symbolSize: isSite ? 38 : 16,
-      mass: isSite ? 8 : 1,
+      // R68: Hub sites are bigger/heavier; Spoke sites are smaller.
+      symbolSize: isHub ? 52 : isSite ? 32 : 16,
+      mass: isHub ? 12 : isSite ? 6 : 1,
       symbol: isSite ? 'roundRect' : 'circle',
-      itemStyle: { color: isSite ? '#38bdf8' : '#94a3b8' },
+      itemStyle: {
+        // R68: Hub = gold (load-bearing layer); Spoke = faded.
+        color: isHub ? '#fbbf24' : isSite ? '#94a3b8' : '#94a3b8',
+        borderColor: isHub ? '#fde68a' : (isSite ? '#64748b' : 'transparent'),
+        borderWidth: isHub ? 2 : (isSite ? 1 : 0)
+      },
       label: {
         show: true,
-        color: isSite ? '#e2e8f0' : '#cbd5e1',
-        fontWeight: isSite ? 600 : 400,
-        fontSize: isSite ? 13 : 11
+        color: isHub ? '#fef3c7' : isSite ? '#e2e8f0' : '#cbd5e1',
+        fontWeight: isHub ? 700 : isSite ? 500 : 400,
+        fontSize: isHub ? 14 : isSite ? 12 : 11
       }
     };
   });
@@ -148,6 +179,23 @@ function buildOption() {
     const sourceSite = dcSites.get(l.source);
     const destSite = dcSites.get(l.target);
     const isIntra = sourceSite && destSite && sourceSite === destSite;
+    // R68: classify the edge into one of the three Hub-Spoke layers:
+    //   hub-hub        — load-bearing, BOLDEST edge (width 2.5)
+    //   hub-spoke      — normal cross-tier (width 1.0)
+    //   spoke-spoke    — designed absence — HIDDEN (filtered below)
+    const sourceIsHub = sourceSite && hubSet.has(sourceSite);
+    const destIsHub = destSite && hubSet.has(destSite);
+    let layer;
+    if (sourceIsHub && destIsHub) layer = 'hub-hub';
+    else if (sourceIsHub || destIsHub) layer = 'hub-spoke';
+    else layer = 'spoke-spoke';
+    // Filter out spoke-spoke edges (designed absence in Hub-Spoke model).
+    // The dashboard `primaries` payload would not normally emit these,
+    // but defensive filtering keeps the topology honest if KCC ever
+    // produces a transitive spoke-spoke link.
+    if (layer === 'spoke-spoke' && !isIntra) {
+      return null;
+    }
     // Single unified label: cross-site uses source→dest convention
     // (matches the arrow direction). Intra-site keeps the ↔ marker.
     let labelText;
@@ -167,6 +215,8 @@ function buildOption() {
       l.statusCode === 0 ? '#86efac' :
       l.statusCode === 1 ? '#fde68a' :
       '#fca5a5';
+    // R68: edge width by layer — hub-hub is the load-bearing layer.
+    const edgeWidth = isIntra ? 1.5 : (layer === 'hub-hub' ? 2.5 : 1.0);
     return {
       source: l.source,
       target: l.target,
@@ -174,7 +224,7 @@ function buildOption() {
       symbolSize: 8,
       lineStyle: {
         color: edgeColor,
-        width: 1.5,
+        width: edgeWidth,
         curveness: 0.08,
         type: 'solid',
         opacity: 0.85
@@ -188,7 +238,7 @@ function buildOption() {
         padding: [2, 4]
       }
     };
-  });
+  }).filter(Boolean);
 
   const categories = siteOrder.value.map((name, i) => ({
     name: `${name}`,
