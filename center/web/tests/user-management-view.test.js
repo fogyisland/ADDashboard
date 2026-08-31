@@ -33,12 +33,12 @@ const RouterLinkStub = {
 };
 
 // Build a deep mutable clone for the queue/get command roundtrip
-function makeCommandResponse({ id, status, resultJson = null, errorMessage = null }) {
-  return { data: { id, status, resultJson, errorMessage, targetDc: 'DC1', commandType: 'user_search', createdAt: '2026-08-31T00:00:00Z' } };
+function makeCommandResponse({ id, status, result = null, errorMessage = null }) {
+  return { data: { id, status, result, errorMessage, targetDc: 'DC1', commandType: 'user_search', createdAt: '2026-08-31T00:00:00Z' } };
 }
 
-function makeGetResponse({ id, status, resultJson = null, errorMessage = null }) {
-  return makeCommandResponse({ id, status, resultJson, errorMessage });
+function makeGetResponse({ id, status, result = null, errorMessage = null }) {
+  return makeCommandResponse({ id, status, result, errorMessage });
 }
 
 const FAKE_DCS = ['DC-BJ-01', 'DC-SH-01', 'DC-GZ-01'];
@@ -68,7 +68,7 @@ beforeEach(() => {
     makeGetResponse({
       id: 100,
       status: 'success',
-      resultJson: { users: [
+      result: { users: [
         { sam: 'jdoe', displayName: 'John Doe', enabled: true, lastLogon: '2026-08-30T10:00:00Z', description: 'Sales Engineer' },
         { sam: 'asmith', displayName: 'Alice Smith', enabled: false, lastLogon: null, description: 'Disabled' }
       ], truncated: false, count: 2 }
@@ -176,7 +176,7 @@ test('per-row action buttons render (重置密码 / 启用 / 解锁 / 编辑属�
 test('clicking 启用 calls queueCommand with user_enable + correct params', async () => {
   adAdminApi.getCommand.mockResolvedValue(makeGetResponse({
     id: 100, status: 'success',
-    resultJson: { users: [{ sam: 'asmith', displayName: 'Alice Smith', enabled: false, lastLogon: null, description: '' }], truncated: false, count: 1 }
+    result: { users: [{ sam: 'asmith', displayName: 'Alice Smith', enabled: false, lastLogon: null, description: '' }], truncated: false, count: 1 }
   }));
   const w = mountView();
   await flushPromises();
@@ -231,7 +231,7 @@ test('clicking 组成员 opens UserGroupMembershipsModal', async () => {
   // a groups payload (the previous search already populated the table).
   adAdminApi.getCommand.mockResolvedValue(makeGetResponse({
     id: 200, status: 'success',
-    resultJson: { sam: 'jdoe', groups: [{ name: 'Sales Team', dn: 'CN=Sales Team,DC=contoso' }] }
+    result: { sam: 'jdoe', groups: [{ name: 'Sales Team', dn: 'CN=Sales Team,DC=contoso' }] }
   }));
   const btn = w.find('[data-test="user-action-groups-jdoe"]');
   expect(btn.exists()).toBe(true);
@@ -254,7 +254,7 @@ test('drawer renders last 20 commands via listCommands on mount', async () => {
   });
   const w = mountView();
   await flushPromises();
-  expect(adAdminApi.listCommands).toHaveBeenCalledWith(expect.objectContaining({ operatorId: expect.anything(), size: 20 }));
+  expect(adAdminApi.listCommands).toHaveBeenCalledWith(expect.objectContaining({ operatorId: expect.anything(), size: 50 }));
   expect(w.find('[data-test="cmd-row-1"]').exists()).toBe(true);
   expect(w.find('[data-test="cmd-row-2"]').exists()).toBe(true);
   expect(w.find('[data-test="cmd-status-1"]').exists()).toBe(true);

@@ -157,9 +157,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useAuthStore } from '../../stores/auth.js';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 import AdminLayout from '../../components/AdminLayout.vue';
 import AdCommandHistoryDrawer from './AdCommandHistoryDrawer.vue';
 import UserCreateModal from '../../components/admin/UserCreateModal.vue';
@@ -184,6 +185,23 @@ const lastBanner = ref(null);
 const modal = ref(null);
 const modalTarget = ref(null);
 
+// Shared polling composable for the inline search. The view's runSearch
+// calls polling.start() after queueCommand; the watcher below reads
+// command.value.result on terminal state.
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 35_000 });
+watch(polling.isTerminal, (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  if (r.status === 'success') {
+    results.value = r.result?.users || [];
+  } else {
+    searchError.value = r.errorMessage || `命令${r.status}`;
+    results.value = [];
+  }
+  searching.value = false;
+});
+
 async function loadDcs() {
   loading.value = true;
   error.value = '';
@@ -204,6 +222,8 @@ async function loadDcs() {
 
 async function runSearch() {
   if (!selectedDc.value) return;
+  // Cancel any in-flight search before kicking off a new one.
+  polling.stop();
   searching.value = true;
   searchError.value = '';
   try {
@@ -218,26 +238,7 @@ async function runSearch() {
       searching.value = false;
       return;
     }
-    // Inline poll — keep tight loop so the table renders as fast as the agent.
-    const start = Date.now();
-    while (Date.now() - start < 35_000) {
-      await new Promise(r => setTimeout(r, 1500));
-      const r = await adAdminApi.getCommand(id);
-      const st = r.data?.status;
-      if (st === 'success') {
-        results.value = r.data?.resultJson?.users || [];
-        searching.value = false;
-        return;
-      }
-      if (st === 'failed' || st === 'timeout') {
-        searchError.value = r.data?.errorMessage || `命令${st}`;
-        results.value = [];
-        searching.value = false;
-        return;
-      }
-    }
-    searchError.value = '命令超时';
-    searching.value = false;
+    polling.start(resp.data);
   } catch (e) {
     searchError.value = e?.response?.data?.error || e?.message || '搜索失败';
     searching.value = false;

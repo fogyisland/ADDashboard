@@ -50,6 +50,7 @@
 <script setup>
 import { ref, watch } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
 const props = defineProps({
   targetDc: { type: String, required: true },
@@ -66,6 +67,22 @@ const searching = ref(false);
 let debounceTimer = null;
 let currentRequestId = 0;
 
+// Shared polling composable for the picker. Each new keystroke that
+// reaches the debounce gate calls `polling.stop()` then `polling.start()`
+// with the new command id, so we never have two intervals racing.
+const polling = useCommandPolling(null, { intervalMs: 800, timeoutMs: 10_000 });
+watch(polling.isTerminal, (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r || currentRequestId === 0) return;
+  if (r.status === 'success') {
+    options.value = r.result?.users || [];
+  } else {
+    options.value = [];
+  }
+  searching.value = false;
+});
+
 watch(query, (val) => {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => runSearch(val), 250);
@@ -77,6 +94,8 @@ async function runSearch(q) {
     options.value = [];
     return;
   }
+  // Cancel any in-flight poll before kicking off the new one.
+  polling.stop();
   const reqId = ++currentRequestId;
   searching.value = true;
   try {
@@ -86,30 +105,16 @@ async function runSearch(q) {
       params: { filter: trimmed, limit: 20 }
     });
     const id = resp.data?.id;
-    if (!id || reqId !== currentRequestId) return;
-    // Wait for terminal state via direct GET (not full polling composable
-    // — picker needs minimal overhead). Polls every 800ms, max 10s.
-    const start = Date.now();
-    while (Date.now() - start < 10_000) {
-      await new Promise(r => setTimeout(r, 800));
-      if (reqId !== currentRequestId) return;
-      const r2 = await adAdminApi.getCommand(id);
-      const st = r2.data?.status;
-      if (st === 'success') {
-        const users = r2.data?.resultJson?.users || [];
-        options.value = users;
-        return;
-      }
-      if (st === 'failed' || st === 'timeout') {
-        options.value = [];
-        return;
-      }
-    }
-    options.value = [];
+    if (!id) { searching.value = false; options.value = []; return; }
+    if (reqId !== currentRequestId) return;
+    // Seed the polling composable with the queued response. The watcher
+    // above consumes `isTerminal` once the server flips to terminal.
+    polling.start({ id, status: 'queued', result: null });
   } catch {
-    if (reqId === currentRequestId) options.value = [];
-  } finally {
-    if (reqId === currentRequestId) searching.value = false;
+    if (reqId === currentRequestId) {
+      options.value = [];
+      searching.value = false;
+    }
   }
 }
 

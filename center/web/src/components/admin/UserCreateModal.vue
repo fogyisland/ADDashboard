@@ -76,15 +76,16 @@
       </section>
       <footer>
         <button type="button" data-test="user-create-cancel" @click="cancel" :disabled="submitting">取消</button>
-        <button type="button" data-test="user-create-submit" class="primary" @click="submit" :disabled="submitting || !canSubmit">提交</button>
+        <button type="button" data-test="user-create-submit" class="primary" @click="submit" :disabled="submitting || !canSubmit || !props.targetDc" :title="!props.targetDc ? '请先选择目标 DC' : ''">提交</button>
       </footer>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, reactive } from 'vue';
+import { ref, computed, reactive, watch } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
 const props = defineProps({
   targetDc: { type: String, required: true }
@@ -111,7 +112,26 @@ const resultOk = ref(false);
 const activeCommand = ref(null);
 const timedOut = ref(false);
 
-let pollHandle = null;
+// Polling composable owns setInterval + setTimeout cleanup via
+// onBeforeUnmount. The local `watch` below is also auto-disposed when
+// this modal unmounts, so there is no orphan-handler / deadline leak.
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 30_000 });
+watch(polling.timedOut, (v) => { if (v) timedOut.value = true; });
+watch(polling.isTerminal, (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  if (r.status === 'success') {
+    resultMessage.value = `已创建 — ${r.result?.dn || form.sam}`;
+    resultOk.value = true;
+    submitting.value = false;
+    emit('submitted', r);
+  } else {
+    resultMessage.value = r.errorMessage || `命令${r.status}`;
+    resultOk.value = false;
+    submitting.value = false;
+  }
+});
 
 const canSubmit = computed(() =>
   form.sam.trim() && form.password && form.password === form.passwordConfirm && !submitting.value
@@ -152,31 +172,7 @@ async function submit() {
       params: buildParams()
     });
     activeCommand.value = resp.data;
-    // Schedule a hard 30s timeout banner; keep polling until terminal.
-    const deadline = setTimeout(() => { if (!resultMessage.value) timedOut.value = true; }, 30_000);
-    pollHandle = setInterval(async () => {
-      try {
-        const r = await adAdminApi.getCommand(activeCommand.value.id);
-        const st = r.data?.status;
-        if (st === 'success') {
-          resultMessage.value = `已创建 — ${r.data?.resultJson?.dn || form.sam}`;
-          resultOk.value = true;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-          emit('submitted', r.data);
-          return;
-        }
-        if (st === 'failed' || st === 'timeout') {
-          resultMessage.value = r.data?.errorMessage || `命令${st}`;
-          resultOk.value = false;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-          return;
-        }
-      } catch { /* keep polling on transient errors */ }
-    }, 1500);
+    polling.start(resp.data);
   } catch (e) {
     formError.value = e?.response?.data?.error || e?.message || '提交失败';
     submitting.value = false;
@@ -184,7 +180,7 @@ async function submit() {
 }
 
 function cancel() {
-  if (pollHandle) clearInterval(pollHandle);
+  polling.stop();
   emit('close');
 }
 </script>

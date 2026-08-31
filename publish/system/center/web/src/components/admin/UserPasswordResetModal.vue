@@ -33,15 +33,16 @@
       </section>
       <footer>
         <button type="button" data-test="user-password-reset-cancel" @click="cancel" :disabled="submitting">取消</button>
-        <button type="button" data-test="user-password-reset-submit" class="primary" @click="submit" :disabled="submitting || !canSubmit">提交</button>
+        <button type="button" data-test="user-password-reset-submit" class="primary" @click="submit" :disabled="submitting || !canSubmit || !props.targetDc" :title="!props.targetDc ? '请先选择目标 DC' : ''">提交</button>
       </footer>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
 const props = defineProps({
   targetDc: { type: String, required: true },
@@ -60,7 +61,24 @@ const resultOk = ref(false);
 const activeCommand = ref(null);
 const timedOut = ref(false);
 
-let pollHandle = null;
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 30_000 });
+watch(polling.timedOut, (v) => { if (v) timedOut.value = true; });
+watch(polling.isTerminal, (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  if (r.status === 'success') {
+    const u = r.result?.unlocked;
+    resultMessage.value = `密码已重置${u ? ' · 已解锁' : ''}`;
+    resultOk.value = true;
+    submitting.value = false;
+    emit('submitted', r);
+  } else {
+    resultMessage.value = r.errorMessage || `命令${r.status}`;
+    resultOk.value = false;
+    submitting.value = false;
+  }
+});
 
 const canSubmit = computed(() =>
   password.value && password.value === passwordConfirm.value && !submitting.value
@@ -85,30 +103,7 @@ async function submit() {
       }
     });
     activeCommand.value = resp.data;
-    const deadline = setTimeout(() => { if (!resultMessage.value) timedOut.value = true; }, 30_000);
-    pollHandle = setInterval(async () => {
-      try {
-        const r = await adAdminApi.getCommand(activeCommand.value.id);
-        const st = r.data?.status;
-        if (st === 'success') {
-          const u = r.data?.resultJson?.unlocked;
-          resultMessage.value = `密码已重置${u ? ' · 已解锁' : ''}`;
-          resultOk.value = true;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-          emit('submitted', r.data);
-          return;
-        }
-        if (st === 'failed' || st === 'timeout') {
-          resultMessage.value = r.data?.errorMessage || `命令${st}`;
-          resultOk.value = false;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-        }
-      } catch { /* keep polling */ }
-    }, 1500);
+    polling.start(resp.data);
   } catch (e) {
     formError.value = e?.response?.data?.error || e?.message || '提交失败';
     submitting.value = false;
@@ -116,7 +111,7 @@ async function submit() {
 }
 
 function cancel() {
-  if (pollHandle) clearInterval(pollHandle);
+  polling.stop();
   emit('close');
 }
 </script>

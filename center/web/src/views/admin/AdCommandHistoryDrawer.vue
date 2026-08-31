@@ -92,7 +92,7 @@ let timer = null;
 async function refresh() {
   loading.value = true;
   try {
-    const r = await adAdminApi.listCommands({ operatorId: props.operatorId, size: 20 });
+    const r = await adAdminApi.listCommands({ operatorId: props.operatorId, size: 50 });
     rows.value = Array.isArray(r.data?.rows) ? r.data.rows : [];
   } catch {
     // Last-resort: keep last rows. The unhandledrejection handler in

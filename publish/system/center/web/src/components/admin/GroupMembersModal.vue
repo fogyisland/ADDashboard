@@ -91,8 +91,9 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted } from 'vue';
+import { ref, watch, onMounted } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
 const props = defineProps({
   targetDc: { type: String, required: true },
@@ -113,11 +114,55 @@ const resultOk = ref(false);
 const activeCommand = ref(null);
 const timedOut = ref(false);
 
-const replaceTarget = ref('');
+// NIT #9: remove dead state vars (`replaceTarget`, `toggles`) — they were
+// declared but never read or written by anyone. Keeping the load poll
+// + the mutate poll sharing one composable via the action-mode flag below.
+const mode = ref('list'); // 'list' | 'mutate'
 
-let pollHandle = null;
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 30_000 });
+watch(polling.timedOut, (v) => { if (v) timedOut.value = true; });
+watch(polling.isTerminal, async (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  const currentMode = mode.value;
+  if (r.status === 'success') {
+    if (currentMode === 'list') {
+      members.value = r.result?.members || [];
+      loading.value = false;
+    } else {
+      resultMessage.value = formatResult(r.result, lastCommandType.value);
+      resultOk.value = true;
+      submitting.value = false;
+      emit('changed', r);
+      // Refresh the member list to reflect the mutation.
+      mode.value = 'list';
+      try {
+        const resp = await adAdminApi.queueCommand({
+          targetDc: props.targetDc,
+          commandType: 'group_list_members',
+          params: { name: props.name, page: 1, size: 100 }
+        });
+        if (resp.data?.id) polling.start(resp.data);
+      } catch (e) {
+        // Refresh failed — leave the table as-is; the operator can
+        // close + reopen to reload.
+        loading.value = false;
+      }
+    }
+  } else {
+    if (currentMode === 'list') {
+      error.value = r.errorMessage || `命令${r.status}`;
+      loading.value = false;
+    } else {
+      resultMessage.value = r.errorMessage || `命令${r.status}`;
+      resultOk.value = false;
+      submitting.value = false;
+    }
+  }
+});
 
-const toggles = reactive({});
+const lastCommandType = ref('');
 
 function toggleSelectAll() {
   if (allSelected.value) selectedToRemove.value = members.value.map(m => m.sam);
@@ -133,23 +178,9 @@ async function loadMembers() {
       commandType: 'group_list_members',
       params: { name: props.name, page: 1, size: 100 }
     });
-    const id = resp.data?.id;
-    if (!id) { loading.value = false; error.value = '排队失败'; return; }
-    const handler = setInterval(async () => {
-      try {
-        const r = await adAdminApi.getCommand(id);
-        const st = r.data?.status;
-        if (st === 'success') {
-          members.value = r.data?.resultJson?.members || [];
-          loading.value = false;
-          clearInterval(handler);
-        } else if (st === 'failed' || st === 'timeout') {
-          error.value = r.data?.errorMessage || `命令${st}`;
-          loading.value = false;
-          clearInterval(handler);
-        }
-      } catch { /* keep polling */ }
-    }, 1500);
+    if (!resp.data?.id) { loading.value = false; error.value = '排队失败'; return; }
+    mode.value = 'list';
+    polling.start(resp.data);
   } catch (e) {
     error.value = e?.response?.data?.error || e?.message || '加载失败';
     loading.value = false;
@@ -164,6 +195,7 @@ async function runCommand(commandType, params) {
   submitting.value = true;
   resultMessage.value = '';
   timedOut.value = false;
+  lastCommandType.value = commandType;
   try {
     const resp = await adAdminApi.queueCommand({
       targetDc: props.targetDc,
@@ -171,30 +203,8 @@ async function runCommand(commandType, params) {
       params
     });
     activeCommand.value = resp.data;
-    const deadline = setTimeout(() => { if (!resultMessage.value) timedOut.value = true; }, 30_000);
-    pollHandle = setInterval(async () => {
-      try {
-        const r = await adAdminApi.getCommand(activeCommand.value.id);
-        const st = r.data?.status;
-        if (st === 'success') {
-          resultMessage.value = formatResult(r.data?.resultJson, commandType);
-          resultOk.value = true;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-          emit('changed', r.data);
-          await loadMembers();
-          return;
-        }
-        if (st === 'failed' || st === 'timeout') {
-          resultMessage.value = r.data?.errorMessage || `命令${st}`;
-          resultOk.value = false;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-        }
-      } catch { /* keep polling */ }
-    }, 1500);
+    mode.value = 'mutate';
+    polling.start(resp.data);
   } catch (e) {
     error.value = e?.response?.data?.error || e?.message || '提交失败';
     submitting.value = false;
@@ -233,7 +243,6 @@ async function removeMembers() {
 }
 
 function askReplace() {
-  replaceTarget.value = addInput.value;
   confirmReplace.value = true;
 }
 
@@ -251,7 +260,7 @@ async function doReplace() {
 }
 
 function cancel() {
-  if (pollHandle) clearInterval(pollHandle);
+  polling.stop();
   emit('close');
 }
 

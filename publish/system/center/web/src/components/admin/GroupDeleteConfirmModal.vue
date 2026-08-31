@@ -34,7 +34,8 @@
           data-test="group-delete-confirm-submit"
           class="danger"
           @click="submit"
-          :disabled="submitting || confirmInput !== name"
+          :disabled="submitting || confirmInput !== name || !props.targetDc"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
         >删除</button>
       </footer>
     </div>
@@ -42,8 +43,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
 const props = defineProps({
   targetDc: { type: String, required: true },
@@ -59,7 +61,23 @@ const resultOk = ref(false);
 const activeCommand = ref(null);
 const timedOut = ref(false);
 
-let pollHandle = null;
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 30_000 });
+watch(polling.timedOut, (v) => { if (v) timedOut.value = true; });
+watch(polling.isTerminal, (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  if (r.status === 'success') {
+    resultMessage.value = '已删除';
+    resultOk.value = true;
+    submitting.value = false;
+    emit('deleted', r);
+  } else {
+    resultMessage.value = r.errorMessage || `命令${r.status}`;
+    resultOk.value = false;
+    submitting.value = false;
+  }
+});
 
 async function submit() {
   if (confirmInput.value !== props.name) {
@@ -77,29 +95,7 @@ async function submit() {
       params: { name: props.name }
     });
     activeCommand.value = resp.data;
-    const deadline = setTimeout(() => { if (!resultMessage.value) timedOut.value = true; }, 30_000);
-    pollHandle = setInterval(async () => {
-      try {
-        const r = await adAdminApi.getCommand(activeCommand.value.id);
-        const st = r.data?.status;
-        if (st === 'success') {
-          resultMessage.value = '已删除';
-          resultOk.value = true;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-          emit('deleted', r.data);
-          return;
-        }
-        if (st === 'failed' || st === 'timeout') {
-          resultMessage.value = r.data?.errorMessage || `命令${st}`;
-          resultOk.value = false;
-          clearInterval(pollHandle); pollHandle = null;
-          clearTimeout(deadline);
-          submitting.value = false;
-        }
-      } catch { /* keep polling */ }
-    }, 1500);
+    polling.start(resp.data);
   } catch (e) {
     error.value = e?.response?.data?.error || e?.message || '提交失败';
     submitting.value = false;
@@ -107,7 +103,7 @@ async function submit() {
 }
 
 function cancel() {
-  if (pollHandle) clearInterval(pollHandle);
+  polling.stop();
   emit('close');
 }
 </script>

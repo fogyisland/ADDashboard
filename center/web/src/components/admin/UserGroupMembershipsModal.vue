@@ -39,8 +39,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
 const props = defineProps({
   targetDc: { type: String, required: true },
@@ -52,7 +53,18 @@ const groups = ref([]);
 const loading = ref(true);
 const error = ref('');
 
-let pollHandle = null;
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 30_000 });
+watch(polling.isTerminal, (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  if (r.status === 'success') {
+    groups.value = r.result?.groups || [];
+  } else {
+    error.value = r.errorMessage || `命令${r.status}`;
+  }
+  loading.value = false;
+});
 
 onMounted(async () => {
   try {
@@ -61,23 +73,8 @@ onMounted(async () => {
       commandType: 'user_list_groups',
       params: { sam: props.sam }
     });
-    const id = resp.data?.id;
-    if (!id) { loading.value = false; error.value = '排队失败'; return; }
-    pollHandle = setInterval(async () => {
-      try {
-        const r = await adAdminApi.getCommand(id);
-        const st = r.data?.status;
-        if (st === 'success') {
-          groups.value = r.data?.resultJson?.groups || [];
-          loading.value = false;
-          clearInterval(pollHandle); pollHandle = null;
-        } else if (st === 'failed' || st === 'timeout') {
-          error.value = r.data?.errorMessage || `命令${st}`;
-          loading.value = false;
-          clearInterval(pollHandle); pollHandle = null;
-        }
-      } catch { /* keep polling */ }
-    }, 1500);
+    if (!resp.data?.id) { loading.value = false; error.value = '排队失败'; return; }
+    polling.start(resp.data);
   } catch (e) {
     error.value = e?.response?.data?.error || e?.message || '加载失败';
     loading.value = false;
@@ -85,7 +82,7 @@ onMounted(async () => {
 });
 
 function cancel() {
-  if (pollHandle) clearInterval(pollHandle);
+  polling.stop();
   emit('close');
 }
 </script>

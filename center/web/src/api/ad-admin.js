@@ -17,10 +17,9 @@
 // and the spec §2.2 — param shapes vary per type. This client is a thin
 // transport; the views own the per-command-type param shape.
 //
-// listCommands default is `size=20` per the R75 spec §1.3 ("history
-// drawer on the right side, shows last 50 commands") — operator-facing
-// history takes 20 for the inline drawer, full list endpoints allow
-// explicit override.
+// listCommands default is `size=20` per the R75 spec §1.3 — the right-
+// side history drawer renders the most recent 20 commands. Full list
+// endpoints allow explicit page/size overrides when they need them.
 
 import api from './client.js';
 
@@ -36,7 +35,7 @@ export const adAdminApi = {
     api.post('/api/admin/ad-commands', { targetDc, commandType, params }),
 
   // History list. Accepts any subset of { operatorId, status, page, size }.
-  // Default page=1 size=20 — matches the drawer "last 20" UX.
+  // Defaults page=1 size=20 — matches the drawer "last 20" UX.
   listCommands: ({ operatorId, status, page = 1, size = 20 } = {}) => {
     const params = { page, size };
     if (operatorId != null) params.operatorId = operatorId;

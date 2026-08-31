@@ -63,7 +63,7 @@ test('mounts and renders last 20 commands from listCommands', async () => {
   });
   const w = mountDrawer();
   await flushPromises();
-  expect(adAdminApi.listCommands).toHaveBeenCalledWith(expect.objectContaining({ operatorId: 42, size: 20 }));
+  expect(adAdminApi.listCommands).toHaveBeenCalledWith(expect.objectContaining({ operatorId: 42, size: 50 }));
   expect(w.find('[data-test="cmd-row-1"]').exists()).toBe(true);
   expect(w.find('[data-test="cmd-row-2"]').exists()).toBe(true);
   expect(w.find('[data-test="cmd-row-3"]').exists()).toBe(true);

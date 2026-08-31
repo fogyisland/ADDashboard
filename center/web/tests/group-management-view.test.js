@@ -24,8 +24,8 @@ const RouterLinkStub = {
   template: '<a :href="to"><slot /></a>'
 };
 
-function makeCommandResponse({ id, status, resultJson = null, errorMessage = null }) {
-  return { data: { id, status, resultJson, errorMessage, targetDc: 'DC1', commandType: 'group_search', createdAt: '2026-08-31T00:00:00Z' } };
+function makeCommandResponse({ id, status, result = null, errorMessage = null }) {
+  return { data: { id, status, result, errorMessage, targetDc: 'DC1', commandType: 'group_search', createdAt: '2026-08-31T00:00:00Z' } };
 }
 
 const FAKE_DCS = ['DC-BJ-01', 'DC-SH-01', 'DC-GZ-01'];
@@ -54,7 +54,7 @@ beforeEach(() => {
   adAdminApi.listCommands.mockResolvedValue({ data: { total: 0, rows: [], page: 1, size: 20 } });
   adAdminApi.queueCommand.mockResolvedValue(makeCommandResponse({ id: 200, status: 'queued' }));
   adAdminApi.getCommand.mockResolvedValue(
-    makeCommandResponse({ id: 200, status: 'success', resultJson: { groups: FAKE_GROUPS, truncated: false, count: FAKE_GROUPS.length } })
+    makeCommandResponse({ id: 200, status: 'success', result: { groups: FAKE_GROUPS, truncated: false, count: FAKE_GROUPS.length } })
   );
 });
 
@@ -160,7 +160,7 @@ test('clicking 成员管理 opens GroupMembersModal', async () => {
   adAdminApi.getCommand.mockResolvedValue(
     makeCommandResponse({
       id: 300, status: 'success',
-      resultJson: { name: 'Sales Team', members: [{ sam: 'jdoe', dn: 'CN=jdoe,DC=contoso' }], total: 1, page: 1, size: 100 }
+      result: { name: 'Sales Team', members: [{ sam: 'jdoe', dn: 'CN=jdoe,DC=contoso' }], total: 1, page: 1, size: 100 }
     })
   );
   await w.find('[data-test="group-action-members-Sales Team"]').trigger('click');
