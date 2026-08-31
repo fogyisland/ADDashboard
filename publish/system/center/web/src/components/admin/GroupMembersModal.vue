@@ -70,20 +70,23 @@
           type="button"
           data-test="group-members-add"
           @click="addMembers"
-          :disabled="submitting || !addInput.trim()"
+          :disabled="submitting || !props.targetDc || !addInput.trim()"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
         >添加选中</button>
         <button
           type="button"
           data-test="group-members-remove"
           @click="removeMembers"
-          :disabled="submitting || !selectedToRemove.length"
+          :disabled="submitting || !props.targetDc || !selectedToRemove.length"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
         >移除选中 ({{ selectedToRemove.length }})</button>
         <button
           type="button"
           data-test="group-members-replace"
           class="danger"
           @click="askReplace"
-          :disabled="submitting"
+          :disabled="submitting || !props.targetDc"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
         >全部替换</button>
       </footer>
     </div>

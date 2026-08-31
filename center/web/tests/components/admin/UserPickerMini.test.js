@@ -24,6 +24,7 @@ const TARGET_DC = 'DC-BJ-01';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 1000, status: 'queued', targetDc: TARGET_DC, commandType: 'user_search' }
   });

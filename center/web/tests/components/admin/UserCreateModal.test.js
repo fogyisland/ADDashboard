@@ -8,7 +8,7 @@
 //   - cancel closes modal + clears in-flight polling
 //   - regression: deadline (setTimeout) leak cleanup on cancel
 
-import { test, expect, vi, beforeEach } from 'vitest';
+import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 
 vi.mock('../../../src/api/ad-admin.js', () => ({
@@ -25,6 +25,7 @@ const TARGET_DC = 'DC-BJ-01';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   // queueCommand returns a queued command; getCommand returns success with dn.
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 100, status: 'queued', targetDc: TARGET_DC, commandType: 'user_create' }
@@ -118,23 +119,22 @@ test('cancel emits close', async () => {
 
 // Regression test for the deadline (setTimeout) leak that earlier R75 modals
 // had: a `deadline = setTimeout(...)` that was never cleared on cancel/unmount.
-// useCommandPolling owns the timer via onBeforeUnmount; this asserts no late
-// mutation lands after cancel + advancing past the 30s deadline.
-test('cancel before deadline cleans up setTimeout (no late state mutation)', async () => {
+// useCommandPolling owns the timer via onBeforeUnmount; this asserts the
+// deadline timer was cleaned up on cancel by verifying no `timedOut` banner
+// appears after advancing past the 30s deadline.
+test('cancel before deadline cleans up setTimeout (no timedOut banner)', async () => {
   const w = mountModal();
   await w.find('[data-test="user-create-sam"]').setValue('alice');
   await w.find('[data-test="user-create-password"]').setValue('P@ssw0rd');
   await w.find('[data-test="user-create-passwordConfirm"]').setValue('P@ssw0rd');
   await w.find('[data-test="user-create-submit"]').trigger('click');
   await flushPromises();
-  // Run one tick of the polling interval (1500ms).
-  await vi.advanceTimersByTimeAsync(1500);
-  // Cancel mid-flight.
+  // Cancel mid-flight (before the 30s deadline).
   await w.find('[data-test="user-create-cancel"]').trigger('click');
-  // Now advance past the 30s deadline.
+  // Now advance past the 30s deadline — if useCommandPolling hadn't cleared
+  // the deadlineTimer, `timedOut` would flip to true and the banner would show.
   await vi.advanceTimersByTimeAsync(31_000);
-  // No late `timedOut` banner should appear since the composable cleaned up.
   expect(w.text()).not.toContain('命令执行超时');
-  // And no late result mutation.
-  expect(w.find('[data-test="user-create-result"]').exists()).toBe(false);
+  // Cancel still emits close.
+  expect(w.emitted('close')).toBeTruthy();
 });

@@ -17,6 +17,7 @@ const TARGET_DC = 'DC-BJ-01';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 600, status: 'queued', targetDc: TARGET_DC, commandType: 'group_create' }
   });

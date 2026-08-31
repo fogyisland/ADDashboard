@@ -24,6 +24,7 @@ const SAM = 'alice';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 300, status: 'queued', targetDc: TARGET_DC, commandType: 'user_set_attributes' }
   });
@@ -44,7 +45,7 @@ function mountModal(props = {}) {
 const UserPickerMiniStub = {
   props: ['targetDc', 'initialSam'],
   emits: ['pick'],
-  template: '<div data-test="user-picker-mini-stub" @click="$emit(\'pick\', { sam: \'bob\' })" />'
+  template: '<div data-test="user-picker-mini-stub" @click="$emit(\'pick\', { sam: \'bob\' })"></div>'
 };
 
 function mountModalWithStub(props = {}, stubs = { UserPickerMini: UserPickerMiniStub }) {

@@ -19,11 +19,12 @@ const NAME = 'Sales';
 const UserPickerMiniStub = {
   props: ['targetDc', 'initialSam'],
   emits: ['pick'],
-  template: '<div data-test="user-picker-mini-stub" @click="$emit(\'pick\', { sam: \'bob\' })" />'
+  template: '<div data-test="user-picker-mini-stub" @click="$emit(\'pick\', { sam: \'bob\' })"></div>'
 };
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 700, status: 'queued', targetDc: TARGET_DC, commandType: 'group_set_attributes' }
   });

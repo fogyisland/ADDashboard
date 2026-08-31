@@ -21,6 +21,7 @@ const NAME = 'Sales';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 900, status: 'queued', targetDc: TARGET_DC, commandType: 'group_delete' }
   });

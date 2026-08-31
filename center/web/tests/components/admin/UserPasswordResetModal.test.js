@@ -5,7 +5,7 @@
 //   - submit disabled until both passwords match
 //   - submit posts user_password_reset with sam + newPassword
 
-import { test, expect, vi, beforeEach } from 'vitest';
+import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 
 vi.mock('../../../src/api/ad-admin.js', () => ({
@@ -23,6 +23,7 @@ const SAM = 'alice';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 200, status: 'queued', targetDc: TARGET_DC, commandType: 'user_password_reset' }
   });

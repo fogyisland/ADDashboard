@@ -36,6 +36,7 @@ function nextId() { return ++idCounter; }
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   let cmdType = 'group_list_members';
   adAdminApi.queueCommand.mockImplementation(({ commandType }) => ({
     data: { id: nextId(), status: 'queued', targetDc: TARGET_DC, commandType }

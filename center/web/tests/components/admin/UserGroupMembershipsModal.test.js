@@ -21,6 +21,7 @@ const SAM = 'alice';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 400, status: 'queued', targetDc: TARGET_DC, commandType: 'user_list_groups' }
   });
@@ -57,9 +58,9 @@ test('renders group rows from polled response', async () => {
   await flushPromises();
   await vi.runAllTimersAsync();
   expect(w.find('[data-test="user-group-row-Sales Team"]').exists()).toBe(true);
-  expect(w.find('[data-test="user-group-row-All Staff DL]'.replace(']', '') + '"]').exists() ||
-         w.text()).toContain('All Staff DL');
+  expect(w.find('[data-test="user-group-row-All Staff DL"]').exists()).toBe(true);
   expect(w.text()).toContain('Sales Team');
+  expect(w.text()).toContain('All Staff DL');
   expect(w.text()).toContain('Universal');
 });
 

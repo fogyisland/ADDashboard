@@ -21,6 +21,7 @@ const SAM = 'alice';
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.clearAllMocks();
   adAdminApi.queueCommand.mockResolvedValue({
     data: { id: 500, status: 'queued', targetDc: TARGET_DC, commandType: 'user_delete' }
   });
