@@ -31,9 +31,11 @@ test('renders sidebar nav links for the main pages', () => {
   expect(hrefs).toContain('/topology');
   expect(hrefs).toContain('/errors');
   expect(hrefs).toContain('/agents');
-  expect(hrefs).toContain('/dashboard/metrics');
   expect(hrefs).toContain('/packages-runs');
   expect(hrefs).toContain('/servers-overview');
+  // /dashboard/metrics was removed in R73.1 (指标看板 deleted from
+  // frontend); any bookmark to it should 404 — assert it's gone.
+  expect(hrefs).not.toContain('/dashboard/metrics');
 });
 
 test('renders 退出 button in topbar', () => {

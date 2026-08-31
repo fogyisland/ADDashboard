@@ -104,6 +104,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// jsdom doesn't ship URL.createObjectURL / revokeObjectURL (those are
+// browser-only APIs). Define them as configurable stubs on the URL class
+// so vi.spyOn(URL, 'createObjectURL') in the R73 CSV-export tests can
+// install its mock. vi.restoreAllMocks in afterEach won't unwind this
+// defineProperty (which is intentional — the stubs are inert no-ops).
+if (typeof URL.createObjectURL !== 'function') {
+  Object.defineProperty(URL, 'createObjectURL', {
+    configurable: true, writable: true,
+    value: () => 'blob:jsdom-stub'
+  });
+}
+if (typeof URL.revokeObjectURL !== 'function') {
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    configurable: true, writable: true,
+    value: () => {}
+  });
+}
+
 function mountView() {
   // 2026-08-30 R64.2: SiteMatrixView is frontend-only (/matrix) and must
   // wrap <AppLayout>, not <AdminLayout>. Stubs the layout component the
@@ -862,4 +880,303 @@ test('R72: multiple pair rows can be expanded simultaneously', async () => {
   expect(w.find('[data-test="pair-attempts-1"]').exists()).toBe(true);
   // Both should have triggered their own API call (one per pair).
   expect(getPairHistoryMock).toHaveBeenCalledTimes(2);
+});
+
+// ── R73: pair-attempts polish (filter chips + date range + CSV export) ─
+
+test('R73: status filter chips render above pair table (3 chips: all/ok/err)', async () => {
+  // The R73 toolbar lives inside the cell-detail modal; clicking any cell
+  // opens it. 3 chips for status filter (all/ok/fail) + 2 chips for date
+  // range (24h/7d) = 5 chip buttons total.
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  // Toolbar container must exist.
+  expect(w.find('[data-test="pair-toolbar"]').exists()).toBe(true);
+  // 3 filter chips.
+  expect(w.find('[data-test="pair-filter-all"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-filter-ok"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-filter-fail"]').exists()).toBe(true);
+  // 2 window chips.
+  expect(w.find('[data-test="pair-window-24"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-window-168"]').exists()).toBe(true);
+  // Default state — all + 24h are active (have .pair-chip-active class).
+  expect(w.find('[data-test="pair-filter-all"]').classes()).toContain('pair-chip-active');
+  expect(w.find('[data-test="pair-filter-ok"]').classes()).not.toContain('pair-chip-active');
+  expect(w.find('[data-test="pair-window-24"]').classes()).toContain('pair-chip-active');
+  expect(w.find('[data-test="pair-window-168"]').classes()).not.toContain('pair-chip-active');
+});
+
+test('R73: clicking status filter chip filters pair-table rows (all/ok only/err only)', async () => {
+  // basePayload cell 核心 → 厦门 carries 1 green (statusCode=0) + 1 yellow
+  // (statusCode=1) pair. Filter by status should reduce visible rows:
+  //   - all (default)   → 2 pairs visible
+  //   - ok              → 1 pair visible (the green one)
+  //   - fail            → 1 pair visible (the yellow partial-failure one)
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  // Default: all 2 pairs.
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(2);
+  // Click OK filter — only the green row remains.
+  await w.find('[data-test="pair-filter-ok"]').trigger('click');
+  await flushPromises();
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(1);
+  expect(w.find('[data-test="pair-filter-ok"]').classes()).toContain('pair-chip-active');
+  expect(w.find('[data-test="pair-filter-all"]').classes()).not.toContain('pair-chip-active');
+  // Click fail filter — only the yellow partial-failure row remains.
+  await w.find('[data-test="pair-filter-fail"]').trigger('click');
+  await flushPromises();
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(1);
+  expect(w.find('[data-test="pair-filter-fail"]').classes()).toContain('pair-chip-active');
+  // Back to all — 2 rows again.
+  await w.find('[data-test="pair-filter-all"]').trigger('click');
+  await flushPromises();
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(2);
+});
+
+test('R73: filtered pairs sub-table shows only matching statusCode rows', async () => {
+  // Mock returns 3 entries (1 ok + 1 warn + 1 err) for the first pair.
+  // When operator filters by OK, the sub-table should render only the OK
+  // entry. Filter by fail should render warn+err (both qualify as failure
+  // under our statusCode semantics: statusCode=1 OR statusCode>=2).
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: { entries: [
+      { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0, durationMs: 100,
+        objectsTransferred: 5, lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: null },
+      { attemptAt: '2026-08-30T01:05:00Z', statusCode: 1, durationMs: 200,
+        objectsTransferred: 3, lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: 'partial' },
+      { attemptAt: '2026-08-30T01:10:00Z', statusCode: 2, durationMs: 50,
+        objectsTransferred: 0, lastSuccessTime: null, errorMessage: 'boom' }
+    ] }
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  // Expand the first pair row.
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  // Default (all) shows 3 entries.
+  expect(w.findAll('[data-test^="pair-attempt-0-"]').length).toBe(3);
+  // Apply OK filter — 1 entry visible.
+  await w.find('[data-test="pair-filter-ok"]').trigger('click');
+  await flushPromises();
+  const okRows = w.findAll('[data-test^="pair-attempt-0-"]');
+  expect(okRows.length).toBe(1);
+  // The visible row carries the OK glyph class.
+  expect(okRows[0].classes()).toContain('att-row-ok');
+  // Apply fail filter — 2 entries visible (warn + err).
+  await w.find('[data-test="pair-filter-fail"]').trigger('click');
+  await flushPromises();
+  const failRows = w.findAll('[data-test^="pair-attempt-0-"]');
+  expect(failRows.length).toBe(2);
+  // Both have the warn or err class.
+  const classes = failRows.map(r => r.classes().join(' '));
+  expect(classes.some(c => c.includes('att-row-warn'))).toBe(true);
+  expect(classes.some(c => c.includes('att-row-err'))).toBe(true);
+});
+
+test('R73: date range toggle renders 2 chips (24h / 7d)', async () => {
+  // Toolbar must show 24h + 7d chips side-by-side; default 24h active.
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="pair-window-24"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-window-168"]').exists()).toBe(true);
+  expect(w.find('[data-test="pair-window-24"]').text()).toBe('24h');
+  expect(w.find('[data-test="pair-window-168"]').text()).toBe('7d');
+  // Default state: 24h is active.
+  expect(w.find('[data-test="pair-window-24"]').classes()).toContain('pair-chip-active');
+  expect(w.find('[data-test="pair-window-168"]').classes()).not.toContain('pair-chip-active');
+});
+
+test('R73: clicking 7d chip clears cache + re-fetches with limit=50', async () => {
+  // First expand defaults to limit=10 (24h). After clicking the 7d chip,
+  // the cache is cleared and the next expand should re-fetch with
+  // limit=50 (7d's cap).
+  getPairHistoryMock.mockResolvedValue({ data: { entries: [] } });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  // First expand — limit=10.
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(getPairHistoryMock).toHaveBeenLastCalledWith(
+    'MOCK-XMADSRV1', 'DC-BJ-01', 10
+  );
+  // Switch to 7d.
+  await w.find('[data-test="pair-window-168"]').trigger('click');
+  await flushPromises();
+  // Chip state updated.
+  expect(w.find('[data-test="pair-window-168"]').classes()).toContain('pair-chip-active');
+  // Cache cleared — pair-attempts row gone (sub-row collapsed).
+  expect(w.find('[data-test="pair-attempts-0"]').exists()).toBe(false);
+  // Re-expand — limit=50.
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  expect(getPairHistoryMock).toHaveBeenLastCalledWith(
+    'MOCK-XMADSRV1', 'DC-BJ-01', 50
+  );
+  expect(getPairHistoryMock).toHaveBeenCalledTimes(2);
+});
+
+test('R73: CSV export button creates Blob URL + triggers anchor click', async () => {
+  // CSV button lives in the sub-table toolbar; click → URL.createObjectURL
+  // is called + an anchor is appended to <body> + clicked. We spy on
+  // URL.createObjectURL and the click event via appendChild watching.
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: { entries: [
+      { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0, durationMs: 100,
+        objectsTransferred: 5, lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: null }
+    ] }
+  });
+  // Spy on URL.createObjectURL + revokeObjectURL.
+  const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-csv-url');
+  const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  // Capture anchor clicks by tracking appendChild on document.body.
+  const clickedAnchors = [];
+  const realAppend = document.body.appendChild.bind(document.body);
+  const appendSpy = vi.spyOn(document.body, 'appendChild').mockImplementation((node) => {
+    if (node && node.tagName === 'A') {
+      const origClick = node.click.bind(node);
+      node.click = vi.fn(() => { clickedAnchors.push(node); origClick(); });
+    }
+    return realAppend(node);
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  // CSV button visible.
+  const csvBtn = w.find('[data-test="pair-csv-0"]');
+  expect(csvBtn.exists()).toBe(true);
+  expect(csvBtn.text()).toBe('导出 CSV');
+  // Click it.
+  await csvBtn.trigger('click');
+  await flushPromises();
+  // URL.createObjectURL called once with a Blob.
+  expect(createUrlSpy).toHaveBeenCalledTimes(1);
+  const blobArg = createUrlSpy.mock.calls[0][0];
+  expect(blobArg).toBeInstanceOf(Blob);
+  expect(blobArg.type).toBe('text/csv;charset=utf-8');
+  // Anchor appended + clicked exactly once.
+  expect(clickedAnchors.length).toBe(1);
+  expect(appendSpy).toHaveBeenCalled();
+  // URL revoked after the click (cleanup).
+  expect(revokeSpy).toHaveBeenCalledWith('blob:mock-csv-url');
+  // Restore mocks.
+  createUrlSpy.mockRestore();
+  revokeSpy.mockRestore();
+  appendSpy.mockRestore();
+});
+
+test('R73: CSV export filename contains srcDc + destDc + timestamp', async () => {
+  // Filename pattern: pair-history-{srcDc}-to-{dstDc}-{YYYYMMDD-HHmm}.csv
+  // Capture the anchor's download attribute after click.
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: { entries: [
+      { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0, durationMs: 100,
+        objectsTransferred: 5, lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: null }
+    ] }
+  });
+  let capturedFilename = null;
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  const realAppend = document.body.appendChild.bind(document.body);
+  vi.spyOn(document.body, 'appendChild').mockImplementation((node) => {
+    if (node && node.tagName === 'A') {
+      const origClick = node.click.bind(node);
+      node.click = vi.fn(() => { capturedFilename = node.download; });
+    }
+    return realAppend(node);
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="pair-csv-0"]').trigger('click');
+  await flushPromises();
+  // Filename must match the canonical pattern.
+  expect(capturedFilename).toMatch(/^pair-history-DC-BJ-01-to-MOCK-XMADSRV1-\d{8}-\d{4}\.csv$/);
+  vi.restoreAllMocks();
+});
+
+test('R73: CSV export content includes header row + filtered rows', async () => {
+  // The CSV body must start with a UTF-8 BOM (﻿), then the header row
+  // matching the on-screen table column order, then one data row per
+  // filtered entry. We read the Blob's text() to assert.
+  getPairHistoryMock.mockResolvedValueOnce({
+    data: { entries: [
+      { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0, durationMs: 100,
+        objectsTransferred: 5, lastSuccessTime: '2026-08-30T01:00:00Z', errorMessage: null },
+      { attemptAt: '2026-08-30T01:05:00Z', statusCode: 2, durationMs: 50,
+        objectsTransferred: 0, lastSuccessTime: null, errorMessage: 'boom' }
+    ] }
+  });
+  let capturedBlob = null;
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+  const realAppend = document.body.appendChild.bind(document.body);
+  vi.spyOn(document.body, 'appendChild').mockImplementation((node) => {
+    if (node && node.tagName === 'A') {
+      const origClick = node.click.bind(node);
+      node.click = vi.fn(() => {});
+    }
+    if (capturedBlob === null) {
+      // The first node.appendChild within exportPairCsv is the anchor
+      // (after Blob already captured via createObjectURL). To grab the
+      // blob we override createObjectURL below — see capturedBlob var.
+    }
+    return realAppend(node);
+  });
+  // Override createObjectURL to capture the Blob.
+  const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+    capturedBlob = blob;
+    return 'blob:mock';
+  });
+  const w = mountView();
+  await flushPromises();
+  await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="cell-detail-pair-0"]').trigger('click');
+  await flushPromises();
+  await w.find('[data-test="pair-csv-0"]').trigger('click');
+  await flushPromises();
+  expect(capturedBlob).toBeInstanceOf(Blob);
+  // Read blob text via FileReader — jsdom 25 ships FileReader but Blob.text()
+  // is undefined, so we cannot rely on the standard reader. FileReader's
+  // readAsText is the portable way to drain a Blob in jsdom.
+  const text = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(capturedBlob);
+  });
+  // BOM prefix (UTF-8 BOM = U+FEFF).
+  expect(text.charCodeAt(0)).toBe(0xFEFF);
+  // Header row matches the on-screen column order.
+  const body = text.slice(1);
+  const lines = body.split('\r\n');
+  expect(lines[0]).toBe('尝试时间,结果,耗时(ms),传输对象,最近成功,错误/详情');
+  // Two data rows (one per filtered entry: filter='all' is default).
+  expect(lines.length).toBe(3);
+  // First data row — success entry (statusCode=0 → 成功 label).
+  expect(lines[1]).toContain('2026-08-30T01:00:00Z');
+  expect(lines[1]).toContain('成功');
+  expect(lines[1]).toContain('100');
+  expect(lines[1]).toContain('5');
+  // Second data row — failure entry (statusCode=2 → 失败 label).
+  expect(lines[2]).toContain('2026-08-30T01:05:00Z');
+  expect(lines[2]).toContain('失败');
+  expect(lines[2]).toContain('boom');
+  vi.restoreAllMocks();
 });

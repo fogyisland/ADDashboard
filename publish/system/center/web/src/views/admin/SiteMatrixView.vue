@@ -278,7 +278,45 @@
           两站点之间暂无复制链路
         </div>
 
-        <table v-else class="pair-table" data-test="cell-detail-table">
+        <!-- R73: pair-toolbar with status filter + date range chips -->
+        <div class="pair-toolbar" data-test="pair-toolbar">
+          <div class="pair-filter-chips" role="group" aria-label="按状态过滤">
+            <button
+              :class="['pair-chip', pairFilter === 'all' ? 'pair-chip-active' : '']"
+              type="button"
+              data-test="pair-filter-all"
+              @click="pairFilter = 'all'"
+            >全部</button>
+            <button
+              :class="['pair-chip', pairFilter === 'ok' ? 'pair-chip-active' : '']"
+              type="button"
+              data-test="pair-filter-ok"
+              @click="pairFilter = 'ok'"
+            >成功</button>
+            <button
+              :class="['pair-chip', pairFilter === 'fail' ? 'pair-chip-active' : '']"
+              type="button"
+              data-test="pair-filter-fail"
+              @click="pairFilter = 'fail'"
+            >失败+部分失败</button>
+          </div>
+          <div class="pair-window-chips" role="group" aria-label="时间范围">
+            <button
+              :class="['pair-chip', pairWindowHours === 24 ? 'pair-chip-active' : '']"
+              type="button"
+              data-test="pair-window-24"
+              @click="pairFilterWindow(24)"
+            >24h</button>
+            <button
+              :class="['pair-chip', pairWindowHours === 168 ? 'pair-chip-active' : '']"
+              type="button"
+              data-test="pair-window-168"
+              @click="pairFilterWindow(168)"
+            >7d</button>
+          </div>
+        </div>
+
+        <table v-if="cellDetail.pairs.length" class="pair-table" data-test="cell-detail-table">
           <thead>
             <tr>
               <th class="pair-caret-col"></th>
@@ -291,7 +329,7 @@
           </thead>
           <tbody>
             <template
-              v-for="(p, i) in cellDetail.pairs"
+              v-for="(p, i) in filteredCellDetail.pairs"
               :key="`${p.sourceDc}-${p.destDc}`"
             >
               <tr
@@ -325,41 +363,56 @@
                 <td colspan="6">
                   <!-- Loading state (only first time we open this pair) -->
                   <div
-                    v-if="pairLoading === pairExpandKey(p.sourceDc, p.destDc)"
+                    v-if="pairLoading === pairExpandKey(p.sourceDc, p.destDc, pairWindowHours)"
                     class="attempts-loading"
                     :data-test="`pair-attempts-loading-${i}`"
                   >加载中…</div>
                   <!-- Error state (rare — backend 500 or network) -->
                   <div
-                    v-else-if="pairErrorFor(p.sourceDc, p.destDc)"
+                    v-else-if="pairErrorFor(p.sourceDc, p.destDc, pairWindowHours)"
                     class="attempts-error"
                     :data-test="`pair-attempts-error-${i}`"
-                  >{{ pairErrorFor(p.sourceDc, p.destDc) }}</div>
-                  <!-- Empty state (no 24h attempts) -->
+                  >{{ pairErrorFor(p.sourceDc, p.destDc, pairWindowHours) }}</div>
+                  <!-- Empty state (no 24h/7d attempts) -->
                   <div
-                    v-else-if="!pairAttemptsBy(p.sourceDc, p.destDc).length"
+                    v-else-if="!pairAttemptsBy(p.sourceDc, p.destDc, pairWindowHours).length"
                     class="attempts-empty"
                     :data-test="`pair-attempts-empty-${i}`"
-                  >24h 内暂无复制尝试记录</div>
+                  >{{ pairWindowHours === 24 ? '24h' : '7d' }} 内暂无复制尝试记录</div>
                   <!-- Attempts sub-table (happy path) -->
-                  <table v-else class="attempts-table" :data-test="`pair-attempts-table-${i}`">
-                    <thead>
-                      <tr>
-                        <th>尝试时间</th>
-                        <th>结果</th>
-                        <th>耗时 (ms)</th>
-                        <th>传输对象</th>
-                        <th>最近成功</th>
-                        <th>错误/详情</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr
-                        v-for="(a, j) in pairAttemptsBy(p.sourceDc, p.destDc)"
-                        :key="j"
-                        :class="['att-row', `att-row-${pairStatusClass(a)}`]"
-                        :data-test="`pair-attempt-${i}-${j}`"
-                      >
+                  <div v-else class="attempts-area" :data-test="`pair-attempts-area-${i}`">
+                    <div class="attempts-toolbar">
+                      <span class="attempts-count">
+                        {{ pairFilteredAttempts(p.sourceDc, p.destDc).length }} 条
+                        <template v-if="pairFilteredAttempts(p.sourceDc, p.destDc).length !== pairAttemptsBy(p.sourceDc, p.destDc, pairWindowHours).length">
+                          / 共 {{ pairAttemptsBy(p.sourceDc, p.destDc, pairWindowHours).length }} 条
+                        </template>
+                      </span>
+                      <button
+                        class="pair-csv-btn"
+                        type="button"
+                        :data-test="`pair-csv-${i}`"
+                        @click.stop="exportPairCsv(p.sourceDc, p.destDc)"
+                      >导出 CSV</button>
+                    </div>
+                    <table class="attempts-table" :data-test="`pair-attempts-table-${i}`">
+                      <thead>
+                        <tr>
+                          <th>尝试时间</th>
+                          <th>结果</th>
+                          <th>耗时 (ms)</th>
+                          <th>传输对象</th>
+                          <th>最近成功</th>
+                          <th>错误/详情</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr
+                          v-for="(a, j) in pairFilteredAttempts(p.sourceDc, p.destDc)"
+                          :key="j"
+                          :class="['att-row', `att-row-${pairStatusClass(a)}`]"
+                          :data-test="`pair-attempt-${i}-${j}`"
+                        >
                         <td class="att-time">{{ fmt(a.attemptAt) }}</td>
                         <td class="att-result">
                           <span class="glyph" :class="`glyph-${pairStatusClass(a)}`">{{ pairGlyph(a) }}</span>
@@ -372,6 +425,7 @@
                       </tr>
                     </tbody>
                   </table>
+                  </div>
                 </td>
               </tr>
             </template>
@@ -416,6 +470,16 @@ const expandedPairs = ref(new Set());
 const pairAttempts  = ref(new Map());
 const pairLoading   = ref(null);
 const pairErrors    = ref(new Map());
+
+// ── R73: pair-toolbar state (status filter + date range). ──────────────
+// `pairFilter` is a single-select string ('all' | 'ok' | 'fail'). It applies
+// to the pair-table itself (filteredCellDetail pairs) AND to the attempts
+// sub-table (pairFilteredAttempts). Default 'all' = show everything.
+// `pairWindowHours` is 24 or 168 (= 7d). Drives the R45 endpoint `limit`
+// (10 for 24h, 50 for 7d) and is part of the cache key so 24h and 7d don't
+// collide. Default 24 = match R72 baseline behavior.
+const pairFilter = ref('all');
+const pairWindowHours = ref(24);
 
 let timerHandle = null;
 
@@ -607,22 +671,63 @@ function handleCellClick(srcSite, dstSite) {
 
 function closeCellModal() {
   clickedCell.value = null;
+  // R73: also reset pair-toolbar state + clear pair cache so the next
+  // open starts at defaults (全部 + 24h) and refetches fresh.
+  pairFilter.value = 'all';
+  pairWindowHours.value = 24;
+  expandedPairs.value = new Set();
+  pairAttempts.value = new Map();
+  pairLoading.value = null;
+  pairErrors.value = new Map();
 }
+
+// ── R73: filtered cellDetail — apply pairFilter status chips. ──────────
+// Wraps cellDetail so the template can iterate `filteredCellDetail.pairs`
+// instead of `cellDetail.pairs`. Returns null when no cell is open (same
+// contract as cellDetail). When filter='all' this is a shallow clone; when
+// filter='ok' or 'fail' it's a filtered view.
+const filteredCellDetail = computed(() => {
+  if (!cellDetail.value) return null;
+  const pairs = cellDetail.value.pairs.filter(p => {
+    if (pairFilter.value === 'all')  return true;
+    if (pairFilter.value === 'ok')   return p.statusCode === 0;
+    if (pairFilter.value === 'fail') return p.statusCode === 1 || p.statusCode >= 2;
+    return true;
+  });
+  return { ...cellDetail.value, pairs };
+});
 
 // ── R72: pair expand / collapse + lazy history fetch. ──────────────────
 // Operator clicks a pair row in the cell-detail modal → togglePairExpansion
 // adds the key to expandedPairs and (if not already cached) lazy-fetches
 // /pair-history for that (sourceDc, destDc) pair. Second click collapses
 // without re-fetching; re-open after collapse reads the cached map.
-function pairExpandKey(srcDc, dstDc) { return `${srcDc}|${dstDc}`; }
-function isPairExpanded(srcDc, dstDc) {
-  return expandedPairs.value.has(pairExpandKey(srcDc, dstDc));
+// R73: cache key now includes `windowHours` so 24h and 7d don't collide.
+function pairExpandKey(srcDc, dstDc, windowHours = pairWindowHours.value) {
+  return `${srcDc}|${dstDc}|${windowHours}`;
 }
-function pairAttemptsBy(srcDc, dstDc) {
-  return pairAttempts.value.get(pairExpandKey(srcDc, dstDc)) || [];
+function isPairExpanded(srcDc, dstDc, windowHours = pairWindowHours.value) {
+  return expandedPairs.value.has(pairExpandKey(srcDc, dstDc, windowHours));
 }
-function pairErrorFor(srcDc, dstDc) {
-  return pairErrors.value.get(pairExpandKey(srcDc, dstDc)) || '';
+function pairAttemptsBy(srcDc, dstDc, windowHours = pairWindowHours.value) {
+  return pairAttempts.value.get(pairExpandKey(srcDc, dstDc, windowHours)) || [];
+}
+function pairErrorFor(srcDc, dstDc, windowHours = pairWindowHours.value) {
+  return pairErrors.value.get(pairExpandKey(srcDc, dstDc, windowHours)) || '';
+}
+
+// R73: pairFilteredAttempts — apply pairFilter on top of cached entries.
+// Pure client-side transform; no refetch.
+function pairFilteredAttempts(srcDc, dstDc, windowHours = pairWindowHours.value) {
+  const all = pairAttemptsBy(srcDc, dstDc, windowHours);
+  if (pairFilter.value === 'all') return all;
+  if (pairFilter.value === 'ok') {
+    return all.filter(a => a.statusCode === 0);
+  }
+  if (pairFilter.value === 'fail') {
+    return all.filter(a => a.statusCode === 1 || a.statusCode >= 2);
+  }
+  return all;
 }
 
 // Attempt-rendering helpers — same vocabulary as R70's edge-detail modal
@@ -644,8 +749,53 @@ function pairLabel(a) {
   return '失败';
 }
 
+// R73: window-switch handler. Updates the global window + clears the
+// per-pair cache so re-expanded pairs fetch fresh 7d (or 24h) entries.
+// We don't collapse existing expanded rows — operator stays in context.
+// (The watch on pairWindowHours below is the actual clearing trigger.)
+function pairFilterWindow(hours) {
+  if (pairWindowHours.value === hours) return;
+  pairWindowHours.value = hours;
+}
+
+// R73: CSV export. Serializes the *currently filtered* attempts (so the
+// operator's chip selection carries through) to a UTF-8 BOM-prefixed CSV
+// string. Triggers a browser download via Blob + anchor click. Filename
+// includes both DCs + ISO timestamp so files don't collide on the disk.
+function exportPairCsv(srcDc, dstDc) {
+  const entries = pairFilteredAttempts(srcDc, dstDc);
+  if (!entries.length) return;
+  const headers = ['尝试时间', '结果', '耗时(ms)', '传输对象', '最近成功', '错误/详情'];
+  const escape = v => {
+    if (v == null) return '';
+    const s = String(v);
+    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const rows = entries.map(a => [
+    a.attemptAt || '',
+    pairLabel(a),
+    a.durationMs == null ? '' : a.durationMs,
+    a.objectsTransferred == null ? '' : a.objectsTransferred,
+    a.lastSuccessTime || '',
+    a.errorMessage || ''
+  ].map(escape).join(','));
+  const csv = '﻿' + [headers.join(','), ...rows].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+  a.href = url;
+  a.download = `pair-history-${srcDc}-to-${dstDc}-${stamp}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function togglePairExpansion(srcDc, dstDc) {
-  const key = pairExpandKey(srcDc, dstDc);
+  const windowHours = pairWindowHours.value;
+  const key = pairExpandKey(srcDc, dstDc, windowHours);
   if (expandedPairs.value.has(key)) {
     expandedPairs.value.delete(key);
     return;
@@ -654,12 +804,14 @@ async function togglePairExpansion(srcDc, dstDc) {
   // Lazy fetch — only if we haven't already cached attempts for this pair.
   // Avoids re-hitting the DB when the operator collapses + re-opens within
   // the same poll cycle. The Map is reset on primaries refresh so the
-  // cache stays fresh across data updates.
+  // cache stays fresh across data updates. R73: limit param respects the
+  // selected window — 10 for 24h, 50 for 7d.
   if (!pairAttempts.value.has(key)) {
     pairLoading.value = key;
     pairErrors.value.delete(key);
+    const limit = windowHours === 168 ? 50 : 10;
     try {
-      const r = await dashboardApi.getSiteReplicationMatrixPairHistory(dstDc, srcDc, 10);
+      const r = await dashboardApi.getSiteReplicationMatrixPairHistory(dstDc, srcDc, limit);
       pairAttempts.value.set(key, Array.isArray(r.data?.entries) ? r.data.entries : []);
     } catch (e) {
       pairAttempts.value.set(key, []);
@@ -669,6 +821,16 @@ async function togglePairExpansion(srcDc, dstDc) {
     }
   }
 }
+
+// R73: when window changes, collapse every expanded row + clear the cache
+// because cached 24h entries are NOT a subset of 7d (different SQL window).
+// Force re-fetch by emptying the maps; new fetches happen on next expand.
+watch(pairWindowHours, () => {
+  expandedPairs.value = new Set();
+  pairAttempts.value = new Map();
+  pairLoading.value = null;
+  pairErrors.value = new Map();
+});
 
 // Reset the modal AND any expanded pairs when the underlying payload
 // refreshes — keeps the modal consistent with the data the user is
@@ -1239,4 +1401,79 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .cell-detail-modal .glyph-ok   { color: #15803d; }
 .cell-detail-modal .glyph-warn { color: #a16207; }
 .cell-detail-modal .glyph-err  { color: #b91c1c; }
+
+/* ===== R73: pair-toolbar (status filter + date range) + CSV export ===== */
+
+/* Toolbar sits above the pair-table; chips flex to opposite ends. */
+.cell-detail-modal .pair-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 12px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.cell-detail-modal .pair-filter-chips,
+.cell-detail-modal .pair-window-chips {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* Chip — pill button with subtle border. Active = filled bg. */
+.cell-detail-modal .pair-chip {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.08s ease, color 0.08s ease, border-color 0.08s ease;
+  line-height: 1.4;
+}
+.cell-detail-modal .pair-chip:hover {
+  background: var(--panel-alt);
+  color: var(--text);
+}
+.cell-detail-modal .pair-chip-active {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+}
+.cell-detail-modal .pair-chip-active:hover {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+/* Sub-table toolbar — count + CSV button on opposite ends. */
+.cell-detail-modal .attempts-area {
+  padding: 12px 8px 8px 8px;
+}
+.cell-detail-modal .attempts-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 8px 0;
+}
+.cell-detail-modal .attempts-count {
+  font-size: 12px;
+  color: var(--muted);
+}
+.cell-detail-modal .pair-csv-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.08s ease, border-color 0.08s ease;
+}
+.cell-detail-modal .pair-csv-btn:hover {
+  background: var(--panel-alt);
+  border-color: var(--accent);
+  color: var(--accent);
+}
 </style>

@@ -3,8 +3,8 @@
 // Replaces the legacy store-backed tests (R6/R19/R41 era) with the new
 // V1 envelope ({items} not {packages}) and the api/packages.js module.
 // The legacy Pinia store at src/stores/packages.js is still alive for
-// PackageEditView / RegistryView / MetricDashboardView; tests for that
-// surface live in packages-store.test.js.
+// PackageEditView / RegistryView; tests for that surface live in
+// packages-store.test.js.
 
 import { test, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';

@@ -13,8 +13,7 @@
 
   The view talks directly to packagesApi (no Pinia store). The legacy
   Pinia store at src/stores/packages.js is intentionally kept alive for
-  PackageEditView / RegistryView / MetricDashboardView — T13 cleans them
-  up.
+  PackageEditView / RegistryView — T13 cleans them up.
 
   Visual language matches R49 ops-console: dimmer L1 title, status-pill
   3-color, tnum on numbers, 2px left rail on row hover.

@@ -2,9 +2,9 @@ import api from './client.js';
 
 // R66 (V1) admin surface for package scripts + policies.
 // The legacy Pinia store (src/stores/packages.js) is still alive because
-// PackageEditView / RegistryView / MetricDashboardView depend on its
-// envelope; T10 only adds this sibling module so the rewritten
-// PackagesView can talk directly to the 7 V1 endpoints:
+// PackageEditView / RegistryView depend on its envelope; T10 only adds
+// this sibling module so the rewritten PackagesView can talk directly
+// to the 7 V1 endpoints:
 //
 //   GET    /api/admin/packages
 //   GET    /api/admin/packages/:name/script    (R67-T1 view-mode)

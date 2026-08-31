@@ -115,3 +115,6 @@ publish/installer/staging-agentInstall/
 # in depth). The bundle is node_modules-free by design — install-agent.ps1
 # runs `npm install --omit=dev` on the target machine instead.
 publish/installer/agentInstall/**/node_modules/
+
+# Local session temp tokens (created by Claude Code hooks)
+*token*.txt
