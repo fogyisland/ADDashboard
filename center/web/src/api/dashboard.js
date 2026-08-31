@@ -27,5 +27,11 @@ export const dashboardApi = {
   // summarises the package_runs table per package (24h totals + last 10
   // runs as drill-down). Read-only; same /api/dashboard/* auth gate as
   // the rest of the 监控指标 surfaces.
-  getPackagesRuns: () => api.get('/api/dashboard/packages-runs')
+  getPackagesRuns: () => api.get('/api/dashboard/packages-runs'),
+  // 2026-09-01 R74: 复制错误 — admin 监控与诊断 surface that lists every
+  // (source_dc, dest_dc, naming_context) tuple whose latest status is a
+  // failure (status_code IN 1, 2). Window defaults to 24h, accepts 7d.
+  // Drives ReplicationErrorsView (mounted at /admin/replication-errors).
+  replicationErrors: ({ window = '24h' } = {}) =>
+    api.get('/api/dashboard/replication-errors', { params: { window } })
 };

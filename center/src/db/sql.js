@@ -198,7 +198,49 @@ const VARIANTS = {
       // replicationLogRecentAttempts — operators care about recent state.
       // Index ix_hist_pair_time(source_dc, dest_dc, naming_context, collected_at)
       // covers WHERE+ORDER BY. Caller binds [source, dest, limit].
-      replicationLogPerPair: `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= UTC_TIMESTAMP() - INTERVAL 24 HOUR ORDER BY collected_at DESC LIMIT ?`
+      replicationLogPerPair: `SELECT source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= UTC_TIMESTAMP() - INTERVAL 24 HOUR ORDER BY collected_at DESC LIMIT ?`,
+      // 2026-09-01 R74: 复制错误 view — list every (source_dc, dest_dc,
+      // naming_context) tuple whose LATEST status row is a failure
+      // (status_code IN 1, 2). Mirrors the latest-per-pair correlated
+      // subquery used by `allReplicationLinks` + `replicationLogPerPair`,
+      // but anchored on `last_attempt_time` instead of `collected_at`
+      // (a stale-but-failed link should still surface). Window is on
+      // `last_attempt_time` so the same row's age drives both the
+      // "is it recent enough" decision and the ORDER BY. attempt_count
+      // joins from ad_replication_history in the same window so the
+      // operator sees how many attempts landed in the visible period.
+      // duration_ms = (last_attempt - last_success) in ms — same shape as
+      // duration_minutes on allReplicationLinks, just finer-grained.
+      // Caller binds [hours, hours] — two windows so both branches of the
+      // UNION-style subquery share the same cut-off.
+      replicationErrors: `SELECT t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code,
+                              t1.last_success_time, t1.last_attempt_time, t1.error_message,
+                              COALESCE(att.cnt, 0) AS attempt_count,
+                              CASE WHEN t1.last_success_time IS NULL OR t1.last_attempt_time IS NULL
+                                   THEN NULL
+                                   ELSE TIMESTAMPDIFF(MICROSECOND, t1.last_success_time, t1.last_attempt_time) DIV 1000
+                              END AS duration_ms
+                         FROM ad_replication_status t1
+                         LEFT JOIN (
+                           SELECT source_dc, dest_dc, naming_context, COUNT(*) AS cnt
+                           FROM ad_replication_history
+                           WHERE collected_at >= UTC_TIMESTAMP() - INTERVAL ? HOUR
+                           GROUP BY source_dc, dest_dc, naming_context
+                         ) att ON att.source_dc = t1.source_dc
+                              AND att.dest_dc = t1.dest_dc
+                              AND att.naming_context = t1.naming_context
+                         WHERE t1.status_code IN (1, 2)
+                           AND t1.source_dc <> t1.dest_dc
+                           AND t1.naming_context NOT IN ('__dc_summary__', 'META')
+                           AND t1.last_attempt_time = (
+                             SELECT MAX(t2.last_attempt_time) FROM ad_replication_status t2
+                             WHERE t2.source_dc = t1.source_dc
+                               AND t2.dest_dc = t1.dest_dc
+                               AND t2.naming_context = t1.naming_context
+                           )
+                           AND t1.last_attempt_time >= UTC_TIMESTAMP() - INTERVAL ? HOUR
+                         ORDER BY t1.last_attempt_time DESC
+                         LIMIT 200`
     },
     heartbeat: {
       // 2026-08-24 round-12: report_requested_at added (last col, matching
@@ -1004,7 +1046,40 @@ const VARIANTS = {
       // must be the FIRST bound param (tedious driver order: literal value
       // precedes the WHERE-bound ones — see center/src/db/drivers/mssql.js).
       // Caller binds [limit, source, dest].
-      replicationLogPerPair: `SELECT TOP (?) source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY collected_at DESC`
+      replicationLogPerPair: `SELECT TOP (?) source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY collected_at DESC`,
+      // 2026-09-01 R74: 复制错误 view — MSSQL mirror of the MySQL helper
+      // above. OUTER APPLY drives the per-tuple history count instead of
+      // the LEFT JOIN + GROUP BY form (cleaner on SQL Server — avoids
+      // the GROUP BY expansion over the cross join). TOP 200 is a hard
+      // literal since the spec caps the view at 200 rows; the window
+      // (hours) is the only bound param, passed twice.
+      replicationErrors: `SELECT TOP 200 t1.source_dc, t1.dest_dc, t1.naming_context, t1.status_code,
+                                 t1.last_success_time, t1.last_attempt_time, t1.error_message,
+                                 COALESCE(att.cnt, 0) AS attempt_count,
+                                 CASE WHEN t1.last_success_time IS NULL OR t1.last_attempt_time IS NULL
+                                      THEN NULL
+                                      ELSE CAST(DATEDIFF_BIG(MILLISECOND, t1.last_success_time, t1.last_attempt_time) AS BIGINT)
+                                 END AS duration_ms
+                            FROM ad_replication_status t1
+                            OUTER APPLY (
+                              SELECT COUNT(*) AS cnt
+                              FROM ad_replication_history h
+                              WHERE h.source_dc = t1.source_dc
+                                AND h.dest_dc = t1.dest_dc
+                                AND h.naming_context = t1.naming_context
+                                AND h.collected_at >= DATEADD(HOUR, -?, SYSUTCDATETIME())
+                            ) att
+                            WHERE t1.status_code IN (1, 2)
+                              AND t1.source_dc <> t1.dest_dc
+                              AND t1.naming_context NOT IN ('__dc_summary__', 'META')
+                              AND t1.last_attempt_time = (
+                                SELECT MAX(t2.last_attempt_time) FROM ad_replication_status t2
+                                WHERE t2.source_dc = t1.source_dc
+                                  AND t2.dest_dc = t1.dest_dc
+                                  AND t2.naming_context = t1.naming_context
+                              )
+                              AND t1.last_attempt_time >= DATEADD(HOUR, -?, SYSUTCDATETIME())
+                            ORDER BY t1.last_attempt_time DESC`
     },
     heartbeat: {
       // 2026-08-24 round-12: report_requested_at added (last col). ISNULL

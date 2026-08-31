@@ -101,6 +101,10 @@ const groups = [
   { icon: '📊', title: '监控与诊断', items: [
     // R64: 复制状态概览 restored to R49 ops-console (per-DC partner tables).
     { label: '复制状态概览',         path: '/admin/site-replication-matrix/all' },
+    // 2026-09-01 R74: 复制错误 — focused triage view for failed replication
+    // attempts. Slotted immediately after 复制状态概览 so operators can
+    // hop from "what's the fleet status" to "what's actually broken".
+    { label: '复制错误',             path: '/admin/replication-errors' },
     { label: '复制伙伴端口监控',     path: '/admin/replication-log/monitor' },
     { label: '心跳与状态报告',       path: '/admin/heartbeat-report' },
     // R53: 包管理 moved here from 权限与账号 (operator's spec).

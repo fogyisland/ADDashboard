@@ -66,8 +66,9 @@ function mountLayout() {
 //     border-left accent + font-weight 600
 //   - .nav-link:hover = bg var(--border) + color var(--accent)
 const EXPECTED_PATHS = [
-  // 监控与诊断 (4 — R64.1 drops 站点矩阵, frontend-only per operator)
+  // 监控与诊断 (5 — R74 adds 复制错误 between 复制状态概览 and 复制伙伴端口监控)
   '/admin/site-replication-matrix/all',
+  '/admin/replication-errors',
   '/admin/replication-log/monitor',
   '/admin/heartbeat-report',
   '/admin/packages',
@@ -124,20 +125,22 @@ test('R53: emoji icons match group titles (R75 adds ⚙️ for 运维)', () => {
   expect(icons).toEqual(['📊', '🛡️', '💻', '👥', '⚙️', '📋', '🛠️']);
 });
 
-test('R53: 监控与诊断 contains 4 items in operator order (R64.1 drops 站点矩阵, frontend-only)', () => {
+test('R53: 监控与诊断 contains 5 items in operator order (R74 adds 复制错误, R64.1 drops 站点矩阵)', () => {
   const w = mountLayout();
   const monitorGroup = w.findAll('.nav-group')[0];
   const links = monitorGroup.findAll('a.nav-link').map(a => a.attributes('href'));
   expect(links).toEqual([
     '/admin/site-replication-matrix/all',
+    '/admin/replication-errors',
     '/admin/replication-log/monitor',
     '/admin/heartbeat-report',
     '/admin/packages'
   ]);
-  // Verify label renames from R52 → R53 + R64 + R64.1
+  // Verify label renames from R52 → R53 + R64 + R64.1 + R74
   const labels = monitorGroup.findAll('a.nav-link').map(a => a.text());
   expect(labels).toEqual([
     '复制状态概览',
+    '复制错误',              // R74 — focused triage view for failed replication
     '复制伙伴端口监控',     // was 复制伙伴端口健康监控
     '心跳与状态报告',        // was 心跳与告警
     '包管理'
@@ -206,10 +209,10 @@ test('R53: Schema 与清理 DELETED (no /admin/orphan-schemas in any nav-link)',
   expect(allLinks).not.toContain('/admin/orphan-schemas');
 });
 
-test('R75: total 21 nav-links in operator-specified order (R75 adds 2 AD ops links; was 19 in R64.1)', () => {
+test('R75: total 22 nav-links in operator-specified order (R75 adds 2 AD ops links; R74 adds 复制错误)', () => {
   const w = mountLayout();
   const allLinks = w.findAll('a.nav-link').map(a => a.attributes('href'));
-  expect(allLinks.length).toBe(21);
+  expect(allLinks.length).toBe(22);
   expect(allLinks).toEqual(EXPECTED_PATHS);
 });
 
@@ -340,14 +343,14 @@ test('R54: each group title contains caret + title-main wrapper (right-aligned c
   }
 });
 
-test('R54: nav-links sit inside a .nav-group-items wrapper (provides left rail, 7 wrappers, 21 links)', () => {
+test('R54: nav-links sit inside a .nav-group-items wrapper (provides left rail, 7 wrappers, 22 links)', () => {
   const w = mountLayout();
   const itemsContainers = w.findAll('.nav-group-items');
   expect(itemsContainers.length).toBe(7);
-  // All 21 nav-links live inside these containers — none loose at nav level
-  // (R75 adds 2 AD ops links — 21 total, was 19 in R64.1)
+  // All 22 nav-links live inside these containers — none loose at nav level
+  // (R75 adds 2 AD ops links + R74 adds 复制错误 — 22 total, was 19 in R64.1)
   const linksInsideItems = itemsContainers.reduce((acc, c) => acc + c.findAll('a.nav-link').length, 0);
-  expect(linksInsideItems).toBe(21);
+  expect(linksInsideItems).toBe(22);
 });
 
 test('R54: source CSS defines caret rotation rule (.nav-group:not([open]) > .nav-group-title .nav-group-caret)', () => {

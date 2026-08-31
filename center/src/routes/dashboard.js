@@ -144,6 +144,59 @@ export function dashboardRouter({ config, logger, db }) {
     }
   });
 
+  // 2026-09-01 R74: 复制错误 — dedicated read-only surface that lists
+  // every (source_dc, dest_dc, naming_context) tuple whose LATEST status
+  // is a failure (status_code IN 1, 2). Mirrors the latest-per-pair
+  // correlated subquery used by /all + /pair-history but anchored on
+  // `last_attempt_time` (a stale-but-failed link should still surface,
+  // which is the whole point of this view). Window is configurable via
+  // ?window=24h (default) or 7d; everything else is a 400. Hard 200-row
+  // cap to keep the page scannable.
+  //
+  // Response envelope:
+  //   {
+  //     window: '24h',
+  //     errors: [
+  //       { sourceDc, destDc, namingContext, statusCode,
+  //         lastAttemptTime, lastSuccessTime, attemptCount,
+  //         errorMessage, durationMs }
+  //     ],
+  //     total: N
+  //   }
+  r.get('/api/dashboard/replication-errors', auth, async (req, res) => {
+    try {
+      const windowKey = String(req.query.window || '24h').trim().toLowerCase();
+      let hours;
+      if (windowKey === '24h') hours = 24;
+      else if (windowKey === '7d') hours = 7 * 24;
+      else return res.status(400).json({ error: 'invalid window (use 24h or 7d)' });
+
+      const db = getDb();
+      // Both branches bind the window twice — once for the LEFT JOIN'd
+      // attempt_count subquery, once for the outermost WHERE filter.
+      // Dialect param order is identical ([hours, hours]) so no
+      // dialect-aware switching is needed (matches /pair-history's
+      // pattern of branching on dialect only when param order differs).
+      const params = [hours, hours];
+      const { rows } = await db.query(db.sql.dashboard.replicationErrors, params);
+      const errors = rows.map(r => ({
+        sourceDc:        r.source_dc,
+        destDc:          r.dest_dc,
+        namingContext:   r.naming_context,
+        statusCode:      r.status_code,
+        lastAttemptTime: toIso(r.last_attempt_time),
+        lastSuccessTime: toIso(r.last_success_time),
+        attemptCount:    Number(r.attempt_count) || 0,
+        errorMessage:    r.error_message,
+        durationMs:      r.duration_ms == null ? null : Number(r.duration_ms)
+      }));
+      res.json({ window: windowKey, errors, total: errors.length });
+    } catch (e) {
+      logger.error({ err: e }, 'dashboard replication-errors failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   r.get('/api/dashboard/errors', auth, async (_req, res) => {
     try {
       const db = getDb();

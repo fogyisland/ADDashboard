@@ -1314,3 +1314,135 @@ test('packages-runs: 500 on db error', async () => {
   assert.equal(r.status, 500);
   assert.deepEqual(r.body, { error: 'internal' });
 });
+
+// ----- REPLICATION ERRORS (R74) -----
+
+test('replication-errors: 401 when no token', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const app = buildApp();
+  const r = await supertest(app).get('/api/dashboard/replication-errors');
+  assert.equal(r.status, 401);
+});
+
+test('replication-errors: 200 happy path returns camelCase rows with attempt_count + durationMs', async () => {
+  // The MySQL helper anchors on `last_attempt_time` and joins against
+  // ad_replication_history for the attempt_count. The mock returns the
+  // post-JOIN shape directly so we can assert the route's reshape.
+  const la1 = new Date('2026-09-01T08:00:00Z');
+  const la2 = new Date('2026-09-01T07:30:00Z');
+  const ls1 = new Date('2026-09-01T06:00:00Z');
+  const ls2 = null;
+  const db = buildMockDb([
+    {
+      // Matches the dashboard.replicationErrors SELECT — the correlated
+      // subquery + LEFT JOIN on ad_replication_history. Single match
+      // because the route issues one query per request.
+      match: /FROM\s+ad_replication_status[\s\S]+status_code\s+IN\s*\(\s*1\s*,\s*2\s*\)/i,
+      rows: [
+        {
+          source_dc: 'MOCK-HUBADSRV1', dest_dc: 'MOCK-NCADSRV1',
+          naming_context: 'DC=corp,DC=example,DC=com',
+          status_code: 2,
+          last_success_time: ls1, last_attempt_time: la1,
+          error_message: 'RPC server unavailable',
+          attempt_count: 47, duration_ms: 3600_000
+        },
+        {
+          source_dc: 'MOCK-NCADSRV1', dest_dc: 'MOCK-HUBADSRV1',
+          naming_context: 'CN=Configuration,DC=corp,DC=example,DC=com',
+          status_code: 1,
+          last_success_time: ls2, last_attempt_time: la2,
+          error_message: 'LDAP partial failure',
+          attempt_count: 12, duration_ms: null
+        }
+      ]
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/replication-errors')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.window, '24h');
+  assert.equal(r.body.total, 2);
+  assert.equal(r.body.errors.length, 2);
+
+  // Order preserved from SQL: most-recent first.
+  assert.equal(r.body.errors[0].sourceDc, 'MOCK-HUBADSRV1');
+  assert.equal(r.body.errors[0].destDc, 'MOCK-NCADSRV1');
+  assert.equal(r.body.errors[0].namingContext, 'DC=corp,DC=example,DC=com');
+  assert.equal(r.body.errors[0].statusCode, 2);
+  assert.equal(r.body.errors[0].attemptCount, 47);
+  assert.equal(r.body.errors[0].errorMessage, 'RPC server unavailable');
+  assert.equal(r.body.errors[0].lastAttemptTime, la1.toISOString());
+  assert.equal(r.body.errors[0].lastSuccessTime, ls1.toISOString());
+  assert.equal(r.body.errors[0].durationMs, 3600_000);
+
+  // null lastSuccessTime becomes null in the JSON shape (not "null" string).
+  assert.equal(r.body.errors[1].lastSuccessTime, null);
+  assert.equal(r.body.errors[1].durationMs, null);
+  assert.equal(r.body.errors[1].statusCode, 1);
+});
+
+test('replication-errors: empty array when no failures in window', async () => {
+  const db = buildMockDb([
+    {
+      match: /FROM\s+ad_replication_status[\s\S]+status_code\s+IN\s*\(\s*1\s*,\s*2\s*\)/i,
+      rows: []
+    }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/replication-errors')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.window, '24h');
+  assert.deepEqual(r.body.errors, []);
+  assert.equal(r.body.total, 0);
+});
+
+test('replication-errors: window=7d sends 168 hours to the SQL helper', async () => {
+  // Use a recording pool so we can assert the bound params reach the
+  // driver wrapper in the expected order ([hours, hours]).
+  const records = [];
+  const db = buildMockDb([
+    {
+      match: /FROM\s+ad_replication_status[\s\S]+status_code\s+IN\s*\(\s*1\s*,\s*2\s*\)/i,
+      rows: []
+    }
+  ]).withRecording(records);
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/replication-errors?window=7d')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.window, '7d');
+  assert.equal(r.body.total, 0);
+  // Find the replicationErrors SELECT and verify its param list.
+  const repl = records.find(rec => /replicationErrors|status_code\s+IN\s*\(\s*1\s*,\s*2\s*\)/i.test(rec.sql));
+  assert.ok(repl, 'replicationErrors SQL was issued');
+  assert.deepEqual(repl.params, [168, 168], 'both window-binds are 168 (7d)');
+});
+
+test('replication-errors: 400 on invalid window value', async () => {
+  _setDbForTest(buildMockDb().standard());
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/replication-errors?window=12h')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error, 'invalid window (use 24h or 7d)');
+});
+
+test('replication-errors: 500 on db error, returns {error: "internal"}', async () => {
+  _setDbForTest(buildThrowingPool('replication-errors boom'));
+  const app = buildApp();
+  const r = await supertest(app)
+    .get('/api/dashboard/replication-errors')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(r.status, 500);
+  assert.deepEqual(r.body, { error: 'internal' });
+});

@@ -110,6 +110,11 @@ const routes = [
   // types via adAdminApi (queue + poll pattern).
   { path: '/admin/ad-users',             component: () => import('./views/admin/UserManagementView.vue'),    meta: { perm: 'admin:users' } },
   { path: '/admin/ad-groups',            component: () => import('./views/admin/GroupManagementView.vue'),   meta: { perm: 'admin:users' } },
+  // 2026-09-01 R74: 复制错误 — focused triage view that lists every
+  // (source_dc, dest_dc, naming_context) tuple whose latest status row
+  // is a failure (status_code IN 1, 2). Default 24h window, 7d opt-in
+  // via the toolbar <select>. Sits inside the admin 监控与诊断 group.
+  { path: '/admin/replication-errors',    component: () => import('./views/admin/ReplicationErrorsView.vue'), meta: { perm: 'admin:users' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 
