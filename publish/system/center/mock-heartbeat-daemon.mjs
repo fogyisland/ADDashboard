@@ -34,6 +34,12 @@ import {
   fetchConfiguredPorts
 } from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
+// 2026-08-31 R75: drain /api/agent/ad-commands on each daemon tick. Same
+// pattern as mock-multi-agent.mjs::processAdCommands — the daemon runs
+// continuously so commands queued between ticks get picked up promptly.
+// The mock-ad-admin-e2e.mjs driver uses the same function so the daemon
+// and the e2e exercise identical code paths.
+import { dispatchMockAdCommand } from './mock-ad-admin.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -164,6 +170,68 @@ async function postJson(url, body, { timeoutMs = 5000 } = {}) {
   } catch (e) {
     return { status: 0, ok: false, error: e.message };
   }
+}
+
+// 2026-08-31 R75 — drain /api/agent/ad-commands for a single mock agent.
+// Mirrors mock-multi-agent.mjs::processAdCommands; the daemon uses this
+// on every tick so an admin-queued AD command is picked up within one
+// HEARTBEAT_INTERVAL_MS of being queued (vs. waiting for the next
+// scenario iteration).
+//
+// Returns the count of commands processed (0 when the queue is empty).
+// Failures are logged at warn + swallowed so a transient 5xx doesn't
+// kill the agent loop — the next tick re-polls.
+async function processAdCommands(agentId) {
+  let claimed;
+  try {
+    const url = `${CENTER_URL.replace(/\/+$/, '')}/api/agent/ad-commands?hostname=${encodeURIComponent(agentId)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'X-Agent-Token': AGENT_TOKEN },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!res.ok) {
+      // 404 happens during centre boot when the route isn't mounted yet;
+      // any other non-2xx is logged for ops visibility. Either way the
+      // next tick re-polls.
+      if (res.status !== 404) {
+        console.warn(`[${agentId}] ad-commands poll returned HTTP ${res.status}`);
+      }
+      return 0;
+    }
+    const body = await res.json();
+    claimed = Array.isArray(body?.commands) ? body.commands : [];
+  } catch (e) {
+    console.warn(`[${agentId}] ad-commands poll failed: ${e.message}`);
+    return 0;
+  }
+  if (claimed.length === 0) return 0;
+  let processed = 0;
+  for (const cmd of claimed) {
+    const result = dispatchMockAdCommand(agentId, cmd);
+    try {
+      const ackRes = await fetch(
+        `${CENTER_URL.replace(/\/+$/, '')}/api/agent/ad-commands/${cmd.id}/result`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN },
+          body: JSON.stringify(result),
+          signal: AbortSignal.timeout(10_000)
+        }
+      );
+      if (!ackRes.ok) {
+        console.warn(`[${agentId}] ad-commands ack failed (id=${cmd.id}, HTTP ${ackRes.status})`);
+      } else {
+        processed++;
+      }
+    } catch (e) {
+      console.warn(`[${agentId}] ad-commands ack error (id=${cmd.id}): ${e.message}`);
+    }
+  }
+  if (processed > 0) {
+    console.log(`[${agentId}] ad-commands drained ${processed} command(s)`);
+  }
+  return processed;
 }
 
 // 2026-08-27 round-41: track the "next heartbeat should explicitly clear
@@ -461,6 +529,15 @@ async function runAgent(spec, { stopFlag, configuredPorts = [] }) {
         if (d.ok) lastDiscoveryAt = now;
       }
     }
+    // 2026-08-31 R75: drain /api/agent/ad-commands once per heartbeat
+    // tick. Runs AFTER the heartbeat so any command queued between ticks
+    // gets claimed on the next heartbeat (5s cadence by default). The
+    // dispatch is best-effort; failures are logged inside processAdCommands.
+    try {
+      await processAdCommands(agentId);
+    } catch (e) {
+      console.warn(`[${agentId}] ad-commands drain crashed: ${e.message}`);
+    }
     await delay(HEARTBEAT_INTERVAL_MS);
   }
   console.log(`[${agentId}] daemon exiting (heartbeats=${heartbeatCount}, reportNow=${reportNowCount})`);
@@ -473,7 +550,11 @@ const stopFlag = { stopped: false };
 // can verify every scenario's dc payload conforms to the backend's
 // discovery.js upsertDc 12-param binding without spinning up the full
 // daemon.
-export { defaultScenario };
+//
+// 2026-08-31 R75: export processAdCommands so the mock-ad-admin-e2e.mjs
+// driver can drain /api/agent/ad-commands inline (avoids spawning a
+// separate daemon process for the e2e).
+export { defaultScenario, processAdCommands };
 
 // 2026-08-28 R57-B: wrap the daemon startup in main() and only invoke
 // when this file is run directly. Without this guard, importing the

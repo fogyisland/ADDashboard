@@ -31,6 +31,14 @@
 // operator can re-stage the scenario without touching code.
 
 import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot, buildPartnerPortEntries, buildMockHeartbeatPorts, fetchConfiguredPorts } from './mock-snapshot.mjs';
+// 2026-08-31 R75: ad-commands integration. The mock agent polls
+// /api/agent/ad-commands on each iteration; for every claimed command it
+// dispatches the corresponding mockAd* function and POSTs back the result
+// envelope. The flow is identical to what the real agent's JS dispatcher
+// (agent/src/dispatchers/ad-admin.js) will do once T12 wires up the PS1
+// scripts — the mock lets us e2e-test the full center path before any
+// PS1 work starts.
+import { dispatchMockAdCommand } from './mock-ad-admin.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -539,6 +547,81 @@ async function fetchAdminView() {
   return json;
 }
 
+// 2026-08-31 R75 — drain /api/agent/ad-commands for a single mock agent.
+// Returns the count of commands processed (0 when the queue is empty).
+//
+// The endpoint is mounted on the WEB port (8080 by default) per server.js
+// mount layout. The agent's X-Agent-Token is the same one used for
+// heartbeat / report / discover / file-push. Each command dispatched via
+// dispatchMockAdCommand (mock-ad-admin.mjs) returns the result envelope
+// shape the real agent's JS dispatcher will produce from its PS1 spawn().
+//
+// Failures are logged at warn and swallowed (best-effort) so a transient
+// 5xx doesn't kill the scenario loop — the next iteration re-polls.
+async function processAdCommands(agentId) {
+  let claimed;
+  try {
+    const url = `${ADMIN_URL}/api/agent/ad-commands?hostname=${encodeURIComponent(agentId)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'X-Agent-Token': AGENT_TOKEN },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!res.ok) {
+      // Most common cause: 503 because the centre is mid-restart, or
+      // the agent's token was rotated and the new one isn't in this
+      // mock's env yet. Log and skip — the next tick re-polls.
+      if (res.status !== 404) {
+        console.warn(`[${agentId}] ad-commands poll returned HTTP ${res.status}`);
+      }
+      return 0;
+    }
+    const body = await res.json();
+    claimed = Array.isArray(body?.commands) ? body.commands : [];
+  } catch (e) {
+    console.warn(`[${agentId}] ad-commands poll failed: ${e.message}`);
+    return 0;
+  }
+  if (claimed.length === 0) return 0;
+  let processed = 0;
+  for (const cmd of claimed) {
+    const result = dispatchMockAdCommand(agentId, cmd);
+    try {
+      const ackRes = await fetch(`${ADMIN_URL}/api/agent/ad-commands/${cmd.id}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN },
+        body: JSON.stringify(result),
+        signal: AbortSignal.timeout(10_000)
+      });
+      if (!ackRes.ok) {
+        console.warn(`[${agentId}] ad-commands ack failed (id=${cmd.id}, HTTP ${ackRes.status})`);
+      } else {
+        processed++;
+      }
+    } catch (e) {
+      console.warn(`[${agentId}] ad-commands ack error (id=${cmd.id}): ${e.message}`);
+    }
+  }
+  return processed;
+}
+
+// 2026-08-31 R75: drain ad-commands for every mock agent in the scenario.
+// Called once after the replication + heartbeat phase so a queued AD
+// admin command (queued via POST /api/admin/ad-commands) gets picked up
+// and acked in the same loop iteration. The operator's e2e driver
+// (mock-ad-admin-e2e.mjs) relies on this to exercise the full path.
+async function processAdCommandsForAll(agentIds) {
+  let total = 0;
+  for (const id of agentIds) {
+    try {
+      total += await processAdCommands(id);
+    } catch (e) {
+      console.warn(`[${id}] processAdCommands crashed: ${e.message}`);
+    }
+  }
+  return total;
+}
+
 function summarizeView(view) {
   if (!view) return '  (set ADMIN_TOKEN to fetch /api/admin/heartbeat-report/agents after staging)';
   const lines = ['  agent              lastHeartbeat            lastReportAt            status              summary'];
@@ -569,6 +652,15 @@ async function main() {
     await runOne(sc);
   }
 
+  // 2026-08-31 R75: drain /api/agent/ad-commands once per scenario. The
+  // scenario loop runs one-shot; the daemon variant (mock-heartbeat-daemon)
+  // ticks every 30s. Both end up exercising the full center → agent →
+  // mock-dispatch → ack chain. Mirrors the operator's directive "mock
+  // 反过去执行 agent 路径" — the mock drives the same code path the real
+  // agent's JS dispatcher will drive.
+  const drained = await processAdCommandsForAll(scenarios.map(s => s.agentId));
+  console.log(`  ad-commands  → drained ${drained} command(s)`);
+
   // Give MySQL a moment to settle, then surface the admin view if we can.
   await new Promise(r => setTimeout(r, 500));
   console.log(`\n--- admin view ---`);
@@ -591,7 +683,11 @@ async function main() {
 // mock-discovery-shape.test.js can verify every scenario's discovery.dc
 // payload conforms to the backend's discovery.js upsertDc 12-param binding
 // without spinning up the full daemon.
-export { defaultScenario };
+//
+// 2026-08-31 R75: export processAdCommands so the mock-ad-admin-e2e.mjs
+// driver can drain /api/agent/ad-commands inline (avoids spawning a
+// separate daemon process for the e2e).
+export { defaultScenario, processAdCommands };
 
 // 2026-08-28 R57-B: only invoke main() when this file is run directly.
 // Without this guard, importing the module (e.g., from
