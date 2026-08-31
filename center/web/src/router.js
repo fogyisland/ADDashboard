@@ -102,6 +102,14 @@ const routes = [
   { path: '/admin/ad-file-push',         component: () => import('./views/admin/AdFilePushView.vue'),         meta: { perm: 'admin:users' } },
   { path: '/admin/member-file-push',     component: () => import('./views/admin/MemberFilePushView.vue'),     meta: { perm: 'admin:users' } },
   { path: '/admin/member-command-exec',  component: () => import('./views/admin/MemberCommandExecView.vue'), meta: { perm: 'admin:users' } },
+  // 2026-08-31 R75: AD 用户与组管理 — surface for AD user/group CRUD
+  // (search / create / password reset / enable / disable / unlock /
+  //  edit attributes / group memberships / delete for users; parallel
+  // set of operations for groups incl. member mgmt). Both views share
+  // the AdCommandHistoryDrawer right sidebar and the 17 R75 command
+  // types via adAdminApi (queue + poll pattern).
+  { path: '/admin/ad-users',             component: () => import('./views/admin/UserManagementView.vue'),    meta: { perm: 'admin:users' } },
+  { path: '/admin/ad-groups',            component: () => import('./views/admin/GroupManagementView.vue'),   meta: { perm: 'admin:users' } },
   { path: '/:pathMatch(.*)*', component: NotFoundView }
 ];
 

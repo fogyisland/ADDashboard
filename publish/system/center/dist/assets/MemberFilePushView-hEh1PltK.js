@@ -1,1 +1,0 @@
-import{F as e}from"./FilePushView-BLJ0hBqV.js";import{c as r,b as t}from"./index-Dv7Nzl7p.js";const _={__name:"MemberFilePushView",setup(s){return(a,o)=>(t(),r(e,{"target-type":"server"}))}};export{_ as default};

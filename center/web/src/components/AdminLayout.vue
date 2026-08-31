@@ -125,6 +125,16 @@ const groups = [
     { label: '用户管理', path: '/admin/users' },
     { label: '角色管理', path: '/admin/roles' }
   ]},
+  // 2026-08-31 R75: 运维 group — AD 用户与组管理 (per operator directive
+  // "放在运维那边，可以针对特定的AD服务器，用户创建、搜索、密码重置、
+  // 禁用等等功能，组创建、组属性设定，成员增减、删除等等功能").
+  // Sits between 权限和账户 and 运维日志 — logical reading order:
+  // account → AD operations → log review. 2 nav-links, brings total to
+  // 6+1 = 7 groups + 23 nav-links (was 6 / 21 in R64.1).
+  { icon: '⚙️', title: '运维', items: [
+    { label: 'AD 用户管理', path: '/admin/ad-users' },
+    { label: 'AD 组管理',   path: '/admin/ad-groups' }
+  ]},
   { icon: '📋', title: '运维日志', items: [
     // R53: 审计日志 → 系统运维日志 (记录目前所有的系统变更日志).
     { label: '系统运维日志',         path: '/admin/audit' },

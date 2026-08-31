@@ -84,6 +84,9 @@ const EXPECTED_PATHS = [
   // 权限和账户 (2)
   '/admin/users',
   '/admin/roles',
+  // R75: 运维 (2) — AD 用户管理 + AD 组管理
+  '/admin/ad-users',
+  '/admin/ad-groups',
   // 运维日志 (2)
   '/admin/audit',
   '/admin/operations-log',
@@ -100,7 +103,7 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-test('R53: renders 6 top-level groups in operator-specified order', () => {
+test('R53: renders 7 top-level groups in operator-specified order (R75 adds 运维)', () => {
   const w = mountLayout();
   const groupTitles = w.findAll('.nav-group-title .label').map(t => t.text());
   expect(groupTitles).toEqual([
@@ -108,16 +111,17 @@ test('R53: renders 6 top-level groups in operator-specified order', () => {
     'AD 活动目录服务器',
     '成员服务器管理',
     '权限和账户',
+    '运维',
     '运维日志',
     '系统设置'
   ]);
-  expect(w.findAll('.nav-group').length).toBe(6);
+  expect(w.findAll('.nav-group').length).toBe(7);
 });
 
-test('R53: emoji icons match group titles', () => {
+test('R53: emoji icons match group titles (R75 adds ⚙️ for 运维)', () => {
   const w = mountLayout();
   const icons = w.findAll('.nav-group-title .icon').map(t => t.text());
-  expect(icons).toEqual(['📊', '🛡️', '💻', '👥', '📋', '🛠️']);
+  expect(icons).toEqual(['📊', '🛡️', '💻', '👥', '⚙️', '📋', '🛠️']);
 });
 
 test('R53: 监控与诊断 contains 4 items in operator order (R64.1 drops 站点矩阵, frontend-only)', () => {
@@ -171,16 +175,23 @@ test('R53: 权限和账户 contains only 用户管理 + 角色管理 (no 包管�
   expect(labels).toEqual(['用户管理', '角色管理']);
 });
 
+test('R75: 运维 contains AD 用户管理 + AD 组管理 (between 权限和账户 and 运维日志)', () => {
+  const w = mountLayout();
+  const opsGroup = w.findAll('.nav-group')[4];
+  const labels = opsGroup.findAll('a.nav-link').map(a => a.text());
+  expect(labels).toEqual(['AD 用户管理', 'AD 组管理']);
+});
+
 test('R53: 运维日志 contains 系统运维日志 + 心跳与状态执行日志', () => {
   const w = mountLayout();
-  const logGroup = w.findAll('.nav-group')[4];
+  const logGroup = w.findAll('.nav-group')[5];
   const labels = logGroup.findAll('a.nav-link').map(a => a.text());
   expect(labels).toEqual(['系统运维日志', '心跳与状态执行日志']);
 });
 
 test('R53: 系统设置 contains orphans (版本升级 / 系统配置 / 邮件配置)', () => {
   const w = mountLayout();
-  const sysGroup = w.findAll('.nav-group')[5];
+  const sysGroup = w.findAll('.nav-group')[6];
   const links = sysGroup.findAll('a.nav-link').map(a => a.attributes('href'));
   expect(links).toEqual([
     '/admin/migrations',
@@ -195,17 +206,17 @@ test('R53: Schema 与清理 DELETED (no /admin/orphan-schemas in any nav-link)',
   expect(allLinks).not.toContain('/admin/orphan-schemas');
 });
 
-test('R53: total 19 nav-links in operator-specified order (R64.1 removes 站点矩阵 from admin)', () => {
+test('R75: total 21 nav-links in operator-specified order (R75 adds 2 AD ops links; was 19 in R64.1)', () => {
   const w = mountLayout();
   const allLinks = w.findAll('a.nav-link').map(a => a.attributes('href'));
-  expect(allLinks.length).toBe(19);
+  expect(allLinks.length).toBe(21);
   expect(allLinks).toEqual(EXPECTED_PATHS);
 });
 
-test('all top-level groups open by default', () => {
+test('all top-level groups open by default (7 groups after R75)', () => {
   const w = mountLayout();
   const details = w.findAll('details.nav-group');
-  expect(details.length).toBe(6);
+  expect(details.length).toBe(7);
   for (const d of details) {
     expect(d.attributes('open')).toBeDefined();
   }
@@ -316,10 +327,10 @@ import { dirname, resolve } from 'node:path';
 const adminLayoutPath = resolve(dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '../src/components/AdminLayout.vue');
 const adminLayoutSrc = readFileSync(adminLayoutPath, 'utf8');
 
-test('R54: each group title contains caret + title-main wrapper (right-aligned caret)', () => {
+test('R54: each group title contains caret + title-main wrapper (right-aligned caret, 7 groups)', () => {
   const w = mountLayout();
   const titles = w.findAll('.nav-group-title');
-  expect(titles.length).toBe(6);
+  expect(titles.length).toBe(7);
   for (const t of titles) {
     expect(t.find('.nav-group-title-main').exists()).toBe(true);
     expect(t.find('.nav-group-title-main .icon').exists()).toBe(true);
@@ -329,14 +340,14 @@ test('R54: each group title contains caret + title-main wrapper (right-aligned c
   }
 });
 
-test('R54: nav-links sit inside a .nav-group-items wrapper (provides left rail)', () => {
+test('R54: nav-links sit inside a .nav-group-items wrapper (provides left rail, 7 wrappers, 21 links)', () => {
   const w = mountLayout();
   const itemsContainers = w.findAll('.nav-group-items');
-  expect(itemsContainers.length).toBe(6);
-  // All 19 nav-links live inside these containers — none loose at nav level
-  // (R64.1 removed 站点矩阵 from admin — 19 total, was 20)
+  expect(itemsContainers.length).toBe(7);
+  // All 21 nav-links live inside these containers — none loose at nav level
+  // (R75 adds 2 AD ops links — 21 total, was 19 in R64.1)
   const linksInsideItems = itemsContainers.reduce((acc, c) => acc + c.findAll('a.nav-link').length, 0);
-  expect(linksInsideItems).toBe(19);
+  expect(linksInsideItems).toBe(21);
 });
 
 test('R54: source CSS defines caret rotation rule (.nav-group:not([open]) > .nav-group-title .nav-group-caret)', () => {
