@@ -1390,7 +1390,221 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
+  // 2026-08-31 R75 — AD user & group management command queue. Three
+  // admin endpoints wired through adAdminCommandsService (which lives in
+  // ../services/ad-admin-commands.js). The service handles all DB work,
+  // per-type params validation, and password-redaction. The route adds:
+  //   - DC-online check at queue time (503 with last-seen timestamp when
+  //     the agent hasn't heartbeated in 5min — operator can override
+  //     with ?force=true to queue anyway)
+  //   - audit row emission per queue (action derived from commandType;
+  //     passwords REDACTED in the audit payload per spec §3.4 ruling #8)
+  //   - pagination + filter on the list endpoint
+  //
+  // Routes that load the service via dynamic import to avoid a cycle
+  // (the service imports getDb() lazily, but the route file is on the
+  // critical path of the bootstrap and we want the require() surface
+  // minimal at module load).
+
+  // POST /api/admin/ad-commands — queue a new AD command.
+  r.post('/api/admin/ad-commands', auth, async (req, res) => {
+    const { targetDc, commandType, params } = req.body || {};
+    if (!targetDc || typeof targetDc !== 'string') {
+      return res.status(400).json({ error: 'targetDc required' });
+    }
+    if (!commandType || typeof commandType !== 'string') {
+      return res.status(400).json({ error: 'commandType required' });
+    }
+    // DC-online check (spec §2.5 ruling #10). Skip when ?force=true. The
+    // last-seen timestamp is included in the 503 body so the operator can
+    // decide whether to override. Performed BEFORE the service call so
+    // we don't write a row for a command the agent can't pick up.
+    const force = String(req.query?.force ?? '') === 'true';
+    if (!force) {
+      try {
+        const db = getDb();
+        const { rows } = await db.query(db.sql.heartbeat.dcOnlineCheck, [targetDc.trim()]);
+        if (!rows || rows.length === 0) {
+          // Look up the most recent heartbeat regardless of freshness so
+          // we can surface "last seen at <ts>" in the 503 body. The
+          // readLastHeartbeatAt SELECT is the same shape the heartbeat
+          // cold-start path uses.
+          const recent = await db.query(db.sql.heartbeat.readLastHeartbeatAt, [targetDc.trim()]);
+          const lastHeartbeatAt = recent.rows?.[0]?.last_heartbeat_at ?? null;
+          return res.status(503).json({
+            error: `no agent currently online for ${targetDc}; last heartbeat ${lastHeartbeatAt || 'never'}`,
+            lastHeartbeatAt
+          });
+        }
+      } catch (e) {
+        // Don't 500 the queue endpoint on a heartbeat SELECT hiccup —
+        // surface a clear 503 (operator can retry or override). Log so
+        // ops can investigate the underlying issue.
+        logger.warn({ err: e.message, targetDc }, 'ad-commands DC-online check failed');
+        return res.status(503).json({ error: 'DC-online check failed; retry or pass ?force=true' });
+      }
+    }
+    let row;
+    try {
+      const { queueCommand } = await import('../services/ad-admin-commands.js');
+      row = await queueCommand({
+        targetDc,
+        commandType,
+        params,
+        operatorId: req.user?.sub ?? null
+      });
+    } catch (e) {
+      if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+      logger.error({ err: e, targetDc, commandType }, 'ad-commands queue failed');
+      return res.status(500).json({ error: 'internal' });
+    }
+    // Audit row derived from commandType (matches the user-facing action
+    // the operator just took; the system-side ad_command_claimed /
+    // _succeeded / _failed rows are emitted by the agent routes).
+    // Payload shape: redact password fields per spec §3.4 ruling #8.
+    // password-bearing params become { hasPassword: true, passwordLength }.
+    const auditAction = commandTypeToAuditAction(commandType);
+    const auditPayload = {
+      commandId: row.id,
+      targetDc: row.target_dc,
+      commandType,
+      paramsSummary: redactPasswordsForAudit(params)
+    };
+    await writeAudit({
+      userId: req.user?.sub ?? null,
+      action: auditAction,
+      target: typeof params?.sam === 'string' ? params.sam
+        : typeof params?.name === 'string' ? params.name
+        : `dc:${row.target_dc}`,
+      payload: auditPayload,
+      logger
+    });
+    res.status(201).json({
+      id: row.id,
+      commandType: row.command_type,
+      targetDc: row.target_dc,
+      status: row.status,
+      createdAt: row.created_at
+    });
+  });
+
+  // GET /api/admin/ad-commands — paginated history (operator's drawer).
+  r.get('/api/admin/ad-commands', auth, async (req, res) => {
+    try {
+      const { listCommands } = await import('../services/ad-admin-commands.js');
+      const operatorIdRaw = req.query?.operatorId;
+      const operatorId = operatorIdRaw != null && operatorIdRaw !== ''
+        ? Number(operatorIdRaw) : undefined;
+      const status = req.query?.status || undefined;
+      const page = req.query?.page ?? 1;
+      const size = req.query?.size ?? 50;
+      const out = await listCommands({ operatorId, status, page, size });
+      // Shape rows for the operator drawer. result_json is omitted (the
+      // single-row endpoint exposes it; the list keeps payload light).
+      const rows = out.rows.map(r => ({
+        id: r.id,
+        commandType: r.command_type,
+        targetDc: r.target_dc,
+        status: r.status,
+        operatorId: r.operator_id,
+        operatorUsername: r.operator_username ?? null,
+        createdAt: r.created_at,
+        claimedAt: r.claimed_at,
+        completedAt: r.completed_at,
+        durationMs: r.duration_ms,
+        errorMessage: r.error_message
+      }));
+      res.json({ total: out.total, rows, page: out.page, size: out.size });
+    } catch (e) {
+      logger.error({ err: e }, 'ad-commands list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // GET /api/admin/ad-commands/:id — single row incl. params_json +
+  // result_json. Audit-classifier entries (`ad_command_*`) cover the
+  // operator-visible events; this endpoint just reads.
+  r.get('/api/admin/ad-commands/:id', auth, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+    try {
+      const { getCommand } = await import('../services/ad-admin-commands.js');
+      const row = await getCommand(id);
+      if (!row) return res.status(404).json({ error: 'command not found' });
+      // Redact passwords on the way out so an admin looking at history
+      // never sees cleartext (defense-in-depth — the service already
+      // strips on write).
+      const safeParams = row.params_json ? redactPasswordsForAudit(row.params_json) : null;
+      const safeResult = row.result_json ? redactPasswordsForAudit(row.result_json) : null;
+      res.json({
+        id: row.id,
+        commandType: row.command_type,
+        targetDc: row.target_dc,
+        status: row.status,
+        operatorId: row.operator_id,
+        operatorUsername: row.operator_username ?? null,
+        params: safeParams,
+        result: safeResult,
+        errorMessage: row.error_message,
+        durationMs: row.duration_ms,
+        createdAt: row.created_at,
+        claimedAt: row.claimed_at,
+        completedAt: row.completed_at
+      });
+    } catch (e) {
+      logger.error({ err: e, id }, 'ad-commands get failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
+}
+
+// ── R75 audit-payload helpers (route-local) ──────────────────────────────
+// commandType → audit action (matches spec §3.2). The 17 user-facing
+// commandTypes each map to one audit action (the same one we'd write for
+// an operator doing that operation directly without the queue).
+function commandTypeToAuditAction(commandType) {
+  const map = {
+    user_search: 'ad_user_search',
+    user_create: 'ad_user_create',
+    user_password_reset: 'ad_user_password_reset',
+    user_enable: 'ad_user_enable',
+    user_disable: 'ad_user_disable',
+    user_unlock: 'ad_user_unlock',
+    user_set_attributes: 'ad_user_set_attributes',
+    user_delete: 'ad_user_delete',
+    user_list_groups: 'ad_user_list_groups',
+    group_search: 'ad_group_search',
+    group_create: 'ad_group_create',
+    group_set_attributes: 'ad_group_set_attributes',
+    group_add_member: 'ad_group_add_member',
+    group_remove_member: 'ad_group_remove_member',
+    group_set_members: 'ad_group_set_members',
+    group_delete: 'ad_group_delete',
+    group_list_members: 'ad_group_list_members'
+  };
+  return map[commandType] || 'ad_user_search';
+}
+
+// Redact password-shaped keys for audit payload + GET response. Mirrors
+// the service's redactPasswords() (kept as a route-local copy so the route
+// never has to import a test-internal helper).
+function redactPasswordsForAudit(value) {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(redactPasswordsForAudit);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (k === 'password' || k === 'newPassword' || k === 'oldPassword') {
+        out[k] = { hasPassword: true, passwordLength: typeof v === 'string' ? v.length : 0 };
+        continue;
+      }
+      out[k] = redactPasswordsForAudit(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 // Built-in package name constant. Mirrors member-servers.js — disabling it

@@ -33,6 +33,10 @@ test('classifier: classifyAction returns Chinese label + category + severity tog
 
 test('classifier: CATEGORY_ACTIONS.security is exactly the registered security actions', () => {
   assert.deepEqual([...CATEGORY_ACTIONS.get('security')].sort(), [
+    // 2026-08-31 R75: AD user/group destructive actions land in the
+    // security category (same shape as delete_user / disable_builtin_*).
+    'ad_group_delete', 'ad_group_set_members', 'ad_user_delete',
+    'ad_user_disable', 'ad_user_password_reset',
     'agent_self_register', 'auto_expire_agent_token', 'auto_expire_jwt_secret',
     'commit_agent_token', 'commit_jwt_secret',
     'delete_user', 'disable_builtin_ad_os_baseline', 'generate_agent_token',
@@ -43,6 +47,8 @@ test('classifier: CATEGORY_ACTIONS.security is exactly the registered security a
 
 test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token rotation actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
+    'ad_group_delete', 'ad_group_set_members', 'ad_user_delete',
+    'ad_user_disable', 'ad_user_password_reset',
     'auto_expire_agent_token', 'auto_expire_jwt_secret', 'delete_user',
     'disable_builtin_ad_os_baseline', 'generate_agent_token', 'login_failed', 'restart_service',
     'reveal_agent_token', 'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
@@ -51,6 +57,13 @@ test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token ro
 
 test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('medium')].sort(), [
+    // 2026-08-31 R75: AD user/group mutating actions + command-failed
+    // share the medium tier (operator-actionable changes that did not
+    // complete as expected, same shape as push_file_failed).
+    'ad_command_failed', 'ad_command_timeout',
+    'ad_group_add_member', 'ad_group_create', 'ad_group_remove_member',
+    'ad_group_set_attributes',
+    'ad_user_create', 'ad_user_enable', 'ad_user_set_attributes', 'ad_user_unlock',
     'agent_self_register', 'apply_migration', 'apply_up_to',
     'baseline', 'bulk_assign_dc_sites',
     'bulk_disable_package_to_group', 'bulk_import_sites', 'bulk_install_package_to_group',

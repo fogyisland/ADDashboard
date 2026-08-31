@@ -114,7 +114,37 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['push_file_uploaded',  'changes'],
   ['push_file_claimed',   'changes'],
   ['push_file_delivered', 'changes'],
-  ['push_file_failed',    'changes']
+  ['push_file_failed',    'changes'],
+  // 2026-08-31 R75 — AD user & group management command queue. The 17
+  // user-facing actions (`ad_user_*` and `ad_group_*`) are operator-initiated
+  // AD writes. Category is 'changes' or 'security' per the spec §3.2 table —
+  // security/high for destructive operations (password_reset, disable,
+  // delete, set_members, group_delete) since they're the operator's
+  // destructive surface; changes/medium for the rest. The 4 system-side
+  // actions (`ad_command_*`) are agent-observed status transitions;
+  // changes/low for claimed/succeeded (operator-visible positive signals),
+  // changes/medium for failed/timeout (operator-actionable).
+  ['ad_user_search',           'ops'],
+  ['ad_user_create',           'changes'],
+  ['ad_user_password_reset',   'security'],
+  ['ad_user_enable',           'changes'],
+  ['ad_user_disable',          'security'],
+  ['ad_user_unlock',           'changes'],
+  ['ad_user_set_attributes',   'changes'],
+  ['ad_user_delete',           'security'],
+  ['ad_user_list_groups',      'ops'],
+  ['ad_group_search',          'ops'],
+  ['ad_group_create',          'changes'],
+  ['ad_group_set_attributes',  'changes'],
+  ['ad_group_add_member',      'changes'],
+  ['ad_group_remove_member',   'changes'],
+  ['ad_group_set_members',     'security'],
+  ['ad_group_delete',          'security'],
+  ['ad_group_list_members',    'ops'],
+  ['ad_command_claimed',       'changes'],
+  ['ad_command_succeeded',     'changes'],
+  ['ad_command_failed',        'changes'],
+  ['ad_command_timeout',       'changes']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -220,7 +250,34 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['push_file_uploaded',  'low'],
   ['push_file_claimed',   'low'],
   ['push_file_delivered', 'low'],
-  ['push_file_failed',    'medium']
+  ['push_file_failed',    'medium'],
+  // 2026-08-31 R75 — severity per spec §3.2 table. Password reset,
+  // user disable, user delete, group set_members, group delete = high
+  // (operator's destructive AD surface). Create / set_attributes /
+  // add/remove member = medium. Search / list = low. Command_claimed /
+  // succeeded = low (positive signals). Command_failed / timeout =
+  // medium (operator-actionable, same shape as delete_script medium).
+  ['ad_user_search',           'low'],
+  ['ad_user_create',           'medium'],
+  ['ad_user_password_reset',   'high'],
+  ['ad_user_enable',           'medium'],
+  ['ad_user_disable',          'high'],
+  ['ad_user_unlock',           'medium'],
+  ['ad_user_set_attributes',   'medium'],
+  ['ad_user_delete',           'high'],
+  ['ad_user_list_groups',      'low'],
+  ['ad_group_search',          'low'],
+  ['ad_group_create',          'medium'],
+  ['ad_group_set_attributes',  'medium'],
+  ['ad_group_add_member',      'medium'],
+  ['ad_group_remove_member',   'medium'],
+  ['ad_group_set_members',     'high'],
+  ['ad_group_delete',          'high'],
+  ['ad_group_list_members',    'low'],
+  ['ad_command_claimed',       'low'],
+  ['ad_command_succeeded',     'low'],
+  ['ad_command_failed',        'medium'],
+  ['ad_command_timeout',       'medium']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -319,7 +376,31 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['push_file_uploaded',  '推送文件上传'],
   ['push_file_claimed',   '推送文件已认领'],
   ['push_file_delivered', '推送文件已送达'],
-  ['push_file_failed',    '推送文件失败']
+  ['push_file_failed',    '推送文件失败'],
+  // 2026-08-31 R75 — Chinese labels for the AD user/group management
+  // command lifecycle. Verb + object phrasing matches the existing
+  // audit-classifier taxonomy (search/create/list/reset/etc).
+  ['ad_user_search',           'AD 用户搜索'],
+  ['ad_user_create',           'AD 创建用户'],
+  ['ad_user_password_reset',   'AD 重置用户密码'],
+  ['ad_user_enable',           'AD 启用用户'],
+  ['ad_user_disable',          'AD 禁用用户'],
+  ['ad_user_unlock',           'AD 解锁用户'],
+  ['ad_user_set_attributes',   'AD 修改用户属性'],
+  ['ad_user_delete',           'AD 删除用户'],
+  ['ad_user_list_groups',      'AD 查看用户组成员'],
+  ['ad_group_search',          'AD 组搜索'],
+  ['ad_group_create',          'AD 创建组'],
+  ['ad_group_set_attributes',  'AD 修改组属性'],
+  ['ad_group_add_member',      'AD 向组添加成员'],
+  ['ad_group_remove_member',   'AD 从组移除成员'],
+  ['ad_group_set_members',     'AD 替换组成员'],
+  ['ad_group_delete',          'AD 删除组'],
+  ['ad_group_list_members',    'AD 查看组成员'],
+  ['ad_command_claimed',       'AD 命令认领'],
+  ['ad_command_succeeded',     'AD 命令成功'],
+  ['ad_command_failed',        'AD 命令失败'],
+  ['ad_command_timeout',       'AD 命令超时']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([

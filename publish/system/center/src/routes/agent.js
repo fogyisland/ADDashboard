@@ -478,6 +478,94 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         res.status(500).json({ error: 'internal' });
       }
     });
+
+    // 2026-08-31 R75 — AD user & group management command queue.
+    // Agents poll this endpoint on their normal cadence to find queued
+    // commands targeting their hostname. Two-step claim is handled by
+    // services/ad-admin-commands.js claimForAgent (atomic via UPDATE
+    // … WHERE status='queued'). Per spec §3.3 each successful claim emits
+    // one 'ad_command_claimed' audit row (matches the per-file pattern
+    // already used by /api/agent/file-push).
+    r.get('/api/agent/ad-commands', agentMw, async (req, res) => {
+      const hostname = String(req.query.hostname || '').trim();
+      if (!hostname) return res.status(400).json({ error: 'hostname required' });
+      try {
+        const { claimForAgent } = await import('../services/ad-admin-commands.js');
+        const claimed = await claimForAgent(hostname, 5);
+        // Mirror file-push: one ad_command_claimed audit row per claim.
+        // operator_id is null (this is an agent action, not an operator one).
+        for (const c of claimed) {
+          await writeAudit({
+            action: 'ad_command_claimed',
+            target: `dc:${hostname}`,
+            payload: {
+              commandId: c.id,
+              commandType: c.command_type,
+              hostname
+            },
+            logger
+          });
+        }
+        // Agent view: strip params_json from JSON-stringified text into a
+        // real object the agent's JS dispatcher can read directly. The
+        // service has already parsed it on the way out of claimForAgent.
+        res.json({
+          commands: claimed.map(c => ({
+            id: c.id,
+            commandType: c.command_type,
+            targetDc: c.target_dc,
+            params: c.params_json,
+            status: c.status,
+            createdAt: c.created_at,
+            claimedAt: c.claimed_at
+          }))
+        });
+      } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        logger.error({ err: e, hostname }, 'agent ad-commands poll failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
+
+    // Agent-side ack: terminal-state report after PS1 dispatch.
+    // Body: { success, data, error, exitCode, durationMs }.
+    // Response: 200 with the new status, 404 if the command never
+    // existed / was already terminal before this claim, 409 if the
+    // command was claimed by someone else (defense-in-depth).
+    r.post('/api/agent/ad-commands/:id/result', agentMw, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+      const { success, data, error, exitCode, durationMs } = req.body || {};
+      try {
+        const { completeCommand, getCommand } = await import('../services/ad-admin-commands.js');
+        const before = await getCommand(id);
+        if (!before) return res.status(404).json({ error: 'command not found' });
+        const row = await completeCommand(id, { success, data, error, exitCode, durationMs });
+        await writeAudit({
+          action: success ? 'ad_command_succeeded' : 'ad_command_failed',
+          target: `cmd:${id}`,
+          payload: {
+            commandId: id,
+            commandType: row.command_type,
+            targetDc: row.target_dc,
+            exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+            durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+            errorMessage: error ?? null
+          },
+          logger
+        });
+        res.json({ ok: true, commandId: id, status: row.status });
+      } catch (e) {
+        if (e.httpStatus) {
+          // completeCommand throws 404 for "not found" + 409 for "not in
+          // running state" (the spec §2.4 'command not claimed by this
+          // agent' defense-in-depth path). Map both to the right status.
+          return res.status(e.httpStatus).json({ error: e.message });
+        }
+        logger.error({ err: e, id }, 'ad-commands ack failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
   }
 
   // Web mount: stable bootstrap endpoint for agents. Lives on the web port

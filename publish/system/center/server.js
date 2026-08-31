@@ -599,6 +599,21 @@ await ((async () => {
         }
       }).catch(() => {});
     }, 30000).unref();
+    // R75 (2026-08-31): sweep AD admin command timeouts every 10 seconds.
+    // 30 s default matches the agent's internal PS1 exec budget
+    // (services/ad-admin-commands.js sweepTimeouts). Env var
+    // AD_ADMIN_COMMAND_TIMEOUT_MS lets tests tighten the window. .unref()
+    // so the timer doesn't block process exit during graceful shutdown.
+    const _adAdminSweepMs = Number(process.env.AD_ADMIN_COMMAND_TIMEOUT_MS) || 30000;
+    const _adAdminSweepIntervalMs = 10_000;
+    setInterval(async () => {
+      try {
+        const { sweepTimeouts } = await import('./src/services/ad-admin-commands.js');
+        await sweepTimeouts({ timeoutMs: _adAdminSweepMs });
+      } catch (e) {
+        logger.warn({ err: e.message }, 'ad admin commands sweep failed (best-effort)');
+      }
+    }, _adAdminSweepIntervalMs).unref();
     const shutdown = async (sig) => {
       logger.info({ sig }, 'shutting down');
       try { await probeLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'probe stop failed'); }
