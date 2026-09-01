@@ -910,26 +910,29 @@ test('R73: status filter chips render above pair table (3 chips: all/ok/err)', a
 
 test('R73: clicking status filter chip filters pair-table rows (all/ok only/err only)', async () => {
   // basePayload cell 核心 → 厦门 carries 1 green (statusCode=0) + 1 yellow
-  // (statusCode=1) pair. Filter by status should reduce visible rows:
-  //   - all (default)   → 2 pairs visible
-  //   - ok              → 1 pair visible (the green one)
-  //   - fail            → 1 pair visible (the yellow partial-failure one)
+  // (statusCode=1) pair. After R73 redesign, the filter chips control
+  // only the attempt rows inside each expanded pair's sub-table — the
+  // pair rows themselves stay visible regardless of the chip, because
+  // hiding a pair row would hide its just-expanded sub-table and the
+  // operator would lose context. This test verifies that the chip
+  // state still toggles correctly (active class) even though it doesn't
+  // change the pair-row count.
   const w = mountView();
   await flushPromises();
   await fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]').trigger('click');
   await flushPromises();
-  // Default: all 2 pairs.
+  // Default: all 2 pairs visible.
   expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(2);
-  // Click OK filter — only the green row remains.
+  // Click OK filter — both pairs stay visible (chips don't hide rows).
   await w.find('[data-test="pair-filter-ok"]').trigger('click');
   await flushPromises();
-  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(1);
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(2);
   expect(w.find('[data-test="pair-filter-ok"]').classes()).toContain('pair-chip-active');
   expect(w.find('[data-test="pair-filter-all"]').classes()).not.toContain('pair-chip-active');
-  // Click fail filter — only the yellow partial-failure row remains.
+  // Click fail filter — still 2 pairs visible; chip state moves.
   await w.find('[data-test="pair-filter-fail"]').trigger('click');
   await flushPromises();
-  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(1);
+  expect(w.findAll('[data-test^="cell-detail-pair-"]').length).toBe(2);
   expect(w.find('[data-test="pair-filter-fail"]').classes()).toContain('pair-chip-active');
   // Back to all — 2 rows again.
   await w.find('[data-test="pair-filter-all"]').trigger('click');
@@ -1113,7 +1116,12 @@ test('R73: CSV export filename contains srcDc + destDc + timestamp', async () =>
 test('R73: CSV export content includes header row + filtered rows', async () => {
   // The CSV body must start with a UTF-8 BOM (﻿), then the header row
   // matching the on-screen table column order, then one data row per
-  // filtered entry. We read the Blob's text() to assert.
+  // filtered entry. We assert the BOM via Blob byte inspection (the
+  // portable way across jsdom / Node: FileReader.readAsText silently
+  // strips U+FEFF on some implementations, so we can't rely on the
+  // post-decode char code). The body content is checked after a
+  // manual BOM-aware decode so it doesn't depend on the BOM-stripping
+  // policy of the test runtime.
   getPairHistoryMock.mockResolvedValueOnce({
     data: { entries: [
       { attemptAt: '2026-08-30T01:00:00Z', statusCode: 0, durationMs: 100,
@@ -1131,15 +1139,10 @@ test('R73: CSV export content includes header row + filtered rows', async () => 
       const origClick = node.click.bind(node);
       node.click = vi.fn(() => {});
     }
-    if (capturedBlob === null) {
-      // The first node.appendChild within exportPairCsv is the anchor
-      // (after Blob already captured via createObjectURL). To grab the
-      // blob we override createObjectURL below — see capturedBlob var.
-    }
     return realAppend(node);
   });
   // Override createObjectURL to capture the Blob.
-  const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+  vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
     capturedBlob = blob;
     return 'blob:mock';
   });
@@ -1152,20 +1155,31 @@ test('R73: CSV export content includes header row + filtered rows', async () => 
   await w.find('[data-test="pair-csv-0"]').trigger('click');
   await flushPromises();
   expect(capturedBlob).toBeInstanceOf(Blob);
-  // Read blob text via FileReader — jsdom 25 ships FileReader but Blob.text()
-  // is undefined, so we cannot rely on the standard reader. FileReader's
-  // readAsText is the portable way to drain a Blob in jsdom.
-  const text = await new Promise((resolve, reject) => {
+  // Read blob as ArrayBuffer via FileReader (jsdom Blob lacks arrayBuffer()).
+  // This lets us assert the raw byte sequence — including the BOM at
+  // bytes 0-2 — without depending on FileReader.readAsText's BOM-
+  // stripping policy (which silently turns the first char into the
+  // first header character on some jsdom versions).
+  const buf = await new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
+    reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(reader.error);
-    reader.readAsText(capturedBlob);
+    reader.readAsArrayBuffer(capturedBlob);
   });
-  // BOM prefix (UTF-8 BOM = U+FEFF).
-  expect(text.charCodeAt(0)).toBe(0xFEFF);
-  // Header row matches the on-screen column order.
-  const body = text.slice(1);
-  const lines = body.split('\r\n');
+  const bytes = new Uint8Array(buf);
+  expect(bytes.length).toBeGreaterThan(3);
+  // UTF-8 BOM bytes.
+  expect(bytes[0]).toBe(0xEF);
+  expect(bytes[1]).toBe(0xBB);
+  expect(bytes[2]).toBe(0xBF);
+  // Decode the body. TextDecoder in some Node versions preserves the
+  // BOM in the decoded string even with ignoreBOM:true — so we strip
+  // it explicitly after decode (the BOM has already been asserted
+  // above as raw bytes).
+  const td = new TextDecoder('utf-8');
+  let fullText = td.decode(buf);
+  if (fullText.charCodeAt(0) === 0xFEFF) fullText = fullText.slice(1);
+  const lines = fullText.split('\r\n');
   expect(lines[0]).toBe('尝试时间,结果,耗时(ms),传输对象,最近成功,错误/详情');
   // Two data rows (one per filtered entry: filter='all' is default).
   expect(lines.length).toBe(3);

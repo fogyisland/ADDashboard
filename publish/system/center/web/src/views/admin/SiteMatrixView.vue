@@ -681,20 +681,16 @@ function closeCellModal() {
   pairErrors.value = new Map();
 }
 
-// ── R73: filtered cellDetail — apply pairFilter status chips. ──────────
-// Wraps cellDetail so the template can iterate `filteredCellDetail.pairs`
-// instead of `cellDetail.pairs`. Returns null when no cell is open (same
-// contract as cellDetail). When filter='all' this is a shallow clone; when
-// filter='ok' or 'fail' it's a filtered view.
+// ── R73: filtered cellDetail — passthrough (all pairs always visible). ──
+// Earlier rounds used `filteredCellDetail` to filter pair rows by
+// pairFilter, but that conflicts with the per-pair attempt sub-table:
+// when the operator expands pair-A then clicks 'fail', pair-A gets hidden
+// from the modal and the just-expanded sub-table disappears. We now keep
+// every pair row visible and let `pairFilter` only narrow the attempt
+// rows inside each expanded pair's sub-table (R73 attempt-filter test).
 const filteredCellDetail = computed(() => {
   if (!cellDetail.value) return null;
-  const pairs = cellDetail.value.pairs.filter(p => {
-    if (pairFilter.value === 'all')  return true;
-    if (pairFilter.value === 'ok')   return p.statusCode === 0;
-    if (pairFilter.value === 'fail') return p.statusCode === 1 || p.statusCode >= 2;
-    return true;
-  });
-  return { ...cellDetail.value, pairs };
+  return cellDetail.value;
 });
 
 // ── R72: pair expand / collapse + lazy history fetch. ──────────────────
@@ -780,11 +776,19 @@ function exportPairCsv(srcDc, dstDc) {
     a.lastSuccessTime || '',
     a.errorMessage || ''
   ].map(escape).join(','));
-  const csv = '﻿' + [headers.join(','), ...rows].join('\r\n');
+  // BOM prefix: U+FEFF written via explicit escape to avoid editor / Vite
+  // encoding round-trips that collapse raw BOM bytes to U+5C01 (尧) or
+  // similar. Excel needs this to detect UTF-8 when opening the CSV.
+  const csv = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
+  // Filename timestamp: YYYYMMDD-HHmm (4-digit hour+min). Earlier
+  // HHmmss shape added second precision that operators don't need when
+  // exports are minute-cadence. Built from raw ISO slice — the colon
+  // between HH and MM sits at index 13 so we slice around it explicitly.
+  const iso = new Date().toISOString();   // 2026-09-01T08:20:59.904Z
+  const stamp = iso.slice(0, 10).replace(/-/g, '') + '-' + iso.slice(11, 13) + iso.slice(14, 16);
   a.href = url;
   a.download = `pair-history-${srcDc}-to-${dstDc}-${stamp}.csv`;
   document.body.appendChild(a);
