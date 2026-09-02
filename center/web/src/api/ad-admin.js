@@ -34,6 +34,16 @@ export const adAdminApi = {
   queueCommand: ({ targetDc, commandType, params }) =>
     api.post('/api/admin/ad-commands', { targetDc, commandType, params }),
 
+  // 2026-09-02 R76 — batch-queue N commands in a single request. Only the
+  // 4 batch-safe mutator types are accepted on the server side
+  // (user_enable / user_disable / user_unlock / user_password_reset).
+  // For user_password_reset the same newPassword applies to every entry.
+  // Returns 201 when all entries queued, 207 (Multi-Status) when some
+  // entries failed per-entry validation; the response shape is the same
+  // in both cases: { queued: [...], totalQueued, errors: [{index, error}] }.
+  queueBatch: ({ targetDc, commandType, paramsList }) =>
+    api.post('/api/admin/ad-commands/batch', { targetDc, commandType, paramsList }),
+
   // History list. Accepts any subset of { operatorId, status, page, size }.
   // Defaults page=1 size=20 — matches the drawer "last 20" UX.
   listCommands: ({ operatorId, status, page = 1, size = 20 } = {}) => {

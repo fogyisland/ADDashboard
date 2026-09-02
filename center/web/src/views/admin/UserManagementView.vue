@@ -80,6 +80,15 @@
     <table v-else class="t">
       <thead>
         <tr>
+          <th class="checkbox-col">
+            <input
+              type="checkbox"
+              data-test="user-bulk-master"
+              :checked="allSelected"
+              :indeterminate.prop="someSelected && !allSelected"
+              @change="toggleAll"
+            />
+          </th>
           <th>sAMAccountName</th>
           <th>显示名称</th>
           <th>启用</th>
@@ -90,6 +99,14 @@
       </thead>
       <tbody>
         <tr v-for="m in results" :key="m.sam" :data-test="`user-row-${m.sam}`" class="user-row">
+          <td class="checkbox-col">
+            <input
+              type="checkbox"
+              :data-test="`user-bulk-${m.sam}`"
+              :checked="selectedSams.has(m.sam)"
+              @change="toggleSam(m.sam)"
+            />
+          </td>
           <td><code class="sam">{{ m.sam }}</code></td>
           <td>{{ m.displayName || '—' }}</td>
           <td>
@@ -111,6 +128,38 @@
         </tr>
       </tbody>
     </table>
+
+    <!-- Bulk-action bar (R76): appears when >=1 row is selected. -->
+    <div v-if="selectedSams.size > 0" class="bulk-bar" data-test="user-bulk-bar">
+      <span class="bulk-count" data-test="user-bulk-count">已选 {{ selectedSams.size }} 个账号</span>
+      <div class="bulk-actions">
+        <button
+          data-test="user-bulk-enable"
+          :disabled="!selectedDc || bulkInFlight"
+          @click="bulkConfirm('user_enable')"
+        >启用</button>
+        <button
+          data-test="user-bulk-disable"
+          :disabled="!selectedDc || bulkInFlight"
+          @click="bulkConfirm('user_disable')"
+        >禁用</button>
+        <button
+          data-test="user-bulk-unlock"
+          :disabled="!selectedDc || bulkInFlight"
+          @click="bulkSend('user_unlock')"
+        >解锁</button>
+        <button
+          data-test="user-bulk-reset"
+          :disabled="!selectedDc || bulkInFlight"
+          @click="openBatchPasswordReset"
+        >重置密码</button>
+        <button
+          data-test="user-bulk-clear"
+          :disabled="bulkInFlight"
+          @click="clearSelection"
+        >取消选择</button>
+      </div>
+    </div>
 
     <div v-if="lastBanner" :class="['action-banner', lastBanner.ok ? 'ok' : 'err']">
       {{ lastBanner.text }} <small v-if="lastBanner.commandId">· 命令 #{{ lastBanner.commandId }}</small>
@@ -153,6 +202,12 @@
       @close="modal = null"
       @deleted="onSubmitted('delete', $event)"
     />
+    <BatchPasswordResetModal
+      v-if="modal === 'batchPasswordReset'"
+      :sams="Array.from(selectedSams)"
+      @close="modal = null"
+      @submit="onBatchPasswordResetSubmit"
+    />
   </AdminLayout>
 </template>
 
@@ -168,6 +223,7 @@ import UserPasswordResetModal from '../../components/admin/UserPasswordResetModa
 import UserAttributesModal from '../../components/admin/UserAttributesModal.vue';
 import UserGroupMembershipsModal from '../../components/admin/UserGroupMembershipsModal.vue';
 import UserDeleteConfirmModal from '../../components/admin/UserDeleteConfirmModal.vue';
+import BatchPasswordResetModal from '../../components/admin/BatchPasswordResetModal.vue';
 
 const auth = useAuthStore();
 const currentUserId = computed(() => auth.user?.id);
@@ -184,6 +240,138 @@ const lastBanner = ref(null);
 
 const modal = ref(null);
 const modalTarget = ref(null);
+
+// 2026-09-02 R76 — bulk-action selection state. Set keyed by sam; cleared
+// on every fresh search (results array changes), and on modal open.
+const selectedSams = ref(new Set());
+const bulkInFlight = ref(false);
+
+const allSelected = computed(() =>
+  results.value.length > 0 && selectedSams.value.size === results.value.length
+);
+const someSelected = computed(() => selectedSams.value.size > 0);
+
+function toggleSam(sam) {
+  // Vue's reactivity doesn't track Set mutations, so swap to a new Set
+  // whenever we add or remove. Mirrors the pattern used elsewhere in the
+  // R75 views (Map cache with explicit replace).
+  const next = new Set(selectedSams.value);
+  if (next.has(sam)) next.delete(sam);
+  else next.add(sam);
+  selectedSams.value = next;
+}
+
+function toggleAll() {
+  if (allSelected.value) {
+    selectedSams.value = new Set();
+  } else {
+    selectedSams.value = new Set(results.value.map(m => m.sam));
+  }
+}
+
+function clearSelection() {
+  selectedSams.value = new Set();
+}
+
+// Reset selection whenever results are replaced (e.g. fresh search).
+watch(results, () => {
+  selectedSams.value = new Set();
+});
+
+// ── Bulk operations ──────────────────────────────────────────────────────
+// Two patterns depending on whether the command is destructive:
+//   - bulkSend: fires immediately (enable / unlock are non-destructive)
+//   - bulkConfirm: shows confirm() first (disable is destructive — covers
+//     R76 §2 ruling about avoiding bulk-mis-click footguns)
+// The user_password_reset variant opens BatchPasswordResetModal.
+async function bulkSend(commandType) {
+  if (!selectedDc.value || selectedSams.value.size === 0) return;
+  const sams = Array.from(selectedSams.value);
+  bulkInFlight.value = true;
+  try {
+    const resp = await adAdminApi.queueBatch({
+      targetDc: selectedDc.value,
+      commandType,
+      paramsList: sams.map(sam => ({ sam }))
+    });
+    const queued = resp.data?.queued?.length ?? 0;
+    const errors = resp.data?.errors?.length ?? 0;
+    lastBanner.value = {
+      ok: errors === 0,
+      text: errors === 0
+        ? `已批量 ${labelFor(commandType)} ${queued} 个账号`
+        : `批量 ${labelFor(commandType)} 部分失败 — 成功 ${queued} / 失败 ${errors}`,
+      commandId: null
+    };
+    if (errors === 0) clearSelection();
+  } catch (e) {
+    lastBanner.value = {
+      ok: false,
+      text: `批量 ${labelFor(commandType)} 失败 — ${e?.response?.data?.error || e?.message}`,
+      commandId: null
+    };
+  } finally {
+    bulkInFlight.value = false;
+    setTimeout(runSearch, 2500);
+  }
+}
+
+function bulkConfirm(commandType) {
+  if (!selectedDc.value || selectedSams.value.size === 0) return;
+  const n = selectedSams.value.size;
+  const verb = labelFor(commandType);
+  const ok = window.confirm(`确认${verb} ${n} 个账号?`);
+  if (!ok) return;
+  return bulkSend(commandType);
+}
+
+function labelFor(commandType) {
+  switch (commandType) {
+    case 'user_enable': return '启用';
+    case 'user_disable': return '禁用';
+    case 'user_unlock': return '解锁';
+    case 'user_password_reset': return '重置密码';
+    default: return commandType;
+  }
+}
+
+function openBatchPasswordReset() {
+  if (selectedSams.value.size === 0) return;
+  modal.value = 'batchPasswordReset';
+  modalTarget.value = null;
+}
+
+async function onBatchPasswordResetSubmit(payload) {
+  const { sams, newPassword, mustChangePassword, unlockAccount } = payload;
+  bulkInFlight.value = true;
+  modal.value = null;
+  try {
+    const resp = await adAdminApi.queueBatch({
+      targetDc: selectedDc.value,
+      commandType: 'user_password_reset',
+      paramsList: sams.map(sam => ({ sam, newPassword, mustChangePassword, unlockAccount }))
+    });
+    const queued = resp.data?.queued?.length ?? 0;
+    const errors = resp.data?.errors?.length ?? 0;
+    lastBanner.value = {
+      ok: errors === 0,
+      text: errors === 0
+        ? `已批量重置密码 ${queued} 个账号`
+        : `批量重置密码 部分失败 — 成功 ${queued} / 失败 ${errors}`,
+      commandId: null
+    };
+    if (errors === 0) clearSelection();
+  } catch (e) {
+    lastBanner.value = {
+      ok: false,
+      text: `批量重置密码 失败 — ${e?.response?.data?.error || e?.message}`,
+      commandId: null
+    };
+  } finally {
+    bulkInFlight.value = false;
+    setTimeout(runSearch, 2500);
+  }
+}
 
 // Shared polling composable for the inline search. The view's runSearch
 // calls polling.start() after queueCommand; the watcher below reads
@@ -348,6 +536,36 @@ onMounted(async () => {
 .status-pill.err { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
 
 .actions-col { width: 360px; }
+
+/* 2026-09-02 R76 — bulk-action checkboxes + sticky bulk-action bar. */
+.checkbox-col { width: 32px; text-align: center; }
+.bulk-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+}
+.bulk-count { font-size: 13px; color: var(--accent); font-weight: 600; }
+.bulk-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.bulk-actions button {
+  padding: 5px 12px;
+  font-size: 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--text);
+}
+.bulk-actions button:hover { background: var(--border); }
+.bulk-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .action-banner {
   margin-top: 12px; padding: 8px 12px; border-radius: 4px; font-size: 12px;

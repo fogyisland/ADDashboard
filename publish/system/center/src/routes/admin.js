@@ -1420,30 +1420,8 @@ export function adminRouter({ config, logger, db }) {
     // decide whether to override. Performed BEFORE the service call so
     // we don't write a row for a command the agent can't pick up.
     const force = String(req.query?.force ?? '') === 'true';
-    if (!force) {
-      try {
-        const db = getDb();
-        const { rows } = await db.query(db.sql.heartbeat.dcOnlineCheck, [targetDc.trim()]);
-        if (!rows || rows.length === 0) {
-          // Look up the most recent heartbeat regardless of freshness so
-          // we can surface "last seen at <ts>" in the 503 body. The
-          // readLastHeartbeatAt SELECT is the same shape the heartbeat
-          // cold-start path uses.
-          const recent = await db.query(db.sql.heartbeat.readLastHeartbeatAt, [targetDc.trim()]);
-          const lastHeartbeatAt = recent.rows?.[0]?.last_heartbeat_at ?? null;
-          return res.status(503).json({
-            error: `no agent currently online for ${targetDc}; last heartbeat ${lastHeartbeatAt || 'never'}`,
-            lastHeartbeatAt
-          });
-        }
-      } catch (e) {
-        // Don't 500 the queue endpoint on a heartbeat SELECT hiccup —
-        // surface a clear 503 (operator can retry or override). Log so
-        // ops can investigate the underlying issue.
-        logger.warn({ err: e.message, targetDc }, 'ad-commands DC-online check failed');
-        return res.status(503).json({ error: 'DC-online check failed; retry or pass ?force=true' });
-      }
-    }
+    const onlineErr = await _checkDcOnline(targetDc, force);
+    if (onlineErr) return res.status(onlineErr.status).json(onlineErr.body);
     let row;
     try {
       const { queueCommand } = await import('../services/ad-admin-commands.js');
@@ -1463,22 +1441,7 @@ export function adminRouter({ config, logger, db }) {
     // _succeeded / _failed rows are emitted by the agent routes).
     // Payload shape: redact password fields per spec §3.4 ruling #8.
     // password-bearing params become { hasPassword: true, passwordLength }.
-    const auditAction = commandTypeToAuditAction(commandType);
-    const auditPayload = {
-      commandId: row.id,
-      targetDc: row.target_dc,
-      commandType,
-      paramsSummary: redactPasswordsForAudit(params)
-    };
-    await writeAudit({
-      userId: req.user?.sub ?? null,
-      action: auditAction,
-      target: typeof params?.sam === 'string' ? params.sam
-        : typeof params?.name === 'string' ? params.name
-        : `dc:${row.target_dc}`,
-      payload: auditPayload,
-      logger
-    });
+    await _auditAdCommand(req, row, commandType, params, logger);
     res.status(201).json({
       id: row.id,
       commandType: row.command_type,
@@ -1486,6 +1449,113 @@ export function adminRouter({ config, logger, db }) {
       status: row.status,
       createdAt: row.created_at
     });
+  });
+
+  // 2026-09-02 R76 — POST /api/admin/ad-commands/batch — queue N AD
+  // commands in a single request. Whitelisted commandTypes only (the
+  // 4 batch-safe user mutators: enable / disable / unlock /
+  // password_reset). For each entry we run the SAME per-type validator
+  // the single endpoint uses (re-exported by the service via
+  // `_testInternals.validators`) and queue via the existing
+  // queueCommand service path — no raw batch INSERT. Returns 201 when
+  // all entries queue, 207 (Multi-Status) when some fail per-entry
+  // validation but the request shape itself is sound, and 400/503 for
+  // request-level errors.
+  const BATCH_COMMAND_TYPES = new Set([
+    'user_enable', 'user_disable', 'user_unlock', 'user_password_reset'
+  ]);
+  const BATCH_MAX_PARAMS = 100;
+  r.post('/api/admin/ad-commands/batch', auth, async (req, res) => {
+    const { targetDc, commandType, paramsList } = req.body || {};
+    if (!targetDc || typeof targetDc !== 'string') {
+      return res.status(400).json({ error: 'targetDc required' });
+    }
+    if (!commandType || typeof commandType !== 'string') {
+      return res.status(400).json({ error: 'commandType required' });
+    }
+    if (!BATCH_COMMAND_TYPES.has(commandType)) {
+      return res.status(400).json({
+        error: `batch commandType must be one of ${[...BATCH_COMMAND_TYPES].join(', ')}`
+      });
+    }
+    if (!Array.isArray(paramsList) || paramsList.length === 0) {
+      return res.status(400).json({ error: 'paramsList must be a non-empty array' });
+    }
+    if (paramsList.length > BATCH_MAX_PARAMS) {
+      return res.status(400).json({
+        error: `paramsList exceeds max ${BATCH_MAX_PARAMS} entries (got ${paramsList.length})`
+      });
+    }
+    const force = String(req.query?.force ?? '') === 'true';
+    const onlineErr = await _checkDcOnline(targetDc, force);
+    if (onlineErr) return res.status(onlineErr.status).json(onlineErr.body);
+
+    // Resolve the per-type validator from the service (no raw SQL — we
+    // want the SAME shape the single endpoint validates against). If
+    // the validator lookup fails, every entry will be rejected with a
+    // 400-shaped error so the caller knows the batch commandType is
+    // unreachable (defense-in-depth — BATCH_COMMAND_TYPES already
+    // whitelists only known validators).
+    let queueCommand;
+    let validator;
+    try {
+      ({ queueCommand } = await import('../services/ad-admin-commands.js'));
+      // The service re-exports its validators() map via _testInternals.
+      // The single-queue path validates internally; we want per-entry
+      // validation here so a 207 can carry partial-success errors[].
+      const { _testInternals } = await import('../services/ad-admin-commands.js');
+      validator = _testInternals.validators[commandType];
+      if (typeof validator !== 'function') {
+        return res.status(400).json({ error: `unknown command_type: ${commandType}` });
+      }
+    } catch (e) {
+      logger.error({ err: e, commandType }, 'ad-commands batch import failed');
+      return res.status(500).json({ error: 'internal' });
+    }
+
+    const queued = [];
+    const errors = [];
+    const operatorId = req.user?.sub ?? null;
+    for (let i = 0; i < paramsList.length; i++) {
+      const entry = paramsList[i];
+      const v = validator(entry);
+      if (!v.ok) {
+        errors.push({ index: i, error: v.error });
+        continue;
+      }
+      try {
+        const row = await queueCommand({
+          targetDc,
+          commandType,
+          params: v.normalized,
+          operatorId
+        });
+        queued.push(row);
+        await _auditAdCommand(req, row, commandType, v.normalized, logger);
+      } catch (e) {
+        if (e.httpStatus) {
+          errors.push({ index: i, error: e.message });
+        } else {
+          logger.error({ err: e, commandType, index: i }, 'ad-commands batch entry failed');
+          errors.push({ index: i, error: 'queue failed' });
+        }
+      }
+    }
+
+    const responseBody = {
+      queued: queued.map(row => ({
+        id: row.id,
+        commandType: row.command_type,
+        targetDc: row.target_dc,
+        status: row.status,
+        createdAt: row.created_at
+      })),
+      totalQueued: queued.length,
+      errors
+    };
+    // 207 when at least one entry failed; 201 when all queued.
+    const status = errors.length === 0 ? 201 : 207;
+    res.status(status).json(responseBody);
   });
 
   // GET /api/admin/ad-commands — paginated history (operator's drawer).
@@ -1564,6 +1634,55 @@ export function adminRouter({ config, logger, db }) {
 // commandType → audit action (matches spec §3.2). The 17 user-facing
 // commandTypes each map to one audit action (the same one we'd write for
 // an operator doing that operation directly without the queue).
+
+// DC-online check extracted from the single endpoint (R76 — shared by
+// the batch endpoint). Returns `null` when the target is reachable (or
+// `force=true` was passed), or `{ status, body }` describing the 503
+// response the caller should send back unchanged.
+async function _checkDcOnline(targetDc, force) {
+  if (force) return null;
+  try {
+    const db = getDb();
+    const { rows } = await db.query(db.sql.heartbeat.dcOnlineCheck, [targetDc.trim()]);
+    if (rows && rows.length > 0) return null;
+    const recent = await db.query(db.sql.heartbeat.readLastHeartbeatAt, [targetDc.trim()]);
+    const lastHeartbeatAt = recent.rows?.[0]?.last_heartbeat_at ?? null;
+    return {
+      status: 503,
+      body: {
+        error: `no agent currently online for ${targetDc}; last heartbeat ${lastHeartbeatAt || 'never'}`,
+        lastHeartbeatAt
+      }
+    };
+  } catch (e) {
+    logger.warn({ err: e.message, targetDc }, 'ad-commands DC-online check failed');
+    return { status: 503, body: { error: 'DC-online check failed; retry or pass ?force=true' } };
+  }
+}
+
+// Audit row derived from commandType (R76 extracted helper). Both the
+// single endpoint and the batch endpoint emit the same shape per queued
+// command — operator-visible actions only, passwords REDACTED in the
+// payload per spec §3.4 ruling #8.
+async function _auditAdCommand(req, row, commandType, params, logger) {
+  const auditAction = commandTypeToAuditAction(commandType);
+  const auditPayload = {
+    commandId: row.id,
+    targetDc: row.target_dc,
+    commandType,
+    paramsSummary: redactPasswordsForAudit(params)
+  };
+  await writeAudit({
+    userId: req.user?.sub ?? null,
+    action: auditAction,
+    target: typeof params?.sam === 'string' ? params.sam
+      : typeof params?.name === 'string' ? params.name
+      : `dc:${row.target_dc}`,
+    payload: auditPayload,
+    logger
+  });
+}
+
 function commandTypeToAuditAction(commandType) {
   const map = {
     user_search: 'ad_user_search',
