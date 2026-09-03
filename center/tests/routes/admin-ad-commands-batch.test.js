@@ -352,3 +352,226 @@ test('batch: exactly 100 entries accepted', async () => {
   assert.equal(r.status, 201);
   assert.equal(r.body.totalQueued, 100);
 });
+
+// ── 2026-09-03 R77 — group_add_member / group_remove_member ────────────
+
+test('batch: 400 when commandType not in whitelist (group_search)', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ targetDc: 'HUB', commandType: 'group_search', paramsList: [{ filter: 'a' }] });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /batch commandType must be one of/);
+});
+
+test('batch: 400 when commandType not in whitelist (group_set_members)', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({ targetDc: 'HUB', commandType: 'group_set_members', paramsList: [{ name: 'Sales', members: [] }] });
+  assert.equal(r.status, 400);
+});
+
+test('batch: queues 3 group_add_member for distinct groups → 201 + 3 ids', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_add_member',
+      paramsList: [
+        { name: 'Sales',      members: ['alice', 'bob'] },
+        { name: 'Marketing',  members: ['carol'] },
+        { name: 'Engineering', members: ['dave', 'eve', 'frank'] }
+      ]
+    });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.totalQueued, 3);
+  assert.equal(r.body.errors.length, 0);
+  for (const q of r.body.queued) {
+    assert.equal(q.commandType, 'group_add_member');
+    assert.equal(q.targetDc, 'HUB');
+    assert.equal(q.status, 'queued');
+    assert.ok(q.id > 0);
+  }
+  // Verify the params_json the service actually persisted carries the
+  // shape the agent expects. params_json is a JSON string at this layer
+  // (the service stores the raw JSON; getCommand parses on read).
+  const rowsByTarget = {};
+  for (const row of db.inserted) {
+    const parsed = typeof row.params_json === 'string'
+      ? JSON.parse(row.params_json)
+      : row.params_json;
+    rowsByTarget[parsed.name] = parsed;
+  }
+  assert.deepEqual(rowsByTarget.Sales.members, ['alice', 'bob']);
+  assert.deepEqual(rowsByTarget.Marketing.members, ['carol']);
+  assert.deepEqual(rowsByTarget.Engineering.members, ['dave', 'eve', 'frank']);
+});
+
+test('batch: queues 2 group_remove_member → 201 + 2 ids', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_remove_member',
+      paramsList: [
+        { name: 'Sales',     members: ['alice'] },
+        { name: 'Marketing', members: ['bob', 'carol'] }
+      ]
+    });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.totalQueued, 2);
+});
+
+test('batch: group_add_member audit rows derived to ad_group_add_member', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken('op-7')}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_add_member',
+      paramsList: [
+        { name: 'Sales', members: ['alice'] },
+        { name: 'Sales', members: ['bob'] }
+      ]
+    });
+  const auditRows = db.auditRows.filter(x => x.action === 'ad_group_add_member');
+  assert.equal(auditRows.length, 2);
+  assert.equal(auditRows[0].userId, 'op-7');
+  // Both entries targeted the same group; the audit-row `target` field
+  // uses the params.name (operator-visible identifier).
+  assert.equal(auditRows[0].target, 'Sales');
+  assert.equal(auditRows[1].target, 'Sales');
+  // paramsSummary.members is the array the operator passed in (the
+  // service normalizes each entry via members.map(String) so the agent
+  // gets a stable string-array shape).
+  assert.deepEqual(auditRows[0].payload.paramsSummary.members, ['alice']);
+  assert.deepEqual(auditRows[1].payload.paramsSummary.members, ['bob']);
+});
+
+test('batch: group_add_member missing groupName → 207 errors[] populated', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_add_member',
+      paramsList: [
+        { members: ['alice'] },          // missing name → reject
+        { name: 'Sales', members: ['bob'] } // valid
+      ]
+    });
+  assert.equal(r.status, 207);
+  assert.equal(r.body.totalQueued, 1);
+  assert.equal(r.body.errors.length, 1);
+  assert.equal(r.body.errors[0].index, 0);
+  assert.match(r.body.errors[0].error, /name/);
+});
+
+test('batch: group_add_member with empty members[] → 207 errors[] populated', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_add_member',
+      paramsList: [
+        { name: 'Sales', members: [] },        // empty → reject
+        { name: 'Marketing', members: ['x'] } // valid
+      ]
+    });
+  assert.equal(r.status, 207);
+  assert.equal(r.body.totalQueued, 1);
+  assert.equal(r.body.errors.length, 1);
+  assert.equal(r.body.errors[0].index, 0);
+  assert.match(r.body.errors[0].error, /members/);
+});
+
+test('batch: group_add_member with non-array members → 207 errors[] populated', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_add_member',
+      paramsList: [
+        { name: 'Sales', members: 'alice' } // string, not array → reject
+      ]
+    });
+  assert.equal(r.status, 207);
+  assert.equal(r.body.totalQueued, 0);
+  assert.equal(r.body.errors.length, 1);
+  assert.match(r.body.errors[0].error, /members/);
+});
+
+test('batch: group_remove_member missing name → 207 errors[] populated', async () => {
+  const db = makeDb({ dcsOnline: new Set(['HUB']) });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'HUB',
+      commandType: 'group_remove_member',
+      paramsList: [
+        { members: ['alice'] },                  // missing name → reject
+        { name: 'Sales', members: ['bob'] }    // valid
+      ]
+    });
+  assert.equal(r.status, 207);
+  assert.equal(r.body.totalQueued, 1);
+  assert.equal(r.body.errors.length, 1);
+  assert.equal(r.body.errors[0].index, 0);
+  assert.match(r.body.errors[0].error, /name/);
+});
+
+test('batch: group_add_member 503 when DC offline (no ?force)', async () => {
+  const db = makeDb({ dcsOnline: new Set() });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'OFFLINE',
+      commandType: 'group_add_member',
+      paramsList: [{ name: 'Sales', members: ['alice'] }]
+    });
+  assert.equal(r.status, 503);
+  assert.match(r.body.error, /no agent currently online/);
+});
+
+test('batch: group_remove_member ?force=true bypasses DC-online check', async () => {
+  const db = makeDb({ dcsOnline: new Set() });
+  _setDbForTest(db);
+  const r = await supertest(buildApp(db))
+    .post('/api/admin/ad-commands/batch?force=true')
+    .set('Authorization', `Bearer ${adminToken()}`)
+    .send({
+      targetDc: 'OFFLINE',
+      commandType: 'group_remove_member',
+      paramsList: [
+        { name: 'Sales',     members: ['alice'] },
+        { name: 'Marketing', members: ['bob'] }
+      ]
+    });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.totalQueued, 2);
+});

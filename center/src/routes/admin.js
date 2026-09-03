@@ -1451,18 +1451,19 @@ export function adminRouter({ config, logger, db }) {
     });
   });
 
-  // 2026-09-02 R76 — POST /api/admin/ad-commands/batch — queue N AD
-  // commands in a single request. Whitelisted commandTypes only (the
-  // 4 batch-safe user mutators: enable / disable / unlock /
-  // password_reset). For each entry we run the SAME per-type validator
-  // the single endpoint uses (re-exported by the service via
-  // `_testInternals.validators`) and queue via the existing
-  // queueCommand service path — no raw batch INSERT. Returns 201 when
-  // all entries queue, 207 (Multi-Status) when some fail per-entry
-  // validation but the request shape itself is sound, and 400/503 for
-  // request-level errors.
+  // 2026-09-02 R76 + 2026-09-03 R77 — POST /api/admin/ad-commands/batch —
+  // queue N AD commands in a single request. Whitelisted commandTypes
+  // only (the 4 batch-safe user mutators from R76 plus the 2 group
+  // member mutators from R77: add / remove). For each entry we run the
+  // SAME per-type validator the single endpoint uses (re-exported by
+  // the service via `_testInternals.validators`) and queue via the
+  // existing queueCommand service path — no raw batch INSERT. Returns
+  // 201 when all entries queue, 207 (Multi-Status) when some fail
+  // per-entry validation but the request shape itself is sound, and
+  // 400/503 for request-level errors.
   const BATCH_COMMAND_TYPES = new Set([
-    'user_enable', 'user_disable', 'user_unlock', 'user_password_reset'
+    'user_enable', 'user_disable', 'user_unlock', 'user_password_reset',
+    'group_add_member', 'group_remove_member'
   ]);
   const BATCH_MAX_PARAMS = 100;
   r.post('/api/admin/ad-commands/batch', auth, async (req, res) => {

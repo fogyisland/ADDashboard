@@ -1,22 +1,34 @@
 <!--
   2026-08-31 R75 — GroupManagementView.vue (AD 组管理).
+  2026-09-03 R77 — add batch operations (add/remove members to/from N groups).
 
   Per R75 spec §1.2 + §4.4. Same visual language as UserManagementView.
+  R77 mirrors the R76 user-side bulk-action bar: checkbox column +
+  sticky bulk-action bar + BatchAddMembersModal (mode='add' / 'remove').
 
   Layout:
     1. Page header
     2. Toolbar — DC picker + Name filter + 查询 + 新建
-    3. Results table (Name | Category | Scope | Description | Members | 操作)
-    4. Right-side drawer
-    5. Modals — GroupCreate, GroupProperties, GroupMembers, GroupDelete
+    3. Results table (☐ | Category | Scope | Description | Members | 操作)
+    4. Sticky bulk-action bar (R77): 添加成员 / 移除成员 / 取消选择
+    5. Right-side drawer
+    6. Modals — GroupCreate, GroupProperties, GroupMembers, GroupDelete,
+       BatchAddMembersModal (mode='add'|'remove')
 
-  data-test contract (matched by tests/group-management-view.test.js):
+  data-test contract (matched by group-management-bulk.test.js):
     dc-picker              — DC select dropdown
     group-search-filter    — Name filter input
     group-search-button    — search submit
     group-create-button    — open new-group modal
     group-row-${name}      — each result row
     group-action-${action} — per-row action button
+    group-bulk-master      — master checkbox in header
+    group-bulk-${name}     — per-row checkbox
+    group-bulk-bar         — sticky bulk-action bar
+    group-bulk-count       — "已选 N 个组"
+    group-bulk-add         — 添加成员 button
+    group-bulk-remove      — 移除成员 button
+    group-bulk-clear       — 取消选择 button
 -->
 <template>
   <AdminLayout>
@@ -78,6 +90,15 @@
     <table v-else class="t">
       <thead>
         <tr>
+          <th class="checkbox-col">
+            <input
+              type="checkbox"
+              data-test="group-bulk-master"
+              :checked="allSelected"
+              :indeterminate.prop="someSelected && !allSelected"
+              @change="toggleAll"
+            />
+          </th>
           <th>名称</th>
           <th>类别</th>
           <th>范围</th>
@@ -88,6 +109,14 @@
       </thead>
       <tbody>
         <tr v-for="g in results" :key="g.name" :data-test="`group-row-${g.name}`" class="group-row">
+          <td class="checkbox-col">
+            <input
+              type="checkbox"
+              :data-test="`group-bulk-${g.name}`"
+              :checked="selectedNames.has(g.name)"
+              @change="toggleName(g.name)"
+            />
+          </td>
           <td><code class="sam">{{ g.name }}</code></td>
           <td>
             <span :class="['cat-pill', g.category === 'Security' ? 'sec' : 'dist']">
@@ -107,6 +136,32 @@
         </tr>
       </tbody>
     </table>
+
+    <!-- Bulk-action bar (R77): appears when >=1 group is selected.
+         Mirrors the R76 user-side bar; the only mutator commands
+         available in batch for groups are group_add_member and
+         group_remove_member (the 17 commandTypes whitelist — only
+         the 2 mutators are batch-safe per spec). -->
+    <div v-if="selectedNames.size > 0" class="bulk-bar" data-test="group-bulk-bar">
+      <span class="bulk-count" data-test="group-bulk-count">已选 {{ selectedNames.size }} 个组</span>
+      <div class="bulk-actions">
+        <button
+          data-test="group-bulk-add"
+          :disabled="!selectedDc || bulkInFlight"
+          @click="openBatchAddMembers"
+        >添加成员</button>
+        <button
+          data-test="group-bulk-remove"
+          :disabled="!selectedDc || bulkInFlight"
+          @click="openBatchRemoveMembers"
+        >移除成员</button>
+        <button
+          data-test="group-bulk-clear"
+          :disabled="bulkInFlight"
+          @click="clearSelection"
+        >取消选择</button>
+      </div>
+    </div>
 
     <div v-if="lastBanner" :class="['action-banner', lastBanner.ok ? 'ok' : 'err']">
       {{ lastBanner.text }} <small v-if="lastBanner.commandId">· 命令 #{{ lastBanner.commandId }}</small>
@@ -143,6 +198,13 @@
       @close="modal = null"
       @deleted="onSubmitted('delete', $event)"
     />
+    <BatchAddMembersModal
+      v-if="modal === 'batchAdd' || modal === 'batchRemove'"
+      :mode="modal === 'batchRemove' ? 'remove' : 'add'"
+      :groups-count="selectedNames.size"
+      @close="modal = null"
+      @submit="onBatchMembersSubmit"
+    />
   </AdminLayout>
 </template>
 
@@ -157,6 +219,7 @@ import GroupCreateModal from '../../components/admin/GroupCreateModal.vue';
 import GroupPropertiesModal from '../../components/admin/GroupPropertiesModal.vue';
 import GroupMembersModal from '../../components/admin/GroupMembersModal.vue';
 import GroupDeleteConfirmModal from '../../components/admin/GroupDeleteConfirmModal.vue';
+import BatchAddMembersModal from '../../components/admin/BatchAddMembersModal.vue';
 
 const auth = useAuthStore();
 const currentUserId = computed(() => auth.user?.id);
@@ -175,6 +238,96 @@ const modal = ref(null);
 const modalTarget = ref(null);
 
 const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 35_000 });
+
+// R77 — bulk-action selection state. Set keyed by group name; cleared
+// on every fresh search (results array changes), and on modal open.
+// Mirrors the R76 user-side pattern so operators get a consistent UX.
+const selectedNames = ref(new Set());
+const bulkInFlight = ref(false);
+
+const allSelected = computed(() =>
+  results.value.length > 0 && selectedNames.value.size === results.value.length
+);
+const someSelected = computed(() => selectedNames.value.size > 0);
+
+function toggleName(name) {
+  // Vue's reactivity doesn't track Set mutations, so swap to a new Set
+  // whenever we add or remove (same trick used by UserManagementView).
+  const next = new Set(selectedNames.value);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  selectedNames.value = next;
+}
+
+function toggleAll() {
+  if (allSelected.value) {
+    selectedNames.value = new Set();
+  } else {
+    selectedNames.value = new Set(results.value.map(g => g.name));
+  }
+}
+
+function clearSelection() {
+  selectedNames.value = new Set();
+}
+
+// Reset selection whenever results are replaced (e.g. fresh search).
+watch(results, () => {
+  selectedNames.value = new Set();
+});
+
+function openBatchAddMembers() {
+  if (selectedNames.value.size === 0) return;
+  modal.value = 'batchAdd';
+}
+
+function openBatchRemoveMembers() {
+  if (selectedNames.value.size === 0) return;
+  modal.value = 'batchRemove';
+}
+
+// Submit handler for BatchAddMembersModal (handles both add + remove
+// flows — the modal is mode-aware and emits the SAME submit shape
+// either way; the parent decides which commandType to fire based on
+// the modal that opened it).
+async function onBatchMembersSubmit(payload) {
+  const { sams } = payload;
+  const commandType = modal.value === 'batchRemove' ? 'group_remove_member' : 'group_add_member';
+  const groups = Array.from(selectedNames.value);
+  bulkInFlight.value = true;
+  modal.value = null;
+  try {
+    const resp = await adAdminApi.queueBatch({
+      targetDc: selectedDc.value,
+      commandType,
+      // One entry per selected group, all carrying the SAME sams
+      // list — explicit R77 UX concession (the operator pastes the
+      // sams list once; the backend fans out N rows).
+      paramsList: groups.map(name => ({ name, members: sams }))
+    });
+    const queued = resp.data?.queued?.length ?? 0;
+    const errors = resp.data?.errors?.length ?? 0;
+    const verb = commandType === 'group_remove_member' ? '移除成员' : '添加成员';
+    lastBanner.value = {
+      ok: errors === 0,
+      text: errors === 0
+        ? `已批量 ${verb} ${queued} 个组`
+        : `批量 ${verb} 部分失败 — 成功 ${queued} / 失败 ${errors}`,
+      commandId: null
+    };
+    if (errors === 0) clearSelection();
+  } catch (e) {
+    const verb = commandType === 'group_remove_member' ? '移除成员' : '添加成员';
+    lastBanner.value = {
+      ok: false,
+      text: `批量 ${verb} 失败 — ${e?.response?.data?.error || e?.message}`,
+      commandId: null
+    };
+  } finally {
+    bulkInFlight.value = false;
+    setTimeout(runSearch, 2500);
+  }
+}
 watch(polling.isTerminal, (terminal) => {
   if (!terminal) return;
   const r = polling.command.value;
@@ -303,6 +456,38 @@ onMounted(async () => {
 .scope-pill { background: rgba(107, 114, 128, 0.15); color: #94a3b8; }
 
 .actions-col { width: 240px; }
+
+/* 2026-09-03 R77 — bulk-action checkboxes + sticky bulk-action bar.
+   Identical to the R76 user-side styling so operators get one
+   consistent UX between the user and group admin views. */
+.checkbox-col { width: 32px; text-align: center; }
+.bulk-bar {
+  position: sticky;
+  bottom: 0;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+}
+.bulk-count { font-size: 13px; color: var(--accent); font-weight: 600; }
+.bulk-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.bulk-actions button {
+  padding: 5px 12px;
+  font-size: 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--text);
+}
+.bulk-actions button:hover { background: var(--border); }
+.bulk-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .action-banner {
   margin-top: 12px; padding: 8px 12px; border-radius: 4px; font-size: 12px;
