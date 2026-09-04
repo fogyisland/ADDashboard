@@ -1,7 +1,7 @@
 import { loadConfig } from './src/config.js';
 import { createLogger } from './src/logger.js';
 import { runCollector } from './src/collector.js';
-import { postReport, postHeartbeat, fetchConfig } from './src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, requestJson } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { runDiscovery, postDiscovery, startDiscoveryScheduler } from './src/discovery.js';
 import { runHealthChecks } from './src/healthcheck.js';
@@ -9,16 +9,25 @@ import { fetchPortList } from './src/port-config-fetcher.js';
 import { openQueue } from './src/local-queue.js';
 import { createScheduler } from './src/scheduler.js';
 import { PackageManager } from './src/package-manager.js';
-import { requestJson } from './src/reporter.js';
 import { getOsInfo } from './src/os-info.js';
 import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
 import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
+// 2026-09-04 R78: wire the AD-commands + file-push drainers into the
+// heartbeat loop. Both are pure-function modules; we inject the HTTP
+// helpers (requestJson for JSON wire; a binary-fetch helper for the
+// file bytes) and the local PS1 dispatcher.
+import { drainAdCommands } from './src/ad-commands-drainer.js';
+import { drainFilePush } from './src/file-push-drainer.js';
+import { dispatchAdCommand } from './src/dispatchers/ad-admin.js';
 import {
   applyPackageList,
   clearAllTimers
 } from './src/non-ad-scheduler.js';
+import http from 'node:http';
+import https from 'node:https';
+import { URL as NodeURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join as joinPath } from 'node:path';
 
@@ -141,6 +150,67 @@ if (AGENT_TYPE === 'non-ad') {
 async function runAdRuntime({ config, logger }) {
   const queue = openQueue(config.queueDbPath);
 
+  // 2026-09-04 R78: HTTP helpers used by the ad-commands + file-push
+  // drainers. These wrap the existing reporter.requestJson with the
+  // X-Agent-Token header baked in, and add a binary-fetch helper for
+  // the file-push download endpoint (requestJson only handles JSON
+  // bodies; the file bytes come back as application/octet-stream).
+  //
+  // Defined inside runAdRuntime so they close over config without
+  // threading it through every call. The drainer modules don't see
+  // the auth header directly — they just call httpGetJson/httpPostJson
+  // and the wrapper stamps it.
+  function agentHttpGetJson(args) {
+    return requestJson({
+      ...args,
+      headers: { 'X-Agent-Token': config.agentToken, ...(args.headers || {}) },
+    });
+  }
+  function agentHttpPostJson(args) {
+    return requestJson({
+      method: 'POST',
+      ...args,
+      headers: { 'X-Agent-Token': config.agentToken, ...(args.headers || {}) },
+    });
+  }
+  // Binary GET — returns { ok, status, buffer, headerSha256 }. Used by
+  // the file-push drainer to pull raw file bytes off /api/agent/file-push/:id/file.
+  // Mirrors the reporter.js requestJson response shape (ok:true on 2xx)
+  // so the drainer can treat it identically to a JSON endpoint.
+  async function agentHttpGetBinary({ url, headers = {}, timeoutMs = 60_000 }) {
+    return new Promise((resolve) => {
+      let parsed;
+      try { parsed = new NodeURL(url); } catch (e) {
+        return resolve({ ok: false, status: 0, error: `bad url: ${e.message}` });
+      }
+      const lib = parsed.protocol === 'https:' ? https : http;
+      const req = lib.request({
+        method: 'GET',
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        headers,
+        timeout: timeoutMs,
+      }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          const headerSha256 = (res.headers && typeof res.headers['x-file-sha256'] === 'string')
+            ? res.headers['x-file-sha256']
+            : null;
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            return resolve({ ok: true, status: res.statusCode, buffer, headerSha256 });
+          }
+          return resolve({ ok: false, status: res.statusCode, buffer, error: `HTTP ${res.statusCode}` });
+        });
+      });
+      req.on('error', (err) => resolve({ ok: false, status: 0, error: err.message }));
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.end();
+    });
+  }
+
   // Custom-port health probe state. `cachedPortList` is the latest copy of the
   // admin-defined /api/agent/ports list (refreshed on the healthcheck cadence);
   // `latestPortResults` is the most recent probe output, attached to the
@@ -246,7 +316,34 @@ async function runAdRuntime({ config, logger }) {
     // scope (created above), so it can be passed directly. See scheduler.js
     // for why replication already uses the lazy getter.
     runDiscovery: () => getDiscovery().run(),
-    runPackages: () => packageManager.runAllNow({ triggeredBy: 'report-now' })
+    runPackages: () => packageManager.runAllNow({ triggeredBy: 'report-now' }),
+    // 2026-09-04 R78: drain ad-commands + file-push on every heartbeat.
+    // Both are agent-pull flows (R75 / R65 followup); the operator queues
+    // work in the center and expects the next heartbeat to pick it up
+    // without needing a manual 回报 click. The http* helpers inject the
+    // X-Agent-Token auth header into every request; the drainer modules
+    // themselves are auth-agnostic (testable with stub functions).
+    drainAdCommands: () => drainAdCommands({
+      hostname: config.agentId,
+      token: config.agentToken,
+      centerUrl: config.centerUrl,
+      httpGetJson: agentHttpGetJson,
+      httpPostJson: agentHttpPostJson,
+      dispatchAdCommand: (args) => dispatchAdCommand({
+        ...args,
+        powerShellPath: config.powerShellPath,
+      }),
+      logger,
+    }),
+    drainFilePush: () => drainFilePush({
+      hostname: config.agentId,
+      agentId: config.agentId,
+      token: config.agentToken,
+      centerUrl: config.centerUrl,
+      httpGetJson: agentHttpGetJson,
+      httpGetBinary: agentHttpGetBinary,
+      logger,
+    }),
   });
 
   const buildPayload = makePayload({ getPendingClear, setPendingClear });

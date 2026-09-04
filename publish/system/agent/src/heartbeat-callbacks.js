@@ -32,6 +32,19 @@
 // the collector level (runOne / postDiscovery / scheduler already log
 // their own failures); we add a top-level summary log here for
 // observability of the fan-out as a whole.
+//
+// 2026-09-04 R78 — drainers split off from the report-now fan-out:
+// ad-commands + file-push are NOT report-now-triggered. The operator
+// queues an AD command (R75) or pushes a file (R65 followup) and
+// expects it to be picked up on the next heartbeat, not only after
+// they click 回报. So these two collectors run on EVERY heartbeat
+// regardless of reportRequested. They have their own summary log
+// event (`heartbeat.drainers`) so the operator can grep for them
+// independently of the report-now fan-out. The report-now fan-out
+// itself remains a 3-collector fan-out (replication + discovery +
+// packages), unchanged from round-12. The two paths can overlap on
+// a single heartbeat (when reportRequested=true fires after a regular
+// drain) — that's expected and correct.
 
 export function makeSendCallback({
   postHeartbeat,
@@ -46,11 +59,53 @@ export function makeSendCallback({
   // error handling (the agent.js wiring wraps discovery.run with
   // try/catch; runAllNow uses Promise.allSettled internally).
   runDiscovery,
-  runPackages
+  runPackages,
+  // 2026-09-04 R78: optional drainers. Run on EVERY heartbeat (not
+  // gated by reportRequested). drainAdCommands drains
+  // /api/agent/ad-commands and posts each result back; drainFilePush
+  // polls /api/agent/file-push and writes claimed files to disk.
+  // Both are falsey-safe (Promise.resolve() when not wired).
+  drainAdCommands,
+  drainFilePush
 }) {
   return async function send(payload) {
     const r = await postHeartbeat(payload);
     await applyAgentTokenDelivery({ result: r, payload, logger });
+
+    // 2026-09-04 R78 — drainers fire on every heartbeat. They have
+    // their own natural cadence (operator queues commands → next
+    // heartbeat picks them up) so gating them on reportRequested
+    // would mean real agents NEVER drain queued work unless the
+    // operator manually clicks 回报. Mirror the existing fan-out's
+    // Promise.allSettled pattern so a drainer crash never blocks
+    // the other one (or the subsequent report-now fan-out).
+    const drainStartedAt = new Date();
+    try {
+      const drainSettled = await Promise.allSettled([
+        drainAdCommands ? drainAdCommands() : Promise.resolve(),
+        drainFilePush  ? drainFilePush()  : Promise.resolve()
+      ]);
+      const drainFinishedAt = new Date();
+      const drainSummary = drainSettled.map((s, i) => ({
+        collector: ['adCommands', 'filePush'][i],
+        status: s.status,
+        error: s.status === 'rejected' ? String(s.reason?.message || s.reason) : null,
+        result: s.status === 'fulfilled' ? s.value : null,
+      }));
+      logger.info({
+        event: 'heartbeat.drainers',
+        startedAt: drainStartedAt.toISOString(),
+        finishedAt: drainFinishedAt.toISOString(),
+        durationMs: drainFinishedAt - drainStartedAt,
+        summary: drainSummary,
+      }, 'heartbeat drainers complete');
+    } catch (e) {
+      // Promise.allSettled never rejects, so this catch is only hit
+      // by a sync throw from the array setup (e.g. drainAdCommands
+      // getter throws). Don't crash the heartbeat loop; next tick
+      // re-runs.
+      logger.warn({ err: e.message }, 'heartbeat drainers threw; continuing');
+    }
 
     // Strict === true: a truthy non-boolean (e.g. a stale string from a
     // version-mismatched center) must not trigger a re-tick.
