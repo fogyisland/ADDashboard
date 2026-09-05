@@ -1,7 +1,7 @@
 # R81 — 成员服务器 PowerShell 命令执行
 
 **Date:** 2026-09-05
-**Status:** Draft (ruling-baked, implementation-ready)
+**Status:** Delivered (12/12 sub-tasks, 11 commits + 1 sync, 0 operator-restart-required changes pending)
 **Scope:** 中心排队 + agent 拉取 + 自由 PowerShell 在指定成员服务器上执行。Mirror R75 (AD user/group management) 模式但 target 从 DC 变成任意 member server。
 **Spec layering:** 通用执行能力 + R75 同级安全护栏;真正的 sandbox 收紧策略 (R81.1 follow-up)。
 
