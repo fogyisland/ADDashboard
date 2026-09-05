@@ -40,6 +40,9 @@ import { toCamelEntry } from '../agent/src/reporter.js';
 // The mock-ad-admin-e2e.mjs driver uses the same function so the daemon
 // and the e2e exercise identical code paths.
 import { dispatchMockAdCommand } from './mock-ad-admin.mjs';
+// 2026-09-05 R81 — member-server PowerShell dispatch (free-form PS
+// against member hostnames, mirroring the AD surface above).
+import { dispatchMockMemberCommand } from './mock-member-commands.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -230,6 +233,61 @@ async function processAdCommands(agentId) {
   }
   if (processed > 0) {
     console.log(`[${agentId}] ad-commands drained ${processed} command(s)`);
+  }
+  return processed;
+}
+
+// 2026-09-05 R81 — drain /api/agent/member-commands once per heartbeat
+// tick. Mirrors processAdCommands above but targets member-server
+// hostnames (any agentId that's not a DC). The dispatch routes through
+// dispatchMockMemberCommand which simulates the real agent's
+// run-member-script.ps1 spawn.
+async function processMemberCommands(agentId) {
+  let claimed;
+  try {
+    const url = `${CENTER_URL.replace(/\/+$/, '')}/api/agent/member-commands?hostname=${encodeURIComponent(agentId)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'X-Agent-Token': AGENT_TOKEN },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!res.ok) {
+      if (res.status !== 404) {
+        console.warn(`[${agentId}] member-commands poll returned HTTP ${res.status}`);
+      }
+      return 0;
+    }
+    const body = await res.json();
+    claimed = Array.isArray(body?.commands) ? body.commands : [];
+  } catch (e) {
+    console.warn(`[${agentId}] member-commands poll failed: ${e.message}`);
+    return 0;
+  }
+  if (claimed.length === 0) return 0;
+  let processed = 0;
+  for (const cmd of claimed) {
+    const result = dispatchMockMemberCommand(agentId, cmd);
+    try {
+      const ackRes = await fetch(
+        `${CENTER_URL.replace(/\/+$/, '')}/api/agent/member-commands/${cmd.id}/result`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN },
+          body: JSON.stringify(result),
+          signal: AbortSignal.timeout(10_000)
+        }
+      );
+      if (!ackRes.ok) {
+        console.warn(`[${agentId}] member-commands ack failed (id=${cmd.id}, HTTP ${ackRes.status})`);
+      } else {
+        processed++;
+      }
+    } catch (e) {
+      console.warn(`[${agentId}] member-commands ack error (id=${cmd.id}): ${e.message}`);
+    }
+  }
+  if (processed > 0) {
+    console.log(`[${agentId}] member-commands drained ${processed} command(s)`);
   }
   return processed;
 }
@@ -538,6 +596,13 @@ async function runAgent(spec, { stopFlag, configuredPorts = [] }) {
     } catch (e) {
       console.warn(`[${agentId}] ad-commands drain crashed: ${e.message}`);
     }
+    // 2026-09-05 R81: drain /api/agent/member-commands each tick. Same
+    // best-effort shape as the R75 ad-commands drainer above.
+    try {
+      await processMemberCommands(agentId);
+    } catch (e) {
+      console.warn(`[${agentId}] member-commands drain crashed: ${e.message}`);
+    }
     await delay(HEARTBEAT_INTERVAL_MS);
   }
   console.log(`[${agentId}] daemon exiting (heartbeats=${heartbeatCount}, reportNow=${reportNowCount})`);
@@ -554,7 +619,7 @@ const stopFlag = { stopped: false };
 // 2026-08-31 R75: export processAdCommands so the mock-ad-admin-e2e.mjs
 // driver can drain /api/agent/ad-commands inline (avoids spawning a
 // separate daemon process for the e2e).
-export { defaultScenario, processAdCommands };
+export { defaultScenario, processAdCommands, processMemberCommands };
 
 // 2026-08-28 R57-B: wrap the daemon startup in main() and only invoke
 // when this file is run directly. Without this guard, importing the

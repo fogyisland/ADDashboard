@@ -39,6 +39,9 @@ import { buildSnapshot, buildReplicationHistoryEntries, postSnapshot, buildPartn
 // scripts — the mock lets us e2e-test the full center path before any
 // PS1 work starts.
 import { dispatchMockAdCommand } from './mock-ad-admin.mjs';
+// 2026-09-05 R81 — member-server PowerShell dispatch (free-form PS
+// against member hostnames, mirroring the AD surface above).
+import { dispatchMockMemberCommand } from './mock-member-commands.mjs';
 
 const CENTER_URL = process.env.CENTER_URL ?? 'http://127.0.0.1:8081';
 const REPORT_URL = process.env.REPORT_URL ?? 'http://127.0.0.1:8082';
@@ -622,6 +625,69 @@ async function processAdCommandsForAll(agentIds) {
   return total;
 }
 
+// 2026-09-05 R81 — drain /api/agent/member-commands for one mock agent.
+// Mirrors processAdCommands but for member-server PowerShell. Routes
+// cmd through dispatchMockMemberCommand (mock-member-commands.mjs) and
+// acks via /api/agent/member-commands/:id/result. Same best-effort
+// failure handling as the AD path.
+async function processMemberCommands(agentId) {
+  let claimed;
+  try {
+    const url = `${ADMIN_URL}/api/agent/member-commands?hostname=${encodeURIComponent(agentId)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'X-Agent-Token': AGENT_TOKEN },
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!res.ok) {
+      if (res.status !== 404) {
+        console.warn(`[${agentId}] member-commands poll returned HTTP ${res.status}`);
+      }
+      return 0;
+    }
+    const body = await res.json();
+    claimed = Array.isArray(body?.commands) ? body.commands : [];
+  } catch (e) {
+    console.warn(`[${agentId}] member-commands poll failed: ${e.message}`);
+    return 0;
+  }
+  if (claimed.length === 0) return 0;
+  let processed = 0;
+  for (const cmd of claimed) {
+    const result = dispatchMockMemberCommand(agentId, cmd);
+    try {
+      const ackRes = await fetch(`${ADMIN_URL}/api/agent/member-commands/${cmd.id}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN },
+        body: JSON.stringify(result),
+        signal: AbortSignal.timeout(10_000)
+      });
+      if (!ackRes.ok) {
+        console.warn(`[${agentId}] member-commands ack failed (id=${cmd.id}, HTTP ${ackRes.status})`);
+      } else {
+        processed++;
+      }
+    } catch (e) {
+      console.warn(`[${agentId}] member-commands ack error (id=${cmd.id}): ${e.message}`);
+    }
+  }
+  return processed;
+}
+
+// 2026-09-05 R81: drain member-commands for every mock agent in the
+// scenario. Same shape as processAdCommandsForAll (R75).
+async function processMemberCommandsForAll(agentIds) {
+  let total = 0;
+  for (const id of agentIds) {
+    try {
+      total += await processMemberCommands(id);
+    } catch (e) {
+      console.warn(`[${id}] processMemberCommands crashed: ${e.message}`);
+    }
+  }
+  return total;
+}
+
 function summarizeView(view) {
   if (!view) return '  (set ADMIN_TOKEN to fetch /api/admin/heartbeat-report/agents after staging)';
   const lines = ['  agent              lastHeartbeat            lastReportAt            status              summary'];
@@ -661,6 +727,15 @@ async function main() {
   const drained = await processAdCommandsForAll(scenarios.map(s => s.agentId));
   console.log(`  ad-commands  → drained ${drained} command(s)`);
 
+  // 2026-09-05 R81: drain /api/agent/member-commands once per scenario.
+  // Mirrors the ad-commands path but targets member-server hostnames
+  // (any agent_id that's not a DC). The e2e driver
+  // (mock-member-commands-e2e.mjs) depends on this to exercise the
+  // full center → agent → mock-dispatch → ack chain for free-form
+  // PowerShell.
+  const drainedMembers = await processMemberCommandsForAll(scenarios.map(s => s.agentId));
+  console.log(`  member-cmds  → drained ${drainedMembers} command(s)`);
+
   // Give MySQL a moment to settle, then surface the admin view if we can.
   await new Promise(r => setTimeout(r, 500));
   console.log(`\n--- admin view ---`);
@@ -687,7 +762,7 @@ async function main() {
 // 2026-08-31 R75: export processAdCommands so the mock-ad-admin-e2e.mjs
 // driver can drain /api/agent/ad-commands inline (avoids spawning a
 // separate daemon process for the e2e).
-export { defaultScenario, processAdCommands };
+export { defaultScenario, processAdCommands, processMemberCommands };
 
 // 2026-08-28 R57-B: only invoke main() when this file is run directly.
 // Without this guard, importing the module (e.g., from
