@@ -5,47 +5,13 @@ import { dirname } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// 2026-09-01 R73 fix: vitest 2.1.9 plugin container ordering bug. Production vite
-// build resolves @vitejs/plugin-vue's transform before vite:import-analysis and
-// transforms .vue files into JS. In vitest, vite:import-analysis runs FIRST and
-// rejects raw .vue content as invalid JS ("Failed to parse source for import
-// analysis ... Install @vitejs/plugin-vue to handle .vue files").
-//
-// Fix: build a wrap plugin that has the SAME hooks as @vitejs/plugin-vue but
-// with `enforce: 'pre'`. The wrap closes over the real vue() plugin's hook
-// methods and forwards calls. This guarantees the transform runs before
-// vite:import-analysis regardless of vitest's internal plugin ordering.
-const baseVue = vue();
-const wrap = (name, fn) => (...args) => {
-  if (typeof fn === 'function') return fn(...args);
-  return undefined;
-};
-
-const vuePluginPre = {
-  name: 'vitest:vue-pre-wrapper',
-  enforce: 'pre',
-  config: wrap('config', baseVue.config),
-  configResolved: wrap('configResolved', baseVue.configResolved),
-  configureServer: wrap('configureServer', baseVue.configureServer),
-  buildStart: wrap('buildStart', baseVue.buildStart),
-  resolveId: wrap('resolveId', baseVue.resolveId),
-  load: wrap('load', baseVue.load),
-  transform(code, id, opt) {
-    if (typeof baseVue.transform === 'function' && /\.vue$/.test(id)) {
-      // eslint-disable-next-line no-console
-      console.log('[vue-pre] transform called for', id.slice(-40));
-    }
-    if (typeof baseVue.transform === 'function') {
-      return baseVue.transform(code, id, opt);
-    }
-    return undefined;
-  },
-  shouldTransformCachedModule: wrap('shouldTransformCachedModule', baseVue.shouldTransformCachedModule),
-  handleHotUpdate: wrap('handleHotUpdate', baseVue.handleHotUpdate)
-};
-
+// 2026-09-05 R80 fix: dropped the broken  wrap from R73.
+// The wrap forwarded method calls but lost  binding, which
+//  errors out under vitest 2.1.9.
+// Direct usage below matches what vite.config.js uses for production
+// build, so test + build behaviour align.
 export default defineConfig({
-  plugins: [vuePluginPre],
+  plugins: [vue()],
   root: __dirname,
   server: {
     deps: {

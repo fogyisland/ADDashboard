@@ -106,7 +106,7 @@
             type="text"
             data-test="target-path"
             v-model="targetPath"
-            placeholder="C:\ProgramData\ADDashboard\distribute"
+            placeholder="C:\addashboard"
             :disabled="uploading"
           />
           <small class="hint">Agent 端把文件落地到该目录; 留空会失败</small>
@@ -238,7 +238,7 @@ const error = ref('');
 const pendingFile = ref(null);
 const pendingSha = ref('');
 const selectedTargets = ref([]);
-const targetPath = ref('C:\\ProgramData\\ADDashboard\\distribute');
+const targetPath = ref('C:\\addashboard'); // 2026-09-05 operator directive: default to C:\\addashboard
 
 const canSubmit = computed(() =>
   pendingFile.value && pendingSha.value && selectedTargets.value.length && targetPath.value.trim()
@@ -292,7 +292,7 @@ function resetForm() {
   pendingFile.value = null;
   pendingSha.value = '';
   selectedTargets.value = [];
-  targetPath.value = 'C:\\ProgramData\\ADDashboard\\distribute';
+  targetPath.value = 'C:\\addashboard';
 }
 
 async function submit() {
