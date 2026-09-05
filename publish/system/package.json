@@ -1,0 +1,22 @@
+{
+  "name": "ad-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AD Replication Health Dashboard",
+  "workspaces": [
+    "center",
+    "agent"
+  ],
+  "scripts": {
+    "test:center": "npm run test --workspace=center",
+    "test:agent": "npm run test --workspace=agent",
+    "test:web": "npm run test:web --workspace=center",
+    "test": "npm run test:center && npm run test:agent && npm run test:web",
+    "build:web": "npm run build:web --workspace=center",
+    "start": "node scripts/start-prod.js"
+  },
+  "dependencies": {
+    "pino-roll": "^4.0.0"
+  }
+}
