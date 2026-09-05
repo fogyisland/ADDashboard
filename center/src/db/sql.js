@@ -780,6 +780,97 @@ const VARIANTS = {
       countAll: `SELECT COUNT(*) AS total FROM ad_admin_commands`,
       countByOperator: `SELECT COUNT(*) AS total FROM ad_admin_commands WHERE operator_id = ?`,
       countByStatus: `SELECT COUNT(*) AS total FROM ad_admin_commands WHERE status = ?`
+    },
+    // 2026-09-05 R81 — 成员服务器 PowerShell command queue. Same shape as
+    // adAdminCommands (R75) but the target column is `hostname` (member
+    // server) instead of `target_dc` (DC). Center queues via
+    // POST /api/admin/member-commands; agent polls
+    // GET /api/agent/member-commands?hostname=X and acks via
+    // POST /api/agent/member-commands/:id/result. Status flow:
+    // queued → running → success | failed | timeout. The two-step claim
+    // pattern (claimPick + claim IN-list) is identical to R75.
+    adMemberCommands: {
+      insert: `INSERT INTO ad_member_commands
+                 (hostname, command_type, params_json, status, operator_id, created_at)
+               VALUES (?, ?, ?, 'queued', ?, UTC_TIMESTAMP())`,
+      claimPick: `SELECT id FROM ad_member_commands
+                    WHERE status = 'queued' AND hostname = ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?`,
+      claim: (idCount) => `UPDATE ad_member_commands
+                              SET status = 'running', claimed_at = UTC_TIMESTAMP()
+                            WHERE id IN (${Array(idCount).fill('?').join(',')})
+                              AND status = 'queued'
+                              AND hostname = ?`,
+      loadByIds: (idCount) => `SELECT id, hostname, command_type, params_json, status,
+                                       created_at, claimed_at
+                                  FROM ad_member_commands
+                                 WHERE id IN (${Array(idCount).fill('?').join(',')})`,
+      complete: `UPDATE ad_member_commands
+                    SET status = ?, result_json = ?, error_message = ?,
+                        duration_ms = ?, completed_at = UTC_TIMESTAMP()
+                  WHERE id = ?`,
+      listByOperator: `SELECT c.id, c.hostname, c.command_type, c.status,
+                              c.operator_id, u.username AS operator_username,
+                              c.created_at, c.claimed_at, c.completed_at,
+                              c.duration_ms, c.error_message
+                         FROM ad_member_commands c
+                         LEFT JOIN sys_users u ON u.id = c.operator_id
+                        WHERE c.operator_id = ?
+                        ORDER BY c.created_at DESC, c.id DESC
+                        LIMIT ? OFFSET ?`,
+      listAll: `SELECT c.id, c.hostname, c.command_type, c.status,
+                       c.operator_id, u.username AS operator_username,
+                       c.created_at, c.claimed_at, c.completed_at,
+                       c.duration_ms, c.error_message
+                  FROM ad_member_commands c
+                  LEFT JOIN sys_users u ON u.id = c.operator_id
+                 ORDER BY c.created_at DESC, c.id DESC
+                 LIMIT ? OFFSET ?`,
+      listByStatus: `SELECT c.id, c.hostname, c.command_type, c.status,
+                            c.operator_id, u.username AS operator_username,
+                            c.created_at, c.claimed_at, c.completed_at,
+                            c.duration_ms, c.error_message
+                       FROM ad_member_commands c
+                       LEFT JOIN sys_users u ON u.id = c.operator_id
+                      WHERE c.status = ?
+                      ORDER BY c.created_at DESC, c.id DESC
+                      LIMIT ? OFFSET ?`,
+      listByHost: `SELECT c.id, c.hostname, c.command_type, c.status,
+                          c.operator_id, u.username AS operator_username,
+                          c.created_at, c.claimed_at, c.completed_at,
+                          c.duration_ms, c.error_message
+                     FROM ad_member_commands c
+                     LEFT JOIN sys_users u ON u.id = c.operator_id
+                    WHERE c.hostname = ?
+                    ORDER BY c.created_at DESC, c.id DESC
+                    LIMIT ? OFFSET ?`,
+      getById: `SELECT c.id, c.hostname, c.command_type, c.params_json,
+                       c.result_json, c.status, c.operator_id,
+                       u.username AS operator_username,
+                       c.created_at, c.claimed_at, c.completed_at,
+                       c.duration_ms, c.error_message
+                  FROM ad_member_commands c
+                  LEFT JOIN sys_users u ON u.id = c.operator_id
+                 WHERE c.id = ?`,
+      // timeout sweeper — UPDATE running rows whose claimed_at is older
+      // than `timeoutMs`. Caller binds [timeoutSeconds].
+      sweepTimeouts: `UPDATE ad_member_commands
+                         SET status = 'timeout',
+                             error_message = 'command exceeded timeout threshold',
+                             completed_at = UTC_TIMESTAMP()
+                       WHERE status = 'running'
+                         AND claimed_at < UTC_TIMESTAMP() - INTERVAL ? SECOND`,
+      // Rate-limit pre-check: count queued+running rows for this hostname
+      // in the last 60 seconds. Caller binds [hostname].
+      countRecentForHost: `SELECT COUNT(*) AS n FROM ad_member_commands
+                            WHERE hostname = ?
+                              AND status IN ('queued', 'running')
+                              AND created_at >= UTC_TIMESTAMP() - INTERVAL 1 MINUTE`,
+      countAll: `SELECT COUNT(*) AS total FROM ad_member_commands`,
+      countByOperator: `SELECT COUNT(*) AS total FROM ad_member_commands WHERE operator_id = ?`,
+      countByStatus: `SELECT COUNT(*) AS total FROM ad_member_commands WHERE status = ?`,
+      countByHost: `SELECT COUNT(*) AS total FROM ad_member_commands WHERE hostname = ?`
     }
   },
   mssql: {
@@ -1632,6 +1723,93 @@ const VARIANTS = {
       countAll: `SELECT COUNT(*) AS total FROM ad_admin_commands`,
       countByOperator: `SELECT COUNT(*) AS total FROM ad_admin_commands WHERE operator_id = ?`,
       countByStatus: `SELECT COUNT(*) AS total FROM ad_admin_commands WHERE status = CAST(? AS NVARCHAR(16))`
+    },
+    // 2026-09-05 R81 — 成员服务器 PowerShell command queue. MSSQL mirror of
+    // the mysql block above. NVARCHAR(MAX) for JSON columns; SYSUTCDATETIME()
+    // for UTC clock; IN-list claim pattern via ? placeholders; TOP (?) for
+    // pagination (size is FIRST bound param, OFFSET is last).
+    adMemberCommands: {
+      insert: `INSERT INTO ad_member_commands
+                 (hostname, command_type, params_json, status, operator_id, created_at)
+               VALUES (CAST(? AS NVARCHAR(128)), ?, CAST(? AS NVARCHAR(MAX)), 'queued', ?, CAST(SYSUTCDATETIME() AS DATETIME2))`,
+      claimPick: `SELECT TOP (?) id FROM ad_member_commands
+                    WHERE status = CAST('queued' AS NVARCHAR(16))
+                      AND hostname = CAST(? AS NVARCHAR(128))
+                    ORDER BY created_at ASC, id ASC`,
+      claim: (idCount) => `UPDATE ad_member_commands
+                               SET status = CAST('running' AS NVARCHAR(16)),
+                                   claimed_at = CAST(SYSUTCDATETIME() AS DATETIME2)
+                             WHERE id IN (${Array(idCount).fill('?').join(',')})
+                               AND status = CAST('queued' AS NVARCHAR(16))
+                               AND hostname = CAST(? AS NVARCHAR(128))`,
+      loadByIds: (idCount) => `SELECT id, hostname, command_type, params_json, status,
+                                       created_at, claimed_at
+                                  FROM ad_member_commands
+                                 WHERE id IN (${Array(idCount).fill('?').join(',')})`,
+      complete: `UPDATE ad_member_commands
+                    SET status = CAST(? AS NVARCHAR(16)),
+                        result_json = CAST(? AS NVARCHAR(MAX)),
+                        error_message = CAST(? AS NVARCHAR(2000)),
+                        duration_ms = ?,
+                        completed_at = CAST(SYSUTCDATETIME() AS DATETIME2)
+                  WHERE id = ?`,
+      listByOperator: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+                                  c.operator_id, u.username AS operator_username,
+                                  c.created_at, c.claimed_at, c.completed_at,
+                                  c.duration_ms, c.error_message
+                             FROM ad_member_commands c
+                             LEFT JOIN sys_users u ON u.id = c.operator_id
+                            WHERE c.operator_id = ?
+                            ORDER BY c.created_at DESC, c.id DESC
+                            OFFSET ? ROWS`,
+      listAll: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+                              c.operator_id, u.username AS operator_username,
+                              c.created_at, c.claimed_at, c.completed_at,
+                              c.duration_ms, c.error_message
+                         FROM ad_member_commands c
+                         LEFT JOIN sys_users u ON u.id = c.operator_id
+                        ORDER BY c.created_at DESC, c.id DESC
+                        OFFSET ? ROWS`,
+      listByStatus: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+                                c.operator_id, u.username AS operator_username,
+                                c.created_at, c.claimed_at, c.completed_at,
+                                c.duration_ms, c.error_message
+                           FROM ad_member_commands c
+                           LEFT JOIN sys_users u ON u.id = c.operator_id
+                          WHERE c.status = CAST(? AS NVARCHAR(16))
+                          ORDER BY c.created_at DESC, c.id DESC
+                          OFFSET ? ROWS`,
+      listByHost: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+                              c.operator_id, u.username AS operator_username,
+                              c.created_at, c.claimed_at, c.completed_at,
+                              c.duration_ms, c.error_message
+                         FROM ad_member_commands c
+                         LEFT JOIN sys_users u ON u.id = c.operator_id
+                        WHERE c.hostname = CAST(? AS NVARCHAR(128))
+                        ORDER BY c.created_at DESC, c.id DESC
+                        OFFSET ? ROWS`,
+      getById: `SELECT c.id, c.hostname, c.command_type, c.params_json,
+                       c.result_json, c.status, c.operator_id,
+                       u.username AS operator_username,
+                       c.created_at, c.claimed_at, c.completed_at,
+                       c.duration_ms, c.error_message
+                  FROM ad_member_commands c
+                  LEFT JOIN sys_users u ON u.id = c.operator_id
+                 WHERE c.id = ?`,
+      sweepTimeouts: `UPDATE ad_member_commands
+                         SET status = CAST('timeout' AS NVARCHAR(16)),
+                             error_message = CAST('command exceeded timeout threshold' AS NVARCHAR(2000)),
+                             completed_at = CAST(SYSUTCDATETIME() AS DATETIME2)
+                       WHERE status = CAST('running' AS NVARCHAR(16))
+                         AND claimed_at < DATEADD(SECOND, -?, CAST(SYSUTCDATETIME() AS DATETIME2))`,
+      countRecentForHost: `SELECT COUNT(*) AS n FROM ad_member_commands
+                            WHERE hostname = CAST(? AS NVARCHAR(128))
+                              AND status IN (CAST('queued' AS NVARCHAR(16)), CAST('running' AS NVARCHAR(16)))
+                              AND created_at >= DATEADD(MINUTE, -1, SYSUTCDATETIME())`,
+      countAll: `SELECT COUNT(*) AS total FROM ad_member_commands`,
+      countByOperator: `SELECT COUNT(*) AS total FROM ad_member_commands WHERE operator_id = ?`,
+      countByStatus: `SELECT COUNT(*) AS total FROM ad_member_commands WHERE status = CAST(? AS NVARCHAR(16))`,
+      countByHost: `SELECT COUNT(*) AS total FROM ad_member_commands WHERE hostname = CAST(? AS NVARCHAR(128))`
     }
   }
 };
