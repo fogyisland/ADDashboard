@@ -20,6 +20,9 @@ import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
 // file bytes) and the local PS1 dispatcher.
 import { drainAdCommands } from './src/ad-commands-drainer.js';
 import { drainFilePush } from './src/file-push-drainer.js';
+// 2026-09-05 R81 — member-server PowerShell drainer joins the heartbeat pool.
+import { drainMemberCommands } from './src/member-commands-drainer.js';
+import { dispatchMemberCommand } from './src/dispatchers/member-commands.js';
 import { dispatchAdCommand } from './src/dispatchers/ad-admin.js';
 import {
   applyPackageList,
@@ -342,6 +345,23 @@ async function runAdRuntime({ config, logger }) {
       centerUrl: config.centerUrl,
       httpGetJson: agentHttpGetJson,
       httpGetBinary: agentHttpGetBinary,
+      logger,
+    }),
+    // 2026-09-05 R81 — drain member-server PowerShell on every
+    // heartbeat. Same shape as ad-commands: pull queued work from
+    // center, dispatch locally via run-member-script.ps1, ack the
+    // result. dispatcher gets the powerShellPath injected so the
+    // agent's config can point at a non-default PowerShell location.
+    drainMemberCommands: () => drainMemberCommands({
+      hostname: config.agentId,
+      token: config.agentToken,
+      centerUrl: config.centerUrl,
+      httpGetJson: agentHttpGetJson,
+      httpPostJson: agentHttpPostJson,
+      dispatchMemberCommand: (args) => dispatchMemberCommand({
+        ...args,
+        powerShellPath: config.powerShellPath,
+      }),
       logger,
     }),
   });

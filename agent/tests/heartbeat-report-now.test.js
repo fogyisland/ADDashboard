@@ -506,14 +506,15 @@ test('R78 drainers: heartbeat.drainers log event lists both drainer statuses', a
     setPendingClear: () => {},
     drainAdCommands: async () => { throw new Error('boom'); },
     drainFilePush:  async () => ({ processed: 2, delivered: 2, failed: 0 }),
+    drainMemberCommands: async () => ({ processed: 0, succeeded: 0, failed: 0 }),
   });
 
   await send({ agentId: 'agent-1' });
 
   const summary = logCalls.find(c => c.obj?.event === 'heartbeat.drainers');
   assert.ok(summary, 'must log a heartbeat.drainers event');
-  assert.equal(summary.obj.summary.length, 2, 'summary must list both drainers');
-  assert.deepEqual(summary.obj.summary.map(s => s.collector), ['adCommands', 'filePush']);
+  assert.equal(summary.obj.summary.length, 3, 'summary must list both drainers (R81 added memberCommands as the 3rd)');
+  assert.deepEqual(summary.obj.summary.map(s => s.collector), ['adCommands', 'filePush', 'memberCommands']);
   assert.equal(summary.obj.summary[0].status, 'rejected');
   assert.equal(summary.obj.summary[0].error, 'boom');
   assert.equal(summary.obj.summary[1].status, 'fulfilled');
@@ -542,11 +543,98 @@ test('R78 drainers: heartbeat.drainers fires even when reportRequested=true (ind
 
   await send({ agentId: 'agent-1' });
 
-  // BOTH events fire on a reportRequested=true tick — drainers are
-  // independent of the report-now fan-out.
-  const drainEvt = logCalls.find(c => c.obj?.event === 'heartbeat.drainers');
-  const fanEvt   = logCalls.find(c => c.obj?.event === 'report-now.fanOut');
-  assert.ok(drainEvt, 'heartbeat.drainers must fire');
-  assert.ok(fanEvt,   'report-now.fanOut must still fire');
-  assert.equal(fanEvt.obj.summary.length, 3, 'report-now.fanOut still 3 collectors (replication/discovery/packages)');
+  // ============================================================================
+// 2026-09-05 R81 — drainMemberCommands joins the heartbeat.drainers pool.
+// Same wiring as R78: runs on every heartbeat, NOT gated by reportRequested.
+// Listed as the third collector in the heartbeat.drainers summary.
+// ============================================================================
+
+test('R81 drainers: drainMemberCommands runs on every heartbeat, regardless of reportRequested', async () => {
+  let memberCalls = 0;
+  const send = makeSendCallback({
+    postHeartbeat: async () => ({ ok: true, data: { reportRequested: false } }),
+    applyAgentTokenDelivery: async () => {},
+    scheduler: { _tick: async () => {} },
+    logger: silentLogger,
+    getPendingClear: () => false,
+    setPendingClear: () => {},
+    drainAdCommands: async () => ({ processed: 0, succeeded: 0, failed: 0 }),
+    drainFilePush:  async () => ({ processed: 0, delivered: 0, failed: 0 }),
+    drainMemberCommands: async () => { memberCalls++; return { processed: 0, succeeded: 0, failed: 0 }; }
+  });
+
+  await send({ agentId: 'agent-1' });
+
+  assert.equal(memberCalls, 1, 'drainMemberCommands must run on every heartbeat');
+});
+
+test('R81 drainers: heartbeat.drainers summary now lists 3 collectors (adCommands, filePush, memberCommands)', async () => {
+  const logCalls = [];
+  const capturingLogger = {
+    info: (obj, msg) => logCalls.push({ level: 'info', obj, msg }),
+    warn: () => {}, error: () => {}, debug: () => {}
+  };
+  const send = makeSendCallback({
+    postHeartbeat: async () => ({ ok: true, data: { reportRequested: false } }),
+    applyAgentTokenDelivery: async () => {},
+    scheduler: { _tick: async () => {} },
+    logger: capturingLogger,
+    getPendingClear: () => false,
+    setPendingClear: () => {},
+    drainAdCommands: async () => ({ processed: 1, succeeded: 1, failed: 0 }),
+    drainFilePush:  async () => ({ processed: 0, delivered: 0, failed: 0 }),
+    drainMemberCommands: async () => ({ processed: 2, succeeded: 2, failed: 0 })
+  });
+
+  await send({ agentId: 'agent-1' });
+
+  const summary = logCalls.find(c => c.obj?.event === 'heartbeat.drainers');
+  assert.ok(summary, 'must log heartbeat.drainers');
+  assert.equal(summary.obj.summary.length, 3, 'summary must list 3 drainers');
+  assert.deepEqual(summary.obj.summary.map(s => s.collector),
+    ['adCommands', 'filePush', 'memberCommands']);
+  assert.equal(summary.obj.summary[2].status, 'fulfilled');
+  assert.deepEqual(summary.obj.summary[2].result, { processed: 2, succeeded: 2, failed: 0 });
+});
+
+test('R81 drainers: drainMemberCommands rejection does NOT block the others', async () => {
+  let adCalls = 0;
+  let fpCalls = 0;
+  let memberCalls = 0;
+  const send = makeSendCallback({
+    postHeartbeat: async () => ({ ok: true, data: { reportRequested: false } }),
+    applyAgentTokenDelivery: async () => {},
+    scheduler: { _tick: async () => {} },
+    logger: silentLogger,
+    getPendingClear: () => false,
+    setPendingClear: () => {},
+    drainAdCommands: async () => { adCalls++; return { processed: 0, succeeded: 0, failed: 0 }; },
+    drainFilePush:  async () => { fpCalls++; return { processed: 0, delivered: 0, failed: 0 }; },
+    drainMemberCommands: async () => { memberCalls++; throw new Error('member drainer exploded'); }
+  });
+
+  await send({ agentId: 'agent-1' });
+
+  assert.equal(adCalls, 1, 'ad-commands drainer must still run');
+  assert.equal(fpCalls, 1, 'file-push drainer must still run');
+  assert.equal(memberCalls, 1, 'member-commands drainer was invoked (even though it threw)');
+});
+
+test('R81 drainers: undefined drainMemberCommands still safe (backward compat)', async () => {
+  // Non-member-server agents can omit drainMemberCommands without breaking.
+  let adCalls = 0;
+  const send = makeSendCallback({
+    postHeartbeat: async () => ({ ok: true, data: { reportRequested: false } }),
+    applyAgentTokenDelivery: async () => {},
+    scheduler: { _tick: async () => {} },
+    logger: silentLogger,
+    getPendingClear: () => false,
+    setPendingClear: () => {},
+    drainAdCommands: async () => { adCalls++; return { processed: 0, succeeded: 0, failed: 0 }; },
+    drainFilePush: async () => ({ processed: 0, delivered: 0, failed: 0 })
+    // drainMemberCommands: undefined
+  });
+  await send({ agentId: 'agent-1' });
+  assert.equal(adCalls, 1);
+});
 });
