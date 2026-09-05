@@ -52,3 +52,36 @@ test('classifyAction: view_script is classified as changes/low/查看脚本 (R67
   assert.equal(c.severity, 'low');
   assert.equal(c.label, '查看脚本');
 });
+
+// 2026-09-05 R81 — member-server PowerShell command audit (4 entries).
+// The operator-visible action is `ad_member_command_queued` (a free-form
+// script on a member server hostname — high severity because there's no
+// whitelist). The 3 system-side actions track agent-observed status
+// transitions on that row.
+test('classifyAction: ad_member_command_queued is changes/high/成员服务器 PowerShell 命令排队 (R81)', () => {
+  const c = classifyAction('ad_member_command_queued');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'high');
+  assert.equal(c.label, '成员服务器 PowerShell 命令排队');
+});
+
+test('classifyAction: ad_member_command_succeeded is changes/low/成员服务器 PowerShell 命令成功 (R81)', () => {
+  const c = classifyAction('ad_member_command_succeeded');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'low');
+  assert.equal(c.label, '成员服务器 PowerShell 命令成功');
+});
+
+test('classifyAction: ad_member_command_failed is changes/medium/成员服务器 PowerShell 命令失败 (R81)', () => {
+  const c = classifyAction('ad_member_command_failed');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'medium');
+  assert.equal(c.label, '成员服务器 PowerShell 命令失败');
+});
+
+test('classifyAction: ad_member_command_timed_out is changes/medium/成员服务器 PowerShell 命令超时 (R81)', () => {
+  const c = classifyAction('ad_member_command_timed_out');
+  assert.equal(c.category, 'changes');
+  assert.equal(c.severity, 'medium');
+  assert.equal(c.label, '成员服务器 PowerShell 命令超时');
+});
