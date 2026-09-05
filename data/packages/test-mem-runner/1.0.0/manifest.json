@@ -1,0 +1,33 @@
+{
+  "name": "test-mem-runner",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "fixture",
+  "agent": {
+    "minVersion": "1.0.0",
+    "script": "collect.ps1",
+    "intervalSec": 60,
+    "timeoutMs": 30000
+  },
+  "metrics": [
+    {
+      "key": "m1",
+      "label": "M1",
+      "unit": "%",
+      "thresholds": {
+        "warn": 75,
+        "crit": 90
+      }
+    }
+  ],
+  "params": {
+    "schema": {
+      "type": "object"
+    },
+    "required": []
+  },
+  "widget": {
+    "type": "builtin",
+    "component": "GaugeTile"
+  }
+}

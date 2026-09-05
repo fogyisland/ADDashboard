@@ -1,0 +1,1 @@
+Write-Output "{"metrics":{"m1":42}}"

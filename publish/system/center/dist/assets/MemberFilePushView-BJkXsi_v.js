@@ -1,0 +1,1 @@
+import{F as e}from"./FilePushView-ClAgjNmf.js";import{c as r,b as t}from"./index-Df6LSago.js";const _={__name:"MemberFilePushView",setup(s){return(a,o)=>(t(),r(e,{"target-type":"server"}))}};export{_ as default};

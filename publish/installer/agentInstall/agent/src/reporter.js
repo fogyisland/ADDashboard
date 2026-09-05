@@ -98,7 +98,16 @@ export function toCamelEntry(e) {
     // link's NC (which the dashboard's historyByPair lookup joins on).
     // Real agents never set this — the prefix-strip then becomes a no-op
     // and the literal namingContext is bound.
-    _realNamingContext: e._realNamingContext ?? e.RealNamingContext ?? null
+    //
+    // 2026-08-28 round-58.4 (CRITICAL): mock-snapshot.mjs emits the field
+    // as PascalCase-with-underscore (`_RealNamingContext` — matching the
+    // rest of its PascalCase keys like SourceDc/NamingContext). Real
+    // agent's collect-replication.ps1 emits it PascalCase-without-underscore
+    // (`RealNamingContext`). toCamelEntry must accept BOTH shapes or the
+    // mock's __history__:% rows bind a null naming_context → ER_BAD_NULL_ERROR
+    // on every report (the bug filled the centre log with 1900+ "Column
+    // 'naming_context' cannot be null" failures since R42-T9).
+    _realNamingContext: e._realNamingContext ?? e._RealNamingContext ?? e.RealNamingContext ?? null
   };
 }
 
