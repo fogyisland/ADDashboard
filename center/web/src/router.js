@@ -101,7 +101,12 @@ const routes = [
   // endpoints + agent-side wire-up pending.
   { path: '/admin/ad-file-push',         component: () => import('./views/admin/AdFilePushView.vue'),         meta: { perm: 'admin:users' } },
   { path: '/admin/member-file-push',     component: () => import('./views/admin/MemberFilePushView.vue'),     meta: { perm: 'admin:users' } },
-  { path: '/admin/member-command-exec',  component: () => import('./views/admin/MemberCommandExecView.vue'), meta: { perm: 'admin:users' } },
+  // 2026-09-05 R81: 成员服务器 PowerShell 命令执行 — surface for free-form
+  // PowerShell execution against registered member-server hostnames. Mirrors
+  // R75 surface (AdCommandHistoryDrawer right-side + ExecuteCommandModal
+  // modal) but for member-script only. Old MemberCommandExecView (R53
+  // placeholder) is now orphaned (route repointed to MemberCommandsView).
+  { path: '/admin/member-command-exec',  component: () => import('./views/admin/MemberCommandsView.vue'),     meta: { perm: 'admin:users' } },
   // 2026-08-31 R75: AD 用户与组管理 — surface for AD user/group CRUD
   // (search / create / password reset / enable / disable / unlock /
   //  edit attributes / group memberships / delete for users; parallel
