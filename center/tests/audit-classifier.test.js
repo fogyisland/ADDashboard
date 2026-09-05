@@ -47,8 +47,12 @@ test('classifier: CATEGORY_ACTIONS.security is exactly the registered security a
 
 test('classifier: SEVERITY_ACTIONS.high includes the JWT secret + agent-token rotation actions', () => {
   assert.deepEqual([...SEVERITY_ACTIONS.get('high')].sort(), [
-    'ad_group_delete', 'ad_group_set_members', 'ad_user_delete',
-    'ad_user_disable', 'ad_user_password_reset',
+    'ad_group_delete', 'ad_group_set_members',
+    // 2026-09-05 R81 — ad_member_command_queued joins the high tier
+    // (arbitrary PowerShell on a real host is operator-actionable; same
+    // severity as ad_user_password_reset).
+    'ad_member_command_queued',
+    'ad_user_delete', 'ad_user_disable', 'ad_user_password_reset',
     'auto_expire_agent_token', 'auto_expire_jwt_secret', 'delete_user',
     'disable_builtin_ad_os_baseline', 'generate_agent_token', 'login_failed', 'restart_service',
     'reveal_agent_token', 'revoke_user_tokens', 'rotate_agent_token', 'rotate_jwt_secret'
@@ -63,6 +67,10 @@ test('classifier: SEVERITY_ACTIONS.medium covers all medium-severity changes act
     'ad_command_failed', 'ad_command_timeout',
     'ad_group_add_member', 'ad_group_create', 'ad_group_remove_member',
     'ad_group_set_attributes',
+    // 2026-09-05 R81 — member-server PS command failure / timeout mirror
+    // the AD command equivalents (R75): operator-driven flow that did not
+    // complete cleanly, same severity tier.
+    'ad_member_command_failed', 'ad_member_command_timed_out',
     'ad_user_create', 'ad_user_enable', 'ad_user_set_attributes', 'ad_user_unlock',
     'agent_self_register', 'apply_migration', 'apply_up_to',
     'baseline', 'bulk_assign_dc_sites',

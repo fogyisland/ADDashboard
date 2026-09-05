@@ -45,6 +45,12 @@
 // packages), unchanged from round-12. The two paths can overlap on
 // a single heartbeat (when reportRequested=true fires after a regular
 // drain) — that's expected and correct.
+//
+// 2026-09-05 R81 — added drainMemberCommands to the same drainers
+// pool. The operator queues a free-form PowerShell against a
+// member-server hostname; the next heartbeat picks it up and runs
+// it via run-member-script.ps1. Same shape as ad-commands — runs on
+// every heartbeat, NOT gated by reportRequested.
 
 export function makeSendCallback({
   postHeartbeat,
@@ -64,9 +70,12 @@ export function makeSendCallback({
   // gated by reportRequested). drainAdCommands drains
   // /api/agent/ad-commands and posts each result back; drainFilePush
   // polls /api/agent/file-push and writes claimed files to disk.
-  // Both are falsey-safe (Promise.resolve() when not wired).
+  // 2026-09-05 R81: drainMemberCommands adds the member-server PS
+  // surface. All three are falsey-safe (Promise.resolve() when not
+  // wired).
   drainAdCommands,
-  drainFilePush
+  drainFilePush,
+  drainMemberCommands
 }) {
   return async function send(payload) {
     const r = await postHeartbeat(payload);
@@ -79,15 +88,17 @@ export function makeSendCallback({
     // operator manually clicks 回报. Mirror the existing fan-out's
     // Promise.allSettled pattern so a drainer crash never blocks
     // the other one (or the subsequent report-now fan-out).
+    // 2026-09-05 R81 — drainMemberCommands joins the pool.
     const drainStartedAt = new Date();
     try {
       const drainSettled = await Promise.allSettled([
-        drainAdCommands ? drainAdCommands() : Promise.resolve(),
-        drainFilePush  ? drainFilePush()  : Promise.resolve()
+        drainAdCommands      ? drainAdCommands()      : Promise.resolve(),
+        drainFilePush        ? drainFilePush()        : Promise.resolve(),
+        drainMemberCommands  ? drainMemberCommands()  : Promise.resolve()
       ]);
       const drainFinishedAt = new Date();
       const drainSummary = drainSettled.map((s, i) => ({
-        collector: ['adCommands', 'filePush'][i],
+        collector: ['adCommands', 'filePush', 'memberCommands'][i],
         status: s.status,
         error: s.status === 'rejected' ? String(s.reason?.message || s.reason) : null,
         result: s.status === 'fulfilled' ? s.value : null,

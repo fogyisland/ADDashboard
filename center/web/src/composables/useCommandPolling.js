@@ -28,9 +28,22 @@ import { adAdminApi } from '../api/ad-admin.js';
 
 const TERMINAL = new Set(['success', 'failed', 'timeout']);
 
+// Default fetcher is the AD-admin client (R75). R81 (member-server PS
+// execution) injects memberCommandsApi.getCommand so the composable can
+// be reused for any command type. Tests should always inject a fetcher
+// (mocked) — the default would hit the real axios client and fail.
+async function defaultGetCommand(id) {
+  const r = await adAdminApi.getCommand(id);
+  return r.data || null;
+}
+
 export function useCommandPolling(commandId, {
   intervalMs = 3000,
-  timeoutMs = 30000
+  timeoutMs = 30000,
+  // 2026-09-05 R81: pluggable fetcher. When omitted, falls back to
+  // the R75 adAdminApi default for backward compat with existing
+  // R75 callers that didn't pass one.
+  fetcher = defaultGetCommand
 } = {}) {
   const command = ref(null);
   const loading = ref(false);
@@ -55,8 +68,7 @@ export function useCommandPolling(commandId, {
   async function tick() {
     if (!command.value?.id) return;
     try {
-      const r = await adAdminApi.getCommand(command.value.id);
-      const next = r.data || null;
+      const next = await fetcher(command.value.id);
       command.value = next;
       const status = next?.status;
       if (status && TERMINAL.has(status)) {

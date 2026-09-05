@@ -614,6 +614,21 @@ await ((async () => {
         logger.warn({ err: e.message }, 'ad admin commands sweep failed (best-effort)');
       }
     }, _adAdminSweepIntervalMs).unref();
+    // R81 (2026-09-05): sweep member-server PowerShell command timeouts every
+    // 10 seconds. Same setInterval pattern as the R75 ad-admin sweeper above.
+    // Env var MEMBER_COMMAND_TIMEOUT_MS lets tests tighten the window.
+    // .unref() so the timer doesn't block process exit during graceful
+    // shutdown.
+    const _memberCmdSweepMs = Number(process.env.MEMBER_COMMAND_TIMEOUT_MS) || 30000;
+    const _memberCmdSweepIntervalMs = 10_000;
+    setInterval(async () => {
+      try {
+        const { sweepTimeouts } = await import('./src/services/member-commands.js');
+        await sweepTimeouts({ timeoutMs: _memberCmdSweepMs });
+      } catch (e) {
+        logger.warn({ err: e.message }, 'member commands sweep failed (best-effort)');
+      }
+    }, _memberCmdSweepIntervalMs).unref();
     const shutdown = async (sig) => {
       logger.info({ sig }, 'shutting down');
       try { await probeLoop.stop(); } catch (e) { logger.warn({ err: e.message }, 'probe stop failed'); }

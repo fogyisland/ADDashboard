@@ -566,6 +566,89 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         res.status(500).json({ error: 'internal' });
       }
     });
+
+    // 2026-09-05 R81 — member-server PowerShell command queue agent
+    // surface. Mirrors the /api/agent/ad-commands pair above but targets
+    // arbitrary member-server hostnames (the agent is identified by its
+    // hostname in the heartbeat table — same primary key). Two-step
+    // atomic claim lives in services/member-commands.js claimForAgent.
+    //
+    // Each successful claim emits one 'ad_member_command_claimed' audit
+    // row (matches the per-row pattern already used by ad-commands +
+    // file-push). Ack writes 'ad_member_command_succeeded' /
+    // '_failed' depending on success. The 30s timeout sweeper writes
+    // 'ad_member_command_timed_out' (server.js T4).
+    r.get('/api/agent/member-commands', agentMw, async (req, res) => {
+      const hostname = String(req.query.hostname || '').trim();
+      if (!hostname) return res.status(400).json({ error: 'hostname required' });
+      try {
+        const { claimForAgent } = await import('../services/member-commands.js');
+        const claimed = await claimForAgent(hostname, 5);
+        for (const c of claimed) {
+          await writeAudit({
+            action: 'ad_member_command_claimed',
+            target: `host:${hostname}`,
+            payload: {
+              commandId: c.id,
+              commandType: c.command_type,
+              hostname,
+              params: c.params_json
+            },
+            logger
+          });
+        }
+        // Agent view: strip params_json into a real object the JS
+        // dispatcher can read (same shape as the ad-commands response).
+        res.json({
+          commands: claimed.map(c => ({
+            id: c.id,
+            hostname: c.hostname,
+            commandType: c.command_type,
+            params: c.params_json,
+            status: c.status,
+            createdAt: c.created_at,
+            claimedAt: c.claimed_at
+          }))
+        });
+      } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        logger.error({ err: e, hostname }, 'agent member-commands poll failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
+
+    // Agent-side ack: terminal-state report after PS1 dispatch.
+    // Body: { success, data, error, exitCode, durationMs } — same shape
+    // as ad-commands ack so the dispatcher logic is shared.
+    r.post('/api/agent/member-commands/:id/result', agentMw, async (req, res) => {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+      const { success, data, error, exitCode, durationMs } = req.body || {};
+      try {
+        const { completeCommand, getCommand } = await import('../services/member-commands.js');
+        const before = await getCommand(id);
+        if (!before) return res.status(404).json({ error: 'command not found' });
+        const row = await completeCommand(id, { success, data, error, exitCode, durationMs });
+        await writeAudit({
+          action: success ? 'ad_member_command_succeeded' : 'ad_member_command_failed',
+          target: `cmd:${id}`,
+          payload: {
+            commandId: id,
+            commandType: row.command_type,
+            hostname: row.hostname,
+            exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+            durationMs: Number.isFinite(Number(durationMs)) ? Number(durationMs) : null,
+            errorMessage: error ?? null
+          },
+          logger
+        });
+        res.json({ ok: true, commandId: id, status: row.status });
+      } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        logger.error({ err: e, id }, 'member-commands ack failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
   }
 
   // Web mount: stable bootstrap endpoint for agents. Lives on the web port

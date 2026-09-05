@@ -144,7 +144,17 @@ const ACTION_CATEGORY = Object.freeze(new Map([
   ['ad_command_claimed',       'changes'],
   ['ad_command_succeeded',     'changes'],
   ['ad_command_failed',        'changes'],
-  ['ad_command_timeout',       'changes']
+  ['ad_command_timeout',       'changes'],
+  // 2026-09-05 R81 — member-server PowerShell command queue. The single
+  // operator-visible action is `ad_member_command_queued` (an arbitrary
+  // PowerShell script queued against a member server hostname — high-risk
+  // because there's no whitelist). The 3 system-side actions track
+  // agent-observed status transitions on that row. All four are
+  // 'changes' since the row mutates ad_member_commands.
+  ['ad_member_command_queued',    'changes'],
+  ['ad_member_command_succeeded', 'changes'],
+  ['ad_member_command_failed',    'changes'],
+  ['ad_member_command_timed_out', 'changes']
 ]));
 
 const ACTION_SEVERITY = Object.freeze(new Map([
@@ -277,7 +287,14 @@ const ACTION_SEVERITY = Object.freeze(new Map([
   ['ad_command_claimed',       'low'],
   ['ad_command_succeeded',     'low'],
   ['ad_command_failed',        'medium'],
-  ['ad_command_timeout',       'medium']
+  ['ad_command_timeout',       'medium'],
+  // R81 member-server PowerShell: queued is high because the script is
+  // free-form (no whitelist). succeeded is low (operator-positive signal);
+  // failed and timed_out are medium (operator-actionable).
+  ['ad_member_command_queued',    'high'],
+  ['ad_member_command_succeeded', 'low'],
+  ['ad_member_command_failed',    'medium'],
+  ['ad_member_command_timed_out', 'medium']
 ]));
 
 const ACTION_LABEL = Object.freeze(new Map([
@@ -400,7 +417,13 @@ const ACTION_LABEL = Object.freeze(new Map([
   ['ad_command_claimed',       'AD 命令认领'],
   ['ad_command_succeeded',     'AD 命令成功'],
   ['ad_command_failed',        'AD 命令失败'],
-  ['ad_command_timeout',       'AD 命令超时']
+  ['ad_command_timeout',       'AD 命令超时'],
+  // R81 member-server PowerShell command audit labels (Chinese locale —
+  // the audit log UI shows these on the 审计 page).
+  ['ad_member_command_queued',    '成员服务器 PowerShell 命令排队'],
+  ['ad_member_command_succeeded', '成员服务器 PowerShell 命令成功'],
+  ['ad_member_command_failed',    '成员服务器 PowerShell 命令失败'],
+  ['ad_member_command_timed_out', '成员服务器 PowerShell 命令超时']
 ]));
 
 const TARGET_LABEL = Object.freeze(new Map([
