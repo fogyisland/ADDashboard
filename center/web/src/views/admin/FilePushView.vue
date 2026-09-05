@@ -58,17 +58,21 @@
     <section class="upload-card">
       <h3>推送新文件</h3>
       <div class="form-row">
-        <label class="file-input-label">
+        <label class="file-pick">
           <input
             type="file"
             data-test="file-input"
+            class="file-pick__input"
             @change="onFileChange"
             :disabled="uploading"
           />
-          <span v-if="!pendingFile" class="file-input-hint">选择要推送的文件 (≤8 MB)</span>
-          <span v-else class="file-input-hint">
-            {{ pendingFile.name }} · {{ fmtBytes(pendingFile.size) }}
-          </span>
+          <div class="file-pick__cta">
+            <span class="file-pick__icon">📁</span>
+            <span class="file-pick__label">
+              <template v-if="!pendingFile">点击选择文件 (最大 8 MB)</template>
+              <template v-else>{{ pendingFile.name }} · {{ fmtBytes(pendingFile.size) }}</template>
+            </span>
+          </div>
         </label>
         <code v-if="pendingSha" data-test="sha-badge" class="sha-badge" :title="pendingSha">
           SHA-256: {{ pendingSha.slice(0, 12) }}…
@@ -434,8 +438,12 @@ onMounted(refresh);
 .form-label > span { font-size: 12px; color: var(--muted); }
 .form-label input, .form-label select { padding: 6px 10px; border: 1px solid var(--border); border-radius: 3px; background: var(--input-bg); color: var(--text); font-size: 13px; }
 .form-label .hint { color: var(--muted); font-size: 11px; }
-.file-input-label { display: flex; align-items: center; gap: 12px; padding: 8px; border: 1px dashed var(--border); border-radius: 3px; flex: 1; min-width: 220px; cursor: pointer; }
-.file-input-label input { display: none; }
+.file-pick { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; border: 2px dashed var(--primary, #3b82f6); border-radius: 6px; min-width: 320px; cursor: pointer; background: var(--panel); transition: background-color 0.15s, border-color 0.15s; }
+.file-pick:hover { background: var(--hover, rgba(59,130,246,0.08)); border-color: var(--primary, #3b82f6); border-style: solid; }
+.file-pick__input { display: none; }
+.file-pick__cta { display: flex; align-items: center; gap: 10px; color: var(--primary, #3b82f6); font-size: 14px; font-weight: 500; }
+.file-pick__icon { font-size: 20px; }
+.file-pick__label { user-select: none; }
 .file-input-hint { color: var(--muted); font-size: 13px; }
 .sha-badge { font-size: 11px; padding: 4px 8px; background: var(--input-bg); border: 1px solid var(--border); border-radius: 3px; color: var(--muted); }
 .form-actions { display: flex; gap: 8px; }
