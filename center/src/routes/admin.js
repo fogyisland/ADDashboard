@@ -1628,6 +1628,175 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
+  // 2026-09-05 R81 — member-server PowerShell command queue. Mirrors the
+  // /api/admin/ad-commands surface (POST queue + GET list + GET single)
+  // but targets an arbitrary member-server hostname instead of a DC. The
+  // single endpoint is /api/admin/member-commands/:id; the agent claim /
+  // ack endpoints are on the agent router (/api/agent/member-commands*).
+  //
+  // 8 safety guard rails (per spec §3) live in the service layer; this
+  // route is a thin transport wrapper. The route also writes the
+  // `ad_member_command_queued` audit row at queue time (spec §3.4
+  // ruling #7); agent-claimed / _succeeded / _failed / _timed_out audit
+  // rows are emitted by the agent routes + the sweeper.
+
+  // POST /api/admin/member-commands — queue a new PowerShell command
+  // against a member-server hostname.
+  r.post('/api/admin/member-commands', auth, async (req, res) => {
+    const { hostname, params } = req.body || {};
+    if (!hostname || typeof hostname !== 'string') {
+      return res.status(400).json({ error: 'hostname required' });
+    }
+    // Hostname-online check (spec §3 guard rail #1). The service also
+    // runs the check internally — running it here lets us short-circuit
+    // with a clean 503 + lastHeartbeatAt body BEFORE writing the row.
+    // Skip when ?force=true (admin override path, same shape as ad-commands).
+    const force = String(req.query?.force ?? '') === 'true';
+    if (!force) {
+      try {
+        const { checkHostOnline } = await import('../services/member-commands.js');
+        const probe = await checkHostOnline(hostname, { force: false });
+        if (!probe.online) {
+          return res.status(503).json({
+            error: `no agent currently online for ${hostname}; last heartbeat ${probe.lastHeartbeatAt || 'never'}`,
+            lastHeartbeatAt: probe.lastHeartbeatAt ?? null
+          });
+        }
+      } catch (e) {
+        logger.error({ err: e, hostname }, 'member-commands online-check failed');
+        return res.status(503).json({ error: 'host-online check failed; retry or pass ?force=true' });
+      }
+    }
+    let row;
+    try {
+      const { queueCommand } = await import('../services/member-commands.js');
+      row = await queueCommand({
+        hostname,
+        params,
+        operatorId: req.user?.sub ?? null,
+        skipOnlineCheck: true // already checked above
+      });
+    } catch (e) {
+      if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+      logger.error({ err: e, hostname }, 'member-commands queue failed');
+      return res.status(500).json({ error: 'internal' });
+    }
+    // Audit row (spec §3.4 ruling #7). Payload: redact password-shaped
+    // keys (defense-in-depth — script body is operator-visible so we
+    // include a short script summary + the timeoutSec for context).
+    const scriptSummary = (params && typeof params.script === 'string')
+      ? params.script.slice(0, 256)
+      : null;
+    const timeoutSec = (params && Number.isFinite(Number(params.timeoutSec)))
+      ? Number(params.timeoutSec)
+      : null;
+    const auditParams = params ? redactPasswordsForAudit(params) : null;
+    await writeAudit({
+      userId: req.user?.sub ?? null,
+      action: 'ad_member_command_queued',
+      target: `host:${hostname}`,
+      payload: {
+        commandId: row.id,
+        hostname,
+        commandType: 'member_script',
+        timeoutSec,
+        scriptSummary,
+        params: auditParams
+      },
+      logger
+    });
+    res.status(201).json({
+      id: row.id,
+      hostname: row.hostname,
+      commandType: row.command_type,
+      status: row.status,
+      createdAt: row.created_at
+    });
+  });
+
+  // GET /api/admin/member-commands — paginated history filtered by
+  // hostname (the front-end always narrows by hostname for the history
+  // drawer). status filter is also accepted for the admin "all hosts"
+  // view.
+  // NOTE: /hosts (below) must be registered BEFORE the /:id route —
+  // Express routes match in registration order, and `hosts` would
+  // otherwise be parsed as `id` and fail Number(req.params.id) validation.
+  r.get('/api/admin/member-commands/hosts', auth, async (_req, res) => {
+    try {
+      const db = getDb();
+      const { rows } = await db.query(db.sql.heartbeat.tokenDeliveryList);
+      const hosts = (rows || []).map(r => ({
+        hostname: r.agent_id,
+        lastHeartbeatAt: r.last_heartbeat_at ?? null
+      }));
+      res.json({ hosts });
+    } catch (e) {
+      logger.error({ err: e }, 'member-commands hosts list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  r.get('/api/admin/member-commands', auth, async (req, res) => {
+    try {
+      const { listCommands } = await import('../services/member-commands.js');
+      const hostname = req.query?.hostname || undefined;
+      const status = req.query?.status || undefined;
+      const page = req.query?.page ?? 1;
+      const size = req.query?.size ?? 50;
+      const out = await listCommands({ hostname, status, page, size });
+      const rows = out.rows.map(r => ({
+        id: r.id,
+        hostname: r.hostname,
+        commandType: r.command_type,
+        status: r.status,
+        operatorId: r.operator_id,
+        operatorUsername: r.operator_username ?? null,
+        createdAt: r.created_at,
+        claimedAt: r.claimed_at,
+        completedAt: r.completed_at,
+        durationMs: r.duration_ms,
+        errorMessage: r.error_message
+      }));
+      res.json({ total: out.total, rows, page: out.page, size: out.size });
+    } catch (e) {
+      logger.error({ err: e }, 'member-commands list failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // GET /api/admin/member-commands/:id — single row incl. params_json +
+  // result_json. Passwords redacted on the way out so a viewer never sees
+  // cleartext (defense-in-depth — service already strips on write).
+  r.get('/api/admin/member-commands/:id', auth, async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+    try {
+      const { getCommand } = await import('../services/member-commands.js');
+      const row = await getCommand(id);
+      if (!row) return res.status(404).json({ error: 'command not found' });
+      const safeParams = row.params_json ? redactPasswordsForAudit(row.params_json) : null;
+      const safeResult = row.result_json ? redactPasswordsForAudit(row.result_json) : null;
+      res.json({
+        id: row.id,
+        hostname: row.hostname,
+        commandType: row.command_type,
+        status: row.status,
+        operatorId: row.operator_id,
+        operatorUsername: row.operator_username ?? null,
+        params: safeParams,
+        result: safeResult,
+        errorMessage: row.error_message,
+        durationMs: row.duration_ms,
+        createdAt: row.created_at,
+        claimedAt: row.claimed_at,
+        completedAt: row.completed_at
+      });
+    } catch (e) {
+      logger.error({ err: e, id }, 'member-commands get failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
   return r;
 }
 
