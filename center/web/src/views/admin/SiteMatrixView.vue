@@ -7,27 +7,38 @@
   restored the R49 ops-console per-DC partner tables view).
 
   - Single page. One N×N matrix: sites as rows × sites as columns.
-  - Cells show replication health color (green / yellow / red / gray)
-    plus a compact status glyph (✓ / ! / ✕ / ·) and the partner-link
-    count ("3/3").
+  - R80 (operator directive "在站点矩阵中 我们需要展现的子站点中的AD服务器,
+    核心站点中的具体服务器,有连接且健康显示为绿色,无连接显示为 -"):
+    each cell now renders a per-DC sub-grid (src-site DCs × dst-site DCs).
+    Each inner cell carries the status of one (srcDc → dstDc) link as a
+    tiny colored square — green/✓ for ok, yellow/! for warn, red/✕ for
+    err, light-gray/— for none. The outer <td> still carries the
+    aggregate cell-{ok/warn/err/none/self} class (worst status across all
+    DC pairs) so the existing `data-test="cell-X-Y"` selectors keep
+    resolving and the worst-state visual cue is preserved on the cell
+    border.
+  - Self cells (srcSite === dstSite) keep the original `.cell-glyph` +
+    `.cell-num` rendering (single dashed box with "·" / "—") since there
+    are no partner links within a site-pair — no DC sub-grid would
+    carry useful information.
+  - Click on a dc-pair-cell opens the existing R71 cell-detail modal,
+    highlighted to the specific DC pair the operator clicked. Click on
+    the outer cell (or any non-DC-pair area) opens the same modal
+    without highlight.
   - Sticky first column (row headers = site names + DC count) and
     sticky first row (column headers = site names + DC count); the
     grid scrolls horizontally if there are many sites.
-  - Hover a cell → tooltip lists the individual partner links between
-    those two sites (source DC, dest DC, statusCode, lastSuccessTime,
-    errorMessage). No drill-down / lazy fetch — only the latest state.
-  - Click a cell → cell-detail modal listing every (sourceDc → destDc)
-    pair in the site-pair with status pill + last success + error
-    message (R71 — drillability round 3; complements R69 node-modal +
-    R70 edge-modal). Self cells (srcSite === dstSite) are NOT clickable.
-  - Click a DC pair row inside the modal → inline expand to the last 10
-    replication attempts for that (sourceDc → destDc) pair, lazy-
-    fetched from /api/dashboard/site-replication-matrix/pair-history
-    (R72 — reuses the R45 endpoint; closes the per-pair deep-dive loop
-    after R70's edge-modal).
-  - Legend strip (3 colored squares + labels) at the top + a one-line
-    summary of total link counts.
-  - The data contract is unchanged from R60 — same
+  - Hover the outer cell → tooltip lists the individual partner links
+    between those two sites (source DC, dest DC, statusCode,
+    lastSuccessTime, errorMessage). Hover a dc-pair-cell → tooltip
+    describes just that DC pair.
+  - The 3-panel layered structure (R68 Hub-Spoke: Hub↔Hub / Spoke→Hub /
+    Full) is preserved — each panel renders the same per-DC sub-grid
+    pattern with the appropriate visual emphasis (Hub↔Hub cells keep
+    the .cell-hub-pair gold border; Spoke→Hub cells stay compact).
+  - Click a pair row inside the modal → inline expand to the last 10
+    replication attempts (R72), reuse R45 /pair-history endpoint.
+  - The data contract is unchanged — same
     /api/dashboard/site-replication-matrix/all endpoint, same
     primaries[].dcPartners[].partners[] payload.
 -->
@@ -52,7 +63,9 @@
 
     <!-- Legend + 1-line totals — operator reads these in 1 second. The
          "站点 N (Hub X · Spoke Y)" item surfaces the Hub-Spoke split (R68)
-         so the operator sees the architecture shape at a glance. -->
+         so the operator sees the architecture shape at a glance. R80: the
+         4 colored squares now mirror the per-DC sub-grid vocabulary so
+         the operator reads the legend → the cell colors in 1 step. -->
     <div class="legend" data-test="legend">
       <span class="legend-item">
         <span class="swatch swatch-ok"></span>正常 <strong>{{ totals.ok }}</strong>
@@ -81,7 +94,8 @@
          Only renders when ≥ 2 Hubs (a single Hub would be a self-loop).
          Hub↔Hub is the load-bearing layer: failures here fan out to every
          Spoke. Cells get extra visual emphasis (gold tint + thicker border)
-         via the `.cell-hub-pair` modifier. -->
+         via the `.cell-hub-pair` modifier. R80: each cell renders the
+         per-DC sub-grid (Hub DCs × Hub DCs). -->
     <section
       v-if="hubSites.length >= 2"
       class="layer-panel hub-panel"
@@ -110,7 +124,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="rs in hubSites" :key="`hub-row-${rs.siteName}`">
+            <tr v-for="rs in hubSites" :key="`hub-row-${rs.siteName}`" class="matrix-row" :data-test="`matrix-row-hub-${rs.siteName}`">
               <th scope="row" class="row-head hub-row-head" :title="`${rs.siteName} · ${rs.dcCount} DC`">
                 <div class="row-name">{{ rs.siteName }}</div>
                 <div class="row-meta">
@@ -125,8 +139,36 @@
                 :title="cellTooltip(rs.siteName, cs.siteName)"
                 @click="handleCellClick(rs.siteName, cs.siteName)"
               >
-                <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
-                <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
+                <!-- Self cells: keep the original single-glyph rendering.
+                     Within-site DC×DC links don't exist by design, so a
+                     sub-grid would just be a matrix of "—" — no useful
+                     information. R64 self-cell tests still assert
+                     .cell-glyph + .cell-num content, so we keep that
+                     markup verbatim. -->
+                <template v-if="rs.siteName === cs.siteName">
+                  <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
+                  <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
+                </template>
+                <!-- R80: per-DC sub-grid. Rows = rs site's DCs,
+                     cols = cs site's DCs. Each inner cell carries the
+                     link state for one (rowDc → colDc) pair. Click on a
+                     dc-pair-cell opens the R71 modal highlighted to
+                     that DC pair (click.stop so the parent cell's
+                     handleCellClick doesn't double-fire). -->
+                <table v-else class="dc-subgrid" :data-test="`dc-subgrid-${rs.siteName}-${cs.siteName}`">
+                  <tbody>
+                    <tr v-for="rowDc in dcsOf(rs.siteName)" :key="`r-${rs.siteName}-${rowDc}`">
+                      <td
+                        v-for="colDc in dcsOf(cs.siteName)"
+                        :key="`c-${rs.siteName}-${rowDc}-${cs.siteName}-${colDc}`"
+                        :class="['dc-pair-cell', `dc-pair-${dcPairState(rowDc, colDc, rs.siteName, cs.siteName)}`]"
+                        :data-test="`dc-pair-${rs.siteName}-${cs.siteName}-${dcSlug(rowDc)}-to-${dcSlug(colDc)}`"
+                        :title="dcPairTooltip(rowDc, colDc, rs.siteName, cs.siteName)"
+                        @click.stop="handleDcPairClick(rowDc, colDc, rs.siteName, cs.siteName)"
+                      >{{ dcPairGlyph(rowDc, colDc, rs.siteName, cs.siteName) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </td>
             </tr>
           </tbody>
@@ -138,7 +180,8 @@
          Each Spoke row × each Hub col shows whether the Spoke is inbound-
          replicating from each Hub. Inbound-only: cellState(src=Spoke, dst=Hub)
          = is Spoke receiving from Hub. The reverse direction (Hub receiving
-         from Spoke) is the "designed absence" — only visible in panel 3. -->
+         from Spoke) is the "designed absence" — only visible in panel 3.
+         R80: per-DC sub-grid (Spoke DCs × Hub DCs). -->
     <section
       v-if="spokeSites.length && hubSites.length"
       class="layer-panel spoke-panel"
@@ -167,7 +210,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="sp in spokeSites" :key="`spoke-row-${sp.siteName}`">
+            <tr v-for="sp in spokeSites" :key="`spoke-row-${sp.siteName}`" class="matrix-row" :data-test="`matrix-row-spoke-${sp.siteName}`">
               <th scope="row" class="row-head spoke-row-head" :title="`${sp.siteName} · ${sp.dcCount} DC`">
                 <div class="row-name">{{ sp.siteName }}</div>
                 <div class="row-meta">
@@ -182,8 +225,22 @@
                 :title="cellTooltip(sp.siteName, hub.siteName)"
                 @click="handleCellClick(sp.siteName, hub.siteName)"
               >
-                <span class="cell-glyph">{{ cellGlyph(sp.siteName, hub.siteName) }}</span>
-                <span class="cell-num">{{ cellText(sp.siteName, hub.siteName) }}</span>
+                <!-- Spoke→Hub cells are never self-pairs (Spokes ≠ Hubs by
+                     definition), so we always render the sub-grid here. -->
+                <table class="dc-subgrid" :data-test="`dc-subgrid-${sp.siteName}-${hub.siteName}`">
+                  <tbody>
+                    <tr v-for="rowDc in dcsOf(sp.siteName)" :key="`r-${sp.siteName}-${rowDc}`">
+                      <td
+                        v-for="colDc in dcsOf(hub.siteName)"
+                        :key="`c-${sp.siteName}-${rowDc}-${hub.siteName}-${colDc}`"
+                        :class="['dc-pair-cell', `dc-pair-${dcPairState(rowDc, colDc, sp.siteName, hub.siteName)}`]"
+                        :data-test="`dc-pair-${sp.siteName}-${hub.siteName}-${dcSlug(rowDc)}-to-${dcSlug(colDc)}`"
+                        :title="dcPairTooltip(rowDc, colDc, sp.siteName, hub.siteName)"
+                        @click.stop="handleDcPairClick(rowDc, colDc, sp.siteName, hub.siteName)"
+                      >{{ dcPairGlyph(rowDc, colDc, sp.siteName, hub.siteName) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </td>
             </tr>
           </tbody>
@@ -196,7 +253,9 @@
          every site pair is visible, including Spoke↔Spoke (which R68 marks
          as "designed absence" — these cells SHOULD be empty in Hub-Spoke
          compliance). The view stays fully compatible with the existing
-         test selectors (`data-test="cell-X-Y"` resolves here). -->
+         test selectors (`data-test="cell-X-Y"` resolves here). R80:
+         each non-self cell renders the per-DC sub-grid; self cells
+         keep the original glyph + "—". -->
     <section
       v-if="sites.length"
       class="layer-panel full-panel"
@@ -224,7 +283,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="rs in sites" :key="`row-${rs.siteName}`">
+            <tr v-for="rs in sites" :key="`row-${rs.siteName}`" class="matrix-row" :data-test="`matrix-row-${rs.siteName}`">
               <th scope="row" class="row-head" :title="`${rs.siteName} · ${rs.dcCount} DC`">
                 <div class="row-name">{{ rs.siteName }}</div>
                 <div class="row-meta">
@@ -239,8 +298,24 @@
                 :title="cellTooltip(rs.siteName, cs.siteName)"
                 @click="handleCellClick(rs.siteName, cs.siteName)"
               >
-                <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
-                <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
+                <template v-if="rs.siteName === cs.siteName">
+                  <span class="cell-glyph">{{ cellGlyph(rs.siteName, cs.siteName) }}</span>
+                  <span class="cell-num">{{ cellText(rs.siteName, cs.siteName) }}</span>
+                </template>
+                <table v-else class="dc-subgrid" :data-test="`dc-subgrid-${rs.siteName}-${cs.siteName}`">
+                  <tbody>
+                    <tr v-for="rowDc in dcsOf(rs.siteName)" :key="`r-${rs.siteName}-${rowDc}`">
+                      <td
+                        v-for="colDc in dcsOf(cs.siteName)"
+                        :key="`c-${rs.siteName}-${rowDc}-${cs.siteName}-${colDc}`"
+                        :class="['dc-pair-cell', `dc-pair-${dcPairState(rowDc, colDc, rs.siteName, cs.siteName)}`]"
+                        :data-test="`dc-pair-${rs.siteName}-${cs.siteName}-${dcSlug(rowDc)}-to-${dcSlug(colDc)}`"
+                        :title="dcPairTooltip(rowDc, colDc, rs.siteName, cs.siteName)"
+                        @click.stop="handleDcPairClick(rowDc, colDc, rs.siteName, cs.siteName)"
+                      >{{ dcPairGlyph(rowDc, colDc, rs.siteName, cs.siteName) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </td>
             </tr>
           </tbody>
@@ -252,7 +327,9 @@
          Click any non-self cell in any of the 3 panels to drill into the
          underlying DC pairs of that site-pair. Lists every (sourceDc →
          destDc) link with status pill + last success + error message.
-         Backdrop click (.self) closes; ESC support in the script. -->
+         Backdrop click (.self) closes; ESC support in the script.
+         R80: clicking a dc-pair-cell in a non-self cell highlights the
+         matching pair row in the modal (via .pair-row-highlighted). -->
     <div
       v-if="cellDetail"
       class="modal-bg"
@@ -267,6 +344,9 @@
           <p class="modal-meta" data-test="cell-detail-meta">
             <span class="layer-tag-inline" v-if="cellDetail.layerTag">{{ cellDetail.layerTag }}</span>
             {{ cellDetail.pairs.length }} 条链路
+            <span v-if="highlightedPair" class="r80-highlight-tag" data-test="cell-detail-highlight-tag">
+              · 高亮 {{ highlightedPair.sourceDc }} → {{ highlightedPair.destDc }}
+            </span>
           </p>
         </header>
 
@@ -333,7 +413,7 @@
               :key="`${p.sourceDc}-${p.destDc}`"
             >
               <tr
-                :class="['pair-row', `pair-row-${p.statusClass}`, 'pair-row-expandable', isPairExpanded(p.sourceDc, p.destDc) ? 'pair-row-open' : '']"
+                :class="['pair-row', `pair-row-${p.statusClass}`, 'pair-row-expandable', isPairExpanded(p.sourceDc, p.destDc) ? 'pair-row-open' : '', isHighlightedPair(p.sourceDc, p.destDc) ? 'pair-row-highlighted' : '']"
                 :data-test="`cell-detail-pair-${i}`"
                 @click="togglePairExpansion(p.sourceDc, p.destDc)"
               >
@@ -460,6 +540,12 @@ const polling = ref(false);
 // every render is cheaper than caching — small payload.
 const clickedCell = ref(null);
 
+// R80: when the operator clicks a specific dc-pair-cell (instead of the
+// outer cell), we remember that (sourceDc, destDc) so the modal can
+// highlight the matching row. Cleared on cell-level click + on close +
+// on poll refresh so the highlight never lingers past its context.
+const highlightedPair = ref(null);
+
 // ── R72: per-pair history expansion (inside the cell-detail modal). ────
 // `expandedPairs` is the set of `${srcDc}|${dstDc}` keys that the operator
 // has clicked open. `pairAttempts` is a Map of the same key → entries[]
@@ -510,9 +596,37 @@ function isHubPair(siteA, siteB) {
   return set.has(siteA) && set.has(siteB);
 }
 
+// ── Site → DC names index (R80). Single pass; cells call dcsOf(siteName)
+// many times per render so we cache as a Map. Recomputes only when
+// primaries change (same trigger as cellMap). Returns an array of DC
+// names preserving the backend's bridgehead-priority + lex order
+// (computed at the SQL layer; see dashboard.js dcsBySite sort). ──
+const dcsBySiteMap = computed(() => {
+  const map = new Map();
+  for (const p of primaries.value) {
+    map.set(p.siteName, (p.dcs || []).map(d => d.dcName));
+  }
+  return map;
+});
+
+function dcsOf(siteName) {
+  return dcsBySiteMap.value.get(siteName) || [];
+}
+
+// R80: data-test attribute slug for a DC name. DC names can contain
+// characters that aren't legal in HTML data-* attribute values (dots,
+// forward slashes, etc.) — we replace them with underscores so the
+// resulting selector is CSS-safe and stable across mounts.
+function dcSlug(dcName) {
+  return String(dcName).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 // ── Build (sourceSite|destSite) → partner[] from the loaded payload. ──
 // Single pass over the payload; cells look up their partner list from
 // this map. Empty partner list = no link between the two sites.
+// R80: same map is reused for dc-pair-cell state lookups
+// (dcPairState / dcPairGlyph / dcPairTooltip). Each entry already carries
+// sourceDc + destDc, so per-DC state is a .find() over the array.
 const cellMap = computed(() => {
   const map = new Map();
   for (const p of primaries.value) {
@@ -558,7 +672,53 @@ function cellState(srcSite, dstSite) {
   return worstStatus(partners(srcSite, dstSite));
 }
 
+// ── R80: per-DC state (one (srcDc → dstDc) link). Used by every inner
+// dc-pair-cell in the sub-grid. Lookup is O(N) over the partner list
+// (small — typically ≤ 4 entries); we accept the cost to avoid a second
+// parallel data structure that would have to be kept in sync with
+// cellMap. Returns 'ok' / 'warn' / 'err' / 'none' matching the same
+// statusCode vocabulary as cellState.
+// The dcPair- prefix keeps these helpers out of the way of the existing
+// R72 pairGlyph(a) / pairStatusClass(a) helpers below, which render the
+// attempt sub-table inside the modal. ──
+function dcPairState(rowDc, colDc, srcSite, dstSite) {
+  const parts = cellMap.value.get(key(srcSite, dstSite)) || [];
+  const partner = parts.find(p => p.sourceDc === rowDc && p.destDc === colDc);
+  if (!partner) return 'none';
+  if (partner.statusCode === 0) return 'ok';
+  if (partner.statusCode === 1) return 'warn';
+  return 'err';
+}
+
+function dcPairGlyph(rowDc, colDc, srcSite, dstSite) {
+  const s = dcPairState(rowDc, colDc, srcSite, dstSite);
+  if (s === 'ok')   return '✓';
+  if (s === 'warn') return '!';
+  if (s === 'err')  return '✕';
+  return '—';
+}
+
+// Tooltip for one DC pair: state + last success + error message.
+// Matches the operator-readable vocabulary of cellTooltip but scoped
+// to a single DC pair.
+function dcPairTooltip(rowDc, colDc, srcSite, dstSite) {
+  const parts = cellMap.value.get(key(srcSite, dstSite)) || [];
+  const partner = parts.find(p => p.sourceDc === rowDc && p.destDc === colDc);
+  if (!partner) {
+    return `${rowDc} → ${colDc}\n无复制链路`;
+  }
+  const state = partner.statusCode === 0 ? '✓ 健康'
+              : partner.statusCode === 1 ? '! 部分失败'
+              : '✕ 失败';
+  const err = partner.errorMessage ? ` — ${partner.errorMessage}` : '';
+  const last = partner.lastSuccessTime
+    ? ` · 最近成功 ${fmt(partner.lastSuccessTime)}`
+    : ' · 暂无成功记录';
+  return `${rowDc} → ${colDc}\n${state}${last}${err}`;
+}
+
 // Cell content: glyph + "ok/total" ratio. Diagonal = "-" (self).
+// R80: still used for self cells (which don't get a sub-grid).
 function cellGlyph(srcSite, dstSite) {
   if (srcSite === dstSite) return '·';
   const s = cellState(srcSite, dstSite);
@@ -577,6 +737,7 @@ function cellText(srcSite, dstSite) {
 
 // Tooltip on hover: list of partner links with status + last success.
 // Bounded to a reasonable length to keep the tooltip readable.
+// R80: still used as the outer cell title (full site-pair summary).
 function cellTooltip(srcSite, dstSite) {
   if (srcSite === dstSite) return `${srcSite} (本站内)`;
   const parts = partners(srcSite, dstSite);
@@ -597,6 +758,10 @@ function cellTooltip(srcSite, dstSite) {
 
 // Fleet-level totals for the legend strip + summary line. Cheap
 // one-pass over the payload; recomputes whenever primaries change.
+// R80: the "links" total is still the total of (srcDc → dstDc) pairs
+// — i.e., the same thing the per-DC sub-grid renders one square for.
+// Renamed the legend label from 链路 → 域控对 so the legend reflects
+// the per-DC vocabulary the operator now sees in every cell.
 const totals = computed(() => {
   let sites = 0, dcs = 0, links = 0, ok = 0, warn = 0, err = 0;
   for (const p of primaries.value) {
@@ -667,10 +832,34 @@ function cellClickableClass(srcSite, dstSite) {
 function handleCellClick(srcSite, dstSite) {
   if (srcSite === dstSite) return;
   clickedCell.value = { srcSite, dstSite };
+  // R80: cell-level click (not a specific DC pair) → no highlight. This
+  // is reset explicitly so a previous dc-pair-click highlight doesn't
+  // linger after the operator clicks the outer cell on a different site
+  // pair.
+  highlightedPair.value = null;
+}
+
+// R80: dc-pair-cell click handler. Opens the same modal as the outer
+// cell click but with a highlighted target row so the operator can
+// see exactly which (sourceDc → destDc) pair they clicked. We early-
+// return on 'none' (no link) so clicking an empty dc-pair-cell is a
+// true no-op (per the R80 spec).
+function handleDcPairClick(rowDc, colDc, srcSite, dstSite) {
+  if (dcPairState(rowDc, colDc, srcSite, dstSite) === 'none') return;
+  clickedCell.value = { srcSite, dstSite };
+  highlightedPair.value = { sourceDc: rowDc, destDc: colDc };
+}
+
+// R80: highlight predicate used by the modal pair-table to mark the
+// row that matches highlightedPair. Pure equality — no fuzzy match.
+function isHighlightedPair(srcDc, dstDc) {
+  const hp = highlightedPair.value;
+  return !!(hp && hp.sourceDc === srcDc && hp.destDc === dstDc);
 }
 
 function closeCellModal() {
   clickedCell.value = null;
+  highlightedPair.value = null;
   // R73: also reset pair-toolbar state + clear pair cache so the next
   // open starts at defaults (全部 + 24h) and refetches fresh.
   pairFilter.value = 'all';
@@ -754,7 +943,7 @@ function pairFilterWindow(hours) {
   pairWindowHours.value = hours;
 }
 
-// R73: CSV export. Serializes the *currently filtered* attempts (so the
+// R73: CSV export button. Serializes the *currently filtered* attempts (so the
 // operator's chip selection carries through) to a UTF-8 BOM-prefixed CSV
 // string. Triggers a browser download via Blob + anchor click. Filename
 // includes both DCs + ISO timestamp so files don't collide on the disk.
@@ -779,7 +968,7 @@ function exportPairCsv(srcDc, dstDc) {
   // BOM prefix: U+FEFF written via explicit escape to avoid editor / Vite
   // encoding round-trips that collapse raw BOM bytes to U+5C01 (尧) or
   // similar. Excel needs this to detect UTF-8 when opening the CSV.
-  const csv = '\uFEFF' + [headers.join(','), ...rows].join('\r\n');
+  const csv = '﻿' + [headers.join(','), ...rows].join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -843,6 +1032,7 @@ watch(pairWindowHours, () => {
 // this risk because they read live data only on click.)
 watch(primaries, () => {
   clickedCell.value = null;
+  highlightedPair.value = null;
   expandedPairs.value = new Set();
   pairAttempts.value = new Map();
   pairLoading.value = null;
@@ -927,6 +1117,11 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .swatch-warn { background: var(--yellow); }
 .swatch-err  { background: var(--red); }
 
+/* R80 vocabulary: dc-pair-cell states carry the same 4 colors as the
+   swatch legend above so the operator reads the legend → the cell
+   colors in 1 step. The states are defined below alongside the
+   .dc-pair-cell base. */
+
 /* ===== Error / empty =================================================== */
 .error-banner {
   background: rgba(239, 68, 68, 0.12); color: var(--red);
@@ -1000,7 +1195,12 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 }
 .row-meta-num { color: var(--text); font-weight: 600; }
 
-/* ── Cell base ──────────────────────────────────────────────────────── */
+/* ── Cell base ────────────────────────────────────────────────────────
+   R80: outer cell now hosts a per-DC sub-grid instead of a single
+   glyph + ratio. The outer cell keeps the cell-{ok/warn/err/none/
+   self} modifier class for back-compat (tests assert these) and for
+   the worst-status visual cue on the cell border. The inner subgrid
+   carries the per-DC colored squares. */
 .cell {
   min-width: 80px; height: 44px;
   padding: 4px 8px;
@@ -1018,24 +1218,28 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 }
 .cell-num { font-size: 11px; }
 
-/* ── Cell states — operator directive: green/yellow/red/gray only. ─── */
+/* ── Cell states — operator directive: green/yellow/red/gray only. ───
+   R80: outer cell state classes are now subtle (border tint + light
+   background) so the per-DC sub-grid colors dominate the visual. The
+   worst-state class still tints the border so the operator can scan
+   the matrix quickly. */
 .cell-ok {
-  background: rgba(34, 197, 94, 0.22);
-  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.45);
   color: #15803d;
 }
 .cell-ok .cell-glyph { color: #15803d; }
 
 .cell-warn {
-  background: rgba(234, 179, 8, 0.28);
-  border-color: rgba(234, 179, 8, 0.6);
+  background: rgba(234, 179, 8, 0.10);
+  border-color: rgba(234, 179, 8, 0.55);
   color: #a16207;
 }
 .cell-warn .cell-glyph { color: #a16207; }
 
 .cell-err {
-  background: rgba(239, 68, 68, 0.28);
-  border-color: rgba(239, 68, 68, 0.6);
+  background: rgba(239, 68, 68, 0.10);
+  border-color: rgba(239, 68, 68, 0.55);
   color: #b91c1c;
 }
 .cell-err .cell-glyph { color: #b91c1c; }
@@ -1051,6 +1255,68 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
   background: var(--panel-alt);
   border: 1px dashed var(--border);
   color: var(--muted);
+}
+
+/* ===== R80: per-DC sub-grid (one (srcDc × dstDc) per inner cell) ===
+   The sub-grid is a tiny borderless table inside each outer <td>.
+   Each inner cell is a fixed-size colored square that carries the
+   state of one (srcDc → dstDc) link. The sub-grid is auto-sized by
+   DC count — bigger sites produce wider sub-grids, the matrix
+   .matrix-wrap scrolls horizontally to accommodate. */
+.dc-subgrid {
+  border-collapse: separate; border-spacing: 1px;
+  margin: 0 auto;
+  display: inline-table;
+}
+.dc-subgrid tbody {
+  /* no-op selector — kept for future styling hooks */
+}
+.dc-subgrid td {
+  padding: 0;
+}
+.dc-pair-cell {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  text-align: center;
+  vertical-align: middle;
+  border-radius: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: ui-monospace, "SF Mono", monospace;
+  line-height: 18px;
+  cursor: pointer;
+  transition: transform 0.06s ease, box-shadow 0.06s ease;
+}
+.dc-pair-cell:hover {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6);
+}
+/* R80: the 4 DC-pair states — same color vocabulary as the outer cell
+   states but with full saturation (the sub-grid owns the color, the
+   outer cell only tints the border). Glyph color stays dark for none
+   (light-gray bg) and white for the 3 saturated states. */
+.dc-pair-ok {
+  background: var(--green);
+  color: #ffffff;
+}
+.dc-pair-warn {
+  background: var(--yellow);
+  color: #ffffff;
+}
+.dc-pair-err {
+  background: var(--red);
+  color: #ffffff;
+}
+.dc-pair-none {
+  background: var(--panel);
+  color: var(--muted);
+  cursor: default;
+  border: 1px solid var(--border);
+}
+.dc-pair-none:hover {
+  transform: none;
+  box-shadow: none;
 }
 
 /* ===== R68: Hub-Spoke layered panels + Hub visual emphasis ===========
@@ -1148,17 +1414,12 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
   font-weight: 600;
 }
 .cell-hub-pair.cell-ok {
-  background: rgba(251, 191, 36, 0.20);
   border-color: rgba(251, 191, 36, 0.7);
-  color: #92400e;
 }
-.cell-hub-pair.cell-ok .cell-glyph { color: #92400e; }
 .cell-hub-pair.cell-warn {
-  background: rgba(251, 191, 36, 0.18);
   border-color: rgba(234, 179, 8, 0.7);
 }
 .cell-hub-pair.cell-err {
-  background: rgba(251, 146, 60, 0.20);
   border-color: rgba(239, 68, 68, 0.7);
 }
 
@@ -1174,7 +1435,9 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
    (R69 node-detail, R70 edge-detail, R71 cell-detail). It reuses the
    shared modal vocabulary (.modal-bg / .modal / backdrop-click) and
    introduces a per-pair table that lists every (sourceDc → destDc) link
-   in the clicked site-pair, with status pill + last success + error. */
+   in the clicked site-pair, with status pill + last success + error.
+   R80: highlighted pair row gets a stronger background tint + left
+   border accent so the operator sees which DC pair they clicked. */
 .cell-clickable { cursor: pointer; }
 .cell-disabled  { cursor: default; }
 
@@ -1211,6 +1474,19 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
   color: #b45309;
   background: rgba(251, 191, 36, 0.16);
   border: 1px solid rgba(251, 191, 36, 0.5);
+}
+/* R80: small badge in modal header that surfaces the highlighted pair
+   name when the operator clicked a specific dc-pair-cell. The badge is
+   only present while highlightedPair is non-null. */
+.r80-highlight-tag {
+  display: inline-block;
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--accent);
+  font-family: ui-monospace, "SF Mono", monospace;
 }
 .modal-footer {
   padding: 10px 18px;
@@ -1273,6 +1549,14 @@ onUnmounted(() => { if (timerHandle) clearInterval(timerHandle); });
 .cell-detail-modal .pair-row-ok   { background: rgba(34, 197, 94, 0.04); }
 .cell-detail-modal .pair-row-warn { background: rgba(234, 179, 8, 0.06); }
 .cell-detail-modal .pair-row-err  { background: rgba(239, 68, 68, 0.06); }
+
+/* R80: pair-row-highlighted — the row that matches the dc-pair-cell the
+   operator clicked. The accent left border + stronger background tint
+   make the row unmistakable inside a long pair-table. */
+.cell-detail-modal .pair-row-highlighted {
+  background: rgba(99, 102, 241, 0.12) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 
 /* Status pill — same vocabulary as cell states (green/yellow/red). */
 .status-pill {

@@ -183,7 +183,12 @@ test('R64: renders an N×N matrix (sites as rows × sites as columns)', async ()
   // attachment panels also render <th class="col-head"> but with different
   // site subsets, so a global findAll would over-count.
   const cols = fullPanel(w).findAll('thead .col-head');
-  const rows = fullPanel(w).findAll('tbody tr');
+  // 2026-09-05 R80: each non-self cell now hosts a per-DC <table.dc-subgrid>
+  // with its own <tbody> + <tr>. A naked `tbody tr` selector over-counts
+  // (it would also pick up the inner dc-subgrid rows). Scope to the
+  // outer .matrix-row class added in R80 — that's only present on the
+  // site × site rows of the outer matrix.
+  const rows = fullPanel(w).findAll('tbody tr.matrix-row');
   // 3 sites in basePayload → 3 col-heads + 3 body rows + 1 corner
   expect(cols.length).toBe(3);
   expect(rows.length).toBe(3);
@@ -235,9 +240,15 @@ test('R64: green cell renders when all partner links are statusCode=0', async ()
   await flushPromises();
   // 2026-08-30 R68: scope to Full panel.
   const cell = fullPanel(w2).find('[data-test="cell-A站-B站"]');
+  // 2026-09-05 R80: outer td still carries cell-ok (worst status across
+  // all DC pairs). The .cell-glyph + .cell-num summary is gone — the cell
+  // now renders a per-DC sub-grid instead.
   expect(cell.classes()).toContain('cell-ok');
-  expect(cell.find('.cell-glyph').text()).toBe('✓');
-  expect(cell.find('.cell-num').text()).toBe('1/1');
+  // 1×1 sub-grid: 1 dc-pair-ok cell with ✓ glyph.
+  const dp = cell.find('.dc-pair-cell');
+  expect(dp.exists()).toBe(true);
+  expect(dp.classes()).toContain('dc-pair-ok');
+  expect(dp.text()).toBe('✓');
 });
 
 test('R64: yellow cell when worst status is statusCode=1', async () => {
@@ -246,8 +257,14 @@ test('R64: yellow cell when worst status is statusCode=1', async () => {
   // basePayload 核心 → 厦门 = DC-BJ-01(0) + DC-BJ-02(1) → worst yellow
   // 2026-08-30 R68: scope to Full panel.
   const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  // 2026-09-05 R80: outer cell still carries cell-warn (worst status).
   expect(cell.classes()).toContain('cell-warn');
-  expect(cell.find('.cell-glyph').text()).toBe('!');
+  // 2×1 sub-grid: DC-BJ-01 × MOCK-XMADSRV1 (ok) + DC-BJ-02 × MOCK-XMADSRV1 (warn).
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(2);
+  // At least one dc-pair-ok + at least one dc-pair-warn must be present.
+  expect(pairs.some(p => p.classes().includes('dc-pair-ok'))).toBe(true);
+  expect(pairs.some(p => p.classes().includes('dc-pair-warn'))).toBe(true);
 });
 
 test('R64: red cell when any partner link is statusCode=2+', async () => {
@@ -256,8 +273,16 @@ test('R64: red cell when any partner link is statusCode=2+', async () => {
   // basePayload 厦门 → 核心 = statusCode=2 → red
   // 2026-08-30 R68: scope to Full panel.
   const cell = fullPanel(w).find('[data-test="cell-厦门站点-核心站点"]');
+  // 2026-09-05 R80: outer cell still carries cell-err (worst status).
   expect(cell.classes()).toContain('cell-err');
-  expect(cell.find('.cell-glyph').text()).toBe('✕');
+  // 1×2 sub-grid: MOCK-XMADSRV1 × {DC-BJ-01, DC-BJ-02}. Only DC-BJ-01
+  // has a partner entry from 厦门 (statusCode=2 → err); DC-BJ-02 has
+  // none → dc-pair-none.
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(2);
+  const errPair = pairs.find(p => p.classes().includes('dc-pair-err'));
+  expect(errPair).toBeTruthy();
+  expect(errPair.text()).toBe('✕');
 });
 
 test('R64: empty cell (no partner link between two sites) renders gray', async () => {
@@ -266,9 +291,16 @@ test('R64: empty cell (no partner link between two sites) renders gray', async (
   // 核心 → 上海 — no link in basePayload (上海 dcPartners=[])
   // 2026-08-30 R68: scope to Full panel.
   const cell = fullPanel(w).find('[data-test="cell-核心站点-上海站点"]');
+  // 2026-09-05 R80: outer cell still carries cell-none (no partner links).
   expect(cell.classes()).toContain('cell-none');
-  expect(cell.find('.cell-glyph').text()).toBe('·');
-  expect(cell.find('.cell-num').text()).toBe('—');
+  // 2×1 sub-grid: DC-BJ-01 + DC-BJ-02 × MOCK-SHADSRV1, no partners at all
+  // → every inner cell is dc-pair-none with "—".
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(2);
+  for (const p of pairs) {
+    expect(p.classes()).toContain('dc-pair-none');
+    expect(p.text()).toBe('—');
+  }
 });
 
 test('R64: self-loop cell (same site × same site) renders dashed', async () => {
@@ -281,13 +313,22 @@ test('R64: self-loop cell (same site × same site) renders dashed', async () => 
   expect(cell.find('.cell-num').text()).toBe('—');
 });
 
-test('R64: cell text shows ok/total ratio (not raw counts)', async () => {
+test('R64: cell shows per-DC breakdown matching the ok/total ratio', async () => {
   const w = mountView();
   await flushPromises();
-  // 核心 → 厦门 cell = DC-BJ-01(OK) + DC-BJ-02(partial) → 1/2
-  // 2026-08-30 R68: scope to Full panel.
+  // 核心 → 厦门 cell = DC-BJ-01(OK) + DC-BJ-02(partial) → 1 ok / 2 total.
+  // 2026-08-30 R68: scope to Full panel. 2026-09-05 R80: the cell no
+  // longer carries a "1/2" string — instead the per-DC sub-grid renders
+  // 1 ok + 1 warn square, which is the operator-readable equivalent of
+  // "1/2" (the operator counts green squares vs total).
   const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
-  expect(cell.find('.cell-num').text()).toBe('1/2');
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(2);
+  // 1 ok (DC-BJ-01's link) + 1 warn (DC-BJ-02's link).
+  const okCount = pairs.filter(p => p.classes().includes('dc-pair-ok')).length;
+  const warnCount = pairs.filter(p => p.classes().includes('dc-pair-warn')).length;
+  expect(okCount).toBe(1);
+  expect(warnCount).toBe(1);
 });
 
 test('R64: cell tooltip lists each partner link', async () => {
@@ -447,7 +488,9 @@ test('R68: Hub mesh panel renders when ≥ 2 Hubs exist', async () => {
   expect(hubPanel.exists()).toBe(true);
   // 2 Hubs → 2 col-heads + 2 body rows
   expect(hubPanel.findAll('thead .col-head').length).toBe(2);
-  expect(hubPanel.findAll('tbody tr').length).toBe(2);
+  // 2026-09-05 R80: scope to .matrix-row (inner dc-subgrid rows also
+  // live in <tbody><tr>).
+  expect(hubPanel.findAll('tbody tr.matrix-row').length).toBe(2);
   // Hub↔Hub cells get the .cell-hub-pair modifier (load-bearing emphasis)
   const cell = hubPanel.find('[data-test="cell-核心站点-灾备站点"]');
   expect(cell.exists()).toBe(true);
@@ -475,7 +518,9 @@ test('R68: Spoke attachment panel renders with Spoke rows × Hub cols', async ()
   const spokePanel = w.find('[data-test="spoke-panel"]');
   expect(spokePanel.exists()).toBe(true);
   expect(spokePanel.findAll('thead .col-head').length).toBe(1);
-  expect(spokePanel.findAll('tbody tr').length).toBe(2);
+  // 2026-09-05 R80: scope to .matrix-row (inner dc-subgrid rows also
+  // live in <tbody><tr>).
+  expect(spokePanel.findAll('tbody tr.matrix-row').length).toBe(2);
   // Spoke cells get the cell-hub-spoke modifier
   const cell = spokePanel.find('[data-test="cell-厦门站点-核心站点"]');
   expect(cell.exists()).toBe(true);
@@ -530,7 +575,9 @@ test('R68: full-panel preserves the original N×N grid (R60/R64 contract)', asyn
   await flushPromises();
   const panel = fullPanel(w);
   expect(panel.findAll('thead .col-head').length).toBe(3);
-  expect(panel.findAll('tbody tr').length).toBe(3);
+  // 2026-09-05 R80: scope to .matrix-row (inner dc-subgrid rows also
+  // live in <tbody><tr>).
+  expect(panel.findAll('tbody tr.matrix-row').length).toBe(3);
   // Original cell-X-Y selectors resolve inside Full panel
   expect(panel.find('[data-test="cell-核心站点-厦门站点"]').exists()).toBe(true);
   expect(panel.find('[data-test="cell-上海站点-核心站点"]').exists()).toBe(true);
@@ -1193,4 +1240,321 @@ test('R73: CSV export content includes header row + filtered rows', async () => 
   expect(lines[2]).toContain('失败');
   expect(lines[2]).toContain('boom');
   vi.restoreAllMocks();
+});
+
+// ── R80: per-DC sub-grid inside each cell ─────────────────────────────
+// Operator directive (verbatim):
+//   "在站点矩阵中 我们需要展现的子站点中的AD服务器,核心站点中的具体服务器,
+//    有连接且健康显示为绿色,无连接显示为 -"
+// Each non-self cell now renders a per-DC sub-grid (src-site DCs × dst-site
+// DCs). The legacy data-test="cell-X-Y" outer <td> is preserved — tests
+// that look up by site pair still resolve. New selectors:
+//   data-test="dc-subgrid-X-Y"           the inner subgrid table
+//   data-test="dc-pair-X-Y-ROW-to-COL"   each inner dc-pair cell
+// Class vocabulary: .dc-pair-{ok|warn|err|none}.
+
+test('R80: non-self cell renders a per-DC sub-grid (1 DC × 1 DC → 1 inner cell)', async () => {
+  // basePayload has 厦门站点 with 1 DC (MOCK-XMADSRV1) and 上海站点 with 1 DC
+  // (MOCK-SHADSRV1). The 厦门 → 上海 cell has 1×1 = 1 inner dc-pair-cell
+  // (no link between the two sites → dc-pair-none).
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-厦门站点-上海站点"]');
+  // The outer td still carries cell-{state} (worst status class) and
+  // data-test="cell-X-Y" — these are the load-bearing hooks for all
+  // pre-R80 assertions.
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-none');
+  // The new dc-subgrid lives inside the cell.
+  const subgrid = cell.find('[data-test="dc-subgrid-厦门站点-上海站点"]');
+  expect(subgrid.exists()).toBe(true);
+  // 1×1 = 1 inner dc-pair cell, all 'none' (no link between the two sites).
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(1);
+  expect(pairs[0].classes()).toContain('dc-pair-none');
+  expect(pairs[0].text()).toBe('—');
+});
+
+test('R80: per-DC sub-grid renders full row-DC × col-DC product (2 × 1 → 2 cells)', async () => {
+  // basePayload 核心 (2 DCs: DC-BJ-01, DC-BJ-02) × 厦门 (1 DC:
+  // MOCK-XMADSRV1) → 2×1 = 2 inner cells (1 ok + 1 warn).
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(2);
+});
+
+test('R80: per-DC cell shows ✓ when partner link exists and is healthy', async () => {
+  // basePayload 核心 → 厦门 has 1 healthy (DC-BJ-01 → MOCK-XMADSRV1,
+  // statusCode=0). That inner cell should be dc-pair-ok with ✓ glyph.
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  // Use the canonical dc-pair-X-Y-ROW-to-COL selector so we know we're
+  // looking at exactly the (DC-BJ-01 → MOCK-XMADSRV1) pair.
+  const okPair = cell.find('[data-test="dc-pair-核心站点-厦门站点-DC-BJ-01-to-MOCK-XMADSRV1"]');
+  expect(okPair.exists()).toBe(true);
+  expect(okPair.classes()).toContain('dc-pair-ok');
+  expect(okPair.text()).toBe('✓');
+});
+
+test('R80: per-DC cell shows — when no partner link exists between the two DCs', async () => {
+  // basePayload 核心 → 上海 has no partner link in either direction
+  // (上海 dcPartners is empty). All inner cells should be dc-pair-none
+  // with "—" content — the operator directive's exact wording.
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-上海站点"]');
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(2); // 核心 has 2 DCs, 上海 has 1 → 2×1
+  for (const p of pairs) {
+    expect(p.classes()).toContain('dc-pair-none');
+    expect(p.text()).toBe('—');
+  }
+});
+
+test('R80: per-DC cell carries the correct state class (ok / warn / err)', async () => {
+  // basePayload:
+  //   核心 → 厦门 = DC-BJ-01(0) + DC-BJ-02(1) → 1 ok + 1 warn
+  //   厦门 → 核心 = statusCode=2 from MOCK-XMADSRV1 → DC-BJ-01 → 1 err
+  const w = mountView();
+  await flushPromises();
+  // ok + warn in the 核心→厦门 cell
+  const yellowCell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  const okInner = yellowCell.find('[data-test="dc-pair-核心站点-厦门站点-DC-BJ-01-to-MOCK-XMADSRV1"]');
+  const warnInner = yellowCell.find('[data-test="dc-pair-核心站点-厦门站点-DC-BJ-02-to-MOCK-XMADSRV1"]');
+  expect(okInner.classes()).toContain('dc-pair-ok');
+  expect(warnInner.classes()).toContain('dc-pair-warn');
+  // err in the 厦门→核心 cell
+  const redCell = fullPanel(w).find('[data-test="cell-厦门站点-核心站点"]');
+  const errInner = redCell.find('[data-test="dc-pair-厦门站点-核心站点-MOCK-XMADSRV1-to-DC-BJ-01"]');
+  expect(errInner.classes()).toContain('dc-pair-err');
+  expect(errInner.text()).toBe('✕');
+});
+
+test('R80: per-DC cell tooltip contains DC names + status + last success time', async () => {
+  // Tooltip on a dc-pair-cell should mention both DC names, the state
+  // glyph + label (✓ 健康 / ! 部分失败 / ✕ 失败), and the last success
+  // timestamp. No-link cells just show the DC pair + 无复制链路.
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  // Healthy pair.
+  const okInner = cell.find('[data-test="dc-pair-核心站点-厦门站点-DC-BJ-01-to-MOCK-XMADSRV1"]');
+  const okTitle = okInner.attributes('title') || '';
+  expect(okTitle).toContain('DC-BJ-01 → MOCK-XMADSRV1');
+  expect(okTitle).toContain('健康');
+  expect(okTitle).toContain('最近成功');
+  // Partial-failure pair — error message is forwarded into the tooltip.
+  const warnInner = cell.find('[data-test="dc-pair-核心站点-厦门站点-DC-BJ-02-to-MOCK-XMADSRV1"]');
+  const warnTitle = warnInner.attributes('title') || '';
+  expect(warnTitle).toContain('部分失败');
+  expect(warnTitle).toContain('partial');
+  // No-link pair.
+  const emptyCell = fullPanel(w).find('[data-test="cell-核心站点-上海站点"]');
+  const noneInner = emptyCell.findAll('.dc-pair-cell')[0];
+  const noneTitle = noneInner.attributes('title') || '';
+  expect(noneTitle).toContain('无复制链路');
+});
+
+test('R80: clicking a dc-pair-cell opens the cell-detail modal with that DC pair highlighted', async () => {
+  // Click on (DC-BJ-01 → MOCK-XMADSRV1) inside the 核心→厦门 cell. The
+  // modal must open with the cell-title pair name AND the matching pair
+  // row carries the .pair-row-highlighted class so they can see which
+  // specific DC pair they clicked.
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  const okInner = cell.find('[data-test="dc-pair-核心站点-厦门站点-DC-BJ-01-to-MOCK-XMADSRV1"]');
+  await okInner.trigger('click');
+  await flushPromises();
+  // Modal opens.
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(true);
+  // Title + meta carry the site pair + a highlight badge naming the
+  // DC pair the operator clicked.
+  const title = w.find('[data-test="cell-detail-title"]');
+  expect(title.text()).toBe('核心站点 → 厦门站点');
+  const highlightTag = w.find('[data-test="cell-detail-highlight-tag"]');
+  expect(highlightTag.exists()).toBe(true);
+  expect(highlightTag.text()).toContain('DC-BJ-01 → MOCK-XMADSRV1');
+  // The pair row matching (DC-BJ-01, MOCK-XMADSRV1) is highlighted.
+  const rows = w.findAll('[data-test^="cell-detail-pair-"]');
+  expect(rows.length).toBe(2);
+  const highlighted = rows.filter(r => r.classes().includes('pair-row-highlighted'));
+  expect(highlighted.length).toBe(1);
+  expect(highlighted[0].text()).toContain('DC-BJ-01');
+  expect(highlighted[0].text()).toContain('MOCK-XMADSRV1');
+});
+
+test('R80: clicking a no-link (dc-pair-none) cell is a true no-op', async () => {
+  // The spec calls for click on a dc-pair-none cell to do nothing —
+  // the modal must NOT open.
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-上海站点"]');
+  const noneInner = cell.findAll('.dc-pair-none')[0];
+  await noneInner.trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(false);
+});
+
+test('R80: outer-cell click opens modal WITHOUT highlight (vs dc-pair click WITH highlight)', async () => {
+  // The outer-cell click (e.g., on the cell padding between dc-pair cells)
+  // must open the same modal but with no specific DC pair highlighted.
+  // Clicking the outer cell programmatically: we use the data-test selector
+  // and trigger click directly on the outer <td>.
+  const w = mountView();
+  await flushPromises();
+  const cell = fullPanel(w).find('[data-test="cell-核心站点-厦门站点"]');
+  // Trigger click on the outer <td> (the @click handler fires).
+  await cell.trigger('click');
+  await flushPromises();
+  expect(w.find('[data-test="cell-detail-modal"]').exists()).toBe(true);
+  // No highlight tag in the meta line (cell-level click = no specific DC).
+  expect(w.find('[data-test="cell-detail-highlight-tag"]').exists()).toBe(false);
+  // No pair row carries the highlight class.
+  const rows = w.findAll('[data-test^="cell-detail-pair-"]');
+  for (const r of rows) {
+    expect(r.classes()).not.toContain('pair-row-highlighted');
+  }
+});
+
+test('R80: multi-DC Hub↔Hub cell renders full N×N × M×M sub-grid (3×3 = 9 inner cells)', async () => {
+  // multi-DC payload: 2 Hubs each with 3 DCs → Hub↔Hub cell has 3×3 = 9
+  // inner dc-pair cells (with one OK link, the rest are dc-pair-none).
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValueOnce({
+    data: {
+      siteRefreshSeconds: 10,
+      primaries: [
+        {
+          dcName: 'H1-01', siteId: 1, siteName: '中心1',
+          regionCode: 'C1', isHub: true,
+          dcs: [{ dcName: 'H1-01' }, { dcName: 'H1-02' }, { dcName: 'H1-03' }],
+          dcPartners: [
+            { dcName: 'H1-01', partners: [
+              // H1-01 → H2-01 healthy
+              { peerDc: 'H2-01', peerSite: '中心2', statusCode: 0,
+                errorMessage: null,
+                lastAttemptTime: '2026-09-01T01:00:00Z',
+                lastSuccessTime: '2026-09-01T01:00:00Z' }
+            ]}
+          ]
+        },
+        {
+          dcName: 'H2-01', siteId: 2, siteName: '中心2',
+          regionCode: 'C2', isHub: true,
+          dcs: [{ dcName: 'H2-01' }, { dcName: 'H2-02' }, { dcName: 'H2-03' }],
+          dcPartners: [
+            { dcName: 'H2-01', partners: [
+              { peerDc: 'H1-01', peerSite: '中心1', statusCode: 0,
+                errorMessage: null,
+                lastAttemptTime: '2026-09-01T01:00:00Z',
+                lastSuccessTime: '2026-09-01T01:00:00Z' }
+            ]}
+          ]
+        }
+      ]
+    }
+  });
+  const w = mountView();
+  await flushPromises();
+  const cell = w.find('[data-test="cell-中心1-中心2"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-hub-pair');
+  // 3 × 3 = 9 inner cells (H1-01..H1-03 × H2-01..H2-03). Of these,
+  // exactly 1 is dc-pair-ok (H1-01 → H2-01) and 8 are dc-pair-none.
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(9);
+  const okCount = pairs.filter(p => p.classes().includes('dc-pair-ok')).length;
+  const noneCount = pairs.filter(p => p.classes().includes('dc-pair-none')).length;
+  expect(okCount).toBe(1);
+  expect(noneCount).toBe(8);
+});
+
+test('R80: Spoke→Hub cell renders full (Spoke DC count × Hub DC count) sub-grid', async () => {
+  // Multi-DC payload: 2 Spokes × 1 Hub. The hub has 3 DCs and each spoke
+  // has 3 DCs → Spoke→Hub cells are 3×3 = 9 inner cells. With 2 spokes
+  // × 1 hub = 1 cell on the spoke attachment panel.
+  dashboardApi.getSiteReplicationMatrixAll.mockResolvedValueOnce({
+    data: {
+      siteRefreshSeconds: 10,
+      primaries: [
+        {
+          dcName: 'S1-01', siteId: 1, siteName: '分支1',
+          regionCode: 'S1', isHub: false,
+          dcs: [{ dcName: 'S1-01' }, { dcName: 'S1-02' }, { dcName: 'S1-03' }],
+          dcPartners: [
+            { dcName: 'S1-01', partners: [
+              { peerDc: 'H-01', peerSite: '中心', statusCode: 0,
+                errorMessage: null,
+                lastAttemptTime: '2026-09-01T01:00:00Z',
+                lastSuccessTime: '2026-09-01T01:00:00Z' }
+            ]}
+          ]
+        },
+        {
+          dcName: 'S2-01', siteId: 2, siteName: '分支2',
+          regionCode: 'S2', isHub: false,
+          dcs: [{ dcName: 'S2-01' }, { dcName: 'S2-02' }, { dcName: 'S2-03' }],
+          dcPartners: [
+            { dcName: 'S2-01', partners: [
+              { peerDc: 'H-01', peerSite: '中心', statusCode: 0,
+                errorMessage: null,
+                lastAttemptTime: '2026-09-01T01:00:00Z',
+                lastSuccessTime: '2026-09-01T01:00:00Z' }
+            ]}
+          ]
+        },
+        {
+          dcName: 'H-01', siteId: 3, siteName: '中心',
+          regionCode: 'H', isHub: true,
+          dcs: [{ dcName: 'H-01' }, { dcName: 'H-02' }, { dcName: 'H-03' }],
+          dcPartners: [
+            { dcName: 'H-01', partners: [
+              { peerDc: 'S1-01', peerSite: '分支1', statusCode: 0,
+                errorMessage: null,
+                lastAttemptTime: '2026-09-01T01:00:00Z',
+                lastSuccessTime: '2026-09-01T01:00:00Z' },
+              { peerDc: 'S2-01', peerSite: '分支2', statusCode: 0,
+                errorMessage: null,
+                lastAttemptTime: '2026-09-01T01:00:00Z',
+                lastSuccessTime: '2026-09-01T01:00:00Z' }
+            ]}
+          ]
+        }
+      ]
+    }
+  });
+  const w = mountView();
+  await flushPromises();
+  const spokePanel = w.find('[data-test="spoke-panel"]');
+  expect(spokePanel.exists()).toBe(true);
+  // 分支1 → 中心 cell: 3 spoke DCs × 3 hub DCs = 9 inner cells.
+  const cell = spokePanel.find('[data-test="cell-分支1-中心"]');
+  expect(cell.exists()).toBe(true);
+  expect(cell.classes()).toContain('cell-hub-spoke');
+  const pairs = cell.findAll('.dc-pair-cell');
+  expect(pairs.length).toBe(9);
+  // At least one OK inner cell — the spec calls for ✓ green when healthy.
+  const okCount = pairs.filter(p => p.classes().includes('dc-pair-ok')).length;
+  expect(okCount).toBeGreaterThanOrEqual(1);
+});
+
+test('R80: full matrix renders per-DC sub-grids for non-self cells (no regression on R64 contract)', async () => {
+  // R64 contract: every site×site cell must exist in the Full matrix.
+  // After R80, every non-self cell additionally renders a per-DC sub-grid.
+  // Self cells (× same site) keep the original cell-glyph + cell-num
+  // rendering and do NOT render a dc-subgrid.
+  const w = mountView();
+  await flushPromises();
+  const panel = fullPanel(w);
+  // 3 sites → 3×3 = 9 cells total in the Full matrix.
+  const allCells = panel.findAll('[data-test^="cell-"]');
+  // Each cell carries cell-{state}. Self cells (3 of them) get cell-self
+  // and don't host a sub-grid. The other 6 host a dc-subgrid.
+  const selfCells = panel.findAll('.cell-self');
+  expect(selfCells.length).toBe(3);
+  const subgrids = panel.findAll('.dc-subgrid');
+  expect(subgrids.length).toBe(6);
 });
