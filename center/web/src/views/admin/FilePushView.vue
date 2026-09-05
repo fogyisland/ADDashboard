@@ -69,7 +69,7 @@
           <div class="file-pick__cta">
             <span class="file-pick__icon">📁</span>
             <span class="file-pick__label">
-              <template v-if="!pendingFile">点击选择文件 (最大 8 MB)</template>
+              <template v-if="!pendingFile">点击选择文件 (最大 32 MB)</template>
               <template v-else>{{ pendingFile.name }} · {{ fmtBytes(pendingFile.size) }}</template>
             </span>
           </div>

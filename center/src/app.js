@@ -5,7 +5,7 @@ export function createApp({ config, db, logger, needsInit = false }) {
   const app = express();
   app.disable('x-powered-by');
   app.locals.needsInit = needsInit;
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '50mb' })); // 2026-09-05 R80-followup: raised from 10mb to 50mb so file-push can handle up to 32mb binary (~43mb base64 + JSON wrapper stays under 50mb). Hard limit: see FILE_PUSH_MAX_BYTES in services/file-push.js (8mb historical / 32mb new).
   app.use((req, _res, next) => {
     req.log = logger.child({ method: req.method, url: req.url });
     next();
