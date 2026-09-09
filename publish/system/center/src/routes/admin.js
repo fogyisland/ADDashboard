@@ -56,9 +56,28 @@ export function adminRouter({ config, logger, db }) {
   // We resolve `db` lazily via getDb() when the caller didn't pass one — every
   // tests + production wire has getDb() available.
   const _db = db ?? getDb();
-  const auth = [userAuth({ db: _db, logger }), requirePerm('admin:users')];
+  // 2026-09-09 S82 (security) — per-permission auth chains. The legacy
+  // `admin:users` was an umbrella permission that gated user CRUD +
+  // file-push + member-commands + AD admin + secret rotation. We've
+  // split it into per-domain perms; legacy `admin:users` still grants
+  // all of them via _hasPerm in auth/rbac.js (no migration needed).
+  //
+  // Each route below declares which specific permission it requires.
+  // Tests asserting the matrix live in tests/routes/admin-rbac.test.js.
+  const baseAuth = [userAuth({ db: _db, logger })];
+  const authUsers       = [...baseAuth, requirePerm('admin:users')];
+  const authAdObjects   = [...baseAuth, requirePerm('admin:ad-objects')];
+  const authFilePush    = [...baseAuth, requirePerm('admin:file-push')];
+  const authPackages    = [...baseAuth, requirePerm('admin:packages')];
+  const authMemberSrv   = [...baseAuth, requirePerm('admin:member-servers')];
+  const authConfig      = [...baseAuth, requirePerm('admin:config')];
+  // Routes that need ANY of multiple perms use requireAnyPerm below.
 
-  r.get('/api/admin/roles', auth, async (_req, res) => {
+  // Backward-compat alias — existing tests / callers that imported `auth`
+  // expecting the admin:users chain still resolve to the same chain.
+  const auth_adminUsers = authUsers;
+
+  r.get('/api/admin/roles', authUsers, async (_req, res) => {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.roles.list);
@@ -76,7 +95,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/users', auth, async (_req, res) => {
+  r.get('/api/admin/users', authUsers, async (_req, res) => {
     try {
       const rs = await listUsers();
       res.json(rs.map(camelRow));
@@ -86,7 +105,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/users', auth, async (req, res) => {
+  r.post('/api/admin/users', authUsers, async (req, res) => {
     try {
       const { username, password, roleId, status } = req.body || {};
       if (!username || !password || roleId == null) {
@@ -111,7 +130,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.put('/api/admin/users/:id', auth, async (req, res) => {
+  r.put('/api/admin/users/:id', authUsers, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const { password, roleId, status } = req.body || {};
@@ -130,7 +149,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.delete('/api/admin/users/:id', auth, async (req, res) => {
+  r.delete('/api/admin/users/:id', authUsers, async (req, res) => {
     try {
       const id = Number(req.params.id);
       await deleteUser(id);
@@ -157,7 +176,7 @@ export function adminRouter({ config, logger, db }) {
   // warn-logged inside writeAudit). Per `feedback_writeaudit_signature.md`
   // the audit signature is (args, logger, tx); passing no tx is correct
   // here because the data write commits via the global facade.
-  r.post('/api/admin/users/:id/revoke-tokens', auth, async (req, res) => {
+  r.post('/api/admin/users/:id/revoke-tokens', authUsers, async (req, res) => {
     try {
       const id = Number(req.params.id);
       const db = getDb();
@@ -178,7 +197,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/config', auth, async (_req, res) => {
+  r.get('/api/admin/config', authConfig, async (_req, res) => {
     try {
       const cfg = await getConfig();
       // Surface a `restartRequired` block so the ConfigView can render the
@@ -200,7 +219,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.put('/api/admin/config', auth, async (req, res) => {
+  r.put('/api/admin/config', authConfig, async (req, res) => {
     try {
       const updates = req.body || {};
       // Strip smtp_password from the audit payload — putConfig already redacts
@@ -288,7 +307,7 @@ export function adminRouter({ config, logger, db }) {
   // process; NSSM AppExit Default Restart picks the new appsettings.json up
   // on relaunch. We audit the action before exit so a "who restarted the
   // service" question has a deterministic answer.
-  r.post('/api/admin/restart', auth, async (req, res) => {
+  r.post('/api/admin/restart', authConfig, async (req, res) => {
     try {
       await writeAudit({
         userId: req.user?.sub ?? null,
@@ -329,7 +348,7 @@ export function adminRouter({ config, logger, db }) {
   // Use `_db` (the adminRouter-level db facade) so tests that pre-set the
   // db via `adminRouter({ db: mock })` don't need a global getDb() init —
   // matches the same pattern userAuth uses at the top of this file.
-  r.post('/api/admin/agent-token/rotate', auth, async (req, res) => {
+  r.post('/api/admin/agent-token/rotate', authConfig, async (req, res) => {
     try {
       const out = await rotateAgentToken(_db, {
         logger,
@@ -346,7 +365,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/agent-token/commit', auth, async (req, res) => {
+  r.post('/api/admin/agent-token/commit', authConfig, async (req, res) => {
     try {
       await commitAgentToken(_db, {
         logger,
@@ -360,7 +379,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/agent-token', auth, async (_req, res) => {
+  r.get('/api/admin/agent-token', authConfig, async (_req, res) => {
     try {
       const s = await getAgentTokenState(_db);
       // 2026-08-21 UX redesign: drop operator-facing TTL fields. The
@@ -386,7 +405,7 @@ export function adminRouter({ config, logger, db }) {
   // Every call writes a high-severity security audit row (see services/
   // audit-classifier.js reveal_agent_token) so the "who read the live
   // credential when" question has a deterministic answer.
-  r.get('/api/admin/agent-token/reveal', auth, async (req, res) => {
+  r.get('/api/admin/agent-token/reveal', authConfig, async (req, res) => {
     try {
       const out = await revealAgentToken(_db, {
         logger,
@@ -411,7 +430,7 @@ export function adminRouter({ config, logger, db }) {
   // (either because its next heartbeat hasn't fired, or it's offline).
   // No audit row — read-only query, same shape as the heartbeat-report
   // admin endpoints above.
-  r.get('/api/admin/agent-token/delivery', auth, async (_req, res) => {
+  r.get('/api/admin/agent-token/delivery', authConfig, async (_req, res) => {
     try {
       const db = getDb();
       const [tokenState, { rows: agents }] = await Promise.all([
@@ -452,7 +471,7 @@ export function adminRouter({ config, logger, db }) {
   // Use `_db` (the adminRouter-level db facade) so tests that pre-set the
   // db via `adminRouter({ db: mock })` don't need a global getDb() init —
   // matches the same pattern userAuth uses at the top of this file.
-  r.post('/api/admin/jwt-secret/rotate', auth, async (req, res) => {
+  r.post('/api/admin/jwt-secret/rotate', authConfig, async (req, res) => {
     try {
       const out = await rotateJwtSecret(_db, {
         logger,
@@ -466,7 +485,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/jwt-secret/commit', auth, async (req, res) => {
+  r.post('/api/admin/jwt-secret/commit', authConfig, async (req, res) => {
     try {
       await commitJwtSecret(_db, {
         logger,
@@ -480,7 +499,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/jwt-secret', auth, async (_req, res) => {
+  r.get('/api/admin/jwt-secret', authConfig, async (_req, res) => {
     try {
       const s = await getJwtSecretState(_db);
       res.json({
@@ -495,7 +514,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/config/audit', auth, async (_req, res) => {
+  r.get('/api/admin/config/audit', authConfig, async (_req, res) => {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.config.audit.list);
@@ -517,7 +536,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/config/rollback', auth, async (req, res) => {
+  r.post('/api/admin/config/rollback', authConfig, async (req, res) => {
     try {
       const auditId = Number(req.body?.auditId);
       if (!Number.isInteger(auditId) || auditId <= 0) return res.status(400).json({ error: 'auditId required' });
@@ -566,7 +585,7 @@ export function adminRouter({ config, logger, db }) {
   // can assert the auth.pass value reached the SMTP layer without opening a
   // real socket. Real callers omit `_deps` and email.send falls back to
   // nodemailer.createTransport.
-  r.post('/api/admin/config/email/test', auth, async (req, res) => {
+  r.post('/api/admin/config/email/test', authConfig, async (req, res) => {
     try {
       const to = req.body?.to;
       if (!to) return res.status(400).json({ error: 'to is required' });
@@ -607,7 +626,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/audit', auth, async (req, res) => {
+  r.get('/api/admin/audit', authUsers, async (req, res) => {
     try {
       const { listAudit } = await import('../services/audit.js');
       const { category, action, severity, userId, from, to, page = 1, size = 100 } = req.query;
@@ -632,7 +651,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/audit/badge', auth, async (req, res) => {
+  r.get('/api/admin/audit/badge', authUsers, async (req, res) => {
     try {
       const { getAuditBadge } = await import('../services/audit.js');
       const count = await getAuditBadge(req.query.category);
@@ -646,7 +665,7 @@ export function adminRouter({ config, logger, db }) {
 
   const EXPORT_CAP = 50000;
 
-  r.get('/api/admin/audit/export', auth, async (req, res) => {
+  r.get('/api/admin/audit/export', authUsers, async (req, res) => {
     try {
       const { listAudit } = await import('../services/audit.js');
       const format = req.query.format;
@@ -691,7 +710,7 @@ export function adminRouter({ config, logger, db }) {
   // JSON shape, defined in services/consistency.js → deriveConsistency().
   // Auth: same [userAuth, requirePerm('admin:users')] chain as every other
   // route in this router — no per-route auth decisions.
-  r.get('/api/admin/consistency', auth, async (_req, res) => {
+  r.get('/api/admin/consistency', authUsers, async (_req, res) => {
     try {
       const { deriveConsistency } = await import('../services/consistency.js');
       const result = await deriveConsistency();
@@ -703,7 +722,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // ----- Sites Catalog -----
-  r.get('/api/admin/sites-catalog', auth, async (_req, res) => {
+  r.get('/api/admin/sites-catalog', authUsers, async (_req, res) => {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.sites.listCatalog);
@@ -714,7 +733,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/sites-catalog', auth, async (req, res) => {
+  r.post('/api/admin/sites-catalog', authUsers, async (req, res) => {
     const { siteName, regionCode, isHub, description } = req.body || {};
     if (!siteName) return res.status(400).json({ error: 'missing siteName' });
     try {
@@ -739,7 +758,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.put('/api/admin/sites-catalog/:id', auth, async (req, res) => {
+  r.put('/api/admin/sites-catalog/:id', authUsers, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
     const { siteName, regionCode, isHub, description } = req.body || {};
@@ -770,7 +789,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.delete('/api/admin/sites-catalog/:id', auth, async (req, res) => {
+  r.delete('/api/admin/sites-catalog/:id', authUsers, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
     try {
@@ -795,7 +814,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/sites-catalog/bulk', auth, async (req, res) => {
+  r.post('/api/admin/sites-catalog/bulk', authUsers, async (req, res) => {
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
     if (!rows) return res.status(400).json({ error: 'rows array required' });
     if (rows.length === 0) return res.status(400).json({ error: 'rows array empty' });
@@ -851,7 +870,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // ----- DCs Catalog -----
-  r.get('/api/admin/dcs-catalog', auth, async (_req, res) => {
+  r.get('/api/admin/dcs-catalog', authAdObjects, async (_req, res) => {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.dcs.listCatalog);
@@ -870,7 +889,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.put('/api/admin/dcs-catalog/:dc_name/site', auth, async (req, res) => {
+  r.put('/api/admin/dcs-catalog/:dc_name/site', authAdObjects, async (req, res) => {
     const dcName = req.params.dc_name;
     const { siteId } = req.body || {};
     try {
@@ -911,7 +930,7 @@ export function adminRouter({ config, logger, db }) {
   //            the bridgehead directly from the UI — no direct DB write
   //            needed. Bridgehead drives the all-sites replication matrix
   //            primary selection; PDC is a FSMO role, NOT a primary marker.
-  r.put('/api/admin/dcs-catalog/:dc_name/flags', auth, async (req, res) => {
+  r.put('/api/admin/dcs-catalog/:dc_name/flags', authAdObjects, async (req, res) => {
     const dcName = req.params.dc_name;
     const body = req.body || {};
     // Whitelist of toggleable columns — anything else 400s to avoid SQL
@@ -973,7 +992,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/dcs-catalog/bulk-assign', auth, async (req, res) => {
+  r.post('/api/admin/dcs-catalog/bulk-assign', authAdObjects, async (req, res) => {
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
     if (!rows) return res.status(400).json({ error: 'rows array required' });
     if (rows.length === 0) return res.status(400).json({ error: 'rows array empty' });
@@ -1047,7 +1066,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // ----- Ports -----
-  r.get('/api/admin/ports', auth, async (_req, res) => {
+  r.get('/api/admin/ports', authUsers, async (_req, res) => {
     try {
       const rows = await listPorts();
       // Wrap in camelRow so snake_case columns from SQL (e.g. sort_order) are
@@ -1060,7 +1079,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/ports', auth, async (req, res) => {
+  r.post('/api/admin/ports', authUsers, async (req, res) => {
     try {
       const out = await createPort(req.body || {});
       res.status(201).json(out);
@@ -1071,7 +1090,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.put('/api/admin/ports/:id', auth, async (req, res) => {
+  r.put('/api/admin/ports/:id', authUsers, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
     try {
@@ -1085,7 +1104,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.delete('/api/admin/ports/:id', auth, async (req, res) => {
+  r.delete('/api/admin/ports/:id', authUsers, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
     try {
@@ -1108,7 +1127,7 @@ export function adminRouter({ config, logger, db }) {
   // the row that disappeared.
 
   // GET list with member_count
-  r.get('/api/admin/server-groups', auth, async (_req, res) => {
+  r.get('/api/admin/server-groups', authFilePush, async (_req, res) => {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.serverGroups.list);
@@ -1125,7 +1144,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // POST create; 409 on duplicate group_name
-  r.post('/api/admin/server-groups', auth, async (req, res) => {
+  r.post('/api/admin/server-groups', authFilePush, async (req, res) => {
     const { groupName, description } = req.body || {};
     if (!groupName) return res.status(400).json({ error: 'groupName is required' });
     try {
@@ -1147,7 +1166,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // PUT rename (group_name) / update description; 404 on miss
-  r.put('/api/admin/server-groups/:group_id', auth, async (req, res) => {
+  r.put('/api/admin/server-groups/:group_id', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     const { groupName, description } = req.body || {};
@@ -1181,7 +1200,7 @@ export function adminRouter({ config, logger, db }) {
 
   // DELETE drop; cascades to ad_server_group_members via FK ON DELETE CASCADE;
   // host package bindings on ad_member_server_packages persist (no FK to ad_server_groups)
-  r.delete('/api/admin/server-groups/:group_id', auth, async (req, res) => {
+  r.delete('/api/admin/server-groups/:group_id', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     try {
@@ -1203,7 +1222,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // GET members — list hostnames + site for the group
-  r.get('/api/admin/server-groups/:group_id/members', auth, async (req, res) => {
+  r.get('/api/admin/server-groups/:group_id/members', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     try {
@@ -1220,7 +1239,7 @@ export function adminRouter({ config, logger, db }) {
   // Read existing hostnames, compute (added, removed), DELETE removed + INSERT
   // IGNORE / NOT-EXISTS added. Same hostname set → no-op. Wrapped in a tx so
   // concurrent updates from another admin can't tear the membership.
-  r.put('/api/admin/server-groups/:group_id/members', auth, async (req, res) => {
+  r.put('/api/admin/server-groups/:group_id/members', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     const raw = req.body?.hostnames;
@@ -1270,7 +1289,7 @@ export function adminRouter({ config, logger, db }) {
   // POST packages/install — bulk INSERT IGNORE / NOT EXISTS for every member
   // of the group. The SQL block resolves the membership join, so the handler
   // stays a single round-trip regardless of group size.
-  r.post('/api/admin/server-groups/:group_id/packages/install', auth, async (req, res) => {
+  r.post('/api/admin/server-groups/:group_id/packages/install', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     const { packageName } = req.body || {};
@@ -1304,7 +1323,7 @@ export function adminRouter({ config, logger, db }) {
   // POST packages/:name/uninstall — bulk DELETE; for built-in ad-os-baseline,
   // audit one disable_builtin_ad_os_baseline row per affected host BEFORE
   // the DELETE (matches per-host DELETE in memberRouter).
-  r.post('/api/admin/server-groups/:group_id/packages/:package_name/uninstall', auth, async (req, res) => {
+  r.post('/api/admin/server-groups/:group_id/packages/:package_name/uninstall', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     const packageName = req.params.package_name;
@@ -1348,7 +1367,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // POST packages/:name/enable | disable — bulk UPDATE the enabled flag.
-  r.post('/api/admin/server-groups/:group_id/packages/:package_name/enable', auth, async (req, res) => {
+  r.post('/api/admin/server-groups/:group_id/packages/:package_name/enable', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     const packageName = req.params.package_name;
@@ -1369,7 +1388,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.post('/api/admin/server-groups/:group_id/packages/:package_name/disable', auth, async (req, res) => {
+  r.post('/api/admin/server-groups/:group_id/packages/:package_name/disable', authFilePush, async (req, res) => {
     const id = Number(req.params.group_id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid group_id' });
     const packageName = req.params.package_name;
@@ -1407,7 +1426,7 @@ export function adminRouter({ config, logger, db }) {
   // minimal at module load).
 
   // POST /api/admin/ad-commands — queue a new AD command.
-  r.post('/api/admin/ad-commands', auth, async (req, res) => {
+  r.post('/api/admin/ad-commands', authAdObjects, async (req, res) => {
     const { targetDc, commandType, params } = req.body || {};
     if (!targetDc || typeof targetDc !== 'string') {
       return res.status(400).json({ error: 'targetDc required' });
@@ -1466,7 +1485,7 @@ export function adminRouter({ config, logger, db }) {
     'group_add_member', 'group_remove_member'
   ]);
   const BATCH_MAX_PARAMS = 100;
-  r.post('/api/admin/ad-commands/batch', auth, async (req, res) => {
+  r.post('/api/admin/ad-commands/batch', authAdObjects, async (req, res) => {
     const { targetDc, commandType, paramsList } = req.body || {};
     if (!targetDc || typeof targetDc !== 'string') {
       return res.status(400).json({ error: 'targetDc required' });
@@ -1560,7 +1579,7 @@ export function adminRouter({ config, logger, db }) {
   });
 
   // GET /api/admin/ad-commands — paginated history (operator's drawer).
-  r.get('/api/admin/ad-commands', auth, async (req, res) => {
+  r.get('/api/admin/ad-commands', authAdObjects, async (req, res) => {
     try {
       const { listCommands } = await import('../services/ad-admin-commands.js');
       const operatorIdRaw = req.query?.operatorId;
@@ -1595,7 +1614,7 @@ export function adminRouter({ config, logger, db }) {
   // GET /api/admin/ad-commands/:id — single row incl. params_json +
   // result_json. Audit-classifier entries (`ad_command_*`) cover the
   // operator-visible events; this endpoint just reads.
-  r.get('/api/admin/ad-commands/:id', auth, async (req, res) => {
+  r.get('/api/admin/ad-commands/:id', authAdObjects, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
     try {
@@ -1642,7 +1661,7 @@ export function adminRouter({ config, logger, db }) {
 
   // POST /api/admin/member-commands — queue a new PowerShell command
   // against a member-server hostname.
-  r.post('/api/admin/member-commands', auth, async (req, res) => {
+  r.post('/api/admin/member-commands', authMemberSrv, async (req, res) => {
     const { hostname, params } = req.body || {};
     if (!hostname || typeof hostname !== 'string') {
       return res.status(400).json({ error: 'hostname required' });
@@ -1721,7 +1740,7 @@ export function adminRouter({ config, logger, db }) {
   // NOTE: /hosts (below) must be registered BEFORE the /:id route —
   // Express routes match in registration order, and `hosts` would
   // otherwise be parsed as `id` and fail Number(req.params.id) validation.
-  r.get('/api/admin/member-commands/hosts', auth, async (_req, res) => {
+  r.get('/api/admin/member-commands/hosts', authMemberSrv, async (_req, res) => {
     try {
       const db = getDb();
       const { rows } = await db.query(db.sql.heartbeat.tokenDeliveryList);
@@ -1736,7 +1755,7 @@ export function adminRouter({ config, logger, db }) {
     }
   });
 
-  r.get('/api/admin/member-commands', auth, async (req, res) => {
+  r.get('/api/admin/member-commands', authMemberSrv, async (req, res) => {
     try {
       const { listCommands } = await import('../services/member-commands.js');
       const hostname = req.query?.hostname || undefined;
@@ -1767,7 +1786,7 @@ export function adminRouter({ config, logger, db }) {
   // GET /api/admin/member-commands/:id — single row incl. params_json +
   // result_json. Passwords redacted on the way out so a viewer never sees
   // cleartext (defense-in-depth — service already strips on write).
-  r.get('/api/admin/member-commands/:id', auth, async (req, res) => {
+  r.get('/api/admin/member-commands/:id', authMemberSrv, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
     try {
