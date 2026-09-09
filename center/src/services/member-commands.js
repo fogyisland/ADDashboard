@@ -46,6 +46,47 @@ const STDERR_MAX_BYTES = 8 * 1024;
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SEC = 60;
 
+// 2026-09-09 S82 (security) — deny-list of PowerShell patterns that
+// R81's free-form script body must never carry. The agent typically runs
+// as SYSTEM, so a successful match means full server compromise. Each
+// pattern is case-insensitive. Strings matched literally; regexes (e.g.
+// drive-glob \\.\.\\) matched as written. Keep this list tight — it's a
+// defense-in-depth layer on top of the script-size cap + timeout, not a
+// full sandbox. The agent's wrapper (.ps1) trusts the upstream guard
+// rails, so any reject at this layer MUST be enforced server-side before
+// the row is queued.
+const DENIED_PATTERNS = Object.freeze([
+  /\bremove-item\b[\s\S]*\s(-r(ecurse)?\b|-force\b|-rf\b)/i,
+  /\bformat-volume\b/i,
+  /\bstop-computer\b/i,
+  /\brestart-computer\b/i,
+  /\binvoke-expression\b/i,
+  /\biex\b/i,
+  /\bnew-object\b[\s\S]*\bnet\.webclient\b/i,
+  /\bstart-bitstransfer\b/i,
+  /\bbitsadmin\b/i,
+  /\bwget\s+/i,
+  /\bcurl\s+/i,
+  /\\\\\.\\(pipe|ndishc|physicaldrive)/i,
+  /\breg\s+delete\b[\s\S]*\\currentcontrolset/i,
+  /\bbcdedit\b/i,
+  /\bdiskpart\b/i,
+  /\bstop-process\b[\s\S]*-force\b/i
+]);
+
+/**
+ * Returns the first denied-pattern regex that matches `script`, or null
+ * when the script passes every check. Pure function — exported via
+ * _testInternals so the test harness can assert specific payloads.
+ */
+function containsDeniedPattern(script) {
+  if (typeof script !== 'string' || script.length === 0) return null;
+  for (const re of DENIED_PATTERNS) {
+    if (re.test(script)) return re;
+  }
+  return null;
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────
 
 function httpErr(status, message) {
@@ -205,6 +246,14 @@ export async function queueCommand({ hostname, params, operatorId, skipOnlineChe
   // validate params (guard rails #2 + #3)
   const v = validateMemberScript(params);
   if (!v.ok) throw httpErr(400, v.error);
+
+  // 2026-09-09 S82 (security) — deny-list pattern check. R81's
+  // free-form PS body is a RCE surface; reject at queue time so the
+  // row never lands. Defense-in-depth on top of script size + timeout.
+  const denied = containsDeniedPattern(v.normalized.script);
+  if (denied) {
+    throw httpErr(400, `script contains denied pattern: ${denied.source}`);
+  }
 
   const db = getDb();
 
@@ -424,7 +473,9 @@ export const _testInternals = Object.freeze({
   STDERR_MAX_BYTES,
   RATE_LIMIT_MAX,
   RATE_LIMIT_WINDOW_SEC,
+  DENIED_PATTERNS,
   redactPasswords,
   truncateUtf8,
+  containsDeniedPattern,
   httpErr
 });

