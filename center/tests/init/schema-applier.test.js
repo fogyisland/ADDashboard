@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { splitSqlStatements } from '../../src/init/schema-applier.js';
 
@@ -195,24 +195,46 @@ test('splitSqlStatements parses migration 003 (port healthcheck tables)', () => 
 import { applyAll } from '../../src/init/schema-applier.js';
 import { buildMockDb } from '../helpers/db-mock.js';
 
-test('applyAll executes schema, seed, and migrations via db.execute', async () => {
+test('applyAll executes schema + seed only via db.execute (R84: no migrations dir iteration)', async () => {
   const calls = [];
   const db = buildMockDb().withRecording(calls);
-  const result = await applyAll('mysql', db, { repoRoot: process.cwd() + '/..' });
+  const result = await applyAll('mysql', db, { repoRoot });
   const sqls = calls.map(c => c.sql);
   assert.ok(calls.length > 0);
-  // At least one CREATE TABLE statement
+  // At least one CREATE TABLE statement from 01-tables.sql
   assert.ok(sqls.some(s => /CREATE TABLE/i.test(s)));
-  // Returns applied structure
+  // result.migrations MUST be empty — the fresh-install path no longer
+  // iterates db/migrations/*. backfillMigrations writes the schema_migrations
+  // rows separately with applied_by='system-init' (see backfill-verify.test.js).
+  assert.deepStrictEqual(result.migrations, []);
+  // The returned shape still has schema + seed arrays (response-payload stability).
   assert.ok(Array.isArray(result.schema));
   assert.ok(Array.isArray(result.seed));
-  assert.ok(Array.isArray(result.migrations));
+});
+
+test('applyAll does not read db/migrations/*.sql on a fresh install (R84)', async () => {
+  // Hard guard: if a future refactor re-introduces the migrations loop, the
+  // SQL emitted will include migration-only tables (ad_admin_commands,
+  // ad_member_commands, etc.) that ONLY migrations used to create. The
+  // merged 01-tables.sql now contains all of them too, so the more precise
+  // discriminator is "no migration file's first statement appears as a
+  // standalone db.execute() call" — which we approximate by asserting that
+  // schema_migrations CREATE is part of the 01-tables run (not a separate
+  // migrations/009 call). We check the call count is bounded: 01 + 02
+  // alone should produce ~38 statements (T1 verification), not 80+.
+  const calls = [];
+  const db = buildMockDb().withRecording(calls);
+  await applyAll('mysql', db, { repoRoot });
+  // Before R84 this count was 80+ (01 + 02 + 25 migrations). After R84 it
+  // is ~38 (01 + 02 only). We assert it's well under the pre-R84 count to
+  // catch silent regressions.
+  assert.ok(calls.length < 60, `expected <60 db.execute calls (01 + 02 only); got ${calls.length} — migrations dir may have leaked back into applyAll`);
 });
 
 test('applyAll mysql createDatabase option issues CREATE DATABASE', async () => {
   const calls = [];
   const db = buildMockDb().withRecording(calls);
-  await applyAll('mysql', db, { repoRoot: process.cwd() + '/..', createDatabase: true, databaseName: 'ad_test' });
+  await applyAll('mysql', db, { repoRoot, createDatabase: true, databaseName: 'ad_test' });
   const sqls = calls.map(c => c.sql);
   assert.ok(sqls.some(s => /CREATE DATABASE IF NOT EXISTS `ad_test`/i.test(s)));
 });

@@ -65,10 +65,12 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
       const params = canonicalize(connParams);
       const db = await deps.getWizardFacade(dialect, params);
       const applied = await deps.applyAll(dialect, db, { createDatabase: !!createDatabase, databaseName: params.database });
-      // applyAll just ran every file in db/migrations (including 009, which
-      // creates schema_migrations). Record them all as applied so the admin
-      // Schema Migrations page doesn't show a fresh install as fully pending.
-      // Must run after applyAll — the table does not exist before it.
+      // R84: applyAll now only runs db/schema/{01-tables,02-seed-roles}.sql
+      // — it does NOT execute db/migrations/*. Backfill records every
+      // migration file as already-applied so the admin Schema Migrations
+      // page doesn't show a fresh install as fully pending. Order matters:
+      // 01-tables.sql includes the schema_migrations table CREATE
+      // (merged from m009), so backfillMigrations has a writable target.
       await deps.backfillMigrations(dialect, db);
       res.json(applied);
     } catch (e) {

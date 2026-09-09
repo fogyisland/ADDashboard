@@ -93,17 +93,23 @@ test('POST /api/init/db/test returns 400 when dialect is missing', async () => {
   assert.match(r.body.error, /dialect/);
 });
 
-test('POST /api/init/db/apply applies schema + seed + migrations', async () => {
-  const app = makeApp({ applyResult: { schema: ['s1'], seed: ['s2'], migrations: ['m1'] } });
+test('POST /api/init/db/apply applies schema + seed only (R84: no migrations dir iteration)', async () => {
+  // R84: fresh-install path no longer iterates db/migrations/*. The result
+  // shape keeps a `migrations: []` field for response-payload stability but
+  // it must be empty — schema_migrations records are filled in via
+  // backfillMigrations, not by re-executing the SQL files.
+  const app = makeApp({ applyResult: { schema: ['s1'], seed: ['s2'], migrations: [] } });
   const r = await call(app, 'POST', '/api/init/db/apply', { dialect: 'mysql', connParams: { host: 'h', port: 3306, database: 'd', user: 'u', password: 'p' }, createDatabase: false });
   assert.strictEqual(r.status, 200);
   assert.deepStrictEqual(r.body.schema, ['s1']);
+  assert.deepStrictEqual(r.body.seed, ['s2']);
+  assert.deepStrictEqual(r.body.migrations, []);
 });
 
 test('db/apply calls applyAll THEN backfillMigrations in order', async () => {
-  // Order is load-bearing: applyAll runs migration 009, which creates the
-  // schema_migrations table that backfillMigrations writes into. Backfilling
-  // first would hit a missing table.
+  // Order is load-bearing: 01-tables.sql includes the merged m009
+  // CREATE TABLE schema_migrations, which backfillMigrations writes into.
+  // Backfilling first would hit a missing table.
   const callOrder = [];
   const app = makeApp({
     depOverrides: {
