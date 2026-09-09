@@ -1,69 +1,51 @@
 <!--
-  复制拓扑 — 单图表视图
-  2026-08-29 round-62 (operator directive "复制拓扑去掉两个图表 集合成一个图标"):
-  collapse the dual-panel layout (R59 outbound + inbound, R61 horizontal
-  side-by-side) into a SINGLE ECharts graph. Direction is preserved by
-  the arrow at each edge's target end — no need to split into two
-  panels to disambiguate source vs target.
+  复制拓扑 — 单图表视图 (nested tree)
 
-  2026-08-29 round-63 (operator "服务器和站点的关系可以这样绘制"):
-  draw site bounding boxes around each site's DCs using ECharts
-  `graphic` component. After force layout settles (chart.on('finished')),
-  compute pixel bbox per site via convertToPixel() and render a rounded
-  rect (dashed border, site palette color, transparent fill) plus a
-  bold site-name header. This makes the "site → DC" containment
-  hierarchy visually explicit without needing a second chart.
+  2026-09-09 S83 (operator feedback: "DC 必须隶属于一个站点, 目前的复制
+  架构图 站点和 DC 是分开的"): the previous implementation used
+  ECharts `type: 'graph'` + `layout: 'force'` (physics simulation) which
+  rendered Sites and DCs as INDEPENDENT nodes. R63 added an SVG overlay
+  to draw bounding boxes around the per-site DC clusters — but the boxes
+  were pure visual decoration, not a structural relationship. Moving
+  the chart never carried the DCs along with their site.
 
-  2026-08-30 round-69 (operator: "你来定" → picked node-click drill-down):
-  Click a site or DC node → opens a local modal with the node's detail
-  (site: Hub/Spoke badge + DC list + partner counts; DC: role badges
-  + intra/cross-site replication partners). No new backend endpoint —
-  derives everything from props.data. Click backdrop or close button
-  → dismissed. data-test contract:
-    node-detail-modal      — modal root (both node types)
-    node-detail-title      — header title (site name or DC name)
-    node-detail-meta       — Hub/Spoke + DC count line (site nodes only)
-    node-detail-dc-list    — DC list container (site nodes only)
-    node-detail-dc-row     — single DC row in the site list
-    node-detail-partners   — partner list container
-    node-detail-partner    — single partner row
-    node-detail-close      — close button (modal footer)
+  This round swaps to ECharts `type: 'tree'` with `layout: 'orthogonal'`,
+  which gives us TRUE parent-child containment:
+    - Each site is rendered as a tree branch (level 0).
+    - Its DCs are nested as children (level 1) inside the site node.
+    - Moving/zooming the chart keeps the DCs within their site container.
+    - Intra-site replication links (DC ↔ DC inside the same site) are
+      drawn between siblings within the same subtree.
+    - Cross-site replication links are drawn between nodes in different
+      subtrees via the tree series `links` parameter (ECharts tree supports
+      non-hierarchical links for "spanning" connections).
+
+  Visual treatment per node:
+    - Hub site (R68 load-bearing layer):  roundRect 52px, gold (#fbbf24)
+      with cream border (#fde68a) and bold (700 weight) label.
+    - Spoke site:  roundRect 32px, faded (#94a3b8), thinner border.
+    - DC:  circle 16px, neutral grey, lighter label.
+    - Orphan bucket "未分组":  used when a DC has no `site` field.
+      Visually identical to a Spoke site but with a dashed border so the
+      operator notices the data-quality issue at a glance.
+
+  Layered edge vocabulary (preserved from R68):
+    - Hub↔Hub cross-site edges: width 2.5 (load-bearing).
+    - Hub↔Spoke cross-site edges: width 1.0.
+    - Spoke↔Spoke cross-site edges: HIDDEN (Hub-Spoke compliance).
+    - Intra-site edges: width 1.5 (always visible).
 
   History:
-    - R43 — add direction (was mutual connections → fixed to hub-spoke)
-    - R59 — split into 出战 + 入站 two ECharts panels with lens-aware labels
-    - R61 — change panels from vertical to horizontal + 3-color edges
+    - R43 — direction (was mutual → hub-spoke)
+    - R59 — split into 出战 + 入站 two ECharts panels
+    - R61 — change panels from horizontal + 3-color edges
     - R62 — collapse back to ONE chart; arrow direction is enough
-    - R63 — wrap each site's DCs in a colored site bounding box
-    - R68 — Hub-Spoke visual emphasis: Hub sites rendered bigger/golder
-      with bold border; Spoke sites smaller/fainter; Hub↔Hub edges
-      rendered bolder (the load-bearing layer); Spoke→Spoke edges
-      hidden by default (designed absence — Hub-Spoke compliance).
-    - R69 — click any node (site OR DC) to drill into a detail modal
-      (Hub/Spoke badge, DC list with role badges, partner breakdown).
-
-  Layout choices (single canvas):
-    - Sites get per-site category index → ECharts force layout clusters
-      each site's DCs around its site node. Sites are heavy anchors
-      (mass: 8); DCs are light (mass: 1) and settle around their parent.
-    - Edge `symbol: ['none', 'arrow']` puts an arrow at target — direction
-      is unambiguous.
-    - Edge color = green (statusCode 0) / yellow (statusCode 1) / red
-      (statusCode 2+). Matches R60 复制状态概览 + R61 vocabulary.
-    - Edge label = "SourceSite→DestSite" for cross-site links,
-      "↔ 内" for intra-site links.
-
-  Hub-Spoke (R68):
-    - Hub site node: symbolSize 52, gold (#fbbf24) roundRect, mass 12,
-      bold border on bounding box. The "load-bearing" layer of the topology.
-    - Spoke site node: symbolSize 32, faded (#94a3b8) roundRect, mass 6,
-      thinner border on bounding box.
-    - Hub↔Hub edges: lineStyle.width 2.5 (visually heavier).
-    - Spoke→Hub / Hub→Spoke edges: lineStyle.width 1.0 (thinner).
-    - Spoke↔Spoke edges: hidden (filtered out before rendering — these
-      are designed absences per Hub-Spoke compliance).
-    - Visual is driven by `n.isHub` on each site node (sourced from
-      ad_sites.is_hub in the backend, exposed via /api/dashboard/topology).
+    - R63 — wrap each site's DCs in a colored site bounding box (SVG)
+    - R68 — Hub-Spoke visual emphasis (Hub gold, Spoke faded, edge width)
+    - R69 — click node → drill into detail modal
+    - R70 — click edge → drill into pair-history modal
+    - S83 — replace force-graph with nested tree; sites are parents,
+            DCs are children, true containment (R63 SVG overlay retired)
 -->
 <template>
   <!-- 3-color legend (green/yellow/red) so the operator can map edge
@@ -78,7 +60,7 @@
       <header class="structure-header">
         <span class="structure-tag">复制拓扑</span>
         <h3>所有站点的复制链路</h3>
-        <span class="structure-sub">站点框 → DC 节点 → 复制链路（虚线框 = 站点，箭头 = 复制方向，点击节点查看详情）</span>
+        <span class="structure-sub">站点框 → DC 节点 → 复制链路（站点 = 父容器，DC = 子节点；箭头 = 复制方向，点击节点查看详情）</span>
       </header>
       <div ref="chartEl" class="chart" data-test="topology-chart"></div>
     </section>
@@ -248,19 +230,17 @@ const props = defineProps({
 
 const chartEl = ref(null);
 let chart = null;
-// R63: keep references to nodes passed to setOption so convertToPixel()
-// can resolve each DC back to its pixel position from ECharts'
-// internal data store.
-let lastBuiltDataNodes = [];
-// R63: guard against the 'finished' → setOption(graphic) → 'finished'
-// feedback loop. Only re-render boxes when the underlying data changed.
-let lastBoxDataKey = '';
 // R69: clicked node detail (drives the modal). null = closed.
 // Stores the ORIGINAL node from props.data (not the ECharts-wrapped
 // object) so role badges + partner counts derive from source-of-truth.
 const clickedNode = ref(null);
 
 // ── Site order + DC → site lookup (shared across renders) ──────────────
+// S83: siteOrder walks `props.data.nodes` in order to preserve the
+// backend's site ordering (e.g. 核心站点 first). The orphan bucket is
+// always appended LAST so the well-formed sites come first.
+const ORPHAN_BUCKET = '未分组';
+
 const siteOrder = computed(() => {
   const seen = new Set();
   const out = [];
@@ -281,6 +261,14 @@ function dcSiteLookup() {
   return map;
 }
 
+function hubSet() {
+  const set = new Set();
+  for (const n of (props.data.nodes || [])) {
+    if (n.type === 'site' && n.isHub) set.add(n.name);
+  }
+  return set;
+}
+
 // Compact site-name abbrev for edge labels. The legend already maps
 // each site to its own color, so 1-2 chars is enough on the canvas.
 function shortSite(name) {
@@ -290,97 +278,138 @@ function shortSite(name) {
   return name.slice(0, 3);
 }
 
-// 8 distinct site palette colors so the operator can map
-// "same-color circle cluster = same site" at a glance.
-const SITE_PALETTE = [
-  '#38bdf8', '#a78bfa', '#fb923c', '#34d399',
-  '#f472b6', '#facc15', '#60a5fa', '#fb7185'
-];
-
-// R63: hex → rgba helper for site-box transparent fills.
-function hexToRgba(hex, alpha) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!m) return `rgba(0,0,0,${alpha})`;
-  return `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${alpha})`;
-}
-
-function buildOption() {
-  const siteIndex = new Map(siteOrder.value.map((s, i) => [s, i]));
-  const dcSites = dcSiteLookup();
-
-  // R68: Hub set (sites flagged isHub=true). Drives node sizing, color,
-  // and edge-weight emphasis. Built once per render.
-  const hubSet = new Set();
-  for (const n of (props.data.nodes || [])) {
-    if (n.type === 'site' && n.isHub) hubSet.add(n.name);
+// ── S83: tree-data construction ──────────────────────────────────────
+// Each site node carries:
+//   - symbol/symbolSize/itemStyle/label — visual treatment (Hub vs Spoke)
+//   - children — the DCs nested inside the site, each as a leaf with
+//     empty children (ECharts requires `children` to be present; an empty
+//     array makes the node a leaf so it renders at level 1 only).
+//
+// Orphan DCs (no `site` field, or site not in siteOrder) are bucketed
+// into a synthetic "未分组" site rendered LAST so well-formed sites stay
+// prominent.
+function buildTreeData() {
+  const nodes = props.data.nodes || [];
+  const dcsBySite = new Map();
+  for (const siteName of siteOrder.value) {
+    dcsBySite.set(siteName, []);
+  }
+  const orphanDcs = [];
+  for (const n of nodes) {
+    if (n.type !== 'dc') continue;
+    const siteName = n.site;
+    if (siteName && dcsBySite.has(siteName)) {
+      dcsBySite.get(siteName).push(n);
+    } else {
+      orphanDcs.push(n);
+    }
   }
 
-  const nodes = (props.data.nodes || []).map(n => {
-    const isSite = n.type === 'site';
-    const isHub = isSite && hubSet.has(n.name);
+  const branches = siteOrder.value.map(siteName => {
+    const siteNode = nodes.find(n => n.name === siteName && n.type === 'site');
+    const isHub = !!siteNode?.isHub;
+    const dcs = dcsBySite.get(siteName) || [];
     return {
-      name: n.name,
-      // R63: remember site membership so renderSiteBoxes can group DCs
-      // into per-site bounding boxes after force layout settles.
-      _siteName: isSite ? n.name : (n.site || null),
+      name: siteName,
+      _type: 'site',
       _isHub: isHub,
-      category: isSite ? (siteIndex.get(n.name) ?? 0) : (siteIndex.get(n.site) ?? 0),
-      // R68: Hub sites are bigger/heavier; Spoke sites are smaller.
-      symbolSize: isHub ? 52 : isSite ? 32 : 16,
-      mass: isHub ? 12 : isSite ? 6 : 1,
-      symbol: isSite ? 'roundRect' : 'circle',
+      _original: siteNode,
+      symbol: 'roundRect',
+      symbolSize: isHub ? 52 : 32,
       itemStyle: {
-        // R68: Hub = gold (load-bearing layer); Spoke = faded.
-        color: isHub ? '#fbbf24' : isSite ? '#94a3b8' : '#94a3b8',
-        borderColor: isHub ? '#fde68a' : (isSite ? '#64748b' : 'transparent'),
-        borderWidth: isHub ? 2 : (isSite ? 1 : 0)
+        color: isHub ? '#fbbf24' : '#94a3b8',
+        borderColor: isHub ? '#fde68a' : '#64748b',
+        borderWidth: isHub ? 2 : 1
       },
       label: {
         show: true,
-        color: isHub ? '#fef3c7' : isSite ? '#e2e8f0' : '#cbd5e1',
-        fontWeight: isHub ? 700 : isSite ? 500 : 400,
-        fontSize: isHub ? 14 : isSite ? 12 : 11
-      }
+        color: isHub ? '#fef3c7' : '#e2e8f0',
+        fontWeight: isHub ? 700 : 500,
+        fontSize: isHub ? 14 : 12
+      },
+      children: dcs.map(dc => ({
+        name: dc.name,
+        _type: 'dc',
+        _site: siteName,
+        _original: dc,
+        symbol: 'circle',
+        symbolSize: 16,
+        itemStyle: { color: '#94a3b8', borderColor: 'transparent', borderWidth: 0 },
+        label: {
+          show: true,
+          color: '#cbd5e1',
+          fontWeight: 400,
+          fontSize: 11
+        },
+        children: []
+      }))
     };
   });
 
-  // R63: keep references to the node objects passed to setOption so
-  // renderSiteBoxes can pass them to convertToPixel() to read pixel
-  // positions back from ECharts' internal layout.
-  lastBuiltDataNodes = nodes;
+  // Orphan bucket — synthetic site rendered LAST. Dashed border so the
+  // operator notices the data-quality issue (DCs without a site field).
+  if (orphanDcs.length > 0) {
+    branches.push({
+      name: ORPHAN_BUCKET,
+      _type: 'site',
+      _isHub: false,
+      _original: { name: ORPHAN_BUCKET, type: 'site', isHub: false },
+      symbol: 'roundRect',
+      symbolSize: 32,
+      itemStyle: {
+        color: '#94a3b8',
+        borderColor: '#64748b',
+        borderWidth: 1,
+        borderType: 'dashed'
+      },
+      label: {
+        show: true,
+        color: '#e2e8f0',
+        fontWeight: 500,
+        fontSize: 12
+      },
+      children: orphanDcs.map(dc => ({
+        name: dc.name,
+        _type: 'dc',
+        _site: ORPHAN_BUCKET,
+        _original: dc,
+        symbol: 'circle',
+        symbolSize: 16,
+        itemStyle: { color: '#94a3b8', borderColor: 'transparent', borderWidth: 0 },
+        label: {
+          show: true,
+          color: '#cbd5e1',
+          fontWeight: 400,
+          fontSize: 11
+        },
+        children: []
+      }))
+    });
+  }
 
-  const links = (props.data.links || []).map(l => {
+  return branches;
+}
+
+// ── S83: tree links for DC↔DC replication edges ──────────────────────
+// ECharts tree series accepts `links` for non-hierarchical connections.
+// Source/target are node names (must exist in the tree data). Each link
+// carries the same per-link metadata that R68's graph did — status color,
+// intra/cross label, Hub↔Hub vs Hub↔Spoke width, etc.
+//
+// Spoke↔Spoke cross-site links are filtered out (Hub-Spoke compliance).
+function buildTreeLinks() {
+  const dcSites = dcSiteLookup();
+  const hub = hubSet();
+  const links = [];
+  for (const l of (props.data.links || [])) {
     const sourceSite = dcSites.get(l.source);
     const destSite = dcSites.get(l.target);
-    const isIntra = sourceSite && destSite && sourceSite === destSite;
-    // R68: classify the edge into one of the three Hub-Spoke layers:
-    //   hub-hub        — load-bearing, BOLDEST edge (width 2.5)
-    //   hub-spoke      — normal cross-tier (width 1.0)
-    //   spoke-spoke    — designed absence — HIDDEN (filtered below)
-    const sourceIsHub = sourceSite && hubSet.has(sourceSite);
-    const destIsHub = destSite && hubSet.has(destSite);
-    let layer;
-    if (sourceIsHub && destIsHub) layer = 'hub-hub';
-    else if (sourceIsHub || destIsHub) layer = 'hub-spoke';
-    else layer = 'spoke-spoke';
-    // Filter out spoke-spoke edges (designed absence in Hub-Spoke model).
-    // The dashboard `primaries` payload would not normally emit these,
-    // but defensive filtering keeps the topology honest if KCC ever
-    // produces a transitive spoke-spoke link.
-    if (layer === 'spoke-spoke' && !isIntra) {
-      return null;
-    }
-    // Single unified label: cross-site uses source→dest convention
-    // (matches the arrow direction). Intra-site keeps the ↔ marker.
-    let labelText;
-    if (isIntra) {
-      labelText = '↔ 内';
-    } else {
-      const ss = shortSite(sourceSite);
-      const ds = shortSite(destSite);
-      labelText = `${ss}→${ds}`;
-    }
-    // 3-color health vocabulary (matches R60 matrix + R61 topology).
+    if (!sourceSite || !destSite) continue;
+    const isIntra = sourceSite === destSite;
+    const sourceIsHub = hub.has(sourceSite);
+    const destIsHub = hub.has(destSite);
+    // Filter spoke-spoke cross-site (designed absence — Hub-Spoke compliance).
+    if (!isIntra && !sourceIsHub && !destIsHub) continue;
     const edgeColor =
       l.statusCode === 0 ? '#22c55e' :
       l.statusCode === 1 ? '#eab308' :
@@ -389,9 +418,15 @@ function buildOption() {
       l.statusCode === 0 ? '#86efac' :
       l.statusCode === 1 ? '#fde68a' :
       '#fca5a5';
-    // R68: edge width by layer — hub-hub is the load-bearing layer.
+    let labelText;
+    if (isIntra) {
+      labelText = '↔ 内';
+    } else {
+      labelText = `${shortSite(sourceSite)}→${shortSite(destSite)}`;
+    }
+    const layer = (sourceIsHub && destIsHub) ? 'hub-hub' : 'hub-spoke';
     const edgeWidth = isIntra ? 1.5 : (layer === 'hub-hub' ? 2.5 : 1.0);
-    return {
+    links.push({
       source: l.source,
       target: l.target,
       symbol: ['none', 'arrow'],
@@ -399,7 +434,7 @@ function buildOption() {
       lineStyle: {
         color: edgeColor,
         width: edgeWidth,
-        curveness: 0.08,
+        curveness: 0.5,
         type: 'solid',
         opacity: 0.85
       },
@@ -411,17 +446,33 @@ function buildOption() {
         backgroundColor: 'rgba(15, 23, 42, 0.7)',
         padding: [2, 4]
       }
-    };
-  }).filter(Boolean);
+    });
+  }
+  return links;
+}
 
-  const categories = siteOrder.value.map((name, i) => ({
-    name: `${name}`,
-    itemStyle: { color: SITE_PALETTE[i % SITE_PALETTE.length] }
-  }));
+function buildOption() {
+  const treeData = buildTreeData();
+  const treeLinks = buildTreeLinks();
+  const dcSites = dcSiteLookup();
+  const legendData = [...siteOrder.value];
+  if (treeData.some(b => b.name === ORPHAN_BUCKET)) legendData.push(ORPHAN_BUCKET);
 
   return {
     tooltip: {
       formatter: (p) => {
+        if (p.dataType === 'node') {
+          const n = p.data || {};
+          if (n._type === 'site') {
+            const dcCount = (n.children || []).length;
+            const hubTag = n._isHub ? ' · 承载层 Hub' : (n.name === ORPHAN_BUCKET ? ' · 孤立 DC 桶' : ' · 分支 Spoke');
+            return `<b>${n.name}</b> (站点)<br/>DC 数量: ${dcCount}${hubTag}`;
+          }
+          if (n._type === 'dc') {
+            return `<b>${n.name}</b> (DC)<br/>站点: ${n._site || '?'}`;
+          }
+          return n.name || '';
+        }
         if (p.dataType === 'edge') {
           const l = p.data;
           const sourceSite = dcSites.get(l.source);
@@ -437,32 +488,50 @@ function buildOption() {
             '✕ 失败/断开';
           return `<b>${l.source} → ${l.target}</b><br/>方向: ${dir}<br/>状态: ${status}`;
         }
-        if (p.dataType === 'node') {
-          const site = dcSites.get(p.name);
-          return site ? `${p.name}<br/>站点: ${site}` : p.name;
-        }
         return '';
       }
     },
     legend: [{
-      data: categories.map(c => c.name),
+      data: legendData,
       textStyle: { color: '#cbd5e1' },
       top: 8
     }],
     series: [{
-      type: 'graph',
-      layout: 'force',
+      type: 'tree',
+      id: 'topology-tree',
+      layout: 'orthogonal',
+      orient: 'LR',
       roam: true,
       draggable: true,
-      categories,
-      force: {
-        repulsion: 320,
-        edgeLength: [60, 120],
-        gravity: 0.05
+      initialTreeDepth: -1,
+      expandAndCollapse: false,
+      animationDuration: 0,
+      animationDurationUpdate: 0,
+      data: treeData,
+      links: treeLinks,
+      symbolSize: 14,
+      label: {
+        show: true,
+        position: 'left',
+        verticalAlign: 'middle',
+        align: 'right',
+        color: '#e2e8f0'
       },
-      data: nodes,
-      links,
-      lineStyle: { color: '#475569', curveness: 0.08 }
+      leaves: {
+        label: {
+          position: 'right',
+          align: 'left',
+          color: '#cbd5e1'
+        }
+      },
+      lineStyle: {
+        color: '#475569',
+        curveness: 0.5,
+        width: 1.5
+      },
+      emphasis: {
+        focus: 'descendant'
+      }
     }]
   };
 }
@@ -607,6 +676,10 @@ function closeModal() { clickedNode.value = null; }
 // of the node-detail modal — both can be open sequentially but never
 // simultaneously (clicking any element while the other is open closes
 // the previous one and opens the new one).
+//
+// S83: tree series accepts `links` (DC↔DC replication edges) but the
+// edge click still resolves via the same ECharts click event (params.data
+// has `source`/`target` names). The modal logic is unchanged from R70.
 // ─────────────────────────────────────────────────────────────────────
 const clickedEdge = ref(null);     // { source, target, sourceSite, destSite, direction, statusCode } | null
 const edgeHistory = ref([]);       // fetched entries: [{ attemptAt, statusCode, ... }]
@@ -710,120 +783,43 @@ function handleEdgeClick(params) {
 // R69: handle ECharts click. ECharts passes { dataType, data } where
 //   dataType === 'node' → data = node object (with name, type, site, isHub, ...)
 //   dataType === 'edge' → ignore for v1 (edge-click is a future feature).
+//
+// S83: tree series nodes carry `_type` / `_site` / `_isHub` (the internal
+// shape produced by buildTreeData), but for backward compatibility with
+// direct-test dispatch (which uses the legacy `{ type: 'site' }` shape)
+// we accept both. `_type` takes precedence — that's the canonical shape
+// ECharts will produce at click time after S83.
 function handleNodeClick(params) {
   if (!params || params.dataType !== 'node') return;
   const node = params.data;
-  if (!node || (node.type !== 'site' && node.type !== 'dc')) return;
-  // Resolve to the ORIGINAL props.data node (the ECharts-wrapped object
-  // is mutated by buildOption; we want the source-of-truth for role badges).
-  const original = (props.data?.nodes || []).find(n => n.name === node.name && n.type === node.type);
-  clickedNode.value = original || node;
-}
-
-// R63: site bounding boxes. After the force layout settles (signaled by
-// ECharts' 'finished' event), compute each site's DC bbox in pixel
-// coordinates via convertToPixel(), then draw a rounded rect with the
-// site's palette color (dashed border + transparent fill) plus a bold
-// site-name header. The result is a visual container that makes the
-// site → DC membership hierarchy obvious without needing a second chart.
-//
-// Implementation notes:
-//   - Group DCs by `_siteName` (set in buildOption).
-//   - Use convertToPixel({ seriesIndex: 0 }, dcItem) — ECharts finds
-//     the data item by reference in its internal data store.
-//   - `silent: true` so boxes don't intercept hover/click on DC nodes.
-//   - `lastBoxDataKey` guard prevents feedback: setOption({graphic})
-//     itself triggers 'finished', which would re-enter renderSiteBoxes.
-//     We short-circuit if the data hasn't changed since last render.
-function renderSiteBoxes() {
-  if (!chart) return;
-  const key = JSON.stringify(props.data.nodes || []);
-  if (key === lastBoxDataKey) return;
-  lastBoxDataKey = key;
-
-  const dcNodes = lastBuiltDataNodes.filter(n => n.symbol === 'circle');
-  if (dcNodes.length === 0) {
-    chart.setOption({ graphic: [] });
-    return;
+  if (!node) return;
+  const type = node._type || node.type;
+  if (type !== 'site' && type !== 'dc') return;
+  // Resolve to the ORIGINAL props.data node (the ECharts-wrapped tree
+  // node is freshly constructed each render; we want the source-of-truth
+  // for role badges + DC list + partner count).
+  const original = (props.data?.nodes || []).find(
+    n => n.name === node.name && n.type === type
+  );
+  if (original) {
+    clickedNode.value = original;
+  } else {
+    // Fallback: synthetic orphan-bucket site or any node without a
+    // direct props.data counterpart (e.g. the 未分组 bucket itself, or
+    // tests that pass a node without a source counterpart).
+    clickedNode.value = {
+      name: node.name,
+      type,
+      isHub: !!(node._isHub ?? node.isHub),
+      site: node._site ?? node.site
+    };
   }
-
-  const bySite = new Map();
-  for (const dc of dcNodes) {
-    if (!dc._siteName) continue;
-    if (!bySite.has(dc._siteName)) bySite.set(dc._siteName, []);
-    bySite.get(dc._siteName).push(dc);
-  }
-  if (bySite.size === 0) {
-    chart.setOption({ graphic: [] });
-    return;
-  }
-
-  const siteIdxMap = new Map(siteOrder.value.map((s, i) => [s, i]));
-  const padding = 28;
-  const headerHeight = 22;
-  const elements = [];
-
-  bySite.forEach((dcs, siteName) => {
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    let validCoords = false;
-    for (const dc of dcs) {
-      let px;
-      try { px = chart.convertToPixel({ seriesIndex: 0 }, dc); }
-      catch { continue; }
-      if (!px || !Array.isArray(px) || px.length < 2) continue;
-      if (!isFinite(px[0]) || !isFinite(px[1])) continue;
-      minX = Math.min(minX, px[0]);
-      maxX = Math.max(maxX, px[0]);
-      minY = Math.min(minY, px[1]);
-      maxY = Math.max(maxY, px[1]);
-      validCoords = true;
-    }
-    if (!validCoords) return;
-
-    const color = SITE_PALETTE[siteIdxMap.get(siteName) ?? 0] ?? '#38bdf8';
-    const boxX = minX - padding;
-    const boxY = minY - padding - headerHeight;
-    const boxW = (maxX - minX) + padding * 2;
-    const boxH = (maxY - minY) + padding * 2 + headerHeight;
-
-    elements.push({
-      type: 'group',
-      z: -1,
-      silent: true,
-      children: [
-        {
-          type: 'rect',
-          shape: { x: boxX, y: boxY, width: boxW, height: boxH, r: 8 },
-          style: {
-            fill: hexToRgba(color, 0.08),
-            stroke: color,
-            lineWidth: 1.5,
-            lineDash: [6, 6]
-          }
-        },
-        {
-          type: 'text',
-          style: {
-            text: siteName,
-            fill: color,
-            font: 'bold 12px sans-serif',
-            x: boxX + 8,
-            y: boxY + 4
-          }
-        }
-      ]
-    });
-  });
-
-  chart.setOption({ graphic: elements });
 }
 
 onMounted(async () => {
   await nextTick();
   if (chartEl.value) {
     chart = echarts.init(chartEl.value);
-    // R63: site bounding boxes re-render after force layout settles.
-    chart.on('finished', renderSiteBoxes);
     // R69: node-click drill-down modal.
     chart.on('click', handleNodeClick);
     // R70: edge-click drill-down modal (independent of node-click).

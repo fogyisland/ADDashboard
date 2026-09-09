@@ -2,23 +2,23 @@ import { test, expect, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 
 // vi.mock factory is hoisted to top of file; reference hoisted vars to avoid TDZ errors.
-// R63: chart.on('finished', ...) + chart.convertToPixel(...) need mockable methods.
+// S83: chart.on('click') for node + edge handlers. The 'finished' handler
+// from R63 (which drew SVG bounding boxes) is GONE — the tree layout
+// itself provides site-as-parent containment, so the overlay is retired.
 // R70: dashboardApi.getSiteReplicationMatrixPairHistory needs to be
 // mockable for edge-click drill-down tests.
-const { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock, getPairHistoryMock } = vi.hoisted(() => {
+const { setOptionMock, disposeMock, initMock, onMock, getPairHistoryMock } = vi.hoisted(() => {
   const setOptionMock = vi.fn();
   const disposeMock = vi.fn();
   const onMock = vi.fn();
-  const convertToPixelMock = vi.fn();
   const getPairHistoryMock = vi.fn(() => Promise.resolve({ data: { entries: [] } }));
   const initMock = vi.fn(() => ({
     setOption: setOptionMock,
     dispose: disposeMock,
     on: onMock,
-    convertToPixel: convertToPixelMock,
     resize: vi.fn()
   }));
-  return { setOptionMock, disposeMock, initMock, onMock, convertToPixelMock, getPairHistoryMock };
+  return { setOptionMock, disposeMock, initMock, onMock, getPairHistoryMock };
 });
 
 vi.mock('echarts', () => ({
@@ -34,21 +34,15 @@ vi.mock('../src/api/dashboard.js', () => ({
 
 import TopologyChart from '../src/components/TopologyChart.vue';
 
-// R63 helpers: capture the 'finished' handler and feed deterministic pixel coords.
-function getFinishedHandler() {
-  const call = onMock.mock.calls.find(c => c[0] === 'finished');
-  return call ? call[1] : null;
-}
-// R69: capture the 'click' handler for the node drill-down modal.
+// R69 helper: capture the 'click' handler for the node drill-down modal.
 function getClickHandler() {
   const call = onMock.mock.calls.find(c => c[0] === 'click');
   return call ? call[1] : null;
 }
-function setupPixelCoords(map) {
-  convertToPixelMock.mockImplementation((find, dc) => {
-    if (dc && dc.name && map[dc.name]) return map[dc.name];
-    return [100, 100];
-  });
+// R70 helper: capture ALL 'click' handlers so tests can dispatch
+// edge clicks separately from node clicks (R69 + R70 each register one).
+function getAllClickHandlers() {
+  return onMock.mock.calls.filter(c => c[0] === 'click').map(c => c[1]);
 }
 
 beforeEach(() => {
@@ -56,7 +50,6 @@ beforeEach(() => {
   disposeMock.mockReset();
   initMock.mockReset();
   onMock.mockReset();
-  convertToPixelMock.mockReset();
   getPairHistoryMock.mockReset();
   // Default pair-history response: empty entries (tests that need real
   // entries override per-call with mockResolvedValueOnce).
@@ -65,95 +58,199 @@ beforeEach(() => {
     setOption: setOptionMock,
     dispose: disposeMock,
     on: onMock,
-    convertToPixel: convertToPixelMock,
     resize: vi.fn()
   }));
 });
 
-// R70 helper: capture ALL 'click' handlers so tests can dispatch
-// edge clicks separately from node clicks (R69 + R70 each register one).
-function getAllClickHandlers() {
-  return onMock.mock.calls.filter(c => c[0] === 'click').map(c => c[1]);
-}
+// ────────────────────────────────────────────────────────────────────────
+// 2026-09-09 S83 (operator feedback: "DC 必须隶属于一个站点, 目前的复制
+// 架构图 站点和 DC 是分开的"):
+//
+// The previous implementation rendered ECharts `type: 'graph'` +
+// `layout: 'force'` (R62), which put Sites and DCs as independent nodes
+// on the same canvas. R63 added a SVG-overlay hack to draw bounding
+// boxes, but the boxes were pure decoration — moving the chart never
+// carried the DCs along with their site.
+//
+// S83 swaps to `type: 'tree'` + `layout: 'orthogonal'`, which gives
+// TRUE parent-child containment: each site is a level-0 root, its DCs
+// are level-1 leaves nested inside. The R63 SVG overlay is retired
+// (tree layout makes it redundant). Edges between DCs (intra-site +
+// cross-site) are drawn via the tree series' `links` parameter, which
+// ECharts supports for non-hierarchical connections on top of the tree.
+// ────────────────────────────────────────────────────────────────────────
 
-// 2026-08-29 round-62 (operator directive "复制拓扑去掉两个图表 集合成
-// 一个图标"): the dual-panel layout (R59 outbound + inbound, R61
-// horizontal side-by-side) collapses into ONE ECharts graph. Direction
-// is conveyed by the arrow at each edge's target end. Lens-aware
-// labels (R59) and the dual-panel structure are both gone.
-
-// R62-T1: mounts a SINGLE ECharts instance (the dual-panel split is gone).
-test('R62: mounts ONE ECharts instance, not two', async () => {
+// S83-T1: series type is now 'tree', not 'graph'.
+test('S83: series type is tree (not graph+force)', async () => {
   const data = {
     nodes: [
       { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  expect(setOptionMock).toHaveBeenCalledTimes(1);
+  const opt = setOptionMock.mock.calls[0][0];
+  expect(opt.series[0].type).toBe('tree');
+  expect(opt.series[0].layout).toBe('orthogonal');
+});
+
+// S83-T2: tree data structure — sites become roots with DCs as children.
+test('S83: site nodes appear as tree roots with DCs nested as children', async () => {
+  const data = {
+    nodes: [
+      { name: '核心站点', type: 'site', isHub: true },
+      { name: '厦门站点', type: 'site', isHub: false },
+      { name: 'MOCK-HUBADSRV1', type: 'dc', site: '核心站点' },
+      { name: 'MOCK-HUBADSRV2', type: 'dc', site: '核心站点' },
+      { name: 'MOCK-XMADSRV1', type: 'dc', site: '厦门站点' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const branches = opt.series[0].data;
+  expect(Array.isArray(branches)).toBe(true);
+  expect(branches).toHaveLength(2);
+  const hub = branches.find(b => b.name === '核心站点');
+  const spoke = branches.find(b => b.name === '厦门站点');
+  expect(hub).toBeDefined();
+  expect(spoke).toBeDefined();
+  expect(hub._type).toBe('site');
+  expect(hub._isHub).toBe(true);
+  expect(hub.children).toHaveLength(2);
+  expect(hub.children.map(c => c.name)).toEqual(['MOCK-HUBADSRV1', 'MOCK-HUBADSRV2']);
+  expect(hub.children.every(c => c._type === 'dc')).toBe(true);
+  expect(spoke._isHub).toBe(false);
+  expect(spoke.children).toHaveLength(1);
+  expect(spoke.children[0].name).toBe('MOCK-XMADSRV1');
+});
+
+// S83-T3: orphan DCs (no `site` field) go to a default "未分组" bucket.
+test('S83: orphan DCs (no site) bucket into 未分组', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
+      { name: 'ORPHAN1', type: 'dc' },          // no site field
+      { name: 'ORPHAN2', type: 'dc', site: 'ZZZ' } // site doesn't exist
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const branches = opt.series[0].data;
+  expect(branches).toHaveLength(2);
+  const orphan = branches.find(b => b.name === '未分组');
+  expect(orphan).toBeDefined();
+  expect(orphan._type).toBe('site');
+  expect(orphan._isHub).toBe(false);
+  expect(orphan.children).toHaveLength(2);
+  const orphanNames = orphan.children.map(c => c.name).sort();
+  expect(orphanNames).toEqual(['ORPHAN1', 'ORPHAN2']);
+});
+
+// S83-T4: Hub site styling preserved (gold + bigger).
+test('S83: Hub site renders with gold styling (load-bearing layer)', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'SPOKE-B', type: 'site', isHub: false },
+      { name: 'DC-H1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const hub = opt.series[0].data.find(b => b.name === 'HUB-A');
+  const spoke = opt.series[0].data.find(b => b.name === 'SPOKE-B');
+  expect(hub.symbol).toBe('roundRect');
+  expect(hub.symbolSize).toBe(52);
+  expect(hub.itemStyle.color).toBe('#fbbf24');
+  expect(hub.itemStyle.borderWidth).toBe(2);
+  expect(hub.label.fontWeight).toBe(700);
+  // Spoke is smaller and faded
+  expect(spoke.symbolSize).toBe(32);
+  expect(spoke.itemStyle.color).toBe('#94a3b8');
+  expect(spoke.symbolSize).toBeLessThan(hub.symbolSize);
+});
+
+// S83-T5: site without isHub flag falls back to Spoke styling.
+test('S83: site without isHub flag defaults to Spoke styling', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const site = opt.series[0].data.find(b => b.name === 'A');
+  expect(site._isHub).toBe(false);
+  expect(site.symbolSize).toBe(32);
+  expect(site.itemStyle.color).toBe('#94a3b8');
+});
+
+// S83-T6: DC node styling — circle, smaller.
+test('S83: DC nodes render as smaller circles with neutral grey', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const branch = opt.series[0].data[0];
+  for (const dc of branch.children) {
+    expect(dc.symbol).toBe('circle');
+    expect(dc.symbolSize).toBe(16);
+    expect(dc.itemStyle.color).toBe('#94a3b8');
+    expect(dc.children).toEqual([]); // tree leaves need children=[]
+  }
+});
+
+// S83-T7: replication edges flow through the tree series `links` parameter.
+// S83-T8: edge labels + colors preserved (green/yellow/red).
+test('S83: DC↔DC replication edges render via tree.links with status colors', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'HUB-B', type: 'site', isHub: true },
+      { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC-B1', type: 'dc', site: 'HUB-B' }
     ],
     links: [
-      { source: 'DC1', target: 'DC2', statusCode: 0 },
-      { source: 'DC2', target: 'DC1', statusCode: 0 }
+      { source: 'DC-A1', target: 'DC-B1', statusCode: 0 },
+      { source: 'DC-B1', target: 'DC-A1', statusCode: 1 }
     ]
   };
   mount(TopologyChart, { props: { data } });
   await flushPromises();
-  expect(initMock).toHaveBeenCalledTimes(1);
-  expect(setOptionMock).toHaveBeenCalledTimes(1);
-});
-
-// R62-T1: the single chart mounts a topology-structure with one chart div.
-test('R62: renders single .topology-structure with chart', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site', isHub: true },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
-  };
-  const w = mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const structures = w.findAll('[data-test="topology-structure"]');
-  expect(structures).toHaveLength(1);
-  expect(w.find('[data-test="topology-chart"]').exists()).toBe(true);
-  // Old dual-panel selectors are gone.
-  expect(w.find('[data-test="outbound-structure"]').exists()).toBe(false);
-  expect(w.find('[data-test="inbound-structure"]').exists()).toBe(false);
-});
-
-// R62: site-as-parent category is preserved in the single canvas.
-test('R62: single chart applies per-site category index (site-as-parent)', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site', isHub: true },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
-  };
-  const w = mount(TopologyChart, { props: { data } });
-  await flushPromises();
   const opt = setOptionMock.mock.calls[0][0];
-  const siteA = opt.series[0].data.find(n => n.name === 'A');
-  const siteB = opt.series[0].data.find(n => n.name === 'B');
-  const dc1 = opt.series[0].data.find(n => n.name === 'DC1');
-  expect(siteA.category).toBe(0);
-  // R68: Hub sites use bigger symbolSize (52) and heavier mass (12).
-  expect(siteA.symbolSize).toBe(52);
-  expect(siteA.mass).toBe(12);
-  expect(siteB.category).toBe(1);
-  expect(dc1.category).toBe(0);
-  expect(dc1.symbolSize).toBe(16);
-  expect(dc1.mass).toBe(1);
+  const links = opt.series[0].links;
+  expect(Array.isArray(links)).toBe(true);
+  expect(links).toHaveLength(2);
+  const okLink = links.find(l => l.target === 'DC-B1');
+  const warnLink = links.find(l => l.target === 'DC-A1');
+  expect(okLink.lineStyle.color).toBe('#22c55e');
+  expect(okLink.symbol).toEqual(['none', 'arrow']);
+  expect(warnLink.lineStyle.color).toBe('#eab308');
 });
 
-// R62: cross-site edge label uses HUB→XM (single unified convention;
-// arrow direction conveys source→target, so no need for separate
-// 入站 ← outbound → labels).
-test('R62: cross-site edge label uses HUB→XM (single unified direction)', async () => {
+// S83-T9: cross-site edge label uses shortSite(source) → shortSite(dest).
+test('S83: cross-site edge label uses source→dest site abbreviation', async () => {
   const data = {
     nodes: [
       { name: '核心站点', type: 'site', isHub: true },
@@ -163,7 +260,7 @@ test('R62: cross-site edge label uses HUB→XM (single unified direction)', asyn
     ],
     links: [{ source: 'MOCK-HUBADSRV1', target: 'MOCK-XMADSRV1', statusCode: 0 }]
   };
-  const w = mount(TopologyChart, { props: { data } });
+  mount(TopologyChart, { props: { data } });
   await flushPromises();
   const opt = setOptionMock.mock.calls[0][0];
   const link = opt.series[0].links[0];
@@ -171,21 +268,10 @@ test('R62: cross-site edge label uses HUB→XM (single unified direction)', asyn
   expect(text).toMatch(/HUB/);
   expect(text).toMatch(/厦门/);
   expect(text).toMatch(/→/);
-  // Reverse edge — same convention.
-  const reverseData = {
-    nodes: data.nodes,
-    links: [{ source: 'MOCK-XMADSRV1', target: 'MOCK-HUBADSRV1', statusCode: 0 }]
-  };
-  const w2 = mount(TopologyChart, { props: { data: reverseData } });
-  await flushPromises();
-  const opt2 = setOptionMock.mock.calls[setOptionMock.mock.calls.length - 1][0];
-  const revLink = opt2.series[0].links[0];
-  const revText = revLink.edgeLabel.formatter({ data: revLink });
-  expect(revText).toMatch(/→/);
 });
 
-// R62: intra-site edge still uses ↔ 内 marker.
-test('R62: intra-site edge label uses ↔ 内', async () => {
+// S83-T10: intra-site edge uses ↔ 内 marker (preserved).
+test('S83: intra-site edge label uses ↔ 内', async () => {
   const data = {
     nodes: [
       { name: 'A', type: 'site' },
@@ -194,470 +280,15 @@ test('R62: intra-site edge label uses ↔ 内', async () => {
     ],
     links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
   };
-  const w = mount(TopologyChart, { props: { data } });
+  mount(TopologyChart, { props: { data } });
   await flushPromises();
   const opt = setOptionMock.mock.calls[0][0];
   const link = opt.series[0].links[0];
   expect(link.edgeLabel.formatter({ data: link })).toMatch(/↔/);
 });
 
-// R62: edges have arrow at target (direction preserved).
-test('R62: edges put arrow at target + green OK color', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
-  };
-  const w = mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  const link = opt.series[0].links[0];
-  expect(link.symbol).toEqual(['none', 'arrow']);
-  expect(link.lineStyle.color).toBe('#22c55e');
-});
-
-// R62: partial-failure edges are YELLOW (R61 vocabulary preserved).
-test('R62: partial-failure link (statusCode 1) is yellow', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 1 }]
-  };
-  const w = mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  expect(opt.series[0].links[0].lineStyle.color).toBe('#eab308');
-});
-
-// R62: failure edges (statusCode 2+) are RED.
-test('R62: failure link (statusCode 2+) is red', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 2 }]
-  };
-  const w = mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  expect(opt.series[0].links[0].lineStyle.color).toBe('#ef4444');
-});
-
-// R62: tooltip status word matches the 3 edge colors (no longer mentions
-// "出战" / "入站" lens — there is only one chart now).
-test('R62: tooltip status word matches the 3 edge colors; no lens mention', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
-  };
-  const w = mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  const tipOK = opt.tooltip.formatter({
-    dataType: 'edge', data: { source: 'X', target: 'Y', lineStyle: { color: '#22c55e' } }
-  });
-  expect(tipOK).toContain('复制成功');
-  expect(tipOK).not.toContain('出战');
-  expect(tipOK).not.toContain('入站');
-  const tipWarn = opt.tooltip.formatter({
-    dataType: 'edge', data: { source: 'X', target: 'Y', lineStyle: { color: '#eab308' } }
-  });
-  expect(tipWarn).toContain('部分失败');
-  const tipErr = opt.tooltip.formatter({
-    dataType: 'edge', data: { source: 'X', target: 'Y', lineStyle: { color: '#ef4444' } }
-  });
-  expect(tipErr).toContain('失败');
-});
-
-// R62: empty data renders the single chart with empty arrays.
-test('R62: empty data renders single chart with empty arrays', async () => {
-  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
-  await flushPromises();
-  expect(initMock).toHaveBeenCalledTimes(1);
-  const opt = setOptionMock.mock.calls[0][0];
-  expect(opt.series[0].data).toEqual([]);
-  expect(opt.series[0].links).toEqual([]);
-});
-
-// R62: color legend strip with 3 swatches is still rendered above the chart.
-test('R62: color legend renders 3-color legend strip with ok/warn/err swatches', async () => {
-  const w = mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
-  await flushPromises();
-  const legend = w.find('[data-test="color-legend"]');
-  expect(legend.exists()).toBe(true);
-  expect(legend.find('.swatch-ok').exists()).toBe(true);
-  expect(legend.find('.swatch-warn').exists()).toBe(true);
-  expect(legend.find('.swatch-err').exists()).toBe(true);
-  expect(legend.text()).toMatch(/正常/);
-  expect(legend.text()).toMatch(/部分失败/);
-  expect(legend.text()).toMatch(/断开/);
-});
-
-// R62: data prop changes re-render the chart (regression for watch handler).
-test('R62: prop change re-renders the chart', async () => {
-  const data1 = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'DC1', type: 'dc', site: 'A' }
-    ],
-    links: []
-  };
-  const data2 = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
-  };
-  const w = mount(TopologyChart, { props: { data: data1 } });
-  await flushPromises();
-  expect(setOptionMock).toHaveBeenCalledTimes(1);
-  await w.setProps({ data: data2 });
-  await flushPromises();
-  expect(setOptionMock.mock.calls.length).toBeGreaterThanOrEqual(2);
-});
-
-// ────────────────────────────────────────────────────────────────────────
-// 2026-08-29 round-63 (operator "服务器和站点的关系可以这样绘制"):
-// draw site bounding boxes around each site's DCs using ECharts graphic
-// component. After 'finished' fires, each site gets a rounded rect with
-// site-palette stroke + a bold site-name header text.
-// ────────────────────────────────────────────────────────────────────────
-
-// R63: registers chart.on('finished') so the box renderer hooks into
-// the post-layout tick.
-test('R63: registers chart.on(finished) handler for box rendering', async () => {
-  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
-  await flushPromises();
-  const events = onMock.mock.calls.map(c => c[0]);
-  expect(events).toContain('finished');
-});
-
-// R63: one site with 2 DCs produces ONE bounding box (group of rect + text).
-test('R63: one site with 2 DCs produces one bounding box', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'A' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [300, 250] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const handler = getFinishedHandler();
-  expect(handler).toBeDefined();
-  handler();
-  await flushPromises();
-
-  const withGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length > 0);
-  expect(withGraphic).toBeDefined();
-  expect(withGraphic.graphic).toHaveLength(1);
-  const group = withGraphic.graphic[0];
-  expect(group.type).toBe('group');
-  expect(group.silent).toBe(true);
-  expect(group.z).toBe(-1);
-  expect(group.children).toHaveLength(2);
-  expect(group.children[0].type).toBe('rect');
-  expect(group.children[1].type).toBe('text');
-  expect(group.children[1].style.text).toBe('A');
-});
-
-// R63: rect shape is rounded (r > 0), dashed border, and encloses both DCs.
-test('R63: bounding box is rounded with dashed border enclosing the DCs', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'A' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [300, 250] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-
-  const withGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length > 0);
-  const rect = withGraphic.graphic[0].children[0];
-  expect(rect.shape.r).toBeGreaterThan(0);
-  expect(rect.style.lineDash).toEqual([6, 6]);
-  expect(rect.style.lineWidth).toBeGreaterThan(0);
-  // Box width/height positive (encloses both DCs)
-  expect(rect.shape.width).toBeGreaterThan(0);
-  expect(rect.shape.height).toBeGreaterThan(0);
-});
-
-// R63: two sites → two bounding boxes (one per site, with distinct headers).
-test('R63: two sites produce two bounding boxes', async () => {
-  const data = {
-    nodes: [
-      { name: '核心站点', type: 'site' },
-      { name: '厦门站点', type: 'site' },
-      { name: 'DC1', type: 'dc', site: '核心站点' },
-      { name: 'DC2', type: 'dc', site: '厦门站点' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [500, 250] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-
-  const withGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length === 2);
-  expect(withGraphic).toBeDefined();
-  const siteNames = withGraphic.graphic.map(g => g.children[1].style.text);
-  expect(siteNames).toContain('核心站点');
-  expect(siteNames).toContain('厦门站点');
-});
-
-// R63: empty data → setOption({ graphic: [] }) to clear any prior boxes.
-test('R63: empty data clears the graphic (no boxes drawn)', async () => {
-  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-  const withGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .find(opt => opt.graphic !== undefined);
-  expect(withGraphic).toBeDefined();
-  expect(withGraphic.graphic).toEqual([]);
-});
-
-// R63: box stroke color matches the SITE_PALETTE entry for that site
-// (核心站点 = siteOrder[0] = SITE_PALETTE[0] = '#38bdf8').
-test('R63: box color matches site palette entry', async () => {
-  const data = {
-    nodes: [
-      { name: '核心站点', type: 'site' },
-      { name: 'DC1', type: 'dc', site: '核心站点' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-  const withGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length > 0);
-  const rect = withGraphic.graphic[0].children[0];
-  const text = withGraphic.graphic[0].children[1];
-  expect(rect.style.stroke).toBe('#38bdf8');
-  expect(rect.style.fill).toMatch(/rgba\(56,\s*189,\s*248,\s*0\.08\)/);
-  expect(text.style.fill).toBe('#38bdf8');
-});
-
-// R63: second site uses its own palette color (different from first).
-test('R63: distinct sites use distinct palette colors', async () => {
-  const data = {
-    nodes: [
-      { name: '核心站点', type: 'site' },
-      { name: '厦门站点', type: 'site' },
-      { name: 'DC1', type: 'dc', site: '核心站点' },
-      { name: 'DC2', type: 'dc', site: '厦门站点' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [500, 250] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-  const withGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .find(opt => opt.graphic && Array.isArray(opt.graphic) && opt.graphic.length === 2);
-  const strokes = withGraphic.graphic.map(g => g.children[0].style.stroke);
-  expect(strokes).toContain('#38bdf8'); // 核心站点
-  expect(strokes).toContain('#a78bfa'); // 厦门站点 = SITE_PALETTE[1]
-});
-
-// R63: convertToPixel is called once per DC (not per site, not per all nodes).
-test('R63: convertToPixel is called once per DC', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'A' },
-      { name: 'DC3', type: 'dc', site: 'B' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [300, 250], 'DC3': [500, 200] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  convertToPixelMock.mockClear();
-  getFinishedHandler()();
-  await flushPromises();
-  expect(convertToPixelMock).toHaveBeenCalledTimes(3);
-});
-
-// R63: when data prop changes, the boxes are re-rendered with the new
-// site count (not stale from the previous mount).
-test('R63: prop change re-renders boxes with the new site count', async () => {
-  const data1 = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'DC1', type: 'dc', site: 'A' }
-    ],
-    links: []
-  };
-  const data2 = {
-    nodes: [
-      { name: 'A', type: 'site', isHub: true },
-      { name: 'B', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' },
-      { name: 'DC2', type: 'dc', site: 'B' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200], 'DC2': [500, 250] });
-  const w = mount(TopologyChart, { props: { data: data1 } });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-  await w.setProps({ data: data2 });
-  await flushPromises();
-  getFinishedHandler()();
-  await flushPromises();
-
-  const callsWithGraphic = setOptionMock.mock.calls
-    .map(c => c[0])
-    .filter(opt => opt.graphic && Array.isArray(opt.graphic));
-  expect(callsWithGraphic.length).toBeGreaterThanOrEqual(2);
-  // First box render: 1 site
-  expect(callsWithGraphic[0].graphic).toHaveLength(1);
-  // Latest box render: 2 sites
-  expect(callsWithGraphic[callsWithGraphic.length - 1].graphic).toHaveLength(2);
-});
-
-// R63: 'finished' firing twice without data change does NOT re-render boxes
-// (feedback loop guard via lastBoxDataKey).
-test('R63: re-firing finished without data change does not redraw boxes', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site' },
-      { name: 'DC1', type: 'dc', site: 'A' }
-    ],
-    links: []
-  };
-  setupPixelCoords({ 'DC1': [200, 200] });
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const handler = getFinishedHandler();
-  handler();
-  await flushPromises();
-  const countAfter1 = setOptionMock.mock.calls
-    .filter(c => c[0].graphic !== undefined).length;
-  // Fire again — same data, should be a no-op
-  handler();
-  await flushPromises();
-  const countAfter2 = setOptionMock.mock.calls
-    .filter(c => c[0].graphic !== undefined).length;
-  expect(countAfter2).toBe(countAfter1);
-});
-
-// ────────────────────────────────────────────────────────────────────────
-// 2026-08-30 round-68 (Hub-Spoke architecture redesign for 40 DC / 20
-// site scale): site nodes carry an `isHub` flag from the backend. Hub
-// sites render bigger/golder with bolder edges; Spoke sites are smaller
-// and faded; Spoke-Spoke cross-site edges are hidden by default
-// (designed absence — Hub-Spoke compliance).
-// ────────────────────────────────────────────────────────────────────────
-
-// R68: Hub site renders bigger and gold (load-bearing layer).
-test('R68: Hub site node is bigger + gold + bold border', async () => {
-  const data = {
-    nodes: [
-      { name: 'HUB-A', type: 'site', isHub: true },
-      { name: 'SPOKE-B', type: 'site', isHub: false },
-      { name: 'DC-H1', type: 'dc', site: 'HUB-A' },
-      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
-    ],
-    links: [{ source: 'DC-H1', target: 'DC-S1', statusCode: 0 }]
-  };
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  const hubNode = opt.series[0].data.find(n => n.name === 'HUB-A');
-  const spokeNode = opt.series[0].data.find(n => n.name === 'SPOKE-B');
-  // Hub: bigger, gold, bold border
-  expect(hubNode.symbolSize).toBeGreaterThan(spokeNode.symbolSize);
-  expect(hubNode.itemStyle.color).toBe('#fbbf24');
-  expect(hubNode.itemStyle.borderWidth).toBeGreaterThanOrEqual(2);
-  expect(hubNode.label.fontWeight).toBeGreaterThanOrEqual(700);
-  // Spoke: smaller, faded
-  expect(spokeNode.itemStyle.color).toBe('#94a3b8');
-});
-
-// R68: Hub site mass is heavier than Spoke site (anchors the layout).
-test('R68: Hub site has higher mass than Spoke site', async () => {
-  const data = {
-    nodes: [
-      { name: 'HUB-A', type: 'site', isHub: true },
-      { name: 'SPOKE-B', type: 'site', isHub: false },
-      { name: 'DC-H1', type: 'dc', site: 'HUB-A' },
-      { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
-    ],
-    links: []
-  };
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  const hub = opt.series[0].data.find(n => n.name === 'HUB-A');
-  const spoke = opt.series[0].data.find(n => n.name === 'SPOKE-B');
-  expect(hub.mass).toBeGreaterThan(spoke.mass);
-});
-
-// R68: backward-compat — site nodes WITHOUT isHub fall back to Spoke styling.
-test('R68: site without isHub flag defaults to Spoke (smaller, faded)', async () => {
-  const data = {
-    nodes: [
-      { name: 'A', type: 'site' }, // no isHub
-      { name: 'DC1', type: 'dc', site: 'A' }
-    ],
-    links: []
-  };
-  mount(TopologyChart, { props: { data } });
-  await flushPromises();
-  const opt = setOptionMock.mock.calls[0][0];
-  const node = opt.series[0].data.find(n => n.name === 'A');
-  expect(node._isHub).toBe(false);
-  expect(node.symbolSize).toBe(32);
-  expect(node.itemStyle.color).toBe('#94a3b8');
-});
-
-// R68: Hub↔Hub cross-site edge renders BOLDER (load-bearing layer).
-test('R68: Hub↔Hub edge is bolder than Hub↔Spoke edge', async () => {
+// S83-T11: Hub↔Hub cross-site edge is bolder (R68 load-bearing layer).
+test('S83: Hub↔Hub edge is bolder than Hub↔Spoke edge (R68 vocabulary)', async () => {
   const data = {
     nodes: [
       { name: 'HUB-A', type: 'site', isHub: true },
@@ -682,9 +313,8 @@ test('R68: Hub↔Hub edge is bolder than Hub↔Spoke edge', async () => {
   expect(hubHub.lineStyle.width).toBeGreaterThan(hubSpoke.lineStyle.width);
 });
 
-// R68: Spoke↔Spoke cross-site edges are HIDDEN (Hub-Spoke compliance —
-// KCC should never produce these; the view filters them defensively).
-test('R68: Spoke↔Spoke cross-site edges are filtered out (designed absence)', async () => {
+// S83-T12: Spoke↔Spoke cross-site edges are HIDDEN (Hub-Spoke compliance).
+test('S83: Spoke↔Spoke cross-site edges are filtered out', async () => {
   const data = {
     nodes: [
       { name: 'SPOKE-A', type: 'site', isHub: false },
@@ -700,9 +330,8 @@ test('R68: Spoke↔Spoke cross-site edges are filtered out (designed absence)', 
   expect(opt.series[0].links).toHaveLength(0);
 });
 
-// R68: intra-site edges (within same site) are NOT filtered regardless
-// of isHub — they stay visible as the "站点内" replication layer.
-test('R68: intra-site edges are preserved regardless of isHub', async () => {
+// S83-T13: intra-site edges preserved regardless of isHub.
+test('S83: intra-site edges are preserved regardless of isHub', async () => {
   const data = {
     nodes: [
       { name: 'SPOKE-A', type: 'site', isHub: false },
@@ -719,22 +348,76 @@ test('R68: intra-site edges are preserved regardless of isHub', async () => {
     .toMatch(/↔/);
 });
 
-// ────────────────────────────────────────────────────────────────────────
-// 2026-08-30 round-69 (operator: "你来定" → TopologyChart 节点钻取):
-// clicking a site or DC node opens a local modal with the node's detail.
-// Modal derives from props.data (no new backend endpoint).
-// ────────────────────────────────────────────────────────────────────────
+// S83-T14: tooltip for site node shows DC count + Hub/Spoke badge.
+test('S83: tooltip for site node shows DC count + Hub/Spoke badge', async () => {
+  const data = {
+    nodes: [
+      { name: 'HUB-A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'HUB-A' },
+      { name: 'DC2', type: 'dc', site: 'HUB-A' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const siteNode = opt.series[0].data[0];
+  const tip = opt.tooltip.formatter({ dataType: 'node', data: siteNode });
+  expect(tip).toContain('HUB-A');
+  expect(tip).toContain('(站点)');
+  expect(tip).toContain('DC 数量: 2');
+  expect(tip).toContain('承载层 Hub');
+});
 
-// R69: chart.on('click') is registered alongside 'finished'.
-test('R69: registers chart.on(click) handler for node drill-down', async () => {
+// S83-T15: tooltip for DC node shows site membership.
+test('S83: tooltip for DC node shows site membership', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const dcNode = opt.series[0].data[0].children[0];
+  const tip = opt.tooltip.formatter({ dataType: 'node', data: dcNode });
+  expect(tip).toContain('DC1');
+  expect(tip).toContain('(DC)');
+  expect(tip).toContain('站点: A');
+});
+
+// S83-T16: legend lists sites (and 未分组 if orphan bucket exists).
+test('S83: legend lists sites + orphan bucket when applicable', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site', isHub: false },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'ORPHAN', type: 'dc' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const legend = opt.legend[0].data;
+  expect(legend).toContain('A');
+  expect(legend).toContain('B');
+  expect(legend).toContain('未分组');
+});
+
+// S83-T17: registers a chart.on(click) handler for the node drill-down modal.
+test('S83: registers chart.on(click) handler for node drill-down', async () => {
   mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
   await flushPromises();
   const events = onMock.mock.calls.map(c => c[0]);
   expect(events).toContain('click');
 });
 
-// R69: click a site node → modal renders with Hub badge + DC list + partner counts.
-test('R69: clicking a site node opens modal with Hub badge + DC list', async () => {
+// S83-T18: site click still opens R69 modal with Hub badge + DC list.
+test('S83: clicking a site node opens modal with Hub badge + DC list', async () => {
   const data = {
     nodes: [
       { name: 'HUB-A', type: 'site', isHub: true },
@@ -744,8 +427,8 @@ test('R69: clicking a site node opens modal with Hub badge + DC list', async () 
       { name: 'DC-S1', type: 'dc', site: 'SPOKE-B' }
     ],
     links: [
-      { source: 'DC-1', target: 'DC-2', statusCode: 0 }, // intra
-      { source: 'DC-1', target: 'DC-S1', statusCode: 1 } // cross
+      { source: 'DC-1', target: 'DC-2', statusCode: 0 },
+      { source: 'DC-1', target: 'DC-S1', statusCode: 1 }
     ]
   };
   const w = mount(TopologyChart, { props: { data } });
@@ -761,15 +444,14 @@ test('R69: clicking a site node opens modal with Hub badge + DC list', async () 
   expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/2 DC/);
   const dcRows = w.findAll('[data-test="node-detail-dc-row"]');
   expect(dcRows).toHaveLength(2);
-  // First DC row should show DC-1 + 桥头 badge
   expect(dcRows[0].text()).toContain('DC-1');
   expect(dcRows[0].text()).toContain('桥头');
   expect(dcRows[0].text()).toContain('主控');
-  expect(dcRows[0].text()).toContain('2 复制伙伴'); // DC-1 has 2 links
+  expect(dcRows[0].text()).toContain('2 复制伙伴');
 });
 
-// R69: click a Spoke site → meta shows 分支 + 1 DC.
-test('R69: clicking a Spoke site shows 分支 Spoke badge', async () => {
+// S83-T19: Spoke site click → modal meta shows 分支 Spoke + DC count.
+test('S83: clicking a Spoke site shows 分支 Spoke badge', async () => {
   const data = {
     nodes: [
       { name: 'HUB-A', type: 'site', isHub: true },
@@ -787,8 +469,8 @@ test('R69: clicking a Spoke site shows 分支 Spoke badge', async () => {
   expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/1 DC/);
 });
 
-// R69: click a DC node → modal shows the DC's partners (intra/out/in).
-test('R69: clicking a DC node opens modal with partner list', async () => {
+// S83-T20: DC node click still opens R69 modal.
+test('S83: clicking a DC node opens modal with partner list', async () => {
   const data = {
     nodes: [
       { name: 'HUB-A', type: 'site', isHub: true },
@@ -798,33 +480,28 @@ test('R69: clicking a DC node opens modal with partner list', async () => {
       { name: 'DC-B1', type: 'dc', site: 'HUB-B' }
     ],
     links: [
-      { source: 'DC-A1', target: 'DC-A2', statusCode: 0 }, // intra (both HUB-A)
-      { source: 'DC-A1', target: 'DC-B1', statusCode: 1 }  // cross
+      { source: 'DC-A1', target: 'DC-A2', statusCode: 0 },
+      { source: 'DC-A1', target: 'DC-B1', statusCode: 1 }
     ]
   };
   const w = mount(TopologyChart, { props: { data } });
   await flushPromises();
   getClickHandler()({ dataType: 'node', data: { name: 'DC-A1', type: 'dc', site: 'HUB-A', isBridgehead: true } });
   await flushPromises();
-  const modal = w.find('[data-test="node-detail-modal"]');
-  expect(modal.exists()).toBe(true);
+  expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(true);
   expect(w.find('[data-test="node-detail-title"]').text()).toBe('DC-A1');
   expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/HUB-A/);
   expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/桥头/);
-  // No DC list for DC node (only sites show their DCs)
-  expect(w.findAll('[data-test="node-detail-dc-row"]')).toHaveLength(0);
-  // 2 partners: DC-A2 (intra) + DC-B1 (out)
   const partners = w.findAll('[data-test="node-detail-partner"]');
   expect(partners).toHaveLength(2);
-  // intra partner should be sorted first
   expect(partners[0].text()).toContain('站内');
   expect(partners[0].text()).toContain('DC-A2');
   expect(partners[1].text()).toContain('出战');
   expect(partners[1].text()).toContain('DC-B1');
 });
 
-// R69: close button resets clickedNode (modal disappears).
-test('R69: close button dismisses the modal', async () => {
+// S83-T21: close button dismisses the modal.
+test('S83: close button dismisses the node modal', async () => {
   const data = {
     nodes: [
       { name: 'HUB-A', type: 'site', isHub: true },
@@ -842,14 +519,14 @@ test('R69: close button dismisses the modal', async () => {
   expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(false);
 });
 
-// R69: edge click is ignored (v1 only handles node drill-down).
-test('R69: edge click does NOT open the modal', async () => {
+// S83-T22: edge click is ignored by node handler.
+test('S83: edge click does NOT open the node modal', async () => {
   const data = {
     nodes: [
       { name: 'A', type: 'site', isHub: true },
       { name: 'DC1', type: 'dc', site: 'A' }
     ],
-    links: [{ source: 'DC1', target: 'DC1', statusCode: 0 }] // self-link edge
+    links: [{ source: 'DC1', target: 'DC1', statusCode: 0 }]
   };
   const w = mount(TopologyChart, { props: { data } });
   await flushPromises();
@@ -858,16 +535,36 @@ test('R69: edge click does NOT open the modal', async () => {
   expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(false);
 });
 
+// S83-T23: tree shape accepts tree-node { _type, _isHub, _site, children }
+// passed directly from the ECharts click event (real click path).
+test('S83: real ECharts click payload with _type / _site / _isHub opens modal', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  getClickHandler()({
+    dataType: 'node',
+    data: { name: 'DC1', _type: 'dc', _site: 'A', children: [] }
+  });
+  await flushPromises();
+  expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(true);
+  expect(w.find('[data-test="node-detail-title"]').text()).toBe('DC1');
+  expect(w.find('[data-test="node-detail-meta"]').text()).toMatch(/A/);
+});
+
 // ────────────────────────────────────────────────────────────────────────
-// 2026-08-30 round-70 (continuation of R69 drillability):
-// clicking an EDGE opens a separate modal showing the pair's last 10
-// replication attempts (per R45's `/pair-history` endpoint). Independent
-// of the node-detail modal — only one drill-down surface open at a time.
+// R70 (preserved) — edge-click drill-down modal logic is independent of
+// chart series type (the modal renders from fetched pair-history data).
+// The handlers still register + fire from ECharts click events; tests
+// dispatch directly so they pass even if the chart renders the edge.
 // ────────────────────────────────────────────────────────────────────────
 
-// R70: registers BOTH a node click handler (R69) and an edge click
-// handler. Both handlers early-return on the wrong dataType, so the
-// double registration is safe.
+// R70: registers TWO click handlers (node + edge).
 test('R70: registers TWO click handlers (node + edge)', async () => {
   mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
   await flushPromises();
@@ -888,7 +585,6 @@ test('R70: clicking an edge opens modal with source → dest title', async () =>
   };
   const w = mount(TopologyChart, { props: { data } });
   await flushPromises();
-  // Dispatch to ALL click handlers (mirrors ECharts behavior).
   const handlers = getAllClickHandlers();
   handlers.forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-B1' } }));
   await flushPromises();
@@ -907,7 +603,7 @@ test('R70: clicking an intra-site edge shows 站内 direction', async () => {
       { name: 'DC-A1', type: 'dc', site: 'HUB-A' },
       { name: 'DC-A2', type: 'dc', site: 'HUB-A' }
     ],
-    links: [{ source: 'DC-A1', target: 'DC-A2', statusCode: 0 }] // intra-site
+    links: [{ source: 'DC-A1', target: 'DC-A2', statusCode: 0 }]
   };
   const w = mount(TopologyChart, { props: { data } });
   await flushPromises();
@@ -917,7 +613,7 @@ test('R70: clicking an intra-site edge shows 站内 direction', async () => {
   expect(w.find('[data-test="edge-detail-meta"]').text()).toMatch(/站内/);
 });
 
-// R70: cross-site edge → meta shows 出战 direction (source DC reports outbound).
+// R70: cross-site edge → meta shows 出战 direction.
 test('R70: clicking a cross-site edge shows 出战 direction', async () => {
   const data = {
     nodes: [
@@ -967,16 +663,13 @@ test('R70: edge click lazy-fetches history and renders attempts + summary', asyn
   await flushPromises();
   getAllClickHandlers().forEach(h => h({ dataType: 'edge', data: { source: 'DC-A1', target: 'DC-B1' } }));
   await flushPromises();
-  // API client was called with (destDc='DC-B1', sourceDc='DC-A1', limit=10)
   expect(getPairHistoryMock).toHaveBeenCalledWith('DC-B1', 'DC-A1', 10);
-  // Summary line: 24h 内 3 · 成功 1 · 部分失败 1 · 断开 1
   const summary = w.find('[data-test="edge-detail-summary"]');
   expect(summary.exists()).toBe(true);
   expect(summary.text()).toMatch(/24h 内 3/);
   expect(summary.text()).toMatch(/成功 1/);
   expect(summary.text()).toMatch(/部分失败 1/);
   expect(summary.text()).toMatch(/断开 1/);
-  // 3 attempt rows
   const rows = w.findAll('[data-test="edge-detail-attempt"]');
   expect(rows).toHaveLength(3);
   expect(rows[0].text()).toContain('成功');
@@ -987,7 +680,7 @@ test('R70: edge click lazy-fetches history and renders attempts + summary', asyn
   expect(rows[2].classes()).toContain('attempt-row-err');
 });
 
-// R70: close button resets clickedEdge (modal disappears).
+// R70: close button dismisses the edge modal.
 test('R70: close button dismisses the edge modal', async () => {
   const data = {
     nodes: [
@@ -1007,7 +700,7 @@ test('R70: close button dismisses the edge modal', async () => {
   expect(w.find('[data-test="edge-detail-modal"]').exists()).toBe(false);
 });
 
-// R70: clicking a node opens ONLY the node modal — edge modal stays closed.
+// R70: node click opens ONLY the node modal — edge modal stays closed.
 test('R70: node click does NOT open the edge modal (independence)', async () => {
   const data = {
     nodes: [
@@ -1018,7 +711,6 @@ test('R70: node click does NOT open the edge modal (independence)', async () => 
   };
   const w = mount(TopologyChart, { props: { data } });
   await flushPromises();
-  // Dispatch a NODE click to all click handlers (mirrors ECharts).
   getAllClickHandlers().forEach(h => h({
     dataType: 'node',
     data: { name: 'HUB-A', type: 'site', isHub: true }
@@ -1026,4 +718,156 @@ test('R70: node click does NOT open the edge modal (independence)', async () => 
   await flushPromises();
   expect(w.find('[data-test="node-detail-modal"]').exists()).toBe(true);
   expect(w.find('[data-test="edge-detail-modal"]').exists()).toBe(false);
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// S83 foundational tests (regression for the previous graph+force chart)
+// ────────────────────────────────────────────────────────────────────────
+
+// S83: mounts ONE ECharts instance (single-chart layout preserved from R62).
+test('S83: mounts ONE ECharts instance', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  expect(initMock).toHaveBeenCalledTimes(1);
+  expect(setOptionMock).toHaveBeenCalledTimes(1);
+});
+
+// S83: renders single .topology-structure with chart div.
+test('S83: renders single .topology-structure with chart', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const structures = w.findAll('[data-test="topology-structure"]');
+  expect(structures).toHaveLength(1);
+  expect(w.find('[data-test="topology-chart"]').exists()).toBe(true);
+  // Old dual-panel selectors are gone.
+  expect(w.find('[data-test="outbound-structure"]').exists()).toBe(false);
+  expect(w.find('[data-test="inbound-structure"]').exists()).toBe(false);
+});
+
+// S83: empty data renders single chart with empty tree.
+test('S83: empty data renders single chart with empty tree', async () => {
+  mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  expect(initMock).toHaveBeenCalledTimes(1);
+  const opt = setOptionMock.mock.calls[0][0];
+  expect(opt.series[0].data).toEqual([]);
+  expect(opt.series[0].links).toEqual([]);
+});
+
+// S83: color legend strip with 3 swatches is still rendered above the chart.
+test('S83: color legend renders 3-color legend strip with ok/warn/err swatches', async () => {
+  const w = mount(TopologyChart, { props: { data: { nodes: [], links: [] } } });
+  await flushPromises();
+  const legend = w.find('[data-test="color-legend"]');
+  expect(legend.exists()).toBe(true);
+  expect(legend.find('.swatch-ok').exists()).toBe(true);
+  expect(legend.find('.swatch-warn').exists()).toBe(true);
+  expect(legend.find('.swatch-err').exists()).toBe(true);
+  expect(legend.text()).toMatch(/正常/);
+  expect(legend.text()).toMatch(/部分失败/);
+  expect(legend.text()).toMatch(/断开/);
+});
+
+// S83: data prop changes re-render the chart (regression for watch handler).
+test('S83: prop change re-renders the chart', async () => {
+  const data1 = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  const data2 = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: [{ source: 'DC1', target: 'DC2', statusCode: 0 }]
+  };
+  const w = mount(TopologyChart, { props: { data: data1 } });
+  await flushPromises();
+  expect(setOptionMock).toHaveBeenCalledTimes(1);
+  await w.setProps({ data: data2 });
+  await flushPromises();
+  expect(setOptionMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+});
+
+// S83: prop change adds the new site to the tree.
+test('S83: prop change updates the tree with the new site count', async () => {
+  const data1 = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'DC1', type: 'dc', site: 'A' }
+    ],
+    links: []
+  };
+  const data2 = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'B', type: 'site' },
+      { name: 'DC1', type: 'dc', site: 'A' },
+      { name: 'DC2', type: 'dc', site: 'B' }
+    ],
+    links: []
+  };
+  const w = mount(TopologyChart, { props: { data: data1 } });
+  await flushPromises();
+  await w.setProps({ data: data2 });
+  await flushPromises();
+  const lastCall = setOptionMock.mock.calls[setOptionMock.mock.calls.length - 1][0];
+  expect(lastCall.series[0].data).toHaveLength(2);
+});
+
+// S83: orphan bucket renders with dashed border to flag data-quality issue.
+test('S83: orphan bucket renders with dashed border', async () => {
+  const data = {
+    nodes: [
+      { name: 'A', type: 'site', isHub: true },
+      { name: 'ORPHAN', type: 'dc' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const orphan = opt.series[0].data.find(b => b.name === '未分组');
+  expect(orphan).toBeDefined();
+  expect(orphan.itemStyle.borderType).toBe('dashed');
+});
+
+// S83: tooltip for orphan-bucket site mentions "孤立 DC 桶".
+test('S83: tooltip for orphan bucket mentions 孤立 DC 桶', async () => {
+  const data = {
+    nodes: [
+      { name: 'ORPHAN', type: 'dc' }
+    ],
+    links: []
+  };
+  mount(TopologyChart, { props: { data } });
+  await flushPromises();
+  const opt = setOptionMock.mock.calls[0][0];
+  const orphanBranch = opt.series[0].data[0];
+  const tip = opt.tooltip.formatter({ dataType: 'node', data: orphanBranch });
+  expect(tip).toContain('未分组');
+  expect(tip).toContain('孤立 DC 桶');
 });
