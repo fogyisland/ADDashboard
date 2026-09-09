@@ -179,17 +179,15 @@ export async function applyAll(dialect, db, opts = {}) {
   applied.schema = await applyFile(db, resolveSqlPath(repoRoot, 'schema', dialect, '01-tables.sql'));
   applied.seed = await applyFile(db, resolveSqlPath(repoRoot, 'schema', dialect, '02-seed-roles.sql'));
 
-  // Apply migrations if directory exists
-  try {
-    const migrationsDir = resolveMigrationsDir(repoRoot, dialect);
-    const files = readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
-    for (const f of files) {
-      await applyFile(db, join(migrationsDir, f));
-      applied.migrations.push(f);
-    }
-  } catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-  }
+  // Fresh-install path: skip migrations/. db/migrations/* is for the upgrade
+  // path only — the running service applies the gap via
+  // migrationService.upgrade() during normal startup (server.js line 257).
+  // A brand-new schema from 01-tables.sql already carries every column,
+  // index, and table that the cumulative migrations introduced; backfilling
+  // schema_migrations without executing the files is the right behavior
+  // (backfillMigrations marks them applied_by='system-init', execution_ms=0).
+  // Returning `applied.migrations = []` here is intentional — keep the
+  // shape so existing callers / response payloads stay stable.
 
   return applied;
 }
