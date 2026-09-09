@@ -369,6 +369,71 @@ test('admin POST /api/admin/file-push: 401 without admin token', async () => {
   } finally { cleanTmpDir(dir); }
 });
 
+// 2026-09-09 S82 (security) — path-traversal guards at queue time. The
+// route layer rejects `..` in targetPath; the service layer rejects
+// `..` / drive letters / control chars in filename.
+test('admin POST /api/admin/file-push: 400 on targetPath with `..` (S82)', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    _setDbForTest(makeDb());
+    const buf = Buffer.from('x');
+    const r = await supertest(buildAdminApp())
+      .post('/api/admin/file-push')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({
+        filename: 'evil.dll',
+        contentB64: buf.toString('base64'),
+        targetType: 'dc',
+        targets: ['dc01'],
+        targetPath: 'C:\\addashboard\\..\\..\\Windows\\System32'
+      });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /relative-segment/i);
+  } finally { cleanTmpDir(dir); }
+});
+
+test('admin POST /api/admin/file-push: 400 on filename with `..` (S82)', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    _setDbForTest(makeDb());
+    const buf = Buffer.from('x');
+    const r = await supertest(buildAdminApp())
+      .post('/api/admin/file-push')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({
+        filename: '..\\..\\evil.dll',
+        contentB64: buf.toString('base64'),
+        targetType: 'dc',
+        targets: ['dc01'],
+        targetPath: 'C:\\addashboard\\payloads'
+      });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /filename| /i);
+  } finally { cleanTmpDir(dir); }
+});
+
+test('admin POST /api/admin/file-push: 400 on filename with drive-letter colon (S82)', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    _setDbForTest(makeDb());
+    const buf = Buffer.from('x');
+    const r = await supertest(buildAdminApp())
+      .post('/api/admin/file-push')
+      .set('Authorization', `Bearer ${adminToken()}`)
+      .send({
+        filename: 'evil.exe:bad',
+        contentB64: buf.toString('base64'),
+        targetType: 'dc',
+        targets: ['dc01'],
+        targetPath: 'C:\\addashboard\\payloads'
+      });
+    assert.equal(r.status, 400);
+  } finally { cleanTmpDir(dir); }
+});
+
 test('admin GET /api/admin/file-push: lists tasks newest-first', async () => {
   const dir = freshTmpDir();
   try {

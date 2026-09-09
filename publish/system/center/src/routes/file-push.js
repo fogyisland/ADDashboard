@@ -41,7 +41,11 @@ import {
 
 export function filePushRouter({ logger, db }) {
   const r = Router();
-  const auth = [userAuth({ db, logger }), requirePerm('admin:users')];
+  // 2026-09-09 S82 (security) — split admin:users umbrella. File-push
+  // is the R/W-arbitrary-files surface, so it gets its own permission.
+  // Legacy admin:users still grants admin:file-push via auth/rbac.js
+  // _hasPerm legacy-compat path.
+  const auth = [userAuth({ db, logger }), requirePerm('admin:file-push')];
 
   // ── Upload ─────────────────────────────────────────────────────────
   r.post('/api/admin/file-push', auth, async (req, res) => {
@@ -49,6 +53,15 @@ export function filePushRouter({ logger, db }) {
     const { filename, contentB64, sha256, targetType, targets, targetPath } = body;
     if (!filename || typeof filename !== 'string') {
       return res.status(400).json({ error: 'filename required' });
+    }
+    // 2026-09-09 S82 (security) — defense-in-depth: reject `..` in
+    // targetPath at the route layer so an operator can't queue a
+    // directory the agent-side allow-list (lib/path-safety.js) would
+    // reject. Drive-letter validation is on filename in the service;
+    // here we just check the targetPath doesn't itself contain relative
+    // segments that would escape the operator's apparent intent.
+    if (typeof targetPath === 'string' && /\.\./.test(targetPath)) {
+      return res.status(400).json({ error: 'targetPath contains relative-segment (..)' });
     }
     if (!contentB64 || typeof contentB64 !== 'string') {
       return res.status(400).json({ error: 'contentB64 required' });

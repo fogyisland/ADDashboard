@@ -87,6 +87,33 @@ async function flushIndex() {
   await fs.rename(tmp, indexPath());
 }
 
+// 2026-09-09 S82 (security) — filename validation at queue time.
+// Mirrors the agent-side path-safety rules (lib/path-safety.js) so an
+// operator can't even *queue* a payload that would later be rejected on
+// the agent. Defense-in-depth — the agent still re-validates before
+// writing to disk.
+const FILENAME_FORBIDDEN_CHARS = /[\x00-\x1f\x7f]/;
+const FILENAME_FORBIDDEN_SUBSTR = /(\.\.|[:\\/])/;
+
+function validateFilename(filename) {
+  if (typeof filename !== 'string' || filename.length === 0) {
+    return { ok: false, error: 'filename is required' };
+  }
+  if (filename.length > 255) {
+    return { ok: false, error: 'filename exceeds 255 chars' };
+  }
+  if (FILENAME_FORBIDDEN_CHARS.test(filename)) {
+    return { ok: false, error: 'filename contains control characters' };
+  }
+  if (FILENAME_FORBIDDEN_SUBSTR.test(filename)) {
+    return { ok: false, error: 'filename contains path separator, drive letter, or relative-segment (..)' };
+  }
+  if (filename.startsWith('.')) {
+    return { ok: false, error: 'filename starts with . (hidden / relative)' };
+  }
+  return { ok: true };
+}
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 /**
@@ -104,6 +131,13 @@ async function flushIndex() {
  */
 export async function createTask({ filename, buffer, targetType, targets, targetPath, uploadedBy }) {
   if (!filename) throw httpErr(400, 'filename required');
+  // 2026-09-09 S82 (security) — filename validation. Mirrors the
+  // agent-side lib/path-safety.js rules. Reject at queue time so the
+  // operator can't bypass via a payload that would only fail on the
+  // agent later (and so audit shows the rejection happened on the
+  // server, not as an opaque "agent failed to write").
+  const v = validateFilename(filename);
+  if (!v.ok) throw httpErr(400, v.error);
   if (!Buffer.isBuffer(buffer)) throw httpErr(400, 'buffer required');
   if (targetType !== 'dc' && targetType !== 'server') {
     throw httpErr(400, 'targetType must be dc or server');

@@ -40,6 +40,12 @@
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+// 2026-09-09 S82 (security) — path-traversal guard. The wire format
+// (targetPath + filename) is operator-supplied; we validate it against
+// an allow-list of write roots before touching the filesystem so a
+// payload like `..\..\..\Windows\System32\evil.dll` can't escape the
+// intended payload directory.
+import { validatePayloadPathOrThrow } from './lib/path-safety.js';
 
 export async function drainFilePush({
   hostname,
@@ -50,6 +56,12 @@ export async function drainFilePush({
   httpGetBinary,
   logger,
   limit = 5,
+  // 2026-09-09 S82 (security) — optional override for path-safety's
+  // allowedRoots. Production callers omit it (the default covers
+  // C:\addashboard\payloads + ProgramData variants); tests inject
+  // sandbox tmpdirs so they don't have to create real paths under
+  // C:\addashboard\ on every dev machine.
+  allowedRoots,
 } = {}) {
   if (!hostname) {
     return { processed: 0, delivered: 0, failed: 0, error: 'hostname required' };
@@ -99,13 +111,26 @@ export async function drainFilePush({
     // targetPath from the wire beyond using it as a join anchor —
     // mkdirSync({ recursive: true }) creates any missing parents.
     const targetDir = task.targetPath;
-    const targetPath = targetDir && filename
-      ? `${targetDir.replace(/[\\/]+$/, '')}\\${filename}`
-      : null;
 
-    if (!targetPath) {
+    if (!targetDir || !filename) {
       failed++;
       logger?.warn?.({ taskId, filename, targetDir }, 'file-push missing targetPath/filename; skipping');
+      continue;
+    }
+
+    // 2026-09-09 S82 (security) — reject path-traversal payloads BEFORE
+    // we touch the filesystem. validatePayloadPath walks filename rules
+    // (no `..`, no `:`, no leading `.`, no separators), then resolves
+    // `<targetPath>/<filename>` against the allow-list of write roots.
+    // Throws 400-shaped error on rejection; the drainer logs + counts as
+    // failed without writing anything.
+    let targetPath;
+    try {
+      const r = validatePayloadPathOrThrow({ filename, targetPath: targetDir, allowedRoots });
+      targetPath = r.resolved;
+    } catch (e) {
+      failed++;
+      logger?.warn?.({ taskId, filename, targetDir, err: e.message }, 'file-push rejected (path-safety)');
       continue;
     }
 
