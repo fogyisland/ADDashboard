@@ -1,6 +1,12 @@
 import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
+// 2026-09-09 S82 (security) — agent identity binding. Stamp every
+// request with an HMAC-SHA256 of (hostname + agentId + sorted body)
+// keyed by the shared token; the center recomputes and rejects when
+// (hostname, agentId, body) don't agree with the token. Defense-in-depth
+// against token theft + replay from a different hostname.
+import { signRequest } from './lib/agent-identity.js';
 
 export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
   return new Promise((resolve) => {
@@ -112,25 +118,40 @@ export function toCamelEntry(e) {
 }
 
 export function postHeartbeat({ centerUrl, agentToken, port, payload }) {
+  // S82: sign the body so the center can verify (hostname, agentId)
+  // weren't tampered with after the token was issued. agentId is what
+  // the operator sees in the heartbeat table; hostname is the operator-
+  // facing label for member-servers. payload always has both populated.
+  const hostname = String(payload?.hostname || payload?.agentId || '');
+  const agentId = String(payload?.agentId || hostname || '');
+  const bodyWithSource = { source: 'heartbeat', ...payload };
   return requestJson({
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/heartbeat`,
-    headers: { 'X-Agent-Token': agentToken },
-    body: { source: 'heartbeat', ...payload },
+    headers: {
+      'X-Agent-Token': agentToken,
+      'X-Agent-Signature': signRequest({ hostname, agentId, body: bodyWithSource, token: agentToken }),
+    },
+    body: bodyWithSource,
   });
 }
 
 export function postReport({ centerUrl, agentToken, port, snapshot }) {
+  const agentId = snapshot.AgentId ?? snapshot.agentId;
+  const body = {
+    source: 'collect-replication',
+    agentId,
+    collectedAt: snapshot.CollectedAt ?? snapshot.collectedAt,
+    data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []
+  };
   return requestJson({
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/report`,
-    headers: { 'X-Agent-Token': agentToken },
-    body: {
-      source: 'collect-replication',
-      agentId: snapshot.AgentId ?? snapshot.agentId,
-      collectedAt: snapshot.CollectedAt ?? snapshot.collectedAt,
-      data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []
+    headers: {
+      'X-Agent-Token': agentToken,
+      'X-Agent-Signature': signRequest({ hostname: agentId, agentId, body, token: agentToken }),
     },
+    body,
   });
 }
 
@@ -148,6 +169,10 @@ export function fetchConfig({ centerUrl, agentToken, ifNoneMatch = null }) {
   // "last seen" value.
   const headers = { 'X-Agent-Token': agentToken };
   if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
+  // S82: GET requests have no body, but we still stamp a signature
+  // derived from an empty body so the center can reject unsigned-for-1-
+  // minute-after-restart requests from older agents in the field.
+  headers['X-Agent-Signature'] = signRequest({ hostname: '', agentId: '', body: null, token: agentToken });
   return requestJson({
     method: 'GET',
     url: `${centerUrl}/config.json`,
