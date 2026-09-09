@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { authRouter } from '../src/routes/auth.js';
+import { authRouter, _resetLoginRateLimitForTests } from '../src/routes/auth.js';
 import { verifyJwt } from '../src/auth/jwt.js';
 import { default as supertest } from 'supertest';
 import { _setDbForTest } from '../src/db/index.js';
@@ -137,4 +137,71 @@ test('POST /api/auth/login signs JWT with the DB-loaded current secret after a r
   // longer sign with it.
   const staleVerify = verifyJwt(res.body.token, { current: 'stale-appsettings-secret', previous: '' });
   assert.equal(staleVerify, null, 'JWT must NOT verify with the stale appsettings.json secret');
+});
+
+// 2026-09-09 S82 (security) — login brute-force protection. After 5
+// failed logins within 15 min, the 6th attempt from the same IP+username
+// must 429 with a Retry-After header (not just 401). A successful login
+// must clear the bucket so a real user who fat-fingered their password
+// isn't locked out after one mistake.
+//
+// We can't easily use supertest to control the IP — Node's req.ip on
+// supertest is '::ffff:127.0.0.1' or similar. Trust-Node sets it
+// deterministically enough for this test: 5 fails = 401, 6th = 429.
+test('S82: 6th failed login from same IP+username within 15 min → 429 + Retry-After', async () => {
+  _resetLoginRateLimitForTests();
+  const app = express();
+  app.use(express.json());
+  // Use a fake-bcrypt hash so authenticate returns null without spending
+  // 250ms per attempt on real bcrypt rounds.
+  const fakeHash = '$2b$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv';
+  const db = buildMockDb({
+    'alice': { id: 1, username: 'alice', password_hash: fakeHash, status: 1, role_name: 'admin', permissions: ['*'], token_version: 0 }
+  });
+  _setDbForTest(db);
+  app.set('trust proxy', false);
+  app.use(authRouter({
+    config: { jwtSecret: 's', agentToken: 'tok' }, db,
+    logger: { info(){}, error(){}, warn(){}, debug(){} }
+  }));
+  // First 5 failures → 401
+  for (let i = 0; i < 5; i++) {
+    const r = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'wrong' });
+    assert.equal(r.status, 401, `attempt ${i + 1} should be 401`);
+  }
+  // 6th → 429 with Retry-After
+  const sixth = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'wrong' });
+  assert.equal(sixth.status, 429, '6th attempt within 15min must be 429');
+  assert.ok(sixth.headers['retry-after'], 'Retry-After header must be set on 429');
+  assert.ok(Number(sixth.headers['retry-after']) > 0);
+});
+
+test('S82: successful login resets the failure bucket', async () => {
+  _resetLoginRateLimitForTests();
+  const app = express();
+  app.use(express.json());
+  const passwordHash = bcrypt.hashSync('correct-horse-battery-staple', 4); // fewer rounds for test speed
+  // Mix wrong + right: 4 wrong, 1 right, 4 wrong — none should hit 429
+  // because the right one clears the bucket.
+  const db = buildMockDb({
+    'alice': { id: 1, username: 'alice', password_hash: passwordHash, status: 1, role_name: 'admin', permissions: ['*'], token_version: 0 }
+  });
+  _setDbForTest(db);
+  app.set('trust proxy', false);
+  app.use(authRouter({
+    config: { jwtSecret: 's', agentToken: 'tok' }, db,
+    logger: { info(){}, error(){}, warn(){}, debug(){} }
+  }));
+  for (let i = 0; i < 4; i++) {
+    const r = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'wrong' });
+    assert.equal(r.status, 401, `attempt ${i + 1} should be 401`);
+  }
+  // Successful login → bucket cleared
+  const ok = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
+  assert.equal(ok.status, 200);
+  // 4 more wrong should still be 401 (not 429) — bucket was cleared
+  for (let i = 0; i < 4; i++) {
+    const r = await supertest(app).post('/api/auth/login').send({ username: 'alice', password: 'wrong' });
+    assert.equal(r.status, 401, `post-success attempt ${i + 1} should still be 401`);
+  }
 });
