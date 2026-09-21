@@ -1,0 +1,31 @@
+{
+  "name": "ad-domain-consistency",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "Snapshot local-DC view of users/groups/GPOs and SHA-256-hash each class for cross-DC consistency detection.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 3600
+  },
+  "database": {
+    "schemaName": "pkg_ad_domain_consistency",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":    { "type": "varchar(64)", "nullable": false },
+      "ts":          { "type": "datetime",    "nullable": false },
+      "user_count":  { "type": "int" },
+      "user_hash":   { "type": "varchar(64)" },
+      "group_count": { "type": "int" },
+      "group_hash":  { "type": "varchar(64)" },
+      "gpo_count":   { "type": "int" },
+      "gpo_hash":    { "type": "varchar(64)" },
+      "error_code":  { "type": "int" }
+    }
+  }
+}

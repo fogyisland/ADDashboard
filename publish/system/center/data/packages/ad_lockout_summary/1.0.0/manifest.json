@@ -1,0 +1,26 @@
+{
+  "name": "ad-lockout-summary",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "Count of currently locked AD user accounts on this DC. Sampled every 15 minutes so the trend is independent of the replication cycle and shows up cleanly even when replication is broken or the DC is far behind.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_lockout_summary",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":     { "type": "varchar(64)", "nullable": false },
+      "ts":           { "type": "datetime",    "nullable": false },
+      "locked_count": { "type": "int" },
+      "error_code":   { "type": "int" }
+    }
+  }
+}

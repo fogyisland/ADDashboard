@@ -1,0 +1,29 @@
+{
+  "name": "ad-local-port-check",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "Probe local-machine ports [135, 445, 50001, 50002, 50003] for self-health check.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 30000,
+    "intervalSec": 300
+  },
+  "database": {
+    "schemaName": "pkg_ad_local_port_check",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "port_135":   { "type": "json" },
+      "port_445":   { "type": "json" },
+      "port_50001": { "type": "json" },
+      "port_50002": { "type": "json" },
+      "port_50003": { "type": "json" }
+    }
+  }
+}

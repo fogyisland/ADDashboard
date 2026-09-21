@@ -1,0 +1,27 @@
+{
+  "name": "ad-lockout-list",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "Last 15 minutes of Security event 4740 (user account locked out) on this DC, stored as a JSON array. Sampled every 15 minutes so the lockout event stream is independent of the replication cycle.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_lockout_list",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "events":     { "type": "json" },
+      "event_count":{ "type": "int" },
+      "error_code": { "type": "int" }
+    }
+  }
+}
