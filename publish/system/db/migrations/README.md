@@ -74,6 +74,19 @@ After adding a new `NNN-foo.sql`:
 
 ## History
 
+- **R85 (2026-09-21):** hardened `019-package-interval-override.sql`
+  for the R66 `installed_packages` table drop. The original was a
+  bare `ALTER TABLE installed_packages ADD COLUMN ...`; after
+  migration 023 split V0 into `package_scripts` + `package_policies`
+  the V0 table no longer exists on any V1 center, so the bare ALTER
+  failed every upgrade and pinned a `status='failed'` row in
+  `schema_migrations`. Rewritten with the same two-step
+  `INFORMATION_SCHEMA` + dynamic SQL guard used by `016`, wrapped
+  in a stored procedure so the file is a true no-op against either
+  side of the R66 split. The MSSQL sibling already had a
+  `sys.columns IF NOT EXISTS` guard from R12-r12. Backed by
+  `center/tests/migrations/019-package-interval-override.test.js`
+  (8 file-level tests, no live DB required).
 - **R84 (2026-09-09):** split fresh-install and upgrade semantics.
   `applyAll()` no longer iterates `db/migrations/`. `01-tables.sql`
   was rewritten to carry every cumulative DDL from migrations
