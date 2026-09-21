@@ -39,8 +39,8 @@ agent/data/
 
 # Runtime dev data (SQLite databases, plugin test fixtures).
 # Narrow from `data/` to `center/data/` so bundled built-in package sources
-# under publish/center/data/packages/<name>/<version>/ remain tracked (their
-# negations are listed below).
+# under publish/system/center/data/packages/<name>/<version>/ remain tracked
+# (their negations are listed at the bottom of this file).
 center/data/
 
 # NSSM binary downloaded by Ensure-Nssm.ps1 (auto-installed on first deploy)
@@ -81,13 +81,49 @@ publish/designer/
 # Built-in package sources (shipped via publish.zip, versioned in git so the
 # seeder has a stable on-disk source — see center/src/services/builtin-packages.js).
 # These are authored source artifacts, not runtime data; the `center/data/`
-# rule above covers only the runtime cache, not these bundled sources.
-!/publish/center/data/packages/ad_os_baseline/
-!/publish/center/data/packages/ad_os_baseline/1.0.0/
-!/publish/center/data/packages/ad_os_baseline/1.0.0/manifest.json
-!/publish/center/data/packages/ad_os_baseline/1.0.0/collect.ps1
-!/publish/center/data/packages/ad_os_baseline/1.0.0/content.sha256
-!/publish/center/data/packages/ad_os_baseline/1.0.0/migrations/001_initial.sql
+# rule above covers only the runtime cache, not these bundled sources. Note
+# the path is publish/system/center/data/packages/ (R82 split), NOT the older
+# publish/center/data/packages/ path that these negations referenced before
+# R83 (commit 6b2c269) — when R83 dropped the entire built-in tree from the
+# working copy, the old path-based whitelist silently failed to keep them
+# tracked and tests broke (see publish-data-mirror-gap plan). Five built-ins
+# are listed (ad_os_baseline, ad_domain_consistency, ad_local_port_check,
+# ad_lockout_summary, ad_lockout_list); see BUILTIN_PACKAGES in
+# center/src/services/builtin-packages.js for the canonical list. The
+# test center/tests/services/builtin-packages-tracked.test.js asserts
+# every listed file is actually tracked, so a future publish rebuild that
+# drops the tree again is caught in CI rather than at runtime.
+!/publish/system/center/data/packages/ad_os_baseline/
+!/publish/system/center/data/packages/ad_os_baseline/1.0.0/
+!/publish/system/center/data/packages/ad_os_baseline/1.0.0/manifest.json
+!/publish/system/center/data/packages/ad_os_baseline/1.0.0/collect.ps1
+!/publish/system/center/data/packages/ad_os_baseline/1.0.0/content.sha256
+!/publish/system/center/data/packages/ad_os_baseline/1.0.0/migrations/001_initial.sql
+!/publish/system/center/data/packages/ad_os_baseline/1.0.0/migrations/mssql/001_initial.sql
+!/publish/system/center/data/packages/ad_domain_consistency/
+!/publish/system/center/data/packages/ad_domain_consistency/1.0.0/
+!/publish/system/center/data/packages/ad_domain_consistency/1.0.0/manifest.json
+!/publish/system/center/data/packages/ad_domain_consistency/1.0.0/collect.ps1
+!/publish/system/center/data/packages/ad_domain_consistency/1.0.0/migrations/001_initial.sql
+!/publish/system/center/data/packages/ad_domain_consistency/1.0.0/migrations/mssql/001_initial.sql
+!/publish/system/center/data/packages/ad_local_port_check/
+!/publish/system/center/data/packages/ad_local_port_check/1.0.0/
+!/publish/system/center/data/packages/ad_local_port_check/1.0.0/manifest.json
+!/publish/system/center/data/packages/ad_local_port_check/1.0.0/collect.ps1
+!/publish/system/center/data/packages/ad_local_port_check/1.0.0/migrations/001_initial.sql
+!/publish/system/center/data/packages/ad_local_port_check/1.0.0/migrations/mssql/001_initial.sql
+!/publish/system/center/data/packages/ad_lockout_summary/
+!/publish/system/center/data/packages/ad_lockout_summary/1.0.0/
+!/publish/system/center/data/packages/ad_lockout_summary/1.0.0/manifest.json
+!/publish/system/center/data/packages/ad_lockout_summary/1.0.0/collect.ps1
+!/publish/system/center/data/packages/ad_lockout_summary/1.0.0/migrations/001_initial.sql
+!/publish/system/center/data/packages/ad_lockout_summary/1.0.0/migrations/mssql/001_initial.sql
+!/publish/system/center/data/packages/ad_lockout_list/
+!/publish/system/center/data/packages/ad_lockout_list/1.0.0/
+!/publish/system/center/data/packages/ad_lockout_list/1.0.0/manifest.json
+!/publish/system/center/data/packages/ad_lockout_list/1.0.0/collect.ps1
+!/publish/system/center/data/packages/ad_lockout_list/1.0.0/migrations/001_initial.sql
+!/publish/system/center/data/packages/ad_lockout_list/1.0.0/migrations/mssql/001_initial.sql
 
 # Leftover zips dropped in publish/ by user tooling (re-zip if needed)
 publish/db.zip
