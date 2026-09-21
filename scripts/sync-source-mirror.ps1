@@ -11,6 +11,25 @@
 # per push). robocopy /MIR + /XD for the excluded directories is the
 # only reliable way to keep the source mirror in lockstep.
 #
+# ── Intentionally NOT mirrored ──
+#
+# publish/system/center/data/packages/<name>/<version>/ — these are the
+# bundled built-in package sources read by seedBuiltinPackages (see
+# center/src/services/builtin-packages.js). Unlike every other entry in
+# $roots below, this tree IS the source of truth: the seeder copies
+# files from publish/system/center/data/packages/ into the runtime
+# data/packages/ tree on first normal-mode start. There is no
+# repo-root-side origin to mirror FROM — the content has lived in
+# publish/ since R12 (commit 24b1baa) and was just renamed in place by
+# R82 (e253ed0). If a future change adds a true repo-root origin for
+# these files (e.g. publish/system/center/data/packages/<name>/ moved
+# to a new top-level location like packages/<name>/), add the new path
+# here AND update .gitignore + verify-mirror's $roots + the
+# builtin-packages-tracked test in lockstep. Until then, do NOT add
+# publish/system/center/data/packages/ to $roots — robocopy would
+# overwrite the source with itself, which is a no-op but obscures any
+# future divergence.
+#
 # Idempotent. Run after every feature commit before pushing.
 
 [CmdletBinding()]
