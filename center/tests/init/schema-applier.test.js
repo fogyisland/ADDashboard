@@ -420,6 +420,10 @@ test('backfillMigrations inserts all migration files as status=applied with appl
     // Param order mirrors the upsert column list in src/db/sql.js:
     // (version, description, type, script, checksum, applied_at,
     //  execution_ms, applied_by, status, error_message)
+    // DB H4 (2026-09-22): with .js siblings now in scope, a type='js'
+    // row sneaks in alongside the SQL rows. The strict type check is
+    // for SQL rows only; JS rows have their own dedicated test below.
+    if (p[2] === 'js') continue;
     assert.equal(p[2], 'sql');           // type
     assert.match(p[3], /^\d{3}-.*\.sql$/); // script = filename
     assert.match(p[4], /^[0-9a-f]{64}$/);  // checksum = sha256 hex
@@ -444,4 +448,241 @@ test('backfillMigrations is idempotent and returns 0 when the migrations dir is 
   const result = await backfillMigrations('mysql', db, { repoRoot: join(__dirname, 'no-such-repo') });
   assert.equal(result.count, 0);
   assert.deepStrictEqual(result.skipped, []);
+});
+
+// --- DB H4: .js migration siblings (R66 pattern) ---
+//
+// 023-package-scripts-policies-split.js is the R66 data-migration sidecar
+// that ships next to its .sql sibling. Pre-DB-H4 the backfill loop only
+// matched *.sql, so the .js row was never written into schema_migrations
+// and the admin Schema Migrations page kept listing 023 as pending even
+// after a fresh install (the schema is already correct because
+// 01-tables.sql shipped the package_scripts + package_policies tables
+// inline). The fix extends the readdirSync filter to include .js and
+// invokes the exported `migrateInstalledPackagesToTwoTable` helper with
+// the right args. These tests pin the contract.
+
+test('backfillMigrations records .js siblings with type=js and invokes the helper', async () => {
+  // Use a tmpdir so the backfill loop sees exactly one paired migration
+  // — the live repo has 24 SQL files + 1 JS file with verify markers
+  // that don't match a mock db, so a repoRoot-based test would couple
+  // this contract to the live marker set.
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { backfillMigrations } = await import('../../src/init/schema-applier.js');
+  const tmpRepo = mkdtempSync(join(tmpdir(), 'backfill-js-row-'));
+  const tmpMigDir = join(tmpRepo, 'db', 'migrations');
+  mkdirSync(tmpMigDir, { recursive: true });
+  writeFileSync(
+    join(tmpMigDir, '023-package-scripts-policies-split.sql'),
+    '-- no markers, plain SQL\nCREATE TABLE package_scripts (name VARCHAR(64));\n'
+  );
+  writeFileSync(
+    join(tmpMigDir, '023-package-scripts-policies-split.js'),
+    // The helper probes installed_packages and short-circuits when 0 rows.
+    // Track that probe so we can assert the helper was actually invoked
+    // (not just the schema row landed).
+    'export async function migrateInstalledPackagesToTwoTable({ db }) {\n' +
+    '  const { rows } = await db.execute("SELECT * FROM installed_packages", []);\n' +
+    '  if (rows.length === 0) return { migrated: 0 };\n' +
+    '  return { migrated: 1 };\n' +
+    '}\n'
+  );
+
+  const upsertCalls = [];
+  const installPkgRows = [];
+  const db = {
+    dialect: 'mysql',
+    sql: {
+      schemaMigrations: { upsert: 'UPSERT' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN' }
+    },
+    execute: async (sql, params) => {
+      if (sql === 'UPSERT') {
+        upsertCalls.push(params);
+        return { rows: [], affectedRows: 1 };
+      }
+      if (/FROM\s+installed_packages/i.test(sql)) {
+        installPkgRows.push({ sql, params });
+        return { rows: [] }; // fresh DB → 0 rows → helper early-exits
+      }
+      return { rows: [], affectedRows: 0 };
+    },
+    query: async () => ({ rows: [] })
+  };
+  const result = await backfillMigrations('mysql', db, {
+    repoRoot: tmpRepo,
+    getDataDir: null,
+    writeAudit: null
+  });
+
+  // Sanity: SQL file was recorded (existing behaviour preserved) AND
+  // the .js sibling landed too.
+  const jsUpserts = upsertCalls.filter(p => p[2] === 'js');
+  assert.equal(jsUpserts.length, 1, `expected exactly 1 js row, got ${jsUpserts.length}`);
+  const jsRow = jsUpserts[0];
+  // Param order matches the upsert column list (version, description, type,
+  // script, checksum, applied_at, execution_ms, applied_by, status, error_message)
+  assert.equal(jsRow[0], '023');                                // version
+  assert.equal(jsRow[1], 'package-scripts-policies-split');    // description
+  assert.equal(jsRow[2], 'js');                                 // type
+  assert.match(jsRow[3], /^023-.*\.js$/);                       // script = .js filename
+  assert.match(jsRow[4], /^[0-9a-f]{64}$/);                     // checksum = sha256 hex
+  assert.equal(jsRow[6], 0);                                    // execution_ms
+  assert.equal(jsRow[7], 'system-init');                        // applied_by
+  assert.equal(jsRow[8], 'applied');                            // status
+  assert.equal(jsRow[9], null);                                 // error_message
+
+  // SQL files still recorded with type=sql (regression guard).
+  const sqlUpserts = upsertCalls.filter(p => p[2] === 'sql');
+  assert.equal(sqlUpserts.length, 1, 'expected 1 SQL row');
+
+  // The helper was invoked against the live db and probed
+  // installed_packages (it short-circuited because the mock returned 0 rows).
+  assert.ok(installPkgRows.length >= 1, 'expected the helper to query installed_packages');
+
+  // count includes both SQL and JS records.
+  assert.equal(result.count, upsertCalls.length);
+  assert.deepStrictEqual(result.skipped, []);
+});
+
+test('backfillMigrations records .js sibling even when the helper has no rows to migrate', async () => {
+  // Synthesize a temp migrations dir with a paired (023-split.sql,
+  // 023-package-scripts-policies-split.js) so we control exactly what the
+  // backfill sees — the live repo has 24 SQL files + 1 JS file, which
+  // makes assertions about a specific migration brittle. The .sql file
+  // is empty (no markers → straight through). The helper exports the
+  // real `migrateInstalledPackagesToTwoTable` shim that probes
+  // installed_packages and short-circuits on 0 rows.
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { backfillMigrations } = await import('../../src/init/schema-applier.js');
+  const tmpRepo = mkdtempSync(join(tmpdir(), 'backfill-js-no-rows-'));
+  const tmpMigDir = join(tmpRepo, 'db', 'migrations');
+  mkdirSync(tmpMigDir, { recursive: true });
+  writeFileSync(join(tmpMigDir, '023-package-scripts-policies-split.sql'), '-- no markers\n');
+  writeFileSync(
+    join(tmpMigDir, '023-package-scripts-policies-split.js'),
+    // Self-contained shim: the live helper is exercised by the production
+    // bootstrap path (server.js → db.init → bootstrapMigrations), not here.
+    // Embedding a raw Windows path into a JS source file would fail the ESM
+    // loader's `D:`-is-not-a-scheme check, so we don't try to re-export it.
+    'export async function migrateInstalledPackagesToTwoTable() { return { migrated: 0 }; }\n'
+  );
+
+  const upsertCalls = [];
+  const db = {
+    dialect: 'mysql',
+    sql: {
+      schemaMigrations: { upsert: 'UPSERT' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN' }
+    },
+    execute: async (sql, params) => {
+      if (sql === 'UPSERT') {
+        upsertCalls.push(params);
+        return { rows: [], affectedRows: 1 };
+      }
+      // Helper's SELECT FROM installed_packages → returns 0 rows →
+      // short-circuit.
+      return { rows: [], affectedRows: 0 };
+    },
+    query: async () => ({ rows: [] })
+  };
+  const result = await backfillMigrations('mysql', db, { repoRoot: tmpRepo });
+  assert.equal(result.count, 2, 'expected 1 SQL + 1 JS row');
+  assert.deepStrictEqual(result.skipped, []);
+  // Verify the JS row shape.
+  const jsUpserts = upsertCalls.filter(p => p[2] === 'js');
+  assert.equal(jsUpserts.length, 1);
+  assert.equal(jsUpserts[0][0], '023');
+  assert.match(jsUpserts[0][3], /^023-.*\.js$/);
+  assert.equal(jsUpserts[0][8], 'applied');
+  assert.equal(jsUpserts[0][7], 'system-init');
+});
+
+test('backfillMigrations keeps .js sibling in lockstep with .sql marker failure', async () => {
+  // Synthesize a paired migration whose .sql declares verify markers
+  // (a column probe) that won't pass in our mock → expect the .sql row
+  // to be skipped AND the .js row to be skipped alongside it (so the
+  // schema_migrations row can't claim the JS data migration ran when
+  // the schema created by the .sql is absent).
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { backfillMigrations } = await import('../../src/init/schema-applier.js');
+  const tmpRepo = mkdtempSync(join(tmpdir(), 'backfill-js-lockstep-'));
+  const tmpMigDir = join(tmpRepo, 'db', 'migrations');
+  mkdirSync(tmpMigDir, { recursive: true });
+  writeFileSync(
+    join(tmpMigDir, '023-package-scripts-policies-split.sql'),
+    '-- verify: column package_scripts.name\nCREATE TABLE package_scripts (name VARCHAR(64));\n'
+  );
+  writeFileSync(
+    join(tmpMigDir, '023-package-scripts-policies-split.js'),
+    'export function migrateInstalledPackagesToTwoTable(){ return { migrated: 0 }; }\n'
+  );
+
+  const upsertCalls = [];
+  const db = {
+    dialect: 'mysql',
+    sql: {
+      schemaMigrations: { upsert: 'UPSERT' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN' }
+    },
+    execute: async (sql, params) => {
+      if (sql === 'UPSERT') {
+        upsertCalls.push(params);
+        return { rows: [], affectedRows: 1 };
+      }
+      return { rows: [], affectedRows: 0 };
+    },
+    query: async () => ({ rows: [] }) // column probe returns empty → marker fails
+  };
+  const result = await backfillMigrations('mysql', db, { repoRoot: tmpRepo });
+  // .sql row was skipped because its column probe failed.
+  const skippedVersions = new Set(result.skipped.map(s => s.version));
+  assert.ok(skippedVersions.has('023'), 'expected 023 to be skipped');
+  // The .js row MUST be in lockstep: no upsert with type=js for version 023.
+  const jsUpserts = upsertCalls.filter(p => p[2] === 'js');
+  assert.equal(jsUpserts.length, 0, '.js sibling must be skipped when .sql marker probe fails');
+  assert.equal(result.count, 0);
+});
+
+test('backfillMigrations skip-on-JS-error: helper throws → row skipped, SQL rows still recorded', async () => {
+  // Synthesize a temp migrations dir so we control exactly which files
+  // exist. We drop a paired (001-foo.sql, 001-foo.js) where the .js
+  // helper throws. Assert: 001.sql is recorded (no markers → straight
+  // through), the .js is skipped with `js: ...` in its missing list,
+  // and backfill returns count=1.
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { backfillMigrations } = await import('../../src/init/schema-applier.js');
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'backfill-js-err-'));
+  const tmpMigDir = join(tmpRoot, 'db', 'migrations');
+  mkdirSync(tmpMigDir, { recursive: true });
+  writeFileSync(join(tmpMigDir, '001-foo.sql'), '-- no markers, plain SQL\nCREATE TABLE foo (id INT);');
+  writeFileSync(
+    join(tmpMigDir, '001-foo.js'),
+    'export function migrateInstalledPackagesToTwoTable(){ throw new Error("synthetic helper failure"); }'
+  );
+  const upsertCalls = [];
+  const db = {
+    dialect: 'mysql',
+    sql: {
+      schemaMigrations: { upsert: 'UPSERT' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN' }
+    },
+    execute: async (sql, params) => {
+      if (sql === 'UPSERT') {
+        upsertCalls.push(params);
+        return { rows: [], affectedRows: 1 };
+      }
+      return { rows: [], affectedRows: 0 };
+    },
+    query: async () => ({ rows: [] })
+  };
+  const result = await backfillMigrations('mysql', db, { repoRoot: tmpRoot });
+  assert.equal(result.count, 1, '001.sql should be recorded');
+  assert.equal(result.skipped.length, 1, '001.js should be skipped');
+  assert.equal(result.skipped[0].version, '001');
+  assert.match(result.skipped[0].missing[0], /^js: /);
 });

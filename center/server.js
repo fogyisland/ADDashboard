@@ -208,7 +208,17 @@ await ((async () => {
     // mode when the wizard is NOT locked (otherwise we'd let an operator
     // recover a broken DB by re-running init, which the marker forbids).
     try {
-      await init(config);
+      // DB H4 (2026-09-22): thread getDataDir + writeAudit through to
+      // db.init() so the bootstrap backfill (which runs inside db.init)
+      // can invoke a .js migration helper like R66's
+      // 023-package-scripts-policies-split.js with the right args.
+      // Both are optional — pre-009 deployments hit the upgrade path
+      // (real data migration), fresh installs hit the safe no-op path.
+      await init(config, {
+        repoRoot,
+        getDataDir: () => join(repoRoot, 'data', 'packages'),
+        writeAudit
+      });
       db = getDb();
     } catch (err) {
       logger.warn({ err: err.message }, 'db init failed');
