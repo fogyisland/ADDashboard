@@ -34,6 +34,16 @@ import {
   fetchConfiguredPorts
 } from './mock-snapshot.mjs';
 import { toCamelEntry } from '../agent/src/reporter.js';
+// 2026-09-22 S82-r1: server-side identity binding rejects unsigned
+// requests 60s after center restart (see auth/agent-token.js).
+// Real agent stamps X-Agent-Signature = hmac-sha256(token,
+// hostname:agentId:stableJson(body)) on every POST + every GET — see
+// agent/src/reporter.js (signRequest via ../src/lib/agent-identity).
+// mock-heartbeat-daemon previously skipped signature entirely, so the
+// dashboard's heartbeat / replication / discovery feed froze at
+// "last known good" the moment the 60s grace window expired. Wire the
+// same signer here so mock and real exercise the same auth path.
+import { signRequest } from '../agent/src/lib/agent-identity.js';
 // 2026-08-31 R75: drain /api/agent/ad-commands on each daemon tick. Same
 // pattern as mock-multi-agent.mjs::processAdCommands — the daemon runs
 // continuously so commands queued between ticks get picked up promptly.
@@ -158,11 +168,32 @@ function loadScenario() {
 
 // ----- HTTP helpers -----
 
+// S82 identity binding — signature input MUST match the body's agentId
+// and hostname (real agent signs with `signRequest({ hostname, agentId,
+// body, token })` — see agent/src/reporter.js:130-135 and
+// ../src/lib/agent-identity.js:38). The server recomputes the same
+// digest from the parsed request body, so key order / extra whitespace
+// in our on-wire JSON is fine (stableJson normalizes both sides).
+function signBody(body) {
+  return signRequest({
+    hostname: typeof body?.hostname === 'string' ? body.hostname : (body?.agentId ?? ''),
+    agentId: body?.agentId ?? '',
+    body,
+    token: AGENT_TOKEN
+  });
+}
+
 async function postJson(url, body, { timeoutMs = 5000 } = {}) {
+  const sig = signBody(body);
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN, 'X-Agent-Id': body.agentId ?? '' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agent-Token': AGENT_TOKEN,
+        'X-Agent-Id': body.agentId ?? '',
+        'X-Agent-Signature': sig
+      },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -187,10 +218,15 @@ async function postJson(url, body, { timeoutMs = 5000 } = {}) {
 async function processAdCommands(agentId) {
   let claimed;
   try {
+    // S82 GET still carries a signature, derived from the empty body
+    // (matches agent/src/reporter.js signRequest for GET /config.json).
     const url = `${CENTER_URL.replace(/\/+$/, '')}/api/agent/ad-commands?hostname=${encodeURIComponent(agentId)}`;
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'X-Agent-Token': AGENT_TOKEN },
+      headers: {
+        'X-Agent-Token': AGENT_TOKEN,
+        'X-Agent-Signature': signRequest({ hostname: '', agentId: '', body: null, token: AGENT_TOKEN })
+      },
       signal: AbortSignal.timeout(10_000)
     });
     if (!res.ok) {
@@ -217,7 +253,11 @@ async function processAdCommands(agentId) {
         `${CENTER_URL.replace(/\/+$/, '')}/api/agent/ad-commands/${cmd.id}/result`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Agent-Token': AGENT_TOKEN,
+            'X-Agent-Signature': signBody(result)
+          },
           body: JSON.stringify(result),
           signal: AbortSignal.timeout(10_000)
         }
@@ -248,7 +288,10 @@ async function processMemberCommands(agentId) {
     const url = `${CENTER_URL.replace(/\/+$/, '')}/api/agent/member-commands?hostname=${encodeURIComponent(agentId)}`;
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'X-Agent-Token': AGENT_TOKEN },
+      headers: {
+        'X-Agent-Token': AGENT_TOKEN,
+        'X-Agent-Signature': signRequest({ hostname: '', agentId: '', body: null, token: AGENT_TOKEN })
+      },
       signal: AbortSignal.timeout(10_000)
     });
     if (!res.ok) {
@@ -272,7 +315,11 @@ async function processMemberCommands(agentId) {
         `${CENTER_URL.replace(/\/+$/, '')}/api/agent/member-commands/${cmd.id}/result`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Agent-Token': AGENT_TOKEN },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Agent-Token': AGENT_TOKEN,
+            'X-Agent-Signature': signBody(result)
+          },
           body: JSON.stringify(result),
           signal: AbortSignal.timeout(10_000)
         }

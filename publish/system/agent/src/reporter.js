@@ -51,6 +51,39 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
   });
 }
 
+// 2026-09-22 S82 followup — `requestJson` above doesn't auto-stamp the
+// signature header. Every caller that talks to the centre MUST include an
+// X-Agent-Signature after the 60s restart-grace window, otherwise the
+// centre rejects with 401 'identity mismatch'. POST callers already stamp
+// it manually (postHeartbeat / postReport / package-manager flush), but
+// three GET paths were missing it:
+//   - port-config-fetcher.js fetchPortList (GET /api/agent/ports)
+//   - port-scanner.js     probeOnce     (GET /config.json)
+//   - package-manager.js  syncFromCenter (GET /api/agent/packages)
+// `signedRequestJson` wraps `requestJson` so callers only need to pass
+// the identity triple (agentToken, hostname, agentId) — the helper stamps
+// the signature header for them. Callers that already stamp manually
+// (postHeartbeat / postReport) keep using `requestJson` to avoid
+// double-stamping.
+export function signedRequestJson({
+  method, url, headers = {}, body, timeoutMs,
+  agentToken, hostname, agentId
+}) {
+  const stamped = { ...headers };
+  if (typeof agentToken === 'string' && agentToken.length > 0) {
+    stamped['X-Agent-Token'] = agentToken;
+    if (typeof hostname === 'string' && typeof agentId === 'string') {
+      stamped['X-Agent-Signature'] = signRequest({
+        hostname, agentId, body: body ?? null, token: agentToken
+      });
+      // X-Agent-Id lets the centre's middleware skip the body-first lookup
+      // when body is empty (mirror of the agent-side convention).
+      stamped['X-Agent-Id'] = agentId;
+    }
+  }
+  return requestJson({ method, url, headers: stamped, body, timeoutMs });
+}
+
 // Build base URL: if `port` is truthy, strip trailing :digits from centerUrl
 // and append the override port. Otherwise return centerUrl as-is.
 function baseUrl({ centerUrl, port }) {

@@ -95,7 +95,14 @@ async function _tryRecoverCenterPortImpl({ config, configPath, logger, trigger }
   }
 
   const host = deriveScanHost(config);
-  const scan = await discoverCenterPort({ host, agentToken: config.agentToken, logger });
+  // 2026-09-22 S82 — stamp (hostname, agentId) into the probe signature
+  // so the centre accepts the GET after the 60s restart-grace window.
+  const scan = await discoverCenterPort({
+    host, agentToken: config.agentToken,
+    hostname: config.hostname || osInfo.hostname,
+    agentId: config.agentId,
+    logger
+  });
   if (!scan) {
     logger.error({ trigger, host, centerUrl: config.centerUrl }, 'port scan missed; agent will retry on next tick');
     return { ok: false, recovered: false };
@@ -222,7 +229,12 @@ async function runAdRuntime({ config, logger }) {
   let cachedPortList = [];
   let latestPortResults = [];
   async function refreshPortList() {
-    cachedPortList = await fetchPortList(config.centerUrl, config.agentToken);
+    // 2026-09-22 S82 — stamp (hostname, agentId) so the centre accepts
+    // GET /api/agent/ports after the 60s restart-grace window.
+    cachedPortList = await fetchPortList(
+      config.centerUrl, config.agentToken,
+      { hostname: config.hostname || osInfo.hostname, agentId: config.agentId }
+    );
   }
   // Initial refresh on startup, before any heartbeat fires.
   await refreshPortList();
@@ -270,6 +282,7 @@ async function runAdRuntime({ config, logger }) {
     agentVersion: VERSION,
     centerBaseUrl: config.centerUrl,
     agentToken: config.agentToken,
+    hostname: config.hostname || osInfo.hostname,
     dataDir: config.agentDataDir,
     logger,
     powerShellPath: config.powerShellPath

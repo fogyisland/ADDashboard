@@ -36,7 +36,10 @@ test('PackageManager.syncFromCenter writes manifest, script, current.json; remov
     writeFileSync(join(staleDir, 'collect.ps1'), 'old');
     writeFileSync(join(dir, 'packages', 'old-pkg', 'current.json'), JSON.stringify({ version: '1.0.0' }));
 
-    const fetchJson = makeFetchStub({
+    // 2026-09-22 S82 — syncFromCenter now goes through signedRequestJson,
+    // so the stub is wired via `signedFetchJson` (not `fetchJson`, which
+    // only covers the POST /api/agent/packages/report path).
+    const signedFetchJson = makeFetchStub({
       'GET /api/agent/packages': () => ({
         ok: true, status: 200, data: {
           packages: [{
@@ -57,7 +60,7 @@ test('PackageManager.syncFromCenter writes manifest, script, current.json; remov
       agentToken: 'tok',
       dataDir: dir,
       logger: fakeLogger(),
-      fetchJson
+      signedFetchJson
     });
     await pm.syncFromCenter();
 
@@ -247,7 +250,8 @@ test('PackageManager.reschedule sets one timer per package, replaces existing', 
 test('PackageManager removes cache and timer when package no longer enabled', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pkg-mgr-'));
   try {
-    const fetchJson = makeFetchStub({
+    // 2026-09-22 S82 — syncFromCenter uses signedFetchJson (GET path).
+    const signedFetchJson = makeFetchStub({
       'GET /api/agent/packages': () => ({ ok: true, status: 200, data: { packages: [] } })
     });
     const pm = new PackageManager({
@@ -257,7 +261,7 @@ test('PackageManager removes cache and timer when package no longer enabled', as
       agentToken: 'tok',
       dataDir: dir,
       logger: fakeLogger(),
-      fetchJson
+      signedFetchJson
     });
     // Seed a local package
     const pkgDir = join(dir, 'packages', 'gone', '1.0.0');

@@ -395,3 +395,27 @@ test('warn fires once per previous-token request (cached bundle)', async () => {
   await mw(buildReq('B', { agentId: 'dc07' }), buildRes(), () => {});
   assert.equal(logger.warns.length, 2);
 });
+
+// 2026-09-22 S82 hotfix — express.json() sets req.body = {} for GET
+// requests with no body. Real agents (and mock-daemon) sign GETs with
+// body: null, producing ''. The server must normalize {} → '' so the
+// signatures match. Without this, GET /api/agent/ports (and every other
+// GET on the heartbeat/report app) 401s with 'identity mismatch' after
+// the 60s restart grace window.
+test('S82 GET-empty-body: signed with body=null, server sees body={} → accepted', async () => {
+  invalidateAgentTokenCache();
+  _resetIdentityGraceForTests(Date.now() - 120_000); // grace expired
+  const mw = agentToken({ db: stubDb({ current: 'TOK', previous: '' }) });
+  const sig = _sign({ token: 'TOK', hostname: '', agentId: '', body: null });
+  const headers = {
+    'x-agent-token': 'TOK',
+    'x-agent-signature': sig
+  };
+  // express.json() sets req.body = {} for GETs without a body parser payload.
+  const req = { headers, path: '/api/agent/ports', body: {} };
+  const res = buildRes();
+  let called = false;
+  await mw(req, res, () => { called = true; });
+  assert.equal(called, true);
+  assert.notEqual(res.statusCode, 401);
+});

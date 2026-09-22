@@ -1,6 +1,6 @@
 import { readdirSync, writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { requestJson } from './reporter.js';
+import { requestJson, signedRequestJson } from './reporter.js';
 import { runPackageScript } from './package-runner.js';
 
 // Mirrors the center's package installer: pulls enabled packages, runs their
@@ -18,10 +18,12 @@ export class PackageManager {
     agentVersion,
     centerBaseUrl,
     agentToken,
+    hostname,
     dataDir,
     logger,
     scheduler,        // accepted for API parity with the brief, currently unused
-    fetchJson,        // inject for tests; defaults to requestJson
+    fetchJson,        // inject for tests; defaults to requestJson (POST /api/agent/packages/report)
+    signedFetchJson,  // inject for tests; defaults to signedRequestJson (GET /api/agent/packages)
     runScriptFn,      // inject for tests; defaults to runPackageScript
     powerShellPath = 'powershell.exe',
     syncIntervalMs = 5 * 60_000,
@@ -31,6 +33,11 @@ export class PackageManager {
     this.agentVersion = agentVersion;
     this.centerBaseUrl = (centerBaseUrl || '').replace(/\/$/, '');
     this.agentToken = agentToken;
+    // 2026-09-22 S82 — hostname is stamped into the GET signature for
+    // syncFromCenter. Defaults to agentId so existing call sites that
+    // don't pass hostname keep working (matches the convention used by
+    // reporter.js postHeartbeat/postReport where hostname === agentId).
+    this.hostname = (typeof hostname === 'string' && hostname.length > 0) ? hostname : (agentId || '');
     this.dataDir = dataDir;
     this.logger = logger;
     this.powerShellPath = powerShellPath;
@@ -43,6 +50,7 @@ export class PackageManager {
     this.tasks = new Map(); // name -> { timer, intervalMs }
     this.packages = [];     // last synced package list (used by runAllNow)
     this._fetchJson = fetchJson || defaultFetchJson;
+    this._signedFetchJson = signedFetchJson || defaultSignedFetchJson;
     this._runPackageScript = runScriptFn || runPackageScript;
     this._syncTimer = null;
     this._flushTimer = null;
@@ -54,10 +62,19 @@ export class PackageManager {
   // (re)schedules per-package timers. Removes any locally cached package
   // that's no longer in the enabled set.
   async syncFromCenter() {
-    const r = await this._fetchJson({
+    // 2026-09-22 S82 — use a signed GET so the centre's identity-binding
+    // check passes after the 60s restart-grace window. _signedFetchJson
+    // defaults to signedRequestJson; tests inject a stub to avoid real
+    // HTTP. The POST path (flushReportQueue) still uses _fetchJson — its
+    // request body is signed manually upstream of PackageManager, and
+    // tests inject _fetchJson for the same reason.
+    const r = await this._signedFetchJson({
       method: 'GET',
       url: `${this.centerBaseUrl}/api/agent/packages`,
-      headers: { 'X-Agent-Token': this.agentToken },
+      headers: {},
+      agentToken: this.agentToken,
+      hostname: this.hostname,
+      agentId: this.agentId,
       timeoutMs: 30_000
     });
     if (!r.ok) {
@@ -327,4 +344,14 @@ export class PackageManager {
 
 async function defaultFetchJson({ method, url, headers, body, timeoutMs }) {
   return requestJson({ method, url, headers, body, timeoutMs });
+}
+
+// 2026-09-22 S82 — production default for syncFromCenter: stamp
+// X-Agent-Signature via signedRequestJson so the centre's identity-
+// binding middleware accepts the GET after the 60s restart-grace window.
+// Tests inject their own stub via the PackageManager `signedFetchJson`
+// constructor option, mirroring the `fetchJson` pattern for the POST
+// path.
+async function defaultSignedFetchJson({ method, url, headers, agentToken, hostname, agentId, timeoutMs }) {
+  return signedRequestJson({ method, url, headers, agentToken, hostname, agentId, timeoutMs });
 }

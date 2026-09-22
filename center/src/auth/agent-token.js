@@ -92,7 +92,15 @@ function stableJson(value) {
 }
 
 function expectedSignature({ token, hostname, agentId, body }) {
-  const bodyStr = body == null ? '' : stableJson(body);
+  // GET requests have no body, but express.json() middleware sets
+  // `req.body = {}` for them (instead of `null`/`undefined`). Real agents
+  // (and mock-daemon) sign GETs with `body: null`, which the equality below
+  // also normalizes to ''. Without this normalization, every GET request
+  // after the 60s restart-grace window fails with 'identity mismatch' even
+  // though the token itself is valid.
+  const bodyStr = (body == null
+    || (typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 0))
+    ? '' : stableJson(body);
   const message = `${hostname || ''}:${agentId || ''}:${bodyStr}`;
   return crypto.createHmac('sha256', token).update(message).digest('hex');
 }
