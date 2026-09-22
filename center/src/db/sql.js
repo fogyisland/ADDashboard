@@ -680,7 +680,15 @@ const VARIANTS = {
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1`,
       column: `SELECT 1 AS ok FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`
+                  AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+      // information_schema.STATISTICS has one row per (table, index, column)
+      // — composite indexes span multiple rows. DISTINCT collapses to one row
+      // per index name so a single-hit LIMIT 1 is the right cardinality check.
+      index: `SELECT 1 AS ok FROM (
+                SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = ? AND INDEX_NAME = ?
+               ) AS idx LIMIT 1`
     },
     // Non-AD server management (migration 014). Eight tables total split
     // across five domains so services can scope their reads: member-servers
@@ -1629,7 +1637,16 @@ const VARIANTS = {
     probe: {
       table: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?`,
       column: `SELECT TOP 1 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_NAME = ? AND COLUMN_NAME = ?`
+                WHERE TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      // sys.indexes joined with sys.tables; filter out heaps (type = 0) and
+      // hypothetical indexes so a query for `<table>.<name>` only matches
+      // real, user-visible indexes. MSSQL is case-insensitive by default for
+      // identifier collation, so no LOWER/UPPER wrapping is needed.
+      index: `SELECT TOP 1 1 AS ok
+                FROM sys.indexes i
+                JOIN sys.tables t ON i.object_id = t.object_id
+               WHERE t.name = ? AND i.name = ?
+                 AND i.is_hypothetical = 0 AND i.type > 0`
     },
     // Non-AD server management (migration 014). See mysql counterpart.
     memberServers: memberServers.mssql,

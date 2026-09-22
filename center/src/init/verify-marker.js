@@ -1,6 +1,13 @@
-// Parses `-- verify: table X` / `-- verify: column X.Y` markers from the top
-// of a SQL migration file. Returns an array of {kind, name} objects.
-// Returns [] when no markers are present.
+// Parses `-- verify: table X` / `-- verify: column X.Y` / `-- verify: index X.Y`
+// markers from the top of a SQL migration file. Returns an array of
+// {kind, name} objects. Returns [] when no markers are present.
+//
+// Grammar (each kind takes exactly ONE name — use multiple lines for multiple
+// artifacts; this keeps every marker trivially correct vs. a comma-list parser):
+//
+//   -- verify: table    <table_name>
+//   -- verify: column   <table>.<column>
+//   -- verify: index    <table>.<index_name>
 //
 // Scan rules:
 //   - only the first 50 non-empty lines (marker must live near the top so
@@ -9,8 +16,13 @@
 //     outside any block-comment wrapping);
 //   - the keyword is case-insensitive;
 //   - whitespace between the tokens is collapsed.
+//   - only singular `table` / `column` / `index` keywords are accepted.
+//     Plural forms (`tables`, `columns`, `indexes`) and comma-separated
+//     lists are intentionally rejected so the migration file can't paper
+//     over a half-finished change with one lazy marker — split into one
+//     marker per artifact instead.
 const MAX_SCAN_LINES = 50;
-const MARKER_RE = /^\s*--\s*verify:\s*(table|column)\s+(\S+)\s*$/i;
+const MARKER_RE = /^\s*--\s*verify:\s*(table|column|index)\s+(\S+)\s*$/i;
 
 export function parseVerifyMarker(sql) {
   const lines = sql.split('\n').slice(0, MAX_SCAN_LINES);
@@ -46,7 +58,8 @@ export function parseVerifyMarker(sql) {
 
 // Probes each marker against the live DB. Returns {ok, missing}, where
 // `missing` is a human-readable array like ['table sys_config_audit',
-// 'column ad_dcs.is_pdc'] in marker order.
+// 'column ad_dcs.is_pdc', 'index ad_replication_history.ix_hist_pair_time']
+// in marker order.
 //
 // `db.sql` is the already dialect-resolved registry built by buildSql() at
 // db.init() time, so the probe SQL is read from db.sql.probe — the dialect is
@@ -55,6 +68,9 @@ export function parseVerifyMarker(sql) {
 //   kind='table'  -> probe.table  with params [name]
 //   kind='column' -> probe.column with params [table, column]
 //                    (the marker name is '<table>.<column>', split on first '.')
+//   kind='index'  -> probe.index  with params [table, index_name]
+//                    (same dotted convention as 'column'; an unqualified
+//                    index name is reported missing rather than guessed at)
 export async function verifyMarkers(db, markers) {
   const probe = db.sql.probe;
   const missing = [];
@@ -72,6 +88,17 @@ export async function verifyMarkers(db, markers) {
       }
       const { rows } = await db.query(probe.column, [m.name.slice(0, dot), m.name.slice(dot + 1)]);
       if (!rows || rows.length === 0) missing.push(`column ${m.name}`);
+    } else if (m.kind === 'index') {
+      const dot = m.name.indexOf('.');
+      if (dot < 0) {
+        // Same defence-in-depth as column: an unqualified index name can't be
+        // resolved against the live DB, so report missing rather than probe
+        // a wrong table.
+        missing.push(`index ${m.name} (malformed)`);
+        continue;
+      }
+      const { rows } = await db.query(probe.index, [m.name.slice(0, dot), m.name.slice(dot + 1)]);
+      if (!rows || rows.length === 0) missing.push(`index ${m.name}`);
     }
   }
   return { ok: missing.length === 0, missing };

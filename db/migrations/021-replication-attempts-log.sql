@@ -1,4 +1,6 @@
--- verify: columns ad_replication_history.last_attempt_time, attempt_duration_ms, objects_transferred
+-- verify: column ad_replication_history.last_attempt_time
+-- verify: column ad_replication_history.attempt_duration_ms
+-- verify: column ad_replication_history.objects_transferred
 -- verify: index ad_replication_history.ix_hist_pair_time
 
 -- 021-replication-attempts-log.sql

@@ -71,6 +71,64 @@ test('whitespace tolerant between tokens', () => {
   ]);
 });
 
+// --- DB H1: index kind + grammar tightening ---
+
+test('parses single index marker', () => {
+  const sql = '-- verify: index ad_replication_history.ix_hist_pair_time\nCREATE INDEX ...;';
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+});
+
+test('m021 split markers parse correctly (one column per line)', () => {
+  const sql = [
+    '-- verify: column ad_replication_history.last_attempt_time',
+    '-- verify: column ad_replication_history.attempt_duration_ms',
+    '-- verify: column ad_replication_history.objects_transferred',
+    '-- verify: index ad_replication_history.ix_hist_pair_time',
+    'ALTER TABLE ad_replication_history ...;'
+  ].join('\n');
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
+    { kind: 'column', name: 'ad_replication_history.last_attempt_time' },
+    { kind: 'column', name: 'ad_replication_history.attempt_duration_ms' },
+    { kind: 'column', name: 'ad_replication_history.objects_transferred' },
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+});
+
+test('rejects plural form "columns" (one name per line only)', () => {
+  const sql = '-- verify: columns ad_replication_history.last_attempt_time, attempt_duration_ms\n';
+  assert.deepStrictEqual(parseVerifyMarker(sql), []);
+});
+
+test('rejects plural form "tables"', () => {
+  const sql = '-- verify: tables foo, bar\n';
+  assert.deepStrictEqual(parseVerifyMarker(sql), []);
+});
+
+test('rejects plural form "indexes"', () => {
+  const sql = '-- verify: indexes ad_replication_history.ix_hist_pair_time\n';
+  assert.deepStrictEqual(parseVerifyMarker(sql), []);
+});
+
+test('rejects unknown kinds', () => {
+  const sql = '-- verify: trigger my_trigger\n';
+  assert.deepStrictEqual(parseVerifyMarker(sql), []);
+});
+
+test('mixed comma-list "columns a, b, c" produces no markers (forces split)', () => {
+  const sql = [
+    '-- verify: columns ad_replication_history.last_attempt_time, attempt_duration_ms, objects_transferred',
+    '-- verify: index ad_replication_history.ix_hist_pair_time'
+  ].join('\n');
+  // The first line is silently dropped (it didn't match the grammar); the
+  // second line still parses. This is the regression guard — fixing m021
+  // in the migration file is the actual fix; the parser stays strict.
+  assert.deepStrictEqual(parseVerifyMarker(sql), [
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+});
+
 // --- verifyMarkers ---
 
 // Mock db shaped like the real facade: db.sql is the already dialect-resolved
@@ -78,7 +136,7 @@ test('whitespace tolerant between tokens', () => {
 // db.sql.probe.{table,column} — NOT db.sql[dialect].probe. Using the real
 // buildSql output here means a wiring mistake fails the test instead of
 // passing against hand-written SQL that production never sees.
-function mockDb(dialect, { presentTables = new Set(), presentColumns = new Set() } = {}) {
+function mockDb(dialect, { presentTables = new Set(), presentColumns = new Set(), presentIndexes = new Set() } = {}) {
   const sql = buildSql(dialect);
   const calls = [];
   return {
@@ -93,6 +151,10 @@ function mockDb(dialect, { presentTables = new Set(), presentColumns = new Set()
       if (text === sql.probe.column) {
         const colKey = `${params[0]}.${params[1]}`;
         return Promise.resolve({ rows: presentColumns.has(colKey) ? [{ ok: 1 }] : [] });
+      }
+      if (text === sql.probe.index) {
+        const idxKey = `${params[0]}.${params[1]}`;
+        return Promise.resolve({ rows: presentIndexes.has(idxKey) ? [{ ok: 1 }] : [] });
       }
       throw new Error(`unexpected probe SQL: ${text}`);
     }
@@ -162,4 +224,71 @@ test('verifyMarkers: unqualified column marker is reported missing, not probed',
   assert.equal(result.ok, false);
   assert.deepStrictEqual(result.missing, ['column is_pdc (malformed)']);
   assert.equal(db.calls.length, 0);
+});
+
+// --- DB H1: index probe wiring ---
+
+test('verifyMarkers: index present → ok=true, missing=[]', async () => {
+  const db = mockDb('mysql', {
+    presentIndexes: new Set(['ad_replication_history.ix_hist_pair_time'])
+  });
+  const result = await verifyMarkers(db, [
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+  assert.deepStrictEqual(result, { ok: true, missing: [] });
+});
+
+test('verifyMarkers: index marker splits name into [table, index_name] params', async () => {
+  const db = mockDb('mysql', {
+    presentIndexes: new Set(['ad_replication_history.ix_hist_pair_time'])
+  });
+  await verifyMarkers(db, [{ kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }]);
+  // The only call should be the index probe with [table, index_name] params
+  assert.equal(db.calls.length, 1);
+  assert.deepStrictEqual(db.calls[0].params, ['ad_replication_history', 'ix_hist_pair_time']);
+});
+
+test('verifyMarkers: index missing → ok=false, missing=[index X]', async () => {
+  const db = mockDb('mysql');
+  const result = await verifyMarkers(db, [
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+  assert.equal(result.ok, false);
+  assert.deepStrictEqual(result.missing, ['index ad_replication_history.ix_hist_pair_time']);
+});
+
+test('verifyMarkers: unqualified index marker is reported missing, not probed', async () => {
+  const db = mockDb('mysql');
+  const result = await verifyMarkers(db, [{ kind: 'index', name: 'ix_hist_pair_time' }]);
+  assert.equal(result.ok, false);
+  assert.deepStrictEqual(result.missing, ['index ix_hist_pair_time (malformed)']);
+  assert.equal(db.calls.length, 0);
+});
+
+test('verifyMarkers: mixed table + column + index kinds probe against the right SQL', async () => {
+  const db = mockDb('mysql', {
+    presentTables: new Set(['ad_replication_history']),
+    presentColumns: new Set(['ad_replication_history.last_attempt_time']),
+    presentIndexes: new Set(['ad_replication_history.ix_hist_pair_time'])
+  });
+  const result = await verifyMarkers(db, [
+    { kind: 'table', name: 'ad_replication_history' },
+    { kind: 'column', name: 'ad_replication_history.last_attempt_time' },
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+  assert.deepStrictEqual(result, { ok: true, missing: [] });
+  // 3 probes, one per marker
+  assert.equal(db.calls.length, 3);
+});
+
+test('verifyMarkers: index probe uses mssql probe SQL when dialect is mssql', async () => {
+  const db = mockDb('mssql', {
+    presentIndexes: new Set(['ad_replication_history.ix_hist_pair_time'])
+  });
+  const result = await verifyMarkers(db, [
+    { kind: 'index', name: 'ad_replication_history.ix_hist_pair_time' }
+  ]);
+  assert.deepStrictEqual(result, { ok: true, missing: [] });
+  // Confirm the probe SQL routed to db.sql.probe.index (mssql flavour)
+  assert.equal(db.calls[0].text, db.sql.probe.index);
 });
