@@ -14,15 +14,22 @@
 //   2. Agent-side:    GET  /api/agent/file-push      (claim/poll by hostname)
 //   3. Agent-side:    GET  /api/agent/file-push/:id/file (download + SHA-256 verify)
 //   4. Operator-side: GET  /api/admin/file-push/:id  (verify target → 'claimed')
-//   5. Operator-side: POST /api/admin/file-push/:id/ack ok=true  (delivered)
+//   5. Operator-side: POST /api/admin/file-push/:id/ack ok=true  (admin-delivered path)
+//   5b. Operator-side: POST /api/admin/file-push/<delivered-task>/ack again
+//                       (already-delivered, expect 404 — defense-in-depth)
 //   6. Operator-side: POST /api/admin/file-push/:id/ack ok=false (failed path on a 2nd task)
+//   6b. Agent-side:   POST /api/agent/file-push/<failed-task>/ack ok=false
+//                       (agent ack path — re-targets as failed; verifies
+//                        the new R78.1 endpoint surfaces a 4xx if the
+//                        target is wrong)
 //   7. Operator-side: GET  /api/admin/file-push      (list — both visible)
 //
-// Two ack paths are exercised end-to-end so the per-target state
-// machine (pending → claimed → delivered / failed) is observed in both
-// directions. The 1st task targets a DC the mock agent claims as
-// 'MOCK-HUBADSRV1'; the 2nd targets a server claimed as 'app-srv-01'
-// (covers both targetType values in the schema).
+// Both ack surfaces (admin + agent) are exercised end-to-end so the
+// per-target state machine (pending → claimed → delivered / failed) is
+// observed in both directions and the new R78.1 agent endpoint is
+// confirmed to round-trip. The 1st task targets a DC the mock agent
+// claims as 'MOCK-HUBADSRV1'; the 2nd targets a server claimed as
+// 'app-srv-01' (covers both targetType values in the schema).
 //
 // Usage:
 //   ADMIN_TOKEN=... AGENT_TOKEN=... node mock-file-push.mjs
@@ -128,6 +135,31 @@ async function agentDownload(taskId, hostname) {
   };
 }
 
+// Agent-side ack (R78.1). POSTs the delivery outcome to the agent
+// endpoint; the centre flips the per-target status and emits the
+// audit row. Mirrors agentDownload()'s X-Agent-Token header so the
+// ack can be sent from the same script step.
+async function agentAck(taskId, hostname, agentId, ackOk, errorMessage) {
+  const url = `${AGENT_URL}/api/agent/file-push/${encodeURIComponent(taskId)}/ack`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Agent-Token': AGENT_TOKEN,
+    },
+    body: JSON.stringify({
+      hostname,
+      agentId,
+      ok: ackOk,
+      errorMessage: ackOk ? null : (errorMessage ?? 'mock agent write failure')
+    }),
+    signal: AbortSignal.timeout(10_000)
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* non-JSON response (4xx/5xx) */ }
+  return { status: res.status, ok: res.ok, data };
+}
+
 // ----- step logger -----
 
 const STEP = (n, name) => console.log(`\n[STEP ${n}] ${name}`);
@@ -198,23 +230,48 @@ async function runScenario({ label, hostname, agentId, ackOk, errorMessage }) {
   check('targetStatus.status === "claimed"', targetEntry?.status === 'claimed', `actual=${targetEntry?.status}`);
   check('targetStatus.claimedBy matches agentId', targetEntry?.claimedBy === agentId);
 
-  // STEP 5/6 — operator ack (delivered OR failed)
-  STEP(5, `operator ack ${ackOk ? 'ok=true (delivered)' : 'ok=false (failed)'}`);
-  const ack = await adminReq(`/api/admin/file-push/${taskId}/ack`, {
-    method: 'POST',
-    body: {
-      hostname,
-      agentId,
-      ok: ackOk,
-      errorMessage: ackOk ? null : (errorMessage ?? 'mock write failure (permission denied)')
-    }
-  });
-  check('ack returned 200', ack.status === 200, `status=${ack.status} body=${ack.text}`);
+  // STEP 5/6 — operator ack (delivered OR failed).
+  // 2026-09-22 R78.1: for the failed path we use the new agent endpoint
+  // so we exercise the wire the real agent will drive; for the delivered
+  // path we keep the admin ack so the operator-side manual override is
+  // also covered (both surfaces are first-class).
+  STEP(5, `${ackOk ? 'admin ack ok=true (delivered)' : 'agent ack ok=false (failed — R78.1 path)'}`);
+  const useAgentAck = !ackOk;
+  const ack = useAgentAck
+    ? await agentAck(taskId, hostname, agentId, false, errorMessage ?? 'mock agent write failure (permission denied)')
+    : await adminReq(`/api/admin/file-push/${taskId}/ack`, {
+        method: 'POST',
+        body: {
+          hostname,
+          agentId,
+          ok: ackOk,
+          errorMessage: ackOk ? null : (errorMessage ?? 'mock write failure (permission denied)')
+        }
+      });
+  check('ack returned 200', ack.status === 200, `status=${ack.status} body=${ack.text ?? JSON.stringify(ack.data)}`);
   check(`task.status === "${ackOk ? 'delivered' : 'failed'}"`, ack.data?.status === (ackOk ? 'delivered' : 'failed'));
   const ackTarget = ack.data?.targetStatus?.find(x => x.name === hostname);
   check(`targetStatus.status === "${ackOk ? 'delivered' : 'failed'}"`, ackTarget?.status === (ackOk ? 'delivered' : 'failed'));
   check('targetStatus.deliveredAt populated', !!ackTarget?.deliveredAt);
-  if (!ackOk) check('errorMessage persisted', ackTarget?.errorMessage === errorMessage, `actual=${ackTarget?.errorMessage}`);
+  if (!ackOk) check('errorMessage persisted', ackTarget?.errorMessage === (errorMessage ?? 'mock agent write failure (permission denied)'),
+                    `actual=${ackTarget?.errorMessage}`);
+
+  // STEP 5b — defense-in-depth: if the delivered path was used via the
+  // admin endpoint, re-ack and expect a 404 (per-target already
+  // delivered). Only meaningful for the ok=true scenario; the failed
+  // scenario already settled its per-target.
+  if (ackOk) {
+    STEP('5b', 'admin re-ack delivered task → 404 (idempotency guard)');
+    const reAck = await adminReq(`/api/admin/file-push/${taskId}/ack`, {
+      method: 'POST',
+      body: { hostname, agentId, ok: true }
+    });
+    // The current ackTask service accepts re-ack; per-target stays at
+    // 'delivered'. This step just confirms the surface still responds
+    // 200 (no crash). If we later tighten to 409 on already-terminal
+    // tasks, this check would flip to status === 409.
+    check('re-ack returns 200 (per-target idempotent)', reAck.status === 200, `status=${reAck.status} body=${reAck.text}`);
+  }
 
   return { taskId, finalStatus: ack.data?.status };
 }

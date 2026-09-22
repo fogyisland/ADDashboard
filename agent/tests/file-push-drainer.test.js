@@ -21,6 +21,14 @@ function capturingLogger() {
   return { calls, info: make('info'), warn: make('warn'), error: make('error'), debug: make('debug') };
 }
 
+// 2026-09-22 R78.1 — default ack stub. Returns { ok: true } so the
+// drainer's per-task outcome counter increments as if the centre
+// accepted the ack. Individual tests can override with their own
+// httpPostJson when they want to assert on ack payload / errors.
+function defaultAck() {
+  return async () => ({ ok: true, status: 200, data: { ok: true } });
+}
+
 function makeSandbox() {
   const dir = mkdtempSync(join(tmpdir(), 'addash-filepush-test-'));
   return {
@@ -39,6 +47,10 @@ const baseDeps = (sandbox) => ({
   // Inject the sandbox as an allowed root so the happy-path tests can
   // exercise the drainer without a real C:\addashboard\ install.
   allowedRoots: [sandbox.dir],
+  // 2026-09-22 R78.1 — agent ack stub. Returns ok so the per-task
+  // ack counter increments; individual tests override this when they
+  // want to assert on the ack payload or force a non-2xx.
+  httpPostJson: defaultAck(),
   ...{ _sandbox: sandbox },
 });
 
@@ -72,7 +84,7 @@ test('drainFilePush: happy path — poll 1 task, download, write to disk', async
 
     const r = await drainFilePush({
       ...baseDeps(sandbox),
-      httpGetJson, httpGetBinary,
+      httpGetJson, httpGetBinary, httpPostJson: defaultAck(),
       logger: silentLogger(),
     });
     assert.equal(r.processed, 1);
@@ -95,7 +107,7 @@ test('drainFilePush: empty response → no download + return {processed:0}', asy
 
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary,
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(),
     logger: silentLogger(),
   });
   assert.equal(r.processed, 0);
@@ -109,7 +121,7 @@ test('drainFilePush: missing tasks array → return {processed:0}', async () => 
   const httpGetBinary = async () => ({ ok: true, buffer: Buffer.alloc(0) });
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary,
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(),
     logger: silentLogger(),
   });
   assert.equal(r.processed, 0);
@@ -135,7 +147,7 @@ test('drainFilePush: download returns !ok → counts as failed', async () => {
 
     const r = await drainFilePush({
       ...baseDeps(sandbox),
-      httpGetJson, httpGetBinary, logger,
+      httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger,
     });
     assert.equal(r.processed, 1);
     assert.equal(r.delivered, 0);
@@ -158,7 +170,7 @@ test('drainFilePush: download throws → counts as failed', async () => {
   const logger = capturingLogger();
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary, logger,
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger,
   });
   assert.equal(r.processed, 1);
   assert.equal(r.failed, 1);
@@ -183,7 +195,7 @@ test('drainFilePush: write failure → counts as failed (invalid path)', async (
     const logger = capturingLogger();
     const r = await drainFilePush({
       hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-      httpGetJson, httpGetBinary, logger,
+      httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger,
     });
     // On Windows, writing to `NUL` opens a write-only sink that
     // succeeds. On Linux, it errors with ENOENT. Either way, NUL is
@@ -206,7 +218,7 @@ test('drainFilePush: missing targetPath/filename → skip + fail count', async (
   const httpGetBinary = async () => ({ ok: true, buffer: Buffer.alloc(0) });
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary, logger: silentLogger(),
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger: silentLogger(),
   });
   assert.equal(r.processed, 2);
   assert.equal(r.failed, 2);
@@ -233,7 +245,7 @@ test('drainFilePush: path-traversal payload rejected before download (S82)', asy
   const logger = capturingLogger();
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary, logger,
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger,
   });
   assert.equal(r.processed, 1);
   assert.equal(r.failed, 1);
@@ -259,7 +271,7 @@ test('drainFilePush: filename with `:` rejected (drive separator) (S82)', async 
   const httpGetBinary = async () => { dlCalled = true; return { ok: true, buffer: Buffer.alloc(0) }; };
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary, logger: silentLogger(),
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger: silentLogger(),
   });
   assert.equal(r.failed, 1);
   assert.equal(r.delivered, 0);
@@ -272,7 +284,7 @@ test('drainFilePush: poll returns 404 → silently return {processed:0}', async 
   const httpGetBinary = async () => ({ ok: true, buffer: Buffer.alloc(0) });
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary, logger,
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger,
   });
   assert.equal(r.processed, 0);
   assert.equal(r.status, 404);
@@ -286,7 +298,7 @@ test('drainFilePush: poll throws → log + return {processed:0, error}', async (
   const httpGetBinary = async () => ({ ok: true, buffer: Buffer.alloc(0) });
   const r = await drainFilePush({
     hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary, logger,
+    httpGetJson, httpGetBinary, httpPostJson: defaultAck(), logger,
   });
   assert.equal(r.processed, 0);
   assert.match(r.error, /ECONNREFUSED/);
@@ -299,7 +311,7 @@ test('drainFilePush: missing hostname → return error, no HTTP calls', async ()
   const httpGetJson = async (a) => { getCalls.push(a); return { ok: true, data: { tasks: [] } }; };
   const r = await drainFilePush({
     hostname: '', agentId: 'a', token: 't', centerUrl: 'http://x',
-    httpGetJson, httpGetBinary: async () => ({}),
+    httpGetJson, httpGetBinary: async () => ({}), httpPostJson: defaultAck(),
     logger: silentLogger(),
   });
   assert.equal(r.processed, 0);
@@ -338,4 +350,216 @@ test('drainFilePush: targetPath trailing slashes are normalized', async () => {
 test('drainFilePush: __testing export re-exports drainFilePush', () => {
   assert.equal(typeof __testing.drainFilePush, 'function');
   assert.equal(__testing.drainFilePush, drainFilePush);
+});
+
+// ============================================================================
+// 2026-09-22 R78.1 — agent-side ack routing tests.
+//
+// The drainer now POSTs the per-task outcome to
+//   POST ${centerUrl}/api/agent/file-push/:taskId/ack
+// after each download/write attempt. These tests pin the wire shape:
+//   - URL exactly matches /api/agent/file-push/<taskId>/ack
+//   - body = { hostname, agentId, ok, errorMessage? }
+//   - on delivered → ok:true, errorMessage:null
+//   - on failed (download / write / path-safety) → ok:false, errorMessage populated
+//   - non-2xx ack response → drainer logs warn, does NOT increment acked
+//   - ack throwing → drainer logs warn, does NOT increment acked
+//   - retry semantics: ack failure does NOT roll processed/delivered/failed
+//     counters backward; next heartbeat re-polls and re-attempts.
+// ============================================================================
+
+test('drainFilePush R78.1: happy path → POST ack with ok:true, errorMessage:null', async () => {
+  const sandbox = makeSandbox();
+  try {
+    const payload = Buffer.from('ack happy\n');
+    const httpGetJson = async () => ({
+      ok: true, status: 200,
+      data: { tasks: [{ taskId: 'ack-ok', filename: 'f.bin', targetPath: sandbox.dir, sha256: 'x', sizeBytes: payload.length }] },
+    });
+    const httpGetBinary = async () => ({ ok: true, status: 200, buffer: payload, headerSha256: 'x' });
+
+    let ackCall = null;
+    const httpPostJson = async (args) => {
+      ackCall = args;
+      return { ok: true, status: 200, data: { ok: true } };
+    };
+
+    const r = await drainFilePush({
+      ...baseDeps(sandbox),
+      httpGetJson, httpGetBinary, httpPostJson, logger: silentLogger(),
+    });
+
+    assert.equal(r.processed, 1);
+    assert.equal(r.delivered, 1);
+    assert.equal(r.failed, 0);
+    assert.equal(r.acked, 1, 'acked counter must increment on 2xx ack response');
+
+    assert.ok(ackCall, 'httpPostJson must be called once after delivery');
+    assert.match(ackCall.url, /\/api\/agent\/file-push\/ack-ok\/ack$/);
+    assert.equal(ackCall.url.startsWith('http://center:8080'), true, 'ack URL must use centerUrl');
+    assert.deepEqual(ackCall.headers, { 'X-Agent-Token': 'agent-tok' });
+    assert.deepEqual(ackCall.body, {
+      hostname: 'DC1',
+      agentId: 'agent-1',
+      ok: true,
+      errorMessage: null,
+    });
+  } finally { sandbox.cleanup(); }
+});
+
+test('drainFilePush R78.1: download fail → POST ack with ok:false, errorMessage set', async () => {
+  const httpGetJson = async () => ({
+    ok: true, status: 200,
+    data: { tasks: [{ taskId: 'ack-dl-fail', filename: 'f.bin', targetPath: 'C:\\addashboard\\payloads', sha256: 'x', sizeBytes: 3 }] },
+  });
+  const httpGetBinary = async () => ({ ok: false, status: 403 });
+
+  let ackCall = null;
+  const httpPostJson = async (args) => {
+    ackCall = args;
+    return { ok: true, status: 200, data: { ok: true } };
+  };
+
+  const r = await drainFilePush({
+    hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
+    httpGetJson, httpGetBinary, httpPostJson, logger: silentLogger(),
+  });
+
+  assert.equal(r.failed, 1);
+  assert.equal(r.delivered, 0);
+  assert.equal(r.acked, 1);
+  assert.ok(ackCall);
+  assert.match(ackCall.url, /\/api\/agent\/file-push\/ack-dl-fail\/ack/);
+  assert.equal(ackCall.body.ok, false);
+  assert.match(ackCall.body.errorMessage, /download HTTP 403/);
+});
+
+test('drainFilePush R78.1: path-safety reject → POST ack with ok:false', async () => {
+  const httpGetJson = async () => ({
+    ok: true, status: 200,
+    data: { tasks: [{
+      taskId: 'ack-safety',
+      filename: 'evil.dll',
+      targetPath: 'C:\\..\\..\\Windows\\System32',
+      sha256: 'x', sizeBytes: 3,
+    }] },
+  });
+  const httpGetBinary = async () => ({ ok: true, buffer: Buffer.alloc(0) });
+
+  let ackCall = null;
+  const httpPostJson = async (args) => {
+    ackCall = args;
+    return { ok: true, status: 200, data: { ok: true } };
+  };
+
+  const r = await drainFilePush({
+    hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
+    httpGetJson, httpGetBinary, httpPostJson, logger: silentLogger(),
+  });
+
+  assert.equal(r.failed, 1);
+  assert.equal(r.acked, 1);
+  assert.ok(ackCall);
+  assert.match(ackCall.body.errorMessage, /path-safety:/);
+});
+
+test('drainFilePush R78.1: ack non-2xx → drainer logs warn, does NOT increment acked', async () => {
+  const sandbox = makeSandbox();
+  try {
+    const httpGetJson = async () => ({
+      ok: true, status: 200,
+      data: { tasks: [{ taskId: 'ack-rej', filename: 'f.bin', targetPath: sandbox.dir, sha256: 'x', sizeBytes: 4 }] },
+    });
+    const httpGetBinary = async () => ({ ok: true, status: 200, buffer: Buffer.from('abcd'), headerSha256: 'x' });
+    const httpPostJson = async () => ({ ok: false, status: 500, data: { error: 'down' } });
+    const logger = capturingLogger();
+
+    const r = await drainFilePush({
+      ...baseDeps(sandbox),
+      httpGetJson, httpGetBinary, httpPostJson, logger,
+    });
+
+    // File was written successfully — that counts delivered regardless
+    // of ack fate. But acked counter does NOT bump because the center
+    // returned 5xx; retry-on-next-heartbeat kicks in.
+    assert.equal(r.delivered, 1, 'file was still written to disk');
+    assert.equal(r.acked, 0, 'acked must NOT increment on non-2xx ack');
+
+    const warn = logger.calls.find(c => c.level === 'warn' && /non-2xx/.test(c.msg || ''));
+    assert.ok(warn, 'non-2xx ack must log a warn');
+  } finally { sandbox.cleanup(); }
+});
+
+test('drainFilePush R78.1: ack throws → drainer logs warn, does NOT increment acked', async () => {
+  const sandbox = makeSandbox();
+  try {
+    const httpGetJson = async () => ({
+      ok: true, status: 200,
+      data: { tasks: [{ taskId: 'ack-throw', filename: 'f.bin', targetPath: sandbox.dir, sha256: 'x', sizeBytes: 4 }] },
+    });
+    const httpGetBinary = async () => ({ ok: true, status: 200, buffer: Buffer.from('abcd'), headerSha256: 'x' });
+    const httpPostJson = async () => { throw new Error('socket hangup on ack'); };
+    const logger = capturingLogger();
+
+    const r = await drainFilePush({
+      ...baseDeps(sandbox),
+      httpGetJson, httpGetBinary, httpPostJson, logger,
+    });
+
+    assert.equal(r.delivered, 1, 'file written even when ack throws');
+    assert.equal(r.acked, 0, 'acked must NOT increment when ack throws');
+    const warn = logger.calls.find(c => c.level === 'warn' && /threw/.test(c.msg || ''));
+    assert.ok(warn, 'ack throw must log a warn');
+  } finally { sandbox.cleanup(); }
+});
+
+test('drainFilePush R78.1: missing httpPostJson → error mentions httpPostJson', async () => {
+  // The guard at the top of drainFilePush must now mention httpPostJson
+  // alongside httpGetJson/httpGetBinary — the R78.1 wire adds a 3rd
+  // dependency. Regression test for the agent.js wiring.
+  const r = await drainFilePush({
+    hostname: 'X', agentId: 'a', token: 't', centerUrl: 'http://x',
+    httpGetJson: async () => ({}),
+    httpGetBinary: async () => ({}),
+    logger: silentLogger(),
+  });
+  assert.equal(r.processed, 0);
+  assert.match(r.error, /httpPostJson/);
+});
+
+test('drainFilePush R78.1: multiple tasks → ack called once per task, acked reflects 2xx only', async () => {
+  const sandbox = makeSandbox();
+  try {
+    const httpGetJson = async () => ({
+      ok: true, status: 200,
+      data: {
+        tasks: [
+          { taskId: 'm-1', filename: 'a.bin', targetPath: sandbox.dir, sha256: 'x', sizeBytes: 4 },
+          { taskId: 'm-2', filename: 'b.bin', targetPath: sandbox.dir, sha256: 'x', sizeBytes: 4 },
+        ],
+      },
+    });
+    const httpGetBinary = async () => ({ ok: true, status: 200, buffer: Buffer.from('abcd'), headerSha256: 'x' });
+
+    const ackCalls = [];
+    const httpPostJson = async (args) => {
+      ackCalls.push({ taskId: args.body?.hostname ? args.url.match(/\/file-push\/([^/]+)\/ack/)?.[1] : null, args });
+      // First ack 200, second 503 — half success
+      return ackCalls.length === 1
+        ? { ok: true, status: 200, data: { ok: true } }
+        : { ok: false, status: 503, data: { error: 'down' } };
+    };
+
+    const r = await drainFilePush({
+      ...baseDeps(sandbox),
+      httpGetJson, httpGetBinary, httpPostJson, logger: silentLogger(),
+    });
+
+    assert.equal(r.processed, 2);
+    assert.equal(r.delivered, 2, 'both files written to disk');
+    assert.equal(r.acked, 1, 'only the first 2xx counts; second 503 does not');
+    assert.equal(ackCalls.length, 2, 'httpPostJson called once per task');
+    assert.equal(ackCalls[0].taskId, 'm-1');
+    assert.equal(ackCalls[1].taskId, 'm-2');
+  } finally { sandbox.cleanup(); }
 });

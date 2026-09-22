@@ -345,6 +345,12 @@ async function runAdRuntime({ config, logger }) {
       centerUrl: config.centerUrl,
       httpGetJson: agentHttpGetJson,
       httpGetBinary: agentHttpGetBinary,
+      // 2026-09-22 R78.1 — agent-side ack endpoint. After the drainer
+      // writes the file (or hits a hard failure) it POSTs the outcome
+      // to /api/agent/file-push/:id/ack so the center flips the
+      // per-target status + emits the audit row. httpPostJson stamps
+      // the X-Agent-Token header the same way httpGetJson does.
+      httpPostJson: agentHttpPostJson,
       logger,
     }),
     // 2026-09-05 R81 — drain member-server PowerShell on every

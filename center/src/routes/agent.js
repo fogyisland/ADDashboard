@@ -479,6 +479,62 @@ export function agentRouter({ config, logger, mount = 'full' }) {
       }
     });
 
+    // 2026-09-22 R78.1 — agent-side file-push ack. After the agent has
+    // written the file to disk (or hit a write error), it POSTs the
+    // outcome here so the center flips the per-target status to
+    // 'delivered' / 'failed' and emits the matching audit row. Closes
+    // the long-standing gap where the center's only ack surface was
+    // the admin-authed /api/admin/file-push/:id/ack (the agent doesn't
+    // hold an ADMIN_TOKEN). Body shape mirrors the admin ack so the
+    // service-layer ackTask() is reused without changes.
+    //
+    //   POST /api/agent/file-push/:id/ack
+    //   body: { hostname, agentId, ok, errorMessage? }
+    //   200 — { task } on success; target status flipped
+    //   400 — missing hostname/agentId
+    //   403 — hostname not a target of this task (defense-in-depth;
+    //         mirrors the GET /file guard on the same task)
+    //   404 — task id unknown
+    r.post('/api/agent/file-push/:id/ack', agentMw, async (req, res) => {
+      const body = req.body || {};
+      const hostname = String(body.hostname || '').trim();
+      const agentId = String(body.agentId || '').trim();
+      const ok = body.ok === true || body.ok === 'true';
+      const errorMessage = typeof body.errorMessage === 'string' ? body.errorMessage : null;
+      if (!hostname) return res.status(400).json({ error: 'hostname required' });
+      if (!agentId) return res.status(400).json({ error: 'agentId required' });
+      try {
+        const { ackTask, getTask } = await import('../services/file-push.js');
+        // Defense-in-depth: ackTask will 404 if hostname is not a target,
+        // but we can produce a clearer 403 here by checking targets first.
+        const t = await getTask(req.params.id);
+        if (!t.targets.includes(hostname)) {
+          return res.status(403).json({ error: 'hostname not a target of this task' });
+        }
+        const updated = await ackTask(req.params.id, hostname, agentId, ok, errorMessage);
+        // operator_id is null: this is an agent action, not an operator one.
+        // Mirrors the ad-commands ack pattern at /api/agent/ad-commands/:id/result.
+        await writeAudit({
+          action: ok ? 'push_file_delivered' : 'push_file_failed',
+          target: req.params.id,
+          payload: {
+            taskId: req.params.id,
+            hostname,
+            agentId,
+            errorMessage,
+            taskStatus: updated.status,
+            source: 'agent'
+          },
+          logger
+        });
+        res.json(updated);
+      } catch (e) {
+        if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+        logger.error({ err: e, taskId: req.params.id, hostname }, 'agent file-push ack failed');
+        res.status(500).json({ error: 'internal' });
+      }
+    });
+
     // 2026-08-31 R75 — AD user & group management command queue.
     // Agents poll this endpoint on their normal cadence to find queued
     // commands targeting their hostname. Two-step claim is handled by

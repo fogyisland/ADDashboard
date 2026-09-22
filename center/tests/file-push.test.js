@@ -633,6 +633,125 @@ test('agent GET /api/agent/file-push/:id/file: returns bytes when hostname match
   } finally { cleanTmpDir(dir); }
 });
 
+// ── R78.1 — agent-side ack endpoint ──────────────────────────────────────
+// Closes the long-standing R78 KNOWN GAP: after the agent wrote a file
+// to disk there was no agent-auth way to tell the centre "delivered".
+// Operators had to flip the per-target column manually via the admin UI.
+
+test('agent POST /api/agent/file-push/:id/ack: ok=true emits push_file_delivered', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    const db = makeAgentDb();
+    _setDbForTest(db);
+    const t = await createTask({ filename: 'd.bin', buffer: Buffer.from('d'),
+      targetType: 'dc', targets: ['dc-agent-ok'], targetPath: '/p', uploadedBy: 'u1' });
+
+    const r = await supertest(buildAgentApp(db))
+      .post(`/api/agent/file-push/${t.taskId}/ack`)
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'dc-agent-ok', agentId: 'agent-ok-1', ok: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.status, 'delivered');
+    const tgt = r.body.targetStatus.find(x => x.name === 'dc-agent-ok');
+    assert.equal(tgt.status, 'delivered');
+    assert.ok(tgt.deliveredAt);
+    // Audit row — operator_id is null (agent action). Mirrors
+    // ad-commands ack and the admin ack shape. payload is stored as a
+    // JSON string (writeAudit → capPayload); the real prod reader
+    // (listAudit) parses it; we do the same here to assert shape.
+    const delivered = db.auditRows.find(x => x.action === 'push_file_delivered');
+    assert.ok(delivered, 'push_file_delivered audit row must be present');
+    assert.equal(delivered.userId, null, 'operator_id must be null on agent ack');
+    assert.equal(delivered.target, t.taskId);
+    const dPayload = JSON.parse(delivered.payload);
+    assert.equal(dPayload.hostname, 'dc-agent-ok');
+    assert.equal(dPayload.source, 'agent');
+    assert.equal(dPayload.taskStatus, 'delivered');
+  } finally { cleanTmpDir(dir); }
+});
+
+test('agent POST /api/agent/file-push/:id/ack: ok=false emits push_file_failed with errorMessage', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    const db = makeAgentDb();
+    _setDbForTest(db);
+    const t = await createTask({ filename: 'f.bin', buffer: Buffer.from('f'),
+      targetType: 'server', targets: ['srv-agent-fail'], targetPath: '/p', uploadedBy: 'u1' });
+
+    const r = await supertest(buildAgentApp(db))
+      .post(`/api/agent/file-push/${t.taskId}/ack`)
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'srv-agent-fail', agentId: 'agent-fail-1', ok: false, errorMessage: 'EACCES on targetPath' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.status, 'failed');
+    const tgt = r.body.targetStatus.find(x => x.name === 'srv-agent-fail');
+    assert.equal(tgt.status, 'failed');
+    assert.equal(tgt.errorMessage, 'EACCES on targetPath');
+    const failed = db.auditRows.find(x => x.action === 'push_file_failed');
+    assert.ok(failed, 'push_file_failed audit row must be present');
+    assert.equal(failed.userId, null);
+    const fPayload = JSON.parse(failed.payload);
+    assert.equal(fPayload.errorMessage, 'EACCES on targetPath');
+    assert.equal(fPayload.taskStatus, 'failed');
+  } finally { cleanTmpDir(dir); }
+});
+
+test('agent POST /api/agent/file-push/:id/ack: 400 when hostname or agentId missing', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    _setDbForTest(makeAgentDb());
+    const t = await createTask({ filename: 'm.bin', buffer: Buffer.from('m'),
+      targetType: 'dc', targets: ['dc-m'], targetPath: '/p', uploadedBy: 'u1' });
+
+    // Missing hostname
+    let r = await supertest(buildAgentApp())
+      .post(`/api/agent/file-push/${t.taskId}/ack`)
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ agentId: 'a', ok: true });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /hostname/);
+
+    // Missing agentId
+    r = await supertest(buildAgentApp())
+      .post(`/api/agent/file-push/${t.taskId}/ack`)
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'dc-m', ok: true });
+    assert.equal(r.status, 400);
+    assert.match(r.body.error, /agentId/);
+  } finally { cleanTmpDir(dir); }
+});
+
+test('agent POST /api/agent/file-push/:id/ack: 403 when hostname not a target of this task', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    _setDbForTest(makeAgentDb());
+    const t = await createTask({ filename: 'priv.bin', buffer: Buffer.from('private'),
+      targetType: 'dc', targets: ['dc-only'], targetPath: '/p', uploadedBy: 'u1' });
+    const r = await supertest(buildAgentApp())
+      .post(`/api/agent/file-push/${t.taskId}/ack`)
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'someone-else', agentId: 'a', ok: true });
+    assert.equal(r.status, 403);
+  } finally { cleanTmpDir(dir); }
+});
+
+test('agent POST /api/agent/file-push/:id/ack: 404 on unknown taskId', async () => {
+  const dir = freshTmpDir();
+  try {
+    await resetService({ dir });
+    _setDbForTest(makeAgentDb());
+    const r = await supertest(buildAgentApp())
+      .post('/api/agent/file-push/nonexistent-task-id/ack')
+      .set('X-Agent-Token', AGENT_TOKEN)
+      .send({ hostname: 'dc-x', agentId: 'a', ok: true });
+    assert.equal(r.status, 404);
+  } finally { cleanTmpDir(dir); }
+});
+
 // ── Classifier coverage (sibling-SDD audit pattern) ──────────────────────
 
 test('classifier: R65 file-push actions resolve to non-default categories', async () => {
