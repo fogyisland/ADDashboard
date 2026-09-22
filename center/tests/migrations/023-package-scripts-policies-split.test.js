@@ -22,13 +22,24 @@ import { tmpdir } from 'node:os';
 // shape + bound params without driving a real DB. The fake returns
 // `installed_packages` rows on the first SELECT and {} for everything
 // else, so the helper runs end-to-end against a deterministic dataset.
-function makeFakeDb({ installedRows = defaultInstalledRows(), dropGuardRows = [], fkGuardRows = [] } = {}) {
+//
+// `fkReAddProbeRows` (DB H2/H3) controls the post-DROP probe that gates
+// re-adding fk_msp_pkg → package_scripts(name). Default: empty (FK
+// absent) so the ADD CONSTRAINT fires on the upgrade path — the common
+// case after m023 dropped the V0 FK. Tests that exercise the
+// "already-present" idempotent re-apply pass `[{ x: 1 }]`.
+function makeFakeDb({ installedRows = defaultInstalledRows(), dropGuardRows = [], fkGuardRows = [], fkReAddProbeRows = [] } = {}) {
   const calls = [];
   let selectCount = 0;
   const fake = {
     dialect: 'mysql',
     execute: async (sql, params) => {
-      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 80), params: params ? [...params] : [] });
+      // Capture the first 240 chars of the first line — long enough to
+      // fit the single-line ADD CONSTRAINT FK declaration (~160 chars)
+      // so regex assertions like /REFERENCES package_scripts\(name\)/
+      // can match without truncation. Earlier 80-char cutoff was fine
+      // for single-line DROP statements but truncated the ADD shape.
+      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 240), params: params ? [...params] : [] });
       const trimmed = sql.trim();
       if (trimmed.startsWith('SELECT name, version, type, manifest_json')) {
         selectCount++;
@@ -45,6 +56,11 @@ function makeFakeDb({ installedRows = defaultInstalledRows(), dropGuardRows = []
       // skip-the-drop-FK re-apply path.
       if (trimmed.startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
         return { rows: fkGuardRows };
+      }
+      // DB H2/H3: MySQL FK re-add probe (information_schema).
+      // Empty (default) → ADD CONSTRAINT fires; [{x:1}] → no-op re-apply.
+      if (trimmed.startsWith('SELECT 1 AS x FROM information_schema.TABLE_CONSTRAINTS')) {
+        return { rows: fkReAddProbeRows };
       }
       return { rows: [] };
     }
@@ -112,6 +128,22 @@ test('migrates each installed_packages row to package_scripts + package_policies
     const dropIdx = calls.findIndex(c => c.sql.startsWith('DROP TABLE'));
     assert.ok(fkIdx >= 0 && dropIdx >= 0, 'both FK drop and TABLE drop present');
     assert.ok(fkIdx < dropIdx, 'FK drop must run before TABLE drop');
+
+    // DB H2/H3: fk_msp_pkg is re-added with the V1 FK shape AFTER the
+    // DROP TABLE — upgrade path converges on the fresh-install schema.
+    // Default `fkReAddProbeRows = []` (FK absent) → ADD CONSTRAINT fires.
+    const fkAddCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.equal(fkAddCalls.length, 1, 'fk_msp_pkg re-added exactly once');
+    const fkAddIdx = calls.findIndex(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.ok(fkAddIdx > dropIdx, 'ADD CONSTRAINT must run after DROP TABLE installed_packages');
+    assert.match(fkAddCalls[0].sql, /REFERENCES package_scripts\(name\)/, 're-added FK targets package_scripts');
+    assert.match(fkAddCalls[0].sql, /ON DELETE CASCADE/, 're-added FK preserves ON DELETE CASCADE');
+    // MySQL FK re-add probe was issued exactly once.
+    const fkProbeCalls = calls.filter(c =>
+      c.sql.startsWith('SELECT 1 AS x FROM information_schema.TABLE_CONSTRAINTS'));
+    assert.equal(fkProbeCalls.length, 1, 'FK re-add probe queried once');
   } finally {
     cleanup();
   }
@@ -239,10 +271,11 @@ test('MSSQL dialect uses sys.tables guard before DROP', async () => {
   // "already gone" case.
   const calls = [];
   let selectCount = 0;
+  let fkProbeCount = 0;
   const fake = {
     dialect: 'mssql',
     execute: async (sql, params) => {
-      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 80), params: params ? [...params] : [] });
+      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 240), params: params ? [...params] : [] });
       if (sql.trim().startsWith('SELECT name, version, type, manifest_json')) {
         selectCount++;
         if (selectCount === 1) return { rows: defaultInstalledRows() };
@@ -252,9 +285,13 @@ test('MSSQL dialect uses sys.tables guard before DROP', async () => {
         // Simulate "installed_packages already gone"
         return { rows: [] };
       }
-      // T14: MSSQL FK probe — return "FK present" so the FK DROP fires.
+      // MSSQL FK probe — called twice: once before the DROP, once before
+      // the re-add. First call returns "present" (DROP fires); second
+      // call returns "absent" (re-add fires). The fake is stateful.
       if (sql.trim().startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
-        return { rows: [{ x: 1 }] };
+        fkProbeCount++;
+        if (fkProbeCount === 1) return { rows: [{ x: 1 }] };
+        return { rows: [] };
       }
       return { rows: [] };
     }
@@ -269,9 +306,13 @@ test('MSSQL dialect uses sys.tables guard before DROP', async () => {
     assert.equal(drops.length, 0, 'no DROP issued when sys.tables says installed_packages is gone');
     // T14: MSSQL FK probe + DROP CONSTRAINT fired
     const fkProbeCalls = calls.filter(c => c.sql.startsWith('SELECT 1 AS x FROM sys.foreign_keys'));
-    assert.equal(fkProbeCalls.length, 1, 'sys.foreign_keys guard queried once');
+    assert.equal(fkProbeCalls.length, 2, 'sys.foreign_keys guard queried twice (drop probe + re-add probe)');
     const fkDropCalls = calls.filter(c => c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
     assert.equal(fkDropCalls.length, 1, 'FK fk_msp_pkg dropped once via DROP CONSTRAINT');
+    // DB H2/H3: re-add probe saw "absent" → ADD CONSTRAINT fires.
+    const fkAddCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.equal(fkAddCalls.length, 1, 'fk_msp_pkg re-added with ADD CONSTRAINT');
   } finally {
     cleanup();
   }
@@ -286,7 +327,7 @@ test('T14: MSSQL re-apply with FK already gone skips the FK DROP', async () => {
   const fake = {
     dialect: 'mssql',
     execute: async (sql, params) => {
-      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 80), params: params ? [...params] : [] });
+      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 240), params: params ? [...params] : [] });
       if (sql.trim().startsWith('SELECT name, version, type, manifest_json')) {
         selectCount++;
         if (selectCount === 1) return { rows: defaultInstalledRows() };
@@ -296,7 +337,8 @@ test('T14: MSSQL re-apply with FK already gone skips the FK DROP', async () => {
         return { rows: [{ x: 1 }] };
       }
       if (sql.trim().startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
-        // Simulate "FK already gone"
+        // Simulate "FK already gone" — both the DROP probe and the
+        // RE-ADD probe see "absent".
         return { rows: [] };
       }
       return { rows: [] };
@@ -307,7 +349,7 @@ test('T14: MSSQL re-apply with FK already gone skips the FK DROP', async () => {
     const { migrateInstalledPackagesToTwoTable } = await importHelper();
     await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
     const fkProbeCalls = calls.filter(c => c.sql.startsWith('SELECT 1 AS x FROM sys.foreign_keys'));
-    assert.equal(fkProbeCalls.length, 1, 'sys.foreign_keys guard queried once');
+    assert.equal(fkProbeCalls.length, 2, 'sys.foreign_keys guard queried twice (drop probe + re-add probe)');
     const fkDropCalls = calls.filter(c =>
       c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP FOREIGN KEY') ||
       c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
@@ -315,6 +357,10 @@ test('T14: MSSQL re-apply with FK already gone skips the FK DROP', async () => {
     // DROP TABLE still fires
     const dropCalls = calls.filter(c => c.sql.startsWith('DROP TABLE'));
     assert.equal(dropCalls.length, 1, 'DROP TABLE installed_packages fired');
+    // DB H2/H3: re-add probe saw "absent" → ADD CONSTRAINT fires.
+    const fkAddCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.equal(fkAddCalls.length, 1, 'fk_msp_pkg re-added with ADD CONSTRAINT');
   } finally {
     cleanup();
   }
@@ -336,6 +382,137 @@ test('T14: empty installed_packages short-circuits before FK drop + DROP TABLE',
     assert.equal(fkDropCalls.length, 0, 'no FK drop on empty installed_packages');
     const drops = calls.filter(c => c.sql.startsWith('DROP TABLE'));
     assert.equal(drops.length, 0, 'no DROP TABLE on empty installed_packages');
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+// DB H2/H3 — the four contracts that the upgrade-path FK re-add must honor.
+
+test('H2/H3: MySQL upgrade path re-adds fk_msp_pkg → package_scripts(name) ON DELETE CASCADE', async () => {
+  // The upgrade path's defining moment: 2 rows in installed_packages, FK
+  // probe sees "absent" after the drop, ADD CONSTRAINT fires pointing at
+  // package_scripts with ON DELETE CASCADE — exactly what fresh installs
+  // get from 01-tables.sql:350.
+  const { fake, calls } = makeFakeDb();
+  const { dataDir, cleanup } = makeFakeDataDir();
+  try {
+    const { migrateInstalledPackagesToTwoTable } = await importHelper();
+    const r = await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
+    assert.equal(r.migrated, 2);
+    // Order: DROP installed_packages → probe → ADD CONSTRAINT (because
+    // default probe returns "absent"). Verify by index ordering.
+    const dropIdx = calls.findIndex(c => c.sql.startsWith('DROP TABLE'));
+    const probeIdx = calls.findIndex(c =>
+      c.sql.startsWith('SELECT 1 AS x FROM information_schema.TABLE_CONSTRAINTS'));
+    const addIdx = calls.findIndex(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.ok(dropIdx >= 0, 'DROP TABLE present');
+    assert.ok(probeIdx > dropIdx, 'FK re-add probe runs AFTER DROP TABLE');
+    assert.ok(addIdx > probeIdx, 'ADD CONSTRAINT runs AFTER the probe');
+    // FK shape must match the fresh-install declaration exactly.
+    const addCall = calls[addIdx];
+    assert.match(addCall.sql, /FOREIGN KEY \(package_name\)/);
+    assert.match(addCall.sql, /REFERENCES package_scripts\(name\)/);
+    assert.match(addCall.sql, /ON DELETE CASCADE/);
+    assert.match(addCall.sql, /CONSTRAINT fk_msp_pkg/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('H2/H3: MySQL re-add is idempotent — second run with FK already present skips ADD CONSTRAINT', async () => {
+  // A re-run on a DB that already has fk_msp_pkg (e.g. previous run +
+  // upgrade cycle) must NOT issue a duplicate ADD CONSTRAINT — the
+  // information_schema probe sees the FK already exists and short-circuits.
+  const { fake, calls } = makeFakeDb({ fkReAddProbeRows: [{ x: 1 }] });
+  const { dataDir, cleanup } = makeFakeDataDir();
+  try {
+    const { migrateInstalledPackagesToTwoTable } = await importHelper();
+    const r = await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
+    assert.equal(r.migrated, 2, 'migration still completes normally');
+    const fkAddCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.equal(fkAddCalls.length, 0, 'no ADD CONSTRAINT issued when probe sees FK already present');
+    // Probe was still issued (cheap idempotency check).
+    const fkProbeCalls = calls.filter(c =>
+      c.sql.startsWith('SELECT 1 AS x FROM information_schema.TABLE_CONSTRAINTS'));
+    assert.equal(fkProbeCalls.length, 1, 'FK re-add probe queried once even on no-op path');
+  } finally {
+    cleanup();
+  }
+});
+
+test('H2/H3: MSSQL upgrade path re-adds fk_msp_pkg → package_scripts(name)', async () => {
+  // MSSQL probe uses sys.foreign_keys; the fake must answer both the
+  // DROP probe (return "present" so the DROP fires) and the RE-ADD probe
+  // (return "absent" so ADD CONSTRAINT fires).
+  const calls = [];
+  let selectCount = 0;
+  let fkProbeCount = 0;
+  const fake = {
+    dialect: 'mssql',
+    execute: async (sql, params) => {
+      calls.push({ sql: sql.trim().split('\n')[0].slice(0, 240), params: params ? [...params] : [] });
+      if (sql.trim().startsWith('SELECT name, version, type, manifest_json')) {
+        selectCount++;
+        if (selectCount === 1) return { rows: defaultInstalledRows() };
+        return { rows: [] };
+      }
+      if (sql.trim().startsWith('SELECT 1 AS x FROM sys.tables')) {
+        // installed_packages present → DROP fires
+        return { rows: [{ x: 1 }] };
+      }
+      if (sql.trim().startsWith('SELECT 1 AS x FROM sys.foreign_keys')) {
+        fkProbeCount++;
+        if (fkProbeCount === 1) return { rows: [{ x: 1 }] }; // DROP probe: present
+        return { rows: [] }; // RE-ADD probe: absent
+      }
+      return { rows: [] };
+    }
+  };
+  const { dataDir, cleanup } = makeFakeDataDir();
+  try {
+    const { migrateInstalledPackagesToTwoTable } = await importHelper();
+    const r = await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
+    assert.equal(r.migrated, 2);
+    // Both FK probes issued.
+    const fkProbeCalls = calls.filter(c => c.sql.startsWith('SELECT 1 AS x FROM sys.foreign_keys'));
+    assert.equal(fkProbeCalls.length, 2, 'sys.foreign_keys guard queried twice (drop probe + re-add probe)');
+    // FK drop fired once.
+    const fkDropCalls = calls.filter(c => c.sql.startsWith('ALTER TABLE ad_member_server_packages DROP CONSTRAINT'));
+    assert.equal(fkDropCalls.length, 1, 'FK dropped once via DROP CONSTRAINT');
+    // FK re-add fired once with V1 shape.
+    const fkAddCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.equal(fkAddCalls.length, 1, 'FK re-added once via ADD CONSTRAINT');
+    assert.match(fkAddCalls[0].sql, /REFERENCES package_scripts\(name\)/);
+    assert.match(fkAddCalls[0].sql, /ON DELETE CASCADE/);
+  } finally {
+    cleanup();
+  }
+});
+
+test('H2/H3: fresh-install short-circuit — empty installed_packages skips the FK re-add entirely', async () => {
+  // On a fresh install, 01-tables.sql already declares fk_msp_pkg. The
+  // helper's early-return on `migrated === 0` must skip the FK re-add —
+  // no probe, no ADD CONSTRAINT — so 01-tables.sql remains the single
+  // source of truth for the FK on a clean DB.
+  const { fake, calls } = makeFakeDb({ installedRows: [] });
+  const dataDir = mkdtempSync(join(tmpdir(), 'r66-023-h23-fresh-'));
+  try {
+    const { migrateInstalledPackagesToTwoTable } = await importHelper();
+    const r = await migrateInstalledPackagesToTwoTable({ db: fake, dataDir });
+    assert.equal(r.migrated, 0);
+    // No FK re-add probe issued on the early-return path.
+    const fkProbeCalls = calls.filter(c =>
+      c.sql.startsWith('SELECT 1 AS x FROM information_schema.TABLE_CONSTRAINTS') ||
+      c.sql.startsWith('SELECT 1 AS x FROM sys.foreign_keys'));
+    assert.equal(fkProbeCalls.length, 0, 'no FK re-add probe on empty installed_packages');
+    // No ADD CONSTRAINT issued on the early-return path.
+    const fkAddCalls = calls.filter(c =>
+      c.sql.startsWith('ALTER TABLE ad_member_server_packages ADD CONSTRAINT'));
+    assert.equal(fkAddCalls.length, 0, 'no ADD CONSTRAINT on empty installed_packages');
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }

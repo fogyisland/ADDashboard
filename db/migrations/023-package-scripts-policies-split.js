@@ -13,6 +13,18 @@
 // sys.tables probe (no IF EXISTS in MSSQL DROP). Either way a
 // re-apply on an already-migrated DB is a safe no-op.
 //
+// DB H2/H3 (2026-09-22): the V0 FK `fk_msp_pkg` on
+// ad_member_server_packages.package_name originally pointed at
+// installed_packages.name (declared in migration 014). After m023's
+// DROP TABLE installed_packages, the FK is dropped but no replacement
+// is added — so upgrade-path deployments end up with NO FK on
+// package_name. Fresh installs are fine because db/schema/01-tables.sql
+// (and the mssql sibling) declare `fk_msp_pkg → package_scripts(name)
+// ON DELETE CASCADE` from the start. The fix re-adds the same FK here
+// (idempotent probe-then-add) so the upgrade path converges on the
+// fresh-install schema. Skipped on the empty / fresh-install path so
+// 01-tables.sql remains the single source of truth on a clean DB.
+//
 // This file ships at db/migrations/023-package-scripts-policies-split.js;
 // a sibling dispatcher at db/migrations/mssql/023-package-scripts-policies-split.js
 // delegates here (the SQL is dialect-portable via `?` placeholders that
@@ -156,7 +168,47 @@ export async function migrateInstalledPackagesToTwoTable({ db, dataDir, writeAud
     }
   }
 
-  // 5. One audit summary row. Best-effort: caller may pass writeAudit
+  // 5. DB H2/H3 — re-add fk_msp_pkg pointing at package_scripts(name).
+  //    On the upgrade path this is required: 01-tables.sql is not run
+  //    after migrations, so the V0 FK (now dropped) has no replacement.
+  //    On the fresh-install backfill path package_scripts + the FK are
+  //    already declared in 01-tables.sql, so we short-circuit on the
+  //    same `migrated === 0` early-return above. Re-add is gated on a
+  //    constraint-name probe so a re-run is a safe no-op:
+  //      MySQL: information_schema.TABLE_CONSTRAINTS (schema-scoped via
+  //             DATABASE() — avoids matching a different DB on the same
+  //             server).
+  //      MSSQL: sys.foreign_keys (database-scoped by default).
+  //    The ADD CONSTRAINT statement is identical to the fresh-install
+  //    declaration so upgrade-path and fresh-install schemas converge.
+  if (db.dialect === 'mysql') {
+    const fkExists = await db.execute(
+      `SELECT 1 AS x FROM information_schema.TABLE_CONSTRAINTS
+         WHERE CONSTRAINT_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'ad_member_server_packages'
+           AND CONSTRAINT_NAME = 'fk_msp_pkg'`,
+      []
+    );
+    if (fkExists.rows.length === 0) {
+      await db.execute(
+        `ALTER TABLE ad_member_server_packages ADD CONSTRAINT fk_msp_pkg FOREIGN KEY (package_name) REFERENCES package_scripts(name) ON DELETE CASCADE`,
+        []
+      );
+    }
+  } else {
+    const fkExists = await db.execute(
+      "SELECT 1 AS x FROM sys.foreign_keys WHERE name = 'fk_msp_pkg'",
+      []
+    );
+    if (fkExists.rows.length === 0) {
+      await db.execute(
+        `ALTER TABLE ad_member_server_packages ADD CONSTRAINT fk_msp_pkg FOREIGN KEY (package_name) REFERENCES package_scripts(name) ON DELETE CASCADE`,
+        []
+      );
+    }
+  }
+
+  // 6. One audit summary row. Best-effort: caller may pass writeAudit
   //    as null/undefined; skip silently.
   if (writeAudit) {
     await writeAudit({
