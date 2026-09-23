@@ -71,6 +71,7 @@ $productionScripts = @(
   'upgrade-center.ps1'
   'start.ps1'
   'fix-build-env.ps1'   # R87.1 — fix npm/node env on green-installed server, then build:web
+  'prepare-release.ps1' # R88 — wrapper for the four sync scripts (operator runs this on prod before each deploy)
 )
 
 # Other files at scripts/ root that ship alongside the .ps1s (used by

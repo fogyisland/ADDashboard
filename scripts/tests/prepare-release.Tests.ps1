@@ -93,6 +93,7 @@ Describe 'sync-scripts-mirror.ps1 (R88 — no-wipe)' {
     $content | Should -Match "'install-agent\.ps1'"
     $content | Should -Match "'install-center\.ps1'"
     $content | Should -Match "'fix-build-env\.ps1'"   # R87.1 entry
+    $content | Should -Match "'prepare-release\.ps1'" # R88 entry — wrapper itself must ship to prod mirror
   }
 
   It 'still uses robocopy /MIR for scripts/common/ (tests excluded)' {
