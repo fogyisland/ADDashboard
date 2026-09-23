@@ -1,8 +1,9 @@
 # sync-scripts-mirror.ps1 — mirror the production script set into
-# publish/system/scripts/ using robocopy /MIR.
+# publish/system/scripts/ without destroying git-tracked dev-only helpers.
 #
-# Why: production runs from publish/system/scripts/ (the git-tracked mirror),
-# not from the dev-box scripts/. Without a sync script, drift creeps in when
+# Why this exists
+# Production runs from publish/system/scripts/ (the git-tracked mirror), not
+# from the dev-box scripts/. Without a sync script, drift creeps in when
 # someone updates a PS1 and forgets the manual mirror copy. The 2026-08-23
 # Register-ADDashboardAgent split proved manual `cp` (bash or otherwise) was
 # error-prone: bash brings platform-specific escape pitfalls, and there's no
@@ -22,6 +23,17 @@
 # is what an operator unpacks to C:\addashboard, and dev tooling shipped to
 # a production server is dead weight + a fingerprint leak. Adding a new
 # production script requires updating $productionScripts below.
+#
+# Pre-R88 behavior (BUG): the script wiped the entire publish/system/scripts/
+# directory then rebuilt from the allow-list. Every git-tracked dev-only
+# helper (build-publish-zip.ps1, kill-server.ps1, verify-mirror.ps1, …)
+# briefly became "deleted" between sync and the next `git checkout`. Worse,
+# a partial failure mid-sync (network glitch, Ctrl+C) left the mirror in a
+# half-wiped state until the operator manually restored it. R88 fix: stop
+# wiping. Only overwrite / add the allow-list entries; leave everything else
+# (including git-tracked dev-only helpers and non-tracked local files) in
+# place. The first run after this change will still produce 12 added files
+# in git status, but every subsequent run is a no-op for those files.
 #
 # Excludes:
 #   - *.Tests.ps1        (Pester tests live in scripts/tests/ — never ship)
@@ -77,12 +89,9 @@ foreach ($s in $productionScripts + $productionOther) {
   }
 }
 
-# Wipe destination scripts/ root (preserving common/) and rebuild from allow-list.
-# robocopy /MIR on a single file at a time would re-scan every iteration;
-# Copy-Item -Force is cleaner for an explicit list, and our list is small.
-foreach ($existing in Get-ChildItem -LiteralPath $dst -File -ErrorAction SilentlyContinue) {
-  Remove-Item -LiteralPath $existing.FullName -Force
-}
+# R88: NO MORE WIPE. Only copy the allow-list entries over the destination.
+# Anything else in publish/system/scripts/ (git-tracked dev-only helpers,
+# untracked local notes) stays put. To remove a tracked file, use git rm.
 foreach ($s in $productionScripts + $productionOther) {
   Copy-Item -LiteralPath (Join-Path $src $s) -Destination (Join-Path $dst $s) -Force
 }
@@ -94,7 +103,6 @@ $commonDst = Join-Path $dst 'common'
 if (-not (Test-Path $commonSrc)) {
   throw "scripts/common/ missing: $commonSrc"
 }
-if (Test-Path $commonDst) { Remove-Item $commonDst -Recurse -Force }
 $commonArgs = @(
   $commonSrc,
   $commonDst,
@@ -117,4 +125,4 @@ if ($testFiles) {
   throw "test files leaked into mirror: $($testFiles.Name -join ', ')"
 }
 
-Write-Host "[sync-scripts] $src -> $dst ($($productionScripts.Count) ps1 + $($productionOther.Count) other + common/)"
+Write-Host "[sync-scripts] $src -> $dst ($($productionScripts.Count) ps1 + $($productionOther.Count) other + common/, non-wiping)"
