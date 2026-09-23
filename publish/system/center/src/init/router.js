@@ -71,7 +71,20 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
       // page doesn't show a fresh install as fully pending. Order matters:
       // 01-tables.sql includes the schema_migrations table CREATE
       // (merged from m009), so backfillMigrations has a writable target.
-      await deps.backfillMigrations(dialect, db);
+      //
+      // DB H4 (2026-09-22): also pass dataDir + writeAudit through opts so
+      // any .js sibling of a migration (e.g. R66's
+      // 023-package-scripts-policies-split.js) gets recorded too. On a
+      // fresh install the helper is a safe no-op (installed_packages has
+      // 0 rows → early return), but the row still lands in
+      // schema_migrations so the admin UI doesn't list 023 as pending.
+      // The init wizard has no audit user / data dir at this stage, so
+      // both callbacks are null — the helper's writeAudit guard short-
+      // circuits cleanly.
+      await deps.backfillMigrations(dialect, db, {
+        getDataDir: null,
+        writeAudit: null
+      });
       res.json(applied);
     } catch (e) {
       // MSSQL wraps the actionable error in `precedingErrors[]` — the top-level
