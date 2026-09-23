@@ -58,6 +58,7 @@ $productionScripts = @(
   'update-center.ps1'
   'upgrade-center.ps1'
   'start.ps1'
+  'fix-build-env.ps1'   # R87.1 — fix npm/node env on green-installed server, then build:web
 )
 
 # Other files at scripts/ root that ship alongside the .ps1s (used by
