@@ -77,7 +77,19 @@ foreach ($r in $roots) {
 # subtree but aren't in any directory). center/server.js is the center
 # entry point — if it drifts from source, the shipped center fails to
 # boot (see R73 verify-mirror incident). /MIR on a single file = copy.
-$fileRoots = @('center\server.js')
+#
+# R89 also requires center/package.json + center/package-lock.json — the
+# dependency manifests Ensure-CenterNodeModules reads at install time.
+# Without them in the mirror, deploy installs have nothing to install
+# from and the center comes up with `Cannot find package 'express'` (or
+# any other declared dep). In-place installs read the dev tree's
+# center/package.json; deploy installs read the mirror's copy. Both
+# need to exist for the two install modes to stay equivalent.
+$fileRoots = @(
+  'center\server.js'
+  'center\package.json'
+  'center\package-lock.json'
+)
 foreach ($f in $fileRoots) {
   $src = Join-Path $projectRoot $f
   $dstFile = Join-Path $dst $f

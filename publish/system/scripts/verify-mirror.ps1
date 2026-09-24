@@ -19,6 +19,24 @@
 # without being mirrored, and the list wasn't updated. Auto-scan closes the
 # gap permanently: any new source file is mirrored or the verify fails.
 #
+# ── Intentionally NOT scanned ──
+#
+# publish/system/center/data/packages/<name>/<version>/ — these are the
+# bundled built-in package sources read by seedBuiltinPackages (see
+# center/src/services/builtin-packages.js). Unlike every other entry in
+# $roots below, this tree IS the source of truth (not a mirror of a
+# repo-root side), so there is no source counterpart to hash-check
+# against. It has lived in publish/ since R12 (commit 24b1baa) and was
+# renamed in place by R82 (e253ed0). Tracked-ness is asserted instead
+# by center/tests/services/builtin-packages-tracked.test.js, which uses
+# `git ls-files --error-unmatch` to ensure every bundled file is git
+# tracked — that test is the regression guard for the R83 gap where a
+# publish rebuild silently untracked the entire tree. If a future
+# change introduces a repo-root-side origin for these files, add the
+# new path to $roots AND update sync-source-mirror.ps1 + .gitignore in
+# lockstep; until then, do NOT add publish/system/center/data/packages/
+# to $roots — the mirror scan would have nothing to compare against.
+#
 # Usage:
 #   pwsh -File scripts\verify-mirror.ps1
 #

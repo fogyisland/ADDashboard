@@ -506,8 +506,23 @@ await ((async () => {
     // Init mode: the wizard owns the web port. heartbeat/report servers are
     // NOT started — the spec explicitly says agents shouldn't be talking to
     // a half-bootstrapped center, and there's no DB yet to ingest into.
-    const server = apps.webApp.listen(finalConfig.listenPort, () => {
-      logger.info({ port: finalConfig.listenPort, needsInit }, 'center listening (init mode)');
+    //
+    // EADDRINUSE on the web port must NOT silently exit rc=1 (the .listen
+    // callback fires async, and without an `error` listener the event
+    // surfaces as uncaughtException → process.exit(1) with no stderr —
+    // operator sees nothing useful in start.bat console). The promise form
+    // mirrors multi-port.js (server.js:528+) so error messages from a busy
+    // port land on the rotated logger instead of being swallowed.
+    const server = await new Promise((resolve, reject) => {
+      const srv = apps.webApp.listen(finalConfig.listenPort, () => {
+        logger.info({ port: finalConfig.listenPort, needsInit }, 'center listening (init mode)');
+        resolve(srv);
+      });
+      srv.once('error', (err) => {
+        logger.fatal({ err: err.message, code: err.code, port: finalConfig.listenPort },
+          'init-mode web listen failed (port busy or permission denied)');
+        reject(err);
+      });
     });
     const shutdown = async (sig) => {
       logger.info({ sig }, 'shutting down');

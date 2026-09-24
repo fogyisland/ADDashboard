@@ -119,11 +119,15 @@ if ($rc -ge 8) {
 }
 $LASTEXITCODE = 0
 
-# Sanity: assert no test files snuck into the mirror. If this ever trips,
-# the source convention (tests/ as a sibling directory) was broken.
-$testFiles = Get-ChildItem -LiteralPath $dst -Recurse -File -Filter '*.Tests.ps1' -ErrorAction SilentlyContinue
-if ($testFiles) {
-  throw "test files leaked into mirror: $($testFiles.Name -join ', ')"
+# Sanity: assert no test files snuck into the mirror outside of the
+# mirrored scripts/tests/ + scripts/common/tests/ trees (those are
+# deliberately mirrored 1:1 — the source tree uses tests/ as a sibling
+# of scripts/ but operators running offline can still find them on the
+# shipped bundle). Only flag Tests.ps1 that landed outside tests/.
+$strayTestFiles = Get-ChildItem -LiteralPath $dst -Recurse -File -Filter '*.Tests.ps1' -ErrorAction SilentlyContinue |
+  Where-Object { $_.FullName -notmatch '[\\/]tests[\\/]' }
+if ($strayTestFiles) {
+  throw "test files leaked into mirror outside tests/: $($strayTestFiles.Name -join ', ')"
 }
 
 Write-Host "[sync-scripts] $src -> $dst ($($productionScripts.Count) ps1 + $($productionOther.Count) other + common/, non-wiping)"
