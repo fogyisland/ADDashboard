@@ -1,7 +1,7 @@
 import { loadConfig } from './src/config.js';
 import { createLogger } from './src/logger.js';
 import { runCollector } from './src/collector.js';
-import { postReport, postHeartbeat, fetchConfig, requestJson } from './src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, signedRequestJson } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { runDiscovery, postDiscovery, startDiscoveryScheduler } from './src/discovery.js';
 import { runHealthChecks } from './src/healthcheck.js';
@@ -14,6 +14,13 @@ import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
 import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
+// 2026-09-24 R91.4 — agentHttpGetBinary (raw-bytes endpoint) needs the
+// same X-Agent-Signature header as the JSON drainers. reporter.js wraps
+// the X-Agent-Signature stamp in signedRequestJson, but the file-push
+// endpoint returns application/octet-stream (not JSON), so we hand-roll
+// the signature via the lower-level signRequest helper. hostname +
+// agentId are closed over the same way the JSON wrappers do above.
+import { signRequest } from './src/lib/agent-identity.js';
 // 2026-09-04 R78: wire the AD-commands + file-push drainers into the
 // heartbeat loop. Both are pure-function modules; we inject the HTTP
 // helpers (requestJson for JSON wire; a binary-fetch helper for the
@@ -43,6 +50,16 @@ const defaultConfigPath = joinPath(__dirname, 'appsettings.json');
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || defaultConfigPath;
 const config = loadConfig(configPath);
 const logger = createLogger({ component: 'agent', level: config.logLevel });
+
+// 2026-09-24 R91.2 — hoist osInfo to module top level so the early
+// boot paths (port scanner, refreshPortList inside runAdRuntime,
+// PackageManager init) can read osInfo.hostname without hitting a
+// temporal-dead-zone ReferenceError. Previously osInfo was declared
+// `const` inside runNonAdRuntime at line 555; the AD runtime and the
+// recovery paths at agent.js:102 / 236 / 285 reached for it earlier
+// and crashed. Real install on KDLFLOFADSRV2 (2026-09-24) surfaced
+// the bug via "ReferenceError: osInfo is not defined" at refreshPortList.
+const osInfo = getOsInfo();
 
 // ============================================================================
 // 2026-08-15 port-scanning bootstrap (spec §1.2, §1.3):
@@ -170,24 +187,66 @@ async function runAdRuntime({ config, logger }) {
   // threading it through every call. The drainer modules don't see
   // the auth header directly — they just call httpGetJson/httpPostJson
   // and the wrapper stamps it.
+  //
+  // 2026-09-24 R91.4 — these wrappers MUST stamp X-Agent-Signature via
+  // signedRequestJson, not just X-Agent-Token. R78 wired them up before
+  // S82 identity binding shipped (S82 = 2026-09-09, R78 = 2026-09-04);
+  // R87.1 fixed the three GET paths R78 didn't touch (port-config-fetcher,
+  // port-scanner, package-manager) but skipped the drainer wrappers here,
+  // so every drainer request after the 60s restart-grace window 401'd
+  // with 'missing agent signature' on KDLFLOFADSRV2. Switching to
+  // signedRequestJson threads the (hostname, agentId) triple through and
+  // produces the same X-Agent-Signature header as the other signed paths.
+  // host = config.hostname || osInfo.hostname — NOT config.agentId,
+  // because the agent-identity HMAC binds to OS hostname + agentId, and
+  // the previous 'hostname: config.agentId' leak would have produced a
+  // signature the centre couldn't verify even if we had stamped one.
+  const agentHost = config.hostname || osInfo.hostname;
   function agentHttpGetJson(args) {
-    return requestJson({
+    return signedRequestJson({
+      method: 'GET',
       ...args,
-      headers: { 'X-Agent-Token': config.agentToken, ...(args.headers || {}) },
+      agentToken: config.agentToken,
+      hostname: agentHost,
+      agentId: config.agentId,
     });
   }
   function agentHttpPostJson(args) {
-    return requestJson({
+    return signedRequestJson({
       method: 'POST',
       ...args,
-      headers: { 'X-Agent-Token': config.agentToken, ...(args.headers || {}) },
+      agentToken: config.agentToken,
+      hostname: agentHost,
+      agentId: config.agentId,
     });
   }
   // Binary GET — returns { ok, status, buffer, headerSha256 }. Used by
   // the file-push drainer to pull raw file bytes off /api/agent/file-push/:id/file.
   // Mirrors the reporter.js requestJson response shape (ok:true on 2xx)
   // so the drainer can treat it identically to a JSON endpoint.
+  //
+  // 2026-09-24 R91.4 — also stamp X-Agent-Signature here. The raw-bytes
+  // endpoint goes through the same agentMw middleware as /api/agent/file-push,
+  // so without a signature it's 401'd once grace expires. HMAC body is null
+  // (raw GET, no JSON body) — matches what signedRequestJson sends for the
+  // other GET paths.
   async function agentHttpGetBinary({ url, headers = {}, timeoutMs = 60_000 }) {
+    // 2026-09-24 R91.4 — build the same headers signedRequestJson would
+    // produce for a GET: X-Agent-Token + X-Agent-Id + X-Agent-Signature
+    // (over hostname:agentId:<empty body>). The file-push drainer passes
+    // a plain `headers: {}` object, so we own the entire header dict here
+    // and inject the auth trio before the http.request call.
+    const authHeaders = {
+      'X-Agent-Token': config.agentToken,
+      'X-Agent-Id': config.agentId,
+      'X-Agent-Signature': signRequest({
+        hostname: agentHost,
+        agentId: config.agentId,
+        body: null,
+        token: config.agentToken
+      }),
+      ...headers
+    };
     return new Promise((resolve) => {
       let parsed;
       try { parsed = new NodeURL(url); } catch (e) {
@@ -199,7 +258,7 @@ async function runAdRuntime({ config, logger }) {
         hostname: parsed.hostname,
         port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
         path: parsed.pathname + parsed.search,
-        headers,
+        headers: authHeaders,
         timeout: timeoutMs,
       }, (res) => {
         const chunks = [];
@@ -339,8 +398,19 @@ async function runAdRuntime({ config, logger }) {
     // without needing a manual 回报 click. The http* helpers inject the
     // X-Agent-Token auth header into every request; the drainer modules
     // themselves are auth-agnostic (testable with stub functions).
+    //
+    // 2026-09-24 R91.4 — drainer callers used to pass `hostname: config.agentId`
+    // (a copy/paste bug from R78); the drainers then forwarded that value as
+    // `hostname` to the wrapper helpers, which stamped it into the HMAC
+    // signature. The centre recomputes the signature with the OS hostname
+    // from req.body.hostname, so the two sides never matched and the centre
+    // rejected every request with 'identity mismatch'. The HTTP wrappers
+    // themselves now close over `agentHost` (line ~204) and stamp the right
+    // hostname automatically; we still pass the correct hostname through to
+    // the drainers because file-push + member-commands read it for their
+    // own audit fields, not just for the signature.
     drainAdCommands: () => drainAdCommands({
-      hostname: config.agentId,
+      hostname: config.hostname || osInfo.hostname,
       token: config.agentToken,
       centerUrl: config.centerUrl,
       httpGetJson: agentHttpGetJson,
@@ -352,7 +422,7 @@ async function runAdRuntime({ config, logger }) {
       logger,
     }),
     drainFilePush: () => drainFilePush({
-      hostname: config.agentId,
+      hostname: config.hostname || osInfo.hostname,
       agentId: config.agentId,
       token: config.agentToken,
       centerUrl: config.centerUrl,
@@ -372,7 +442,10 @@ async function runAdRuntime({ config, logger }) {
     // result. dispatcher gets the powerShellPath injected so the
     // agent's config can point at a non-default PowerShell location.
     drainMemberCommands: () => drainMemberCommands({
-      hostname: config.agentId,
+      // 2026-09-24 R91.4 — same hostname bug as drainAdCommands /
+      // drainFilePush above. Replaced `config.agentId` with the actual
+      // OS hostname so drainer audit fields and HMAC triple agree.
+      hostname: config.hostname || osInfo.hostname,
       token: config.agentToken,
       centerUrl: config.centerUrl,
       httpGetJson: agentHttpGetJson,
@@ -507,7 +580,12 @@ async function runAdRuntime({ config, logger }) {
       const r = await runHealthChecks({
         centerUrl: config.centerUrl,
         agentToken: config.agentToken,
-        hostname: config.agentId,
+        // 2026-09-24 R91.4 — was `hostname: config.agentId`, the same
+        // copy/paste bug as the drainer callers. healthcheck.js forwards
+        // this value as both the per-probe audit label and as part of
+        // the X-Agent-Signature HMAC triple via signedRequestJson; the
+        // wrong value produced 'identity mismatch' 401s on every probe.
+        hostname: config.hostname || osInfo.hostname,
         heartbeatPort: cachedPorts.heartbeatPort,
         ports: cachedPortList.map(p => p.port)
       });
@@ -552,17 +630,29 @@ async function runAdRuntime({ config, logger }) {
 // the AD runtime above remains the sole writer to ad_replication_status.
 // ============================================================================
 async function runNonAdRuntime({ config, logger }) {
-  const osInfo = getOsInfo();
+  // 2026-09-24 R91.2 — osInfo is now module-level (hoisted from here to
+  // agent.js top). The previous shadowing const inside this function put
+  // the variable in TDZ for any code path that ran before this line.
 
   // 1. Self-register once on boot. The endpoint is idempotent (upsert
   //    discovered_via='self-register'), so it's safe to retry on transient
   //    failures. Fire-and-forget with a logger breadcrumb so a center
   //    outage at boot doesn't block the heartbeat from coming up.
   async function selfRegister() {
-    const r = await requestJson({
+    // 2026-09-24 R91.4 — used to call `requestJson` with only the
+    // X-Agent-Token header. self-register hits the agentMw-protected
+    // /api/admin/member-servers/self-register endpoint, which goes
+    // through agent-token.js S82 identity binding; without the signature
+    // header the request 401s after the 60s grace window. Switched to
+    // signedRequestJson with the same triple used by the other agent
+    // → center POSTs (heartbeat/report) — keeps the HMAC contract
+    // uniform across every endpoint that talks to the centre.
+    const r = await signedRequestJson({
       method: 'POST',
       url: `${config.centerUrl}/api/admin/member-servers/self-register`,
-      headers: { 'X-Agent-Token': config.agentToken },
+      agentToken: config.agentToken,
+      hostname: config.hostname || osInfo.hostname,
+      agentId: config.agentId,
       body: {
         hostname: config.hostname || osInfo.hostname,
         agentVersion: VERSION,
@@ -658,10 +748,16 @@ async function runNonAdRuntime({ config, logger }) {
         // Best-effort report POST; failures are dropped (no on-disk
         // queue for non-AD in v1 — packages are heartbeat-lightweight
         // metrics, not critical replication data).
-        return requestJson({
+        //
+        // 2026-09-24 R91.4 — packages/report is behind agentMw + S82,
+        // so stamp the (hostname, agentId, body) signature like the rest
+        // of the centre-facing POSTs.
+        return signedRequestJson({
           method: 'POST',
           url: `${config.centerUrl}/api/admin/agent/packages/report`,
-          headers: { 'X-Agent-Token': config.agentToken },
+          agentToken: config.agentToken,
+          hostname: config.hostname || osInfo.hostname,
+          agentId: config.agentId,
           body: {
             runs: [{
               packageName: pkg.name,
@@ -681,10 +777,17 @@ async function runNonAdRuntime({ config, logger }) {
 
   async function pollPackages() {
     const hostname = config.hostname || osInfo.hostname;
-    const r = await requestJson({
+    // 2026-09-24 R91.4 — packages-for-host is behind agentMw + S82.
+    // Without X-Agent-Signature it 401s after the 60s grace window,
+    // so non-AD agents stop receiving their package manifest and
+    // never run anything. Switched to signedRequestJson so the GET
+    // (no body) gets the proper empty-body signature.
+    const r = await signedRequestJson({
       method: 'GET',
       url: `${config.centerUrl}/api/admin/agent/packages-for-host?hostname=${encodeURIComponent(hostname)}`,
-      headers: { 'X-Agent-Token': config.agentToken },
+      agentToken: config.agentToken,
+      hostname,
+      agentId: config.agentId,
       timeoutMs: 30_000
     });
     if (!r.ok) {
