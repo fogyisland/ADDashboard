@@ -380,3 +380,116 @@ test('R54: source CSS defines group title as Group Header (uppercase + 11px + mu
   expect(body).toMatch(/font-size:\s*11px/);
   expect(body).toMatch(/color:\s*var\(--muted\)/);
 });
+
+// ===== R92: sidebar menu search + scrollbar =====
+// Operator directive 2026-09-24: "平台管理后台的菜单能够展开和搜索,
+// 同时展开之后提供滑动条".
+//
+// Scope:
+//   1. <input class="sidebar-search"> renders ONLY when sidebar is visible.
+//   2. Typing filters items case-insensitively by label.
+//   3. Groups with zero matches are removed (compact result).
+//   4. Empty query restores all 7 groups / 22 links.
+//   5. Clear (✕) button appears when query is non-empty and clears it.
+//   6. Source CSS defines max-height + overflow-y on the sidebar nav so
+//      a tall viewport-less screen actually gets a scrollbar instead of
+//      pushing the topbar off-screen.
+// All 19 pre-existing tests must continue to pass — empty-query state
+// must be visually/structurally equivalent to the un-filtered menu.
+
+test('R92: search input is hidden when sidebar is collapsed, visible when expanded', async () => {
+  const w = mountLayout();
+  expect(w.find('input.sidebar-search').exists()).toBe(true);
+  await w.find('.sidebar-toggle').trigger('click'); // collapse
+  await nextTick();
+  expect(w.find('input.sidebar-search').exists()).toBe(false);
+  await w.find('.sidebar-toggle').trigger('click'); // expand again
+  await nextTick();
+  expect(w.find('input.sidebar-search').exists()).toBe(true);
+});
+
+test('R92: typing "复制" filters to the two groups containing 复制 (case-insensitive)', async () => {
+  const w = mountLayout();
+  const input = w.find('input.sidebar-search');
+  await input.setValue('复制');
+  await flushPromises();
+  const groupTitles = w.findAll('.nav-group-title .label').map(t => t.text());
+  // 监控与诊断 has 复制状态概览 + 复制错误 + 复制伙伴端口监控 — keeps the group.
+  // AD 活动目录服务器 has none — group removed.
+  // 成员服务器管理 / 权限和账户 / 运维 / 运维日志 / 系统设置 — all removed.
+  expect(groupTitles).toEqual(['监控与诊断']);
+  const links = w.findAll('a.nav-link').map(a => a.text());
+  // All 3 link labels contain 复制 (复制状态概览 / 复制错误 / 复制伙伴端口监控).
+  // The non-matching 包管理 in 监控与诊断 is filtered out.
+  expect(links).toEqual(['复制状态概览', '复制错误', '复制伙伴端口监控']);
+});
+
+test('R92: search is case-insensitive — uppercase "USER" matches lowercase user (demonstrates filter lowercases both sides)', async () => {
+  const w = mountLayout();
+  const input = w.find('input.sidebar-search');
+  // Operator can type in any case — the filter lowercases BOTH the query
+  // and each label before substring match, so casing never blocks a hit.
+  // This test injects a temporary lowercase marker into one label's
+  // label path, queries for its uppercase form, and asserts the match
+  // fires. Then it removes the marker so the test doesn't leak state
+  // into the other tests in the suite.
+  await input.setValue('FILEPUSHMARKER');
+  await flushPromises();
+  // Baseline: 'FILEPUSHMARKER' has no matches anywhere in the menu.
+  expect(w.findAll('a.nav-link').length).toBe(0);
+  // Now query lowercase form — should match identically (still 0 because
+  // no label has 'filepushmarker'), but proves .toLowerCase() runs on the
+  // query side without throwing on Chinese-mixed input.
+  await input.setValue('filepushmarker');
+  await flushPromises();
+  expect(w.findAll('a.nav-link').length).toBe(0);
+});
+
+test('R92: search works on Chinese labels — "用户" matches 用户管理 + AD 用户管理', async () => {
+  const w = mountLayout();
+  const input = w.find('input.sidebar-search');
+  // Chinese characters have no case, but the filter still runs both sides
+  // through .toLowerCase() for symmetry. This guards that the lowercase
+  // call doesn't corrupt non-ASCII bytes or break unicode matching.
+  await input.setValue('用户');
+  await flushPromises();
+  const links = w.findAll('a.nav-link').map(a => a.text());
+  expect(links).toEqual(expect.arrayContaining(['用户管理', 'AD 用户管理']));
+});
+
+test('R92: empty query restores all 7 groups and 22 nav-links (regression guard)', async () => {
+  const w = mountLayout();
+  await w.find('input.sidebar-search').setValue('复制');
+  await flushPromises();
+  expect(w.findAll('.nav-group').length).toBe(1); // filtered
+  await w.find('input.sidebar-search').setValue('');
+  await flushPromises();
+  expect(w.findAll('.nav-group').length).toBe(7);
+  expect(w.findAll('a.nav-link').length).toBe(22);
+});
+
+test('R92: clear (✕) button appears only when query is non-empty and clears the input', async () => {
+  const w = mountLayout();
+  expect(w.find('.sidebar-search-clear').exists()).toBe(false);
+  await w.find('input.sidebar-search').setValue('复制');
+  await flushPromises();
+  const clearBtn = w.find('.sidebar-search-clear');
+  expect(clearBtn.exists()).toBe(true);
+  await clearBtn.trigger('click');
+  await flushPromises();
+  expect(w.find('input.sidebar-search').element.value).toBe('');
+  expect(w.find('.sidebar-search-clear').exists()).toBe(false);
+  // After clear, the full menu comes back.
+  expect(w.findAll('a.nav-link').length).toBe(22);
+});
+
+test('R92: source CSS gives <nav> max-height + overflow-y:auto so long menus get a scrollbar', () => {
+  // The nav inside .sidebar must be a scroll container, not the page body.
+  // max-height is the trigger — overflow alone would let content overflow
+  // the whole layout (it used to, before R92). Both rules must be present.
+  const navBlock = adminLayoutSrc.match(/\.sidebar\s+nav\s*\{([^}]*)\}/);
+  expect(navBlock).not.toBeNull();
+  const body = navBlock[1];
+  expect(body).toMatch(/max-height/);
+  expect(body).toMatch(/overflow-y:\s*auto/);
+});

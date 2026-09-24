@@ -3,14 +3,47 @@
     <aside class="sidebar">
       <router-link to="/" class="back">← 返回看板</router-link>
       <h3>AD Dashboard · 管理</h3>
+      <!-- 2026-09-24 R92: sidebar menu search + scrollbar.
+           Per operator directive "平台管理后台的菜单能够展开和搜索,
+           同时展开之后提供滑动条". Search box renders only while the
+           sidebar is expanded; on collapse it's hidden so the collapsed
+           rail stays narrow. Query is intentionally NOT persisted in
+           localStorage — search is a transient operator action, not a
+           preference. The clear (✕) button only appears once the query
+           is non-empty so the input stays uncluttered on first paint. -->
+      <div v-if="sidebarVisible" class="sidebar-search">
+        <input
+          v-model="searchQuery"
+          type="text"
+          class="sidebar-search sidebar-search-input"
+          placeholder="搜索菜单..."
+          aria-label="搜索菜单"
+          data-test="sidebar-search"
+        />
+        <button
+          v-if="searchQuery"
+          type="button"
+          class="sidebar-search-clear"
+          title="清空搜索"
+          aria-label="清空搜索"
+          @click="searchQuery = ''"
+        >✕</button>
+      </div>
       <nav>
         <!-- 2026-08-28 round-54: visual hierarchy — level-1 title is now a
              dimmer/smaller/uppercase "Group Header" with right-aligned caret;
              level-2 nav-links sit on a left rail with ml-4 indent, 2px blue
              accent + bg on active, hover-bg on hover. Operator directive
              "侧边栏层级感非常模糊" + "一级分类和二级子菜单左对齐齐平".
-             R53 structure (5+1 groups, 19 nav-links) unchanged. -->
-        <details v-for="g in groups" :key="g.title" open class="nav-group">
+             R53 structure (5+1 groups, 19 nav-links) unchanged.
+             2026-09-24 R92: `v-for` source switched from `groups` to
+             `filteredGroups` so an active search hides groups whose items
+             all fail to match the query. When `searchQuery` is empty
+             (the default state on mount) `filteredGroups` is
+             structurally identical to `groups` — all 22 links, all 7
+             groups, in the original order — so the R53/R54/R75
+             regression tests continue to hold. -->
+        <details v-for="g in filteredGroups" :key="g.title" :open="g.open" class="nav-group">
           <summary class="nav-group-title">
             <span class="nav-group-title-main">
               <span class="icon">{{ g.icon }}</span>
@@ -27,6 +60,13 @@
             >{{ i.label }}</router-link>
           </div>
         </details>
+        <!-- R92: empty-state placeholder — appears only when an active
+             search has pruned every group. Tells the operator "your
+             query matched nothing" instead of leaving a blank sidebar
+             that looks like the menu failed to load. -->
+        <div v-if="searchQuery && filteredGroups.length === 0" class="sidebar-search-empty">
+          没有匹配的菜单项
+        </div>
       </nav>
     </aside>
     <main>
@@ -48,7 +88,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
 import { useTheme } from '../composables/useTheme.js';
@@ -71,6 +111,38 @@ function toggleSidebar() {
   try { localStorage.setItem('admin-sidebar-visible', String(sidebarVisible.value)); } catch { /* ignore */ }
 }
 onMounted(loadSidebarVisible);
+
+// 2026-09-24 R92: menu search query. Held as a plain ref (no debounce —
+// the dataset is 22 items, synchronous substring scan is <1ms and adding
+// debounce would only complicate the input UX). Bound to <input v-model>
+// in the template; consumed by the `filteredGroups` computed below.
+// Intentionally NOT persisted to localStorage — search is a transient
+// operator action, not a preference. Reload = clean slate.
+const searchQuery = ref('');
+
+// 2026-09-24 R92: filteredGroups derived view over `groups`. Behaviour:
+//   - empty query → return all 7 groups with all items, in original
+//     order. This is the identity case the existing R53/R54/R75 tests
+//     depend on, so adding search must NOT shift any label or link.
+//   - non-empty query → substring match on `i.label.toLowerCase()`.
+//     Groups with zero surviving items are dropped (per operator
+//     decision "未命中 group 直接隐藏"). Surviving groups are forced
+//     to `open: true` so the operator doesn't have to manually expand
+//     the group to see their hits — search is a "show me what's there"
+//     action, not a "preserve collapsed state" action.
+const filteredGroups = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) {
+    return groups.map(g => ({ ...g, open: true }));
+  }
+  return groups
+    .map(g => ({
+      ...g,
+      items: g.items.filter(i => i.label.toLowerCase().includes(q)),
+      open: true
+    }))
+    .filter(g => g.items.length > 0);
+});
 
 // 2026-08-28 round-53: 5+1 top-level groups per operator directive. The 5 main
 // groups mirror the operator's explicit list exactly (labels, items, order).
@@ -168,6 +240,16 @@ const groups = [
   background: var(--sidebar-bg);
   padding: 20px 16px 20px 20px;
   overflow: hidden;
+  /* 2026-09-24 R92: switch the sidebar to a vertical flex column so the
+     <input> search box + <nav> can size themselves independently.
+     `min-height: 0` is the critical bit — by default a flex item refuses
+     to shrink below its content size, which would let <nav> push the
+     topbar off-screen on short viewports instead of producing an inner
+     scrollbar. With `min-height: 0` set, the overflow-y rule on <nav>
+     actually fires. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   transition: opacity 0.15s ease;
 }
 .layout.sidebar-collapsed .sidebar {
@@ -178,7 +260,89 @@ const groups = [
 .sidebar .back { display: block; color: var(--muted); font-size: 12px; margin-bottom: 12px; text-decoration: none; }
 .sidebar .back:hover { color: var(--accent); }
 .sidebar h3 { color: var(--accent); margin: 0 0 16px; font-size: 14px; }
-.sidebar nav { display: flex; flex-direction: column; gap: 6px; }
+
+/* 2026-09-24 R92: sidebar search box. Sits between the title and the
+   <nav>, so the operator's reading flow is title → search → menu. The
+   input keeps the existing dark/light theme tokens (var(--input-bg) +
+   var(--border) + var(--text)) so it blends in both themes without a
+   new color spec. The ✕ clear button is absolutely positioned inside
+   the wrapper so the input's own padding-right stays untouched. */
+.sidebar-search {
+  position: relative;
+  margin: 0 0 12px;
+}
+.sidebar-search-input {
+  width: 100%;
+  padding: 6px 26px 6px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.sidebar-search-input::placeholder { color: var(--muted); }
+.sidebar-search-input:focus { border-color: var(--accent); }
+.sidebar-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  border: none;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-search-clear:hover { background: var(--muted); color: var(--accent); }
+
+/* 2026-09-24 R92: empty-search placeholder. Matches the muted style of
+   nav-group-title so a blank-result state visually reads as "still part
+   of the sidebar, not a missing module". */
+.sidebar-search-empty {
+  padding: 12px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* 2026-09-24 R92: nav is the scroll container now. max-height is the
+   trigger — overflow alone would let <nav> grow past the sidebar's
+   remaining vertical space and push the layout's height. The
+   calc(100vh - X) gives a sane upper bound on common laptop heights
+   (1080p → ≈ 950px nav area). Scrollbar is themed: thin thumb in
+   var(--border) so it disappears on light backgrounds but is still
+   findable on dark; thumb brightens to var(--muted) on hover so
+   long-menu scrolling has a visible affordance. */
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.sidebar nav::-webkit-scrollbar { width: 6px; }
+.sidebar nav::-webkit-scrollbar-track { background: transparent; }
+.sidebar nav::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+.sidebar nav::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
 /* .sidebar a global reset kept minimal — level-2 nav-link styling now lives
    under .nav-link (round-54) and overrides active/hover with blue accent. */
 main { display: flex; flex-direction: column; min-width: 0; }
