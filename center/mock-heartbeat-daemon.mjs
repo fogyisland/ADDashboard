@@ -170,13 +170,22 @@ function loadScenario() {
 
 // S82 identity binding — signature input MUST match the body's agentId
 // and hostname (real agent signs with `signRequest({ hostname, agentId,
-// body, token })` — see agent/src/reporter.js:130-135 and
+// body, token })` — see agent/src/reporter.js:144-184 and
 // ../src/lib/agent-identity.js:38). The server recomputes the same
-// digest from the parsed request body, so key order / extra whitespace
+// digest from `req.body.hostname || req.headers['x-agent-hostname'] || ''`
+// (see center/src/auth/agent-token.js:171), so key order / extra whitespace
 // in our on-wire JSON is fine (stableJson normalizes both sides).
+//
+// Mock convention (mirrors collect-heartbeat's behaviour where hostname
+// equals agentId for AD DCs): every body we POST carries `hostname: agentId`
+// AND postJson() stamps X-Agent-Hostname. Both surfaces resolve to the same
+// string so centre's HMAC triple matches our HMAC triple — no `body.hostname
+// || body.agentId` fallback. The real agent's reporter does the same:
+// heartbeat bodies carry `hostname` (buildHeartbeatBody) and signedRequestJson
+// stamps X-Agent-Hostname.
 function signBody(body) {
   return signRequest({
-    hostname: typeof body?.hostname === 'string' ? body.hostname : (body?.agentId ?? ''),
+    hostname: body?.hostname ?? body?.agentId ?? '',
     agentId: body?.agentId ?? '',
     body,
     token: AGENT_TOKEN
@@ -185,6 +194,7 @@ function signBody(body) {
 
 async function postJson(url, body, { timeoutMs = 5000 } = {}) {
   const sig = signBody(body);
+  const hostnameHeader = body?.hostname ?? body?.agentId ?? '';
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -192,6 +202,7 @@ async function postJson(url, body, { timeoutMs = 5000 } = {}) {
         'Content-Type': 'application/json',
         'X-Agent-Token': AGENT_TOKEN,
         'X-Agent-Id': body.agentId ?? '',
+        'X-Agent-Hostname': hostnameHeader,
         'X-Agent-Signature': sig
       },
       body: JSON.stringify(body),
@@ -225,7 +236,9 @@ async function processAdCommands(agentId) {
       method: 'GET',
       headers: {
         'X-Agent-Token': AGENT_TOKEN,
-        'X-Agent-Signature': signRequest({ hostname: '', agentId: '', body: null, token: AGENT_TOKEN })
+        'X-Agent-Id': agentId,
+        'X-Agent-Hostname': agentId,
+        'X-Agent-Signature': signRequest({ hostname: agentId, agentId, body: null, token: AGENT_TOKEN })
       },
       signal: AbortSignal.timeout(10_000)
     });
@@ -249,6 +262,7 @@ async function processAdCommands(agentId) {
   for (const cmd of claimed) {
     const result = dispatchMockAdCommand(agentId, cmd);
     try {
+      const ackBody = { ...result, hostname: agentId };
       const ackRes = await fetch(
         `${CENTER_URL.replace(/\/+$/, '')}/api/agent/ad-commands/${cmd.id}/result`,
         {
@@ -256,9 +270,11 @@ async function processAdCommands(agentId) {
           headers: {
             'Content-Type': 'application/json',
             'X-Agent-Token': AGENT_TOKEN,
-            'X-Agent-Signature': signBody(result)
+            'X-Agent-Id': agentId,
+            'X-Agent-Hostname': agentId,
+            'X-Agent-Signature': signBody(ackBody)
           },
-          body: JSON.stringify(result),
+          body: JSON.stringify(ackBody),
           signal: AbortSignal.timeout(10_000)
         }
       );
@@ -290,7 +306,9 @@ async function processMemberCommands(agentId) {
       method: 'GET',
       headers: {
         'X-Agent-Token': AGENT_TOKEN,
-        'X-Agent-Signature': signRequest({ hostname: '', agentId: '', body: null, token: AGENT_TOKEN })
+        'X-Agent-Id': agentId,
+        'X-Agent-Hostname': agentId,
+        'X-Agent-Signature': signRequest({ hostname: agentId, agentId, body: null, token: AGENT_TOKEN })
       },
       signal: AbortSignal.timeout(10_000)
     });
@@ -311,6 +329,7 @@ async function processMemberCommands(agentId) {
   for (const cmd of claimed) {
     const result = dispatchMockMemberCommand(agentId, cmd);
     try {
+      const ackBody = { ...result, hostname: agentId };
       const ackRes = await fetch(
         `${CENTER_URL.replace(/\/+$/, '')}/api/agent/member-commands/${cmd.id}/result`,
         {
@@ -318,9 +337,11 @@ async function processMemberCommands(agentId) {
           headers: {
             'Content-Type': 'application/json',
             'X-Agent-Token': AGENT_TOKEN,
-            'X-Agent-Signature': signBody(result)
+            'X-Agent-Id': agentId,
+            'X-Agent-Hostname': agentId,
+            'X-Agent-Signature': signBody(ackBody)
           },
-          body: JSON.stringify(result),
+          body: JSON.stringify(ackBody),
           signal: AbortSignal.timeout(10_000)
         }
       );
@@ -529,6 +550,9 @@ async function runAgent(spec, { stopFlag, configuredPorts = [] }) {
   const disc = await postJson(`${REPORT_URL}${DISCOVER_PATH}`, {
     source: 'collect-discovery-mock-daemon',
     agentId,
+    // S82 — centre recomputes HMAC over hostname, so the body must carry
+    // it. Mirrors real collect-discovery.ps1 which always stamps hostname.
+    hostname: agentId,
     collectedAt: new Date().toISOString(),
     // 2026-08-28 R57-B: forward all 6 FSMO flags from spec + siteHint.
     // buildDiscovery() defaults each to false if absent; omitting one
@@ -583,6 +607,11 @@ async function runAgent(spec, { stopFlag, configuredPorts = [] }) {
         const rep = await postJson(`${REPORT_URL}${REPORT_PATH}`, {
           source: 'collect-replication-mock-daemon',
           agentId,
+          // S82 — body must carry hostname so centre's HMAC triple matches
+          // our HMAC triple (postJson also stamps X-Agent-Hostname header,
+          // defence in depth). Mirrors real agent/src/reporter.js postReport
+          // which derives reportHostname from caller-passed hostname.
+          hostname: agentId,
           collectedAt: snapshot.CollectedAt,
           data: snapshot.Entries.map(toCamelEntry)
         });
