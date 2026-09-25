@@ -314,18 +314,23 @@ async function runAdRuntime({ config, logger }) {
     // 2026-09-25 R93.3 — pass `cachedPorts.heartbeatPort` so the request lands
     // on the heartbeat app (8081) where /api/agent/ports is mounted. The web
     // app (8080) returns 404 HTML for this path. `cachedPorts.heartbeatPort`
-    // is set by `refreshAgentPorts()` below from /config.json; if it has not
-    // been populated yet (first boot before the first config refresh) the
-    // port falls through to null and fetchPortList uses centerUrl as-is —
-    // same legacy behavior as before this fix, so a stale first tick still
-    // works (just gets 404 → cachedPortList = [] until the next tick).
+    // is set by `refreshAgentPorts()` below from /config.json; on first boot
+    // R93.7 ensures `refreshAgentPortsWithRecovery('boot')` runs before the
+    // initial `refreshPortList()` so `cachedPorts.heartbeatPort` is already
+    // populated. At RUNTIME, a tick can still race ahead of the next config
+    // refresh (5min cadence) and fall through to `null` → centerUrl → web 404;
+    // fetchPortList swallows the 404 HTML and returns [], so the failure mode
+    // is "scan finds nothing for one tick" rather than "operator sees a 404".
     cachedPortList = await fetchPortList(
       config.centerUrl, config.agentToken,
       { hostname: config.hostname || osInfo.hostname, agentId: config.agentId, port: cachedPorts.heartbeatPort }
     );
   }
-  // Initial refresh on startup, before any heartbeat fires.
-  await refreshPortList();
+  // 2026-09-25 R93.7 — initial `await refreshPortList()` no longer runs
+  // here. It now runs AFTER `await refreshAgentPortsWithRecovery('boot')`
+  // (see the call site ~10 lines below) so `cachedPorts.heartbeatPort` is
+  // populated before the first tick. See the breadcrumb on that call site
+  // and tests/boot-order.test.js for the regression guard.
 
   // Center-configured heartbeat / report ports. Refreshed every 5min alongside
   // the existing config refresh; null = no override (use centerUrl verbatim).
@@ -367,6 +372,13 @@ async function runAdRuntime({ config, logger }) {
   }
 
   await refreshAgentPortsWithRecovery('boot');
+
+  // 2026-09-25 R93.7 — moved here from line 328 (above refreshPortList).
+  // See the breadcrumb on the `let cachedPorts` declaration for the full
+  // rationale. The summary: `cachedPorts.heartbeatPort` is now populated
+  // BEFORE the first fetchPortList, so the first boot tick lands on
+  // heartbeat (8081) instead of web (8080).
+  await refreshPortList();
 
   const packageManager = new PackageManager({
     agentId: config.agentId,
