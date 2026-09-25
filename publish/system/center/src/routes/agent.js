@@ -578,7 +578,18 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         });
       } catch (e) {
         if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
-        logger.error({ err: e, hostname }, 'agent ad-commands poll failed');
+        // R93.2 — log full error (pino serializes Error.message + Error.stack
+        // by default). Previously `err: e` got `err.message` only because
+        // the surrounding logger config didn't have a custom serializer;
+        // the stack was invisible when claimForAgent threw from a DB
+        // deadlock or driver init race. Surfacing the stack in NSSM
+        // stderr makes root-cause visible without code changes inside
+        // the services themselves.
+        logger.error({
+          err: { message: e.message, stack: e.stack, code: e.code },
+          hostname,
+          endpoint: 'ad-commands'
+        }, 'agent ad-commands poll failed');
         res.status(500).json({ error: 'internal' });
       }
     });
@@ -668,7 +679,14 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         });
       } catch (e) {
         if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
-        logger.error({ err: e, hostname }, 'agent member-commands poll failed');
+        // R93.2 — see ad-commands catch above for the rationale (full
+        // error payload incl. stack so DB-driver / deadlock causes show
+        // up in NSSM stderr instead of disappearing into a 500).
+        logger.error({
+          err: { message: e.message, stack: e.stack, code: e.code },
+          hostname,
+          endpoint: 'member-commands'
+        }, 'agent member-commands poll failed');
         res.status(500).json({ error: 'internal' });
       }
     });

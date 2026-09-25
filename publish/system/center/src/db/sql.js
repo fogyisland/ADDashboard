@@ -433,13 +433,24 @@ const VARIANTS = {
          ORDER BY collected_at DESC, source_dc, dest_dc
          LIMIT 1`,
       latestReportEntries: (agentId, sinceIso, limit) =>
+        // 2026-09-25 R93.11: tighten read-back to match the matrix /all
+        // contract — exclude the synthetic META / __dc_summary__ rows
+        // collected-replication.ps1 emits when AD module enumeration fails
+        // (`source_dc='*' dest_dc='*' naming_context='META'`), and apply
+        // the same 30-minute freshness floor the dashboard uses so a
+        // stopped agent doesn't keep returning its last cached snapshot
+        // indefinitely. The `since` arg stays as a defense-in-depth lower
+        // bound (24h lookback) on top of the UTC clock gate.
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                 status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
          WHERE agent_id = ?
+           AND naming_context NOT IN ('__dc_summary__', 'META')
+           AND collected_at >= UTC_TIMESTAMP() - INTERVAL 30 MINUTE
            AND collected_at = (
              SELECT MAX(collected_at) FROM ad_replication_status
              WHERE agent_id = ? AND collected_at >= ?
+               AND naming_context NOT IN ('__dc_summary__', 'META')
            )
          ORDER BY source_dc, dest_dc
          LIMIT ${Number(limit)}`,
@@ -1361,13 +1372,20 @@ const VARIANTS = {
            AND collected_at >= CAST(SYSUTCDATETIME() AS DATE)
          ORDER BY collected_at DESC, source_dc, dest_dc`,
       latestReportEntries: (agentId, sinceIso, limit) =>
+        // 2026-09-25 R93.11: tighten read-back to match the matrix /all
+        // contract — see MySQL latestReportEntries comment. Same META +
+        // __dc_summary__ exclusion + 30-minute freshness floor (via
+        // DATEADD(MINUTE, -30, SYSUTCDATETIME())) applied here.
         `SELECT collected_at, source_dc, dest_dc, source_site, dest_site, naming_context,
                  status_code, error_message, last_success_time, last_attempt_time
          FROM ad_replication_status
          WHERE agent_id = CAST(? AS NVARCHAR(64))
+           AND naming_context NOT IN ('__dc_summary__', 'META')
+           AND collected_at >= DATEADD(MINUTE, -30, SYSUTCDATETIME())
            AND collected_at = (
              SELECT TOP 1 collected_at FROM ad_replication_status
              WHERE agent_id = CAST(? AS NVARCHAR(64)) AND collected_at >= CAST(? AS DATETIME2)
+               AND naming_context NOT IN ('__dc_summary__', 'META')
              ORDER BY collected_at DESC
            )
          ORDER BY source_dc, dest_dc`,

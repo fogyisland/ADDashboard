@@ -13,6 +13,17 @@ function toIso(v) {
   return v;
 }
 
+// R93.12: NTDS Settings DN → bare DC name. Collector writes full DN
+// (CN=NTDS Settings,CN=<bare>,CN=Servers,...) into ad_replication_status,
+// but ad_dcs catalogue stores the bare name. Normalise here so the route
+// handler can join link rows against the catalogue. Already-bare values
+// pass through unchanged.
+function extractBareDcName(dnOrName) {
+  if (!dnOrName) return dnOrName;
+  const m = /^CN=NTDS Settings,CN=([^,]+),/i.exec(dnOrName);
+  return m ? m[1] : dnOrName;
+}
+
 // Snake -> camel rename for known columns. Order matters for nested keys.
 const CAML_MAP = new Map([
   ['source_site', 'sourceSite'],
@@ -355,9 +366,19 @@ export function dashboardRouter({ config, logger, db }) {
       const primaries = [];
       for (const s of siteRows) {
         const dcList = dcsBySite.get(s.site_id) || [];
-        if (dcList.length === 0) continue; // no DCs in this site — skip
+
+        // R95: matrix is an N×N site catalogue mirror, not a "currently
+        // active" view. Even sites with zero DCs in ad_dcs — either
+        // pre-registered but not yet discovered, or whose DCs all got
+        // dropped by INNER JOIN due to a site_id drift — must surface
+        // in primaries with `dcs: []` / `dcPartners: []`. The frontend
+        // renders those as a "暂未注册 DC" placeholder column/row.
+        // Operator-side this surfaces catalogue drift immediately (the
+        // matrix shape matches ad_sites row count, not "ad_sites with
+        // at least one ad_dcs row" count) — see
+        // tests/admin-site-replication-matrix-all.test.js R95 cases.
         const primaryEntry = dcList[0];
-        const primaryDc = primaryEntry.dcName;
+        const primaryDc = primaryEntry ? primaryEntry.dcName : null;
 
         // Partner allowlist: all within-site DCs + cross-site primary DCs.
         // round-36: the primary DC itself is a valid peer for sibling DCs
@@ -369,9 +390,22 @@ export function dashboardRouter({ config, logger, db }) {
         // dest_dc` guard at the top of the link loop.
         const allowedPeers = new Set();
         for (const d of dcList) allowedPeers.add(d.dcName);
-        for (const [siteId, primaryName] of primaryBySiteId) {
-          if (siteId !== s.site_id) allowedPeers.add(primaryName);
-        }
+        // R93.13: matrix `/all` is an N×N network-wide view — allow every
+        // catalogue-known DC as a peer, including remote-site secondaries.
+        // The original `for (const [siteId, primaryName] of primaryBySiteId)`
+        // loop only loaded the *primary* DC of every remote site, so any
+        // link sourced from a secondary DC (e.g. KDLJTWHADSRV1 reporting
+        // inbound to KDLFLOFADSRV2 with a full NTDS Settings DN whose bare
+        // host is a ShangHaiJiuTing secondary) was dropped by the
+        // `!allowedPeers.has(peerDc)` filter and never landed in any
+        // partner map — empty matrix cells. Real-machine data on
+        // KDLFLOFADSRV2 has 8 such rows, all from secondaries.
+        // The dest-side gate (`partnerMapByDc.has(destDc)`) already keeps
+        // the inbound scope to the current site, so widening the peer
+        // side to all catalogue DCs is safe — out-of-site destinations
+        // are still filtered, but every catalogue DC that ever sources
+        // a link into this site now surfaces.
+        for (const d of dcRows) allowedPeers.add(d.dc_name);
 
         // round-36: build one partner map per DC in the site. Walk every
         // link, find the receiving DC inside this site, attach the partner
@@ -381,11 +415,15 @@ export function dashboardRouter({ config, logger, db }) {
         for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
 
         for (const l of linkRows) {
-          // self-loop guard
+          // self-loop guard (DN vs DN — both raw values, same identity)
           if (l.source_dc === l.dest_dc) continue;
+          // R93.12: link.source_dc/dest_dc are full NTDS Settings DN.
+          // catalogue dc_name is bare, so normalise both sides before any
+          // partner / catalogue lookup.
+          const destDc = extractBareDcName(l.dest_dc);
+          const peerDc = extractBareDcName(l.source_dc);
           // inbound-only: dest_dc is the receiver
-          if (!partnerMapByDc.has(l.dest_dc)) continue; // dest not in this site
-          const peerDc = l.source_dc;
+          if (!partnerMapByDc.has(destDc)) continue; // dest not in this site
           if (!allowedPeers.has(peerDc)) continue; // round-32 filter
           const peer = dcByName.get(peerDc);
           if (!peer) continue; // orphan DC
@@ -411,7 +449,7 @@ export function dashboardRouter({ config, logger, db }) {
           // every entry is inbound. peerDc alone is sufficient because
           // the same source DC can only have one latest link per
           // (source_dc, dest_dc) pair after the latest-per-pair subquery.
-          const targetMap = partnerMapByDc.get(l.dest_dc);
+          const targetMap = partnerMapByDc.get(destDc);
           const k = peerDc;
           const existing = targetMap.get(k);
           if (!existing) {
@@ -456,7 +494,13 @@ export function dashboardRouter({ config, logger, db }) {
 
         primaries.push({
           dcName: primaryDc,
-          isBridgehead: primaryEntry.isBridgehead,
+          // R95: empty-site surface — when the catalogue has the site row
+          // but `dcsBySite.get(s.site_id)` was empty (e.g. all DCs dropped
+          // by INNER JOIN due to site_id drift, or pre-registered site
+          // with no discovered DC yet), primaryEntry is undefined. Use
+          // null placeholders for the role flags so the row still pushes
+          // and the frontend can render a "暂未注册 DC" placeholder.
+          isBridgehead: primaryEntry ? primaryEntry.isBridgehead : null,
           siteId: s.site_id,
           siteName: s.site_name,
           regionCode: s.region_code,
@@ -464,6 +508,8 @@ export function dashboardRouter({ config, logger, db }) {
           // round-31: full DC list (kept for the "本站 DC 清单" panel).
           // round-36: partner info moves into dcPartners[]; the dcs list
           // remains the source of truth for site membership + role flags.
+          // R95: empty-site surface — `dcList.map(...)` returns `[]` when
+          // no DC rows landed in the catalogue for this site.
           dcs: dcList.map(d => ({
             dcName: d.dcName,
             isBridgehead: d.isBridgehead,
@@ -690,9 +736,10 @@ export function dashboardRouter({ config, logger, db }) {
 
         const allowedPeers = new Set();
         for (const d of dcList) allowedPeers.add(d.dcName);
-        for (const [siteId, primaryName] of primaryBySiteId) {
-          if (siteId !== s.site_id) allowedPeers.add(primaryName);
-        }
+        // R93.13: matrix `/all` is an N×N network-wide view — allow every
+        // catalogue-known DC as a peer, including remote-site secondaries.
+        // See sibling comment in the `/all` handler for the full rationale.
+        for (const d of dcRows) allowedPeers.add(d.dc_name);
 
         const partnerMapByDc = new Map();
         for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
@@ -705,9 +752,21 @@ export function dashboardRouter({ config, logger, db }) {
           // out-bound side still surfaces in 复制状态概览 (R36) where the
           // partner grid enumerates both, but 复制伙伴端口健康监控 is
           // INBOUND-first.
+          //
+          // R93.14: catalogue keys (partnerMapByDc / dcByName / allowedPeers)
+          // are bare DC names; real-machine link rows can carry full NTDS
+          // Settings DN on either side (collect-replication.ps1:365-366
+          // writes bare, the R93.6.1 fallback at line 835-836 writes DN).
+          // Normalise both sides before the catalogue-side joins. The
+          // portHealthByPair indexer at line 706 is keyed by raw
+          // (source_dc, dest_dc), so its consumer lookup at line 771 below
+          // keeps raw DN — don't normalise that.
+          const destDc = extractBareDcName(l.dest_dc);
+          const peerDc = extractBareDcName(l.source_dc);
+
           const sides = [];
-          if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
-            sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
+          if (partnerMapByDc.has(destDc) && allowedPeers.has(peerDc)) {
+            sides.push({ dcName: destDc, peerDc, direction: 'in' });
           }
           if (sides.length === 0) continue;
 
