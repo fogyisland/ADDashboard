@@ -293,9 +293,18 @@ export async function claimForAgent(targetDc, limit = 5) {
   }
   const db = getDb();
   const safeLimit = Math.max(1, Math.min(100, Number(limit) || 5));
+  // 2026-09-25 R93.4 — on MSSQL the claimPick SQL builder is a function
+  // (see db/sql.js:adAdminCommands.claimPick) because MSSQL TOP rejects
+  // parameter binding; on MySQL it's a plain string with `LIMIT ?`. The
+  // helper below inlines the integer on MSSQL or passes it through as a
+  // bound param on MySQL. safeLimit is clamped to [1, 100] and is always
+  // an integer by this point; the explicit Number() cast is
+  // belt-and-suspenders against any future caller passing a stringly
+  // typed limit.
+  const claimPickSql = resolveClaimPickSql(db, safeLimit);
   const { rows: idRows } = await db.query(
-    db.sql.adAdminCommands.claimPick,
-    [targetDc, safeLimit]
+    claimPickSql,
+    db.dialect === 'mssql' ? [targetDc] : [targetDc, safeLimit]
   );
   if (!idRows || idRows.length === 0) return [];
   const ids = idRows.map(r => Number(r.id)).filter(Number.isFinite);
@@ -394,32 +403,34 @@ export async function listCommands({ operatorId, status, page = 1, size = 50 } =
   let listParams;
   let countSql;
   let countParams;
-  // MSSQL's `SELECT TOP (?)` syntax puts the limit as the FIRST bound
-  // param; MySQL's `LIMIT ? OFFSET ?` puts it at the END (after the
-  // WHERE-clause params). The service adapts param order by dialect so
-  // the same call shape works on both.
+  // 2026-09-25 R93.4 — MSSQL's `TOP` clause does not accept parameter
+  // binding (only an integer literal). The SQL builders are function-form
+  // on MSSQL (limit is interpolated) and plain string with `LIMIT ?
+  // OFFSET ?` on MySQL. Service layer dispatches:
+  //   mssql → call listBy* as a function with safeSize, bind [WHERE params, offset]
+  //   mysql → use the plain string, bind [WHERE params, safeSize, offset]
   const isMssql = db.dialect === 'mssql';
   if (operatorId != null && status != null) {
     // Combined filter: status + operatorId. Service runs status filter
     // then post-filters by operatorId (operatorId rarely combines with
     // status in real UI traffic).
-    listSql = db.sql.adAdminCommands.listByStatus;
-    listParams = isMssql ? [safeSize, status, offset] : [status, safeSize, offset];
+    listSql = isMssql ? db.sql.adAdminCommands.listByStatus(safeSize) : db.sql.adAdminCommands.listByStatus;
+    listParams = isMssql ? [status, offset] : [status, safeSize, offset];
     countSql = db.sql.adAdminCommands.countByStatus;
     countParams = [status];
   } else if (operatorId != null) {
-    listSql = db.sql.adAdminCommands.listByOperator;
-    listParams = isMssql ? [safeSize, operatorId, offset] : [operatorId, safeSize, offset];
+    listSql = isMssql ? db.sql.adAdminCommands.listByOperator(safeSize) : db.sql.adAdminCommands.listByOperator;
+    listParams = isMssql ? [operatorId, offset] : [operatorId, safeSize, offset];
     countSql = db.sql.adAdminCommands.countByOperator;
     countParams = [operatorId];
   } else if (status != null) {
-    listSql = db.sql.adAdminCommands.listByStatus;
-    listParams = isMssql ? [safeSize, status, offset] : [status, safeSize, offset];
+    listSql = isMssql ? db.sql.adAdminCommands.listByStatus(safeSize) : db.sql.adAdminCommands.listByStatus;
+    listParams = isMssql ? [status, offset] : [status, safeSize, offset];
     countSql = db.sql.adAdminCommands.countByStatus;
     countParams = [status];
   } else {
-    listSql = db.sql.adAdminCommands.listAll;
-    listParams = [safeSize, offset];
+    listSql = isMssql ? db.sql.adAdminCommands.listAll(safeSize) : db.sql.adAdminCommands.listAll;
+    listParams = isMssql ? [offset] : [safeSize, offset];
     countSql = db.sql.adAdminCommands.countAll;
     countParams = [];
   }
@@ -449,6 +460,20 @@ function tryParseJson(v) {
 function parseParamsJson(row) {
   if (!row) return row;
   return { ...row, params_json: tryParseJson(row.params_json) };
+}
+
+// 2026-09-25 R93.4 — MSSQL's `TOP` clause cannot be parameter-bound (only
+// an integer literal). MySQL's `LIMIT` accepts integer params. The
+// per-dialect claimPick builders reflect that, so the call site has to
+// pick the right shape: function-call to inline the integer on MSSQL,
+// plain string with a bound param on MySQL. Keeps the per-dialect SQL
+// registry simple (one builder per dialect, no dialect sniffing inside
+// the registry) while the service layer carries the dispatch.
+function resolveClaimPickSql(db, safeLimit) {
+  if (db.dialect === 'mssql') {
+    return db.sql.adAdminCommands.claimPick(Number(safeLimit));
+  }
+  return db.sql.adAdminCommands.claimPick;
 }
 
 // ── Test helpers ─────────────────────────────────────────────────────────

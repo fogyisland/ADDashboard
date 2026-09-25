@@ -125,7 +125,7 @@ const VARIANTS = {
     dashboard: {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
       agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
-      siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
+      siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE (source_site IS NOT NULL AND source_site <> '') AND (dest_site IS NOT NULL AND dest_site <> '') GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
       // 2026-08-26 round-21: /topology used to return every row in
       // ad_replication_status, including stale round-19 leftovers and
       // test/junk rows (*, __tz_test, DC01→"") — operators saw 42 links
@@ -925,8 +925,13 @@ const VARIANTS = {
            (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context, last_success_time, last_attempt_time, status_code, error_message, users_count, groups_count, gpos_count, locked_count, partner_port_status)
            VALUES (s.collected_at, s.agent_id, s.source_dc, s.dest_dc, s.source_site, s.dest_site, s.naming_context, s.last_success_time, s.last_attempt_time, s.status_code, s.error_message, s.users_count, s.groups_count, s.gpos_count, s.locked_count, s.partner_port_status);`,
       upsertHistory: `INSERT INTO ad_replication_history (collected_at, agent_id, source_dc, dest_dc, naming_context, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, status_code, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      listRecent: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
-      listBySite: `SELECT TOP (?) source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
+      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding (only
+      // an integer literal). Until R93.4 the placeholder form `TOP (?)` was
+      // bound through sp_executesql and raised error 1060 on every operator
+      // request to the 复制状态概览 view. Function-form so the integer is
+      // inlined; the MySQL sibling keeps `LIMIT ?` because mysql2 accepts it.
+      listRecent: (limit) => `SELECT TOP ${Math.max(1, Math.min(1000, Number(limit) || 100))} source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
+      listBySite: (limit) => `SELECT TOP ${Math.max(1, Math.min(1000, Number(limit) || 100))} source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
       latestSummaryPerDc: `SELECT t.source_dc, t.users_count, t.groups_count, t.gpos_count, t.locked_count, t.collected_at FROM ad_replication_status t OUTER APPLY (SELECT TOP 1 collected_at, users_count, groups_count, gpos_count, locked_count FROM ad_replication_status WHERE source_dc = t.source_dc AND naming_context = '__dc_summary__' ORDER BY collected_at DESC) s WHERE t.naming_context = '__dc_summary__' GROUP BY t.source_dc, t.users_count, t.groups_count, t.gpos_count, t.locked_count, t.collected_at ORDER BY t.source_dc`,
       partnersCount: `SELECT COUNT(*) AS c FROM ad_replication_status WHERE source_dc = ? AND naming_context <> '__dc_summary__' AND collected_at BETWEEN DATEADD(MINUTE, -?, ?) AND DATEADD(MINUTE, ?, ?)`
     },
@@ -1077,7 +1082,7 @@ const VARIANTS = {
     dashboard: {
       overviewCounts: `SELECT COUNT(*) AS total, SUM(CASE WHEN status_code = 0 THEN 1 ELSE 0 END) AS healthy, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS errored, MAX(collected_at) AS last_update FROM ad_replication_status`,
       agentCount: `SELECT COUNT(*) AS agent_count FROM ad_agent_heartbeat WHERE last_heartbeat_at IS NOT NULL AND agent_id <> '__healthcheck__'`,
-      siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE source_site IS NOT NULL AND dest_site IS NOT NULL GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
+      siteMatrix: `SELECT source_site, dest_site, SUM(CASE WHEN status_code >= 2 THEN 1 ELSE 0 END) AS error_count, SUM(CASE WHEN status_code = 1 THEN 1 ELSE 0 END) AS warning_count, COUNT(*) AS total FROM ad_replication_status WHERE (source_site IS NOT NULL AND source_site <> '') AND (dest_site IS NOT NULL AND dest_site <> '') GROUP BY source_site, dest_site ORDER BY source_site, dest_site`,
       // 2026-08-26 round-21: /topology used to return every row in
       // ad_replication_status, including stale round-19 leftovers and
       // test/junk rows (*, __tz_test, DC01→"") — operators saw 42 links
@@ -1141,11 +1146,13 @@ const VARIANTS = {
       // partner row (port-health-only view). Per-pair history for the
       // inline caret in 复制状态概览 still uses replicationLogPerPair
       // below.
-      // 2026-08-28 round-45: MSSQL mirror of replicationLogPerPair. TOP (?)
-      // must be the FIRST bound param (tedious driver order: literal value
-      // precedes the WHERE-bound ones — see center/src/db/drivers/mssql.js).
-      // Caller binds [limit, source, dest].
-      replicationLogPerPair: `SELECT TOP (?) source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY collected_at DESC`,
+      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding
+      // (only an integer literal). Function-form so the limit is inlined;
+      // the MySQL sibling keeps `LIMIT ?` because mysql2 accepts it. The
+      // tedious driver does NOT auto-rewrite `TOP (?)` — that's a stale
+      // comment from R45; the value is interpolated by the JS builder.
+      // Caller binds [source, dest] only (limit is embedded in the SQL).
+      replicationLogPerPair: (limit) => `SELECT TOP ${Math.max(1, Math.min(500, Number(limit) || 100))} source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY collected_at DESC`,
       // 2026-09-01 R74: 复制错误 view — MSSQL mirror of the MySQL helper
       // above. OUTER APPLY drives the per-tuple history count instead of
       // the LEFT JOIN + GROUP BY form (cleaner on SQL Server — avoids
@@ -1676,7 +1683,17 @@ const VARIANTS = {
       insert: `INSERT INTO ad_admin_commands
                  (command_type, target_dc, params_json, status, operator_id, created_at)
                VALUES (?, ?, CAST(? AS NVARCHAR(MAX)), 'queued', ?, CAST(SYSUTCDATETIME() AS DATETIME2))`,
-      claimPick: `SELECT TOP (?) id FROM ad_admin_commands
+      // 2026-09-25 R93.4 — MSSQL TOP does NOT accept parameter binding
+      // (only an integer literal is valid inside TOP). Until R93.4 the
+      // placeholder form `TOP (?)` was bound through sp_executesql, which
+      // raises 1060 "The number of rows provided for a TOP or FETCH clauses
+      // row count parameter must be an integer" on every agent poll from
+      // KDLFLOFADSRV2 (MSSQL center). MySQL keeps `LIMIT ?` because mysql2
+      // accepts integer params there. The service layer
+      // (services/ad-admin-commands.js:claimForAgent) calls this as a
+      // function on MSSQL and as a plain string on MySQL — same call site
+      // after safeLimit is clamped to [1, 100].
+      claimPick: (limit) => `SELECT TOP ${Math.max(1, Math.min(100, Number(limit) || 5))} id FROM ad_admin_commands
                     WHERE status = CAST('queued' AS NVARCHAR(16))
                       AND target_dc = CAST(? AS NVARCHAR(128))
                     ORDER BY created_at ASC, id ASC`,
@@ -1697,7 +1714,15 @@ const VARIANTS = {
                         duration_ms = ?,
                         completed_at = CAST(SYSUTCDATETIME() AS DATETIME2)
                   WHERE id = ?`,
-      listByOperator: `SELECT TOP (?) c.id, c.command_type, c.target_dc, c.status,
+      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding (only an
+      // integer literal). Function-form so the limit is inlined; OFFSET ?
+      // stays as a bound param (OFFSET accepts integer binding fine — only
+      // TOP rejects it). The MySQL siblings below keep `LIMIT ? OFFSET ?`
+      // because mysql2 accepts integer params in both positions. Caller
+      // dispatches: services/ad-admin-commands.js:listCommands passes
+      // `Number(size)` on MSSQL and skips it on MySQL; OFFSET is always
+      // bound.
+      listByOperator: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.command_type, c.target_dc, c.status,
                                   c.operator_id, u.username AS operator_username,
                                   c.created_at, c.claimed_at, c.completed_at,
                                   c.duration_ms, c.error_message
@@ -1706,7 +1731,7 @@ const VARIANTS = {
                             WHERE c.operator_id = ?
                             ORDER BY c.created_at DESC, c.id DESC
                             OFFSET ? ROWS`,
-      listAll: `SELECT TOP (?) c.id, c.command_type, c.target_dc, c.status,
+      listAll: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.command_type, c.target_dc, c.status,
                               c.operator_id, u.username AS operator_username,
                               c.created_at, c.claimed_at, c.completed_at,
                               c.duration_ms, c.error_message
@@ -1714,7 +1739,7 @@ const VARIANTS = {
                          LEFT JOIN sys_users u ON u.id = c.operator_id
                         ORDER BY c.created_at DESC, c.id DESC
                         OFFSET ? ROWS`,
-      listByStatus: `SELECT TOP (?) c.id, c.command_type, c.target_dc, c.status,
+      listByStatus: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.command_type, c.target_dc, c.status,
                                 c.operator_id, u.username AS operator_username,
                                 c.created_at, c.claimed_at, c.completed_at,
                                 c.duration_ms, c.error_message
@@ -1749,7 +1774,11 @@ const VARIANTS = {
       insert: `INSERT INTO ad_member_commands
                  (hostname, command_type, params_json, status, operator_id, created_at)
                VALUES (CAST(? AS NVARCHAR(128)), ?, CAST(? AS NVARCHAR(MAX)), 'queued', ?, CAST(SYSUTCDATETIME() AS DATETIME2))`,
-      claimPick: `SELECT TOP (?) id FROM ad_member_commands
+      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding;
+      // see adAdminCommands.claimPick comment for the full root cause.
+      // claimPick becomes a function so the integer limit is inlined; the
+      // MySQL sibling below keeps `LIMIT ?` because mysql2 accepts it.
+      claimPick: (limit) => `SELECT TOP ${Math.max(1, Math.min(100, Number(limit) || 5))} id FROM ad_member_commands
                     WHERE status = CAST('queued' AS NVARCHAR(16))
                       AND hostname = CAST(? AS NVARCHAR(128))
                     ORDER BY created_at ASC, id ASC`,
@@ -1770,7 +1799,15 @@ const VARIANTS = {
                         duration_ms = ?,
                         completed_at = CAST(SYSUTCDATETIME() AS DATETIME2)
                   WHERE id = ?`,
-      listByOperator: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding (only an
+      // integer literal). Function-form so the limit is inlined; OFFSET ?
+      // stays as a bound param (OFFSET accepts integer binding fine — only
+      // TOP rejects it). The MySQL siblings below keep `LIMIT ? OFFSET ?`
+      // because mysql2 accepts integer params in both positions. Caller
+      // dispatches: services/member-commands.js:listCommands passes
+      // `Number(size)` on MSSQL and skips it on MySQL; OFFSET is always
+      // bound.
+      listByOperator: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.hostname, c.command_type, c.status,
                                   c.operator_id, u.username AS operator_username,
                                   c.created_at, c.claimed_at, c.completed_at,
                                   c.duration_ms, c.error_message
@@ -1779,7 +1816,7 @@ const VARIANTS = {
                             WHERE c.operator_id = ?
                             ORDER BY c.created_at DESC, c.id DESC
                             OFFSET ? ROWS`,
-      listAll: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+      listAll: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.hostname, c.command_type, c.status,
                               c.operator_id, u.username AS operator_username,
                               c.created_at, c.claimed_at, c.completed_at,
                               c.duration_ms, c.error_message
@@ -1787,7 +1824,7 @@ const VARIANTS = {
                          LEFT JOIN sys_users u ON u.id = c.operator_id
                         ORDER BY c.created_at DESC, c.id DESC
                         OFFSET ? ROWS`,
-      listByStatus: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+      listByStatus: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.hostname, c.command_type, c.status,
                                 c.operator_id, u.username AS operator_username,
                                 c.created_at, c.claimed_at, c.completed_at,
                                 c.duration_ms, c.error_message
@@ -1796,7 +1833,7 @@ const VARIANTS = {
                           WHERE c.status = CAST(? AS NVARCHAR(16))
                           ORDER BY c.created_at DESC, c.id DESC
                           OFFSET ? ROWS`,
-      listByHost: `SELECT TOP (?) c.id, c.hostname, c.command_type, c.status,
+      listByHost: (size) => `SELECT TOP ${Math.max(1, Math.min(200, Number(size) || 20))} c.id, c.hostname, c.command_type, c.status,
                               c.operator_id, u.username AS operator_username,
                               c.created_at, c.claimed_at, c.completed_at,
                               c.duration_ms, c.error_message
