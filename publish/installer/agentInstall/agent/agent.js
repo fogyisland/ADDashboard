@@ -383,6 +383,14 @@ async function runAdRuntime({ config, logger }) {
       centerUrl: config.centerUrl,
       agentToken: config.agentToken,
       port: cachedPorts.heartbeatPort,
+      // R93.2 — explicit hostname + agentId so signedRequestJson can
+      // stamp the full header quartet. Payload already carries hostname
+      // (see sendHeartbeat at line 587-600) so the helper's
+      // `payload?.hostname` fallback would also catch it; passing
+      // explicitly here means the wiring is robust to a future payload
+      // shape change that drops the hostname field.
+      hostname: config.hostname || osInfo.hostname,
+      agentId: config.agentId,
       payload
     }),
     applyAgentTokenDelivery: ({ result }) => applyAgentTokenDelivery({
@@ -474,6 +482,12 @@ async function runAdRuntime({ config, logger }) {
     payload: () => {
       const p = {
         agentId: config.agentId,
+        // R93.2 — include hostname in the heartbeat payload so the centre's
+        // middleware can resolve it from `req.body.hostname` first (matches
+        // its documented resolution order at agent-token.js:171). This also
+        // makes the heartbeat table's per-row label unambiguous when an
+        // operator reads ad_agent_heartbeat directly.
+        hostname: config.hostname || osInfo.hostname,
         agentVersion: VERSION,
         pendingQueueSize: queue.count(),
         // 2026-08-21 UX redesign: echo back the agent's last-seen
@@ -495,6 +509,10 @@ async function runAdRuntime({ config, logger }) {
 
   // Site/DCs topology discovery. Runs the PowerShell topology script on a long
   // interval (default 4h) and posts the result to the center's discover endpoint.
+  // R93.2 — postDiscovery now uses signedRequestJson and posts to the report
+  // port (8082) instead of the web port (8080). /api/agent/discover is
+  // mounted only on reportApp, so the previous "send to centerUrl" path
+  // always 404'd against the web app.
   const discovery = startDiscoveryScheduler({
     intervalHours: config.discoveryIntervalHours,
     run: async () => {
@@ -507,6 +525,9 @@ async function runAdRuntime({ config, logger }) {
       await postDiscovery({
         centerUrl: config.centerUrl,
         agentToken: config.agentToken,
+        port: cachedPorts.reportPort,
+        hostname: config.hostname || osInfo.hostname,
+        agentId: config.agentId,
         payload: {
           agentId: config.agentId,
           collectedAt: new Date().toISOString(),
@@ -562,11 +583,22 @@ async function runAdRuntime({ config, logger }) {
       centerUrl: config.centerUrl,
       agentToken: config.agentToken,
       port: cachedPorts.reportPort,
+      // R93.2 — pass real hostname (not agentId) so the report HMAC
+      // matches what the centre's middleware reads off `req.body.hostname`
+      // / X-Agent-Hostname. Legacy convention treated hostname === agentId
+      // which worked only because both sides hashed with the same wrong
+      // value and accidentally agreed; once the centre started reading
+      // from headers, the bug surfaced.
+      hostname: config.hostname || osInfo.hostname,
       snapshot: snap
     }),
     sendHeartbeat: (extra) => {
       const payload = {
         agentId: config.agentId,
+        // R93.2 — same rationale as the AD-runtime heartbeat payload
+        // above: include hostname in the body so the centre's body-first
+        // resolution picks up the real value.
+        hostname: config.hostname || osInfo.hostname,
         agentVersion: VERSION,
         // 2026-08-21 UX redesign: see AD-runtime heartbeat payload above
         // for the rationale. Same contract — the centre decides whether to
@@ -581,6 +613,11 @@ async function runAdRuntime({ config, logger }) {
         centerUrl: config.centerUrl,
         agentToken: config.agentToken,
         port: cachedPorts.heartbeatPort,
+        // R93.2 — explicit hostname + agentId so signedRequestJson can
+        // stamp the full header quartet. Without these the helper would
+        // see `undefined` and skip the signature header entirely.
+        hostname: config.hostname || osInfo.hostname,
+        agentId: config.agentId,
         payload
       }).then(async (r) => {
         await applyAgentTokenDelivery({ result: r, config, configPath, logger });
@@ -840,6 +877,11 @@ async function runNonAdRuntime({ config, logger }) {
         centerUrl: config.centerUrl,
         agentToken: config.agentToken,
         port: cachedPorts.heartbeatPort,
+        // R93.2 — explicit hostname + agentId; payload already has them
+        // (line 858-860) but passing them explicitly matches the
+        // AD-runtime path and protects against payload-shape regressions.
+        hostname: config.hostname || osInfo.hostname,
+        agentId: config.agentId || osInfo.hostname,
         payload: p
       });
       await applyAgentTokenDelivery({ result: r, config, configPath, logger });

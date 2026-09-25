@@ -145,9 +145,17 @@ function BuildReplicationHistoryRows {
     [Parameter(Mandatory = $true)]
     [string]$ComputerName,
 
-    [Parameter(Mandatory = $true)]
+    # R93.2 — site is informational metadata that real ReplSummary calls
+    # don't always populate. Mandatory + AllowNull is a contradiction
+    # PowerShell rejects with "无法将参数绑定到参数'Site'，因为该参数为
+    # 空字符串" when caller passes "" (the empty-string default for
+    # unpopulated sites). AllowNull alone is the correct shape here —
+    # caller can pass $null or "" and PS treats both as no-site. This
+    # unblocks history-row generation when the source row has a null
+    # site (legacy AD sites that predate Windows 2008 functional-level
+    # don't carry the msDS-Site-Name attribute).
     [AllowNull()]
-    [string]$Site,
+    [string]$Site = $null,
 
     [Parameter(Mandatory = $true)]
     [AllowNull()]

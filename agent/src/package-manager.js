@@ -65,9 +65,11 @@ export class PackageManager {
     // 2026-09-22 S82 — use a signed GET so the centre's identity-binding
     // check passes after the 60s restart-grace window. _signedFetchJson
     // defaults to signedRequestJson; tests inject a stub to avoid real
-    // HTTP. The POST path (flushReportQueue) still uses _fetchJson — its
-    // request body is signed manually upstream of PackageManager, and
-    // tests inject _fetchJson for the same reason.
+    // HTTP.
+    // R93.2 — flushReportQueue (POST /api/agent/packages/report) now also
+    // uses _signedFetchJson for the same reason; previously the POST
+    // path used _fetchJson with only X-Agent-Token, which 401'd after
+    // the grace window because centre's HMAC triple couldn't bind.
     const r = await this._signedFetchJson({
       method: 'GET',
       url: `${this.centerBaseUrl}/api/agent/packages`,
@@ -268,11 +270,23 @@ export class PackageManager {
   async flushReportQueue() {
     const all = [...this.queue, ...this.reportBatch];
     if (all.length === 0) return { ok: true, sent: 0 };
-    const r = await this._fetchJson({
+    // R93.2 — switch from _fetchJson (bare requestJson + only X-Agent-Token)
+    // to _signedFetchJson (signedRequestJson) so the centre's HMAC identity
+    // check (post-grace-window) accepts the POST. The centre reads hostname
+    // from `req.body.hostname || X-Agent-Hostname || ''`; without the
+    // signed path no X-Agent-Hostname is sent and the body has no hostname
+    // field, so centre hashed with `hostname=''` while we hashed with the
+    // real hostname → 401 'identity mismatch'. _signedFetchJson defaults
+    // to signedRequestJson; tests inject a stub to avoid real HTTP, same
+    // pattern as syncFromCenter.
+    const r = await this._signedFetchJson({
       method: 'POST',
       url: `${this.centerBaseUrl}/api/agent/packages/report`,
-      headers: { 'X-Agent-Token': this.agentToken },
+      headers: {},
       body: { source: 'package-manager', runs: all },
+      agentToken: this.agentToken,
+      hostname: this.hostname,
+      agentId: this.agentId,
       timeoutMs: 30_000
     });
     if (r.ok) {
@@ -352,6 +366,13 @@ async function defaultFetchJson({ method, url, headers, body, timeoutMs }) {
 // Tests inject their own stub via the PackageManager `signedFetchJson`
 // constructor option, mirroring the `fetchJson` pattern for the POST
 // path.
-async function defaultSignedFetchJson({ method, url, headers, agentToken, hostname, agentId, timeoutMs }) {
-  return signedRequestJson({ method, url, headers, agentToken, hostname, agentId, timeoutMs });
+async function defaultSignedFetchJson({ method, url, headers, body, agentToken, hostname, agentId, timeoutMs }) {
+  // R93.2 — forward `body` to signedRequestJson. The original S82 helper
+  // (syncFromCenter, GET-only) didn't carry a body so this was a no-op;
+  // R93.2's flushReportQueue POST now uses this default and the body
+  // holds the run batch. Without forwarding, the request goes out empty
+  // (Content-Length: 0) and centre stores no runs → tests fail, ops
+  // fail. signedRequestJson itself accepts body and forwards it to
+  // requestJson; this wrapper just has to pass it through.
+  return signedRequestJson({ method, url, headers, body, agentToken, hostname, agentId, timeoutMs });
 }

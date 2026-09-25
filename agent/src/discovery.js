@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { requestJson } from './reporter.js';
+import { signedRequestJson, baseUrl } from './reporter.js';
 
 export function runDiscovery({ powerShellPath, psDiscoveryScriptPath, logger }) {
   return new Promise((resolve) => {
@@ -46,13 +46,16 @@ export function runDiscovery({ powerShellPath, psDiscoveryScriptPath, logger }) 
   });
 }
 
-export function postDiscovery({ centerUrl, agentToken, payload }) {
-  return requestJson({
+export function postDiscovery({ centerUrl, agentToken, port, payload, hostname, agentId }) {
+  return signedRequestJson({
     method: 'POST',
-    url: `${centerUrl}/api/agent/discover`,
-    headers: { 'X-Agent-Token': agentToken },
+    url: `${baseUrl({ centerUrl, port })}/api/agent/discover`,
+    headers: {},
     body: { source: 'collect-discovery', ...payload },
-    timeoutMs: 30000
+    timeoutMs: 30000,
+    agentToken,
+    hostname: String(hostname || ''),
+    agentId: String(agentId || '')
   });
 }
 

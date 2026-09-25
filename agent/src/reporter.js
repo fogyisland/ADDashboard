@@ -125,17 +125,22 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
 // 2026-09-22 S82 followup — `requestJson` above doesn't auto-stamp the
 // signature header. Every caller that talks to the centre MUST include an
 // X-Agent-Signature after the 60s restart-grace window, otherwise the
-// centre rejects with 401 'identity mismatch'. POST callers already stamp
-// it manually (postHeartbeat / postReport / package-manager flush), but
-// three GET paths were missing it:
-//   - port-config-fetcher.js fetchPortList (GET /api/agent/ports)
-//   - port-scanner.js     probeOnce     (GET /config.json)
-//   - package-manager.js  syncFromCenter (GET /api/agent/packages)
+// centre rejects with 401 'identity mismatch'.
 // `signedRequestJson` wraps `requestJson` so callers only need to pass
 // the identity triple (agentToken, hostname, agentId) — the helper stamps
-// the signature header for them. Callers that already stamp manually
-// (postHeartbeat / postReport) keep using `requestJson` to avoid
-// double-stamping.
+// all four identity headers (X-Agent-Token + X-Agent-Signature +
+// X-Agent-Id + X-Agent-Hostname) for them.
+//
+// 2026-09-25 R93.2 — postHeartbeat and postReport now use this helper
+// instead of bare requestJson + manual signature. The previous manual
+// path was correct for the signature itself but missed X-Agent-Hostname
+// (R93.1 only added the helper-side stamp) and the body field didn't
+// carry hostname either, so the centre hashed with `hostname=''` while
+// the agent hashed with the real hostname → HMAC mismatch → 401 after
+// the 60s grace window. Same pattern applies to package-manager's
+// flushReportQueue POST. fetchConfig is intentionally kept on
+// requestJson (the /config.json endpoint expects hostname=agentId=''
+// and there's no body to bind).
 export function signedRequestJson({
   method, url, headers = {}, body, timeoutMs,
   agentToken, hostname, agentId
@@ -180,7 +185,13 @@ export function signedRequestJson({
 
 // Build base URL: if `port` is truthy, strip trailing :digits from centerUrl
 // and append the override port. Otherwise return centerUrl as-is.
-function baseUrl({ centerUrl, port }) {
+// R93.2 — exported so callers (discovery.js, package-manager.js) that
+// previously sent to the wrong port (e.g. /api/agent/discover on the web
+// port which never has that route) can pick the right port the same way
+// postHeartbeat / postReport do. Previously discovery sent to
+// `${centerUrl}/api/agent/discover` and centre has that endpoint only on
+// mount: 'report' (8082), so the request always 404'd on the web port.
+export function baseUrl({ centerUrl, port }) {
   const trimmed = String(centerUrl).replace(/\/+$/, '');
   if (!port) return trimmed;
   return trimmed.replace(/:\d+$/, '') + ':' + Number(port);
@@ -244,30 +255,43 @@ export function toCamelEntry(e) {
   };
 }
 
-export function postHeartbeat({ centerUrl, agentToken, port, payload }) {
-  // S82: sign the body so the center can verify (hostname, agentId)
-  // weren't tampered with after the token was issued. agentId is what
-  // the operator sees in the heartbeat table; hostname is the operator-
-  // facing label for member-servers. payload always has both populated.
-  const hostname = String(payload?.hostname || payload?.agentId || '');
-  const agentId = String(payload?.agentId || hostname || '');
+export function postHeartbeat({ centerUrl, agentToken, port, payload, hostname, agentId }) {
+  // R93.2 — use signedRequestJson so the helper stamps the full identity
+  // header quartet (X-Agent-Token + X-Agent-Signature + X-Agent-Id +
+  // X-Agent-Hostname) in one place. Caller (agent.js) supplies hostname +
+  // agentId explicitly so the HMAC triple matches the centre's middleware
+  // resolution order (`req.body.hostname || X-Agent-Hostname || ''`). The
+  // body still carries hostname too (some centre code paths read it from
+  // body first), but the header is the load-bearing one for GET-style
+  // endpoints and for cases where express.json() ran before the body field
+  // was wired.
+  const hbHostname = String(hostname || payload?.hostname || '');
+  const hbAgentId  = String(agentId  || payload?.agentId  || '');
   const bodyWithSource = { source: 'heartbeat', ...payload };
-  return requestJson({
+  return signedRequestJson({
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/heartbeat`,
-    headers: {
-      'X-Agent-Token': agentToken,
-      'X-Agent-Signature': signRequest({ hostname, agentId, body: bodyWithSource, token: agentToken }),
-    },
+    headers: {},
     body: bodyWithSource,
+    timeoutMs: 30000,
+    agentToken,
+    hostname: hbHostname,
+    agentId: hbAgentId
   }).then((r) => {
-    log.info({ ok: r.ok, status: r.status, agentId, endpoint: 'heartbeat' }, 'heartbeat POST complete');
+    log.info({ ok: r.ok, status: r.status, agentId: hbAgentId, endpoint: 'heartbeat' }, 'heartbeat POST complete');
     return r;
   });
 }
 
-export function postReport({ centerUrl, agentToken, port, snapshot }) {
+export function postReport({ centerUrl, agentToken, port, snapshot, hostname }) {
+  // R93.2 — same migration to signedRequestJson as postHeartbeat. The
+  // snapshot itself only carries AgentId (no top-level hostname field),
+  // so the HMAC hostname is taken from the explicit `hostname` argument
+  // (caller passes `config.hostname || osInfo.hostname`); when omitted,
+  // fall back to agentId so the legacy convention (hostname === agentId)
+  // keeps working for non-AD callers.
   const agentId = snapshot.AgentId ?? snapshot.agentId;
+  const reportHostname = String(hostname || agentId || '');
   const body = {
     source: 'collect-replication',
     agentId,
@@ -275,14 +299,15 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
     data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []
   };
   const started = Date.now();
-  return requestJson({
+  return signedRequestJson({
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/report`,
-    headers: {
-      'X-Agent-Token': agentToken,
-      'X-Agent-Signature': signRequest({ hostname: agentId, agentId, body, token: agentToken }),
-    },
+    headers: {},
     body,
+    timeoutMs: 60000,
+    agentToken,
+    hostname: reportHostname,
+    agentId
   }).then((r) => {
     log.info({
       ok: r.ok,
