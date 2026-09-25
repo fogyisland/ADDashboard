@@ -1,5 +1,13 @@
 BeforeAll {
   . "$PSScriptRoot/../collect-replication.ps1" -ForTesting
+  # 2026-10-?? R93.6: PS 5.1 forbids both `$script:` and `$Global:`
+  # qualifiers inside a dot-sourced .ps1 file (parser only accepts them
+  # in module scope). Park shared state at the host scope via
+  # Set-Variable -Scope Global, then have the mocks read it back with
+  # Get-Variable -Scope Global. BeforeEach below resets to a clean
+  # default so one Describe's leftovers never bleed into the next.
+  Set-Variable -Name 'R93.6SourceSite'    -Value 'Default-Site' -Scope Global
+  Set-Variable -Name 'R93.6PartnerInputs' -Value @()            -Scope Global
 }
 
 Describe 'Get-ReplicationSnapshot' {
@@ -187,5 +195,122 @@ Describe 'BuildReplicationHistoryRows (round-42 复制日志监控)' {
     $r1 = @(BuildReplicationHistoryRows -Partner $p1 -ComputerName 'DC-A' -Site 'BJ' -RealNamingContext 'DC=contoso,DC=com')
     $r2 = @(BuildReplicationHistoryRows -Partner $p2 -ComputerName 'DC-A' -Site 'BJ' -RealNamingContext 'CN=Configuration,DC=contoso,DC=com')
     $r1[0].NamingContext | Should -Not -Be $r2[0].NamingContext
+  }
+}
+
+Describe 'Get-ReplicationSnapshot partner entry (R93.6 复制伙伴可见性)' {
+  BeforeAll {
+    # 2026-10-?? R93.6: PS 5.1 Pester 6 — `Mock -CommandName` cannot mock
+    # cmdlets that aren't loaded on the test machine (no ActiveDirectory
+    # module on dev boxes). We register shims via Set-Item on the
+    # Function: PSDrive so the dot-sourced script under test resolves
+    # them via the SessionState's function lookup chain. This is the
+    # only Pester-6-on-PS5.1-compatible way to swap out calls to cmdlets
+    # that may be absent from the runtime — Mock WithModuleViaReflection
+    # would also work but requires the cmdlet to exist on disk.
+    #
+    # Also mocks Get-Module so the ActiveDirectory-availability
+    # precondition at collect-replication.ps1:549 passes. Without this,
+    # the script throws "ActiveDirectory module not available" and emits
+    # a META entry — the partner mock below never fires.
+    Set-Item -Path 'Function:Get-ADReplicationPartnerMetadata' -Value {
+      param([string]$Target)
+      $inputs = Get-Variable -Name 'R93.6PartnerInputs' -Scope Global -ErrorAction SilentlyContinue
+      if ($null -eq $inputs) { return @() }
+      return ,$inputs.Value
+    }
+    Set-Item -Path 'Function:Get-ADDomainController' -Value {
+      param([string]$Identity, [string]$Filter)
+      $site = Get-Variable -Name 'R93.6SourceSite' -Scope Global -ErrorAction SilentlyContinue
+      $siteValue = $null
+      if ($null -ne $site) { $siteValue = $site.Value }
+      return [PSCustomObject]@{ SiteObjectName = $siteValue; HostName = $Identity }
+    }
+    Set-Item -Path 'Function:Get-Module' -Value {
+      param([string]$Name, [switch]$ListAvailable)
+      return [PSCustomObject]@{ Name = $Name; Version = [Version]'1.0.0' }
+    }
+
+    function New-StubLinkPartner {
+      param(
+        [string]$Partner,
+        [string]$PartnerSiteName = '',
+        [string]$NamingContext = 'DC=contoso,DC=com',
+        [int]$LastReplicationResult = 0
+      )
+      [PSCustomObject]@{
+        Partner                = $Partner
+        PartnerSiteName        = $PartnerSiteName
+        NamingContext          = $NamingContext
+        LastReplicationResult  = $LastReplicationResult
+        LastReplicationSuccess = (Get-Date).ToUniversalTime().AddMinutes(-1)
+        LastReplicationAttempt = (Get-Date).ToUniversalTime()
+      }
+    }
+  }
+
+  BeforeEach {
+    Set-Variable -Name 'R93.6SourceSite'    -Value 'Default-Site' -Scope Global
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @()            -Scope Global
+  }
+
+  It 'DestSite is populated from PartnerSiteName when AD module exposes it' {
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+      (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -PartnerSiteName 'BJ' -NamingContext 'DC=contoso,DC=com')
+    ) -Scope Global
+    $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    $snap.Entries[0].DestSite | Should -Be 'BJ'
+  }
+
+  It 'DestSite falls back to $null when PartnerSiteName is empty AND source site is unknown' {
+    Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+      (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+    ) -Scope Global
+    $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    $snap.Entries[0].DestSite | Should -BeNullOrEmpty
+  }
+
+  It 'DestSite falls back to source site when partner has no site link bridge' {
+    Set-Variable -Name 'R93.6SourceSite' -Value 'BJ' -Scope Global
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+      (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+    ) -Scope Global
+    $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    # Co-located partner — bucket under source site so the row has a
+    # non-empty label for siteMatrix grouping.
+    $snap.Entries[0].DestSite | Should -Be 'BJ'
+  }
+
+  It 'NamingContext is replaced with __partner_naming__:<sha> when AD reports empty' {
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+      (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -NamingContext '')
+    ) -Scope Global
+    $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    $snap.Entries[0].NamingContext | Should -Match '^__partner_naming__:[0-9a-f]{8}$'
+  }
+
+  It 'NamingContext preserves the AD-reported DN when present (no fallback)' {
+    $nc = 'CN=Configuration,DC=contoso,DC=com'
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+      (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -NamingContext $nc)
+    ) -Scope Global
+    $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    $snap.Entries[0].NamingContext | Should -Be $nc
+  }
+
+  It '__partner_naming__:<sha> is deterministic per (sourceDc, partner, idx) tuple' {
+    Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+      (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -NamingContext ''),
+      (New-StubLinkPartner -Partner 'DC-BJ-03.contoso.com' -NamingContext '')
+    ) -Scope Global
+    $snap1 = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    $snap2 = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    # Two distinct partners → two distinct hashes (UNIQUE KEY on
+    # (source_dc, dest_dc, naming_context) must not collide).
+    $snap1.Entries[0].NamingContext | Should -Not -Be $snap1.Entries[1].NamingContext
+    # And the hash is deterministic across invocations.
+    $snap2.Entries[0].NamingContext | Should -Be $snap1.Entries[0].NamingContext
+    $snap2.Entries[1].NamingContext | Should -Be $snap1.Entries[1].NamingContext
   }
 }

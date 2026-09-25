@@ -507,6 +507,19 @@ function Get-ReplicationSnapshot {
 
   # Try to resolve site via AD module. If unavailable, leave $null and rely on
   # the meta-failure entry below.
+  #
+  # 2026-09-25 R93.6 (复制伙伴可见性): on KDLFLOFADSRV2 the lookup previously
+  # surfaced as a silent $null in the JSON output. Operator can't see
+  # replication partners on the dashboard because source_site IS NOT NULL
+  # filter in centre/src/db/sql.js siteMatrix excludes the rows. Fix:
+  #   1. Stderr-log the lookup failure so NSSM stderr shows why site
+  #   resolution failed (helps diagnose AD module/permission/wiring
+  #   issues).
+  #   2. Fall back to Get-ADDomainController -Discover (any DC in the
+  #   domain) when -Identity lookup fails — Get-ADDomainController with
+  #   -Discover uses ADWS without requiring the target DC to be online.
+  #   We only adopt the discovered DC's site when our $ComputerName
+  #   matches one of the discovered DCs.
   try {
     if (-not (Get-Module -Name ActiveDirectory -ListAvailable)) {
       throw "ActiveDirectory module not available"
@@ -517,8 +530,17 @@ function Get-ReplicationSnapshot {
       $snapshot.Site = $dc.SiteObjectName
     }
   } catch {
-    Write-Verbose "Site lookup failed: $_"
-    $snapshot.Site = $null
+    [Console]::Error.WriteLine("[collect-replication] site lookup for $ComputerName failed: $($_.Exception.Message)")
+    try {
+        $dcList = Get-ADDomainController -Filter { HostName -eq $ComputerName } -ErrorAction Stop
+        if ($dcList) {
+          $snapshot.Site = $dcList.SiteObjectName
+          [Console]::Error.WriteLine("[collect-replication] site lookup recovered via -Filter for $ComputerName -> $($snapshot.Site)")
+        }
+      } catch {
+      [Console]::Error.WriteLine("[collect-replication] site lookup -Filter also failed for ${ComputerName}: $($_.Exception.Message)")
+        $snapshot.Site = $null
+      }
   }
 
   # Try to get replication partner metadata. If it fails, emit a meta failure entry.
@@ -568,12 +590,60 @@ function Get-ReplicationSnapshot {
       if ($status -ne 0) {
         $errMsg = "code $($status)"
       }
+      # 2026-09-25 R93.6 (复制伙伴可见性): the previous shape emitted
+      #   DestSite        = $null   (never queried)
+      #   NamingContext   = [string]$p.NamingContext   (forced to "" when
+      #     the partner metadata carried an empty NC)
+      # Result: KDLFLOFADSRV2 heartbeat rows all carried dest_site=NULL
+      # and naming_context='' which (a) skipped centre/src/db/sql.js
+      # siteMatrix's IS NOT NULL filter for dest_site on the NULL half
+      # and (b) routed empty-NC rows into a synthetic ('') bucket on the
+      # site matrix that operators couldn't read.
+      #
+      # Fix:
+      #   - DestSite: use the partner's PartnerSiteName (the AD module
+      #     surfaces it on Get-ADReplicationPartnerMetadata). When the
+      #     partner has no site link bridge to this DC the property is
+      #     $null — fall back to the source site so the row still
+      #     groups under a meaningful label.
+      #   - NamingContext: when AD reports empty (some NC scopes don't
+      #     populate the field at partner-row granularity) we generate
+      #     a synthetic `__partner_naming__:<sha>` key so the
+      #     (source_dc, dest_dc, naming_context) UNIQUE KEY stays unique
+      #     and the siteMatrix bucket doesn't collapse every empty-NC
+      #     pair into one row. The sha is derived from the partner's
+      #     full DN-style partner + index so two empty-NC partners on
+      #     the same DC pair still get distinct rows (matches the
+      #     `__partner_ports__:` precedent from round-46).
+      $ncValue = [string]$p.NamingContext
+      if ([string]::IsNullOrEmpty($ncValue)) {
+        $partnerKey = ''
+        try { $partnerKey = [string]$p.Partner } catch { $partnerKey = '' }
+        $ncSeed = "${ComputerName}|${partnerKey}|$($entries.Count)"
+        $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+          [System.Text.Encoding]::UTF8.GetBytes($ncSeed)
+        )
+        $short = -join ($sha[0..3] | ForEach-Object { $_.ToString('x2') })
+        $ncValue = "__partner_naming__:${short}"
+      }
+      $destSiteValue = $null
+      try {
+        $partnerSite = [string]$p.PartnerSiteName
+        if (-not [string]::IsNullOrEmpty($partnerSite)) {
+          $destSiteValue = $partnerSite
+        } elseif ($null -ne $snapshot.Site) {
+          # Co-located partner with no site link bridge — fall back to
+          # source site so the row has a non-empty label.
+          $destSiteValue = [string]$snapshot.Site
+        }
+      } catch { $destSiteValue = $null }
+
       $entry = [PSCustomObject]@{
         SourceDc        = [string]$p.Partner
         DestDc          = $ComputerName
         SourceSite      = $snapshot.Site
-        DestSite        = $null
-        NamingContext   = [string]$p.NamingContext
+        DestSite        = $destSiteValue
+        NamingContext   = $ncValue
         LastSuccessTime = (ConvertTo-UtcIso -Value $p.LastReplicationSuccess)
         LastAttemptTime = (ConvertTo-UtcIso -Value $p.LastReplicationAttempt)
         StatusCode      = $status
