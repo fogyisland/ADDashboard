@@ -13,6 +13,17 @@ function toIso(v) {
   return v;
 }
 
+// R93.12: NTDS Settings DN → bare DC name. Collector writes full DN
+// (CN=NTDS Settings,CN=<bare>,CN=Servers,...) into ad_replication_status,
+// but ad_dcs catalogue stores the bare name. Normalise here so the route
+// handler can join link rows against the catalogue. Already-bare values
+// pass through unchanged.
+function extractBareDcName(dnOrName) {
+  if (!dnOrName) return dnOrName;
+  const m = /^CN=NTDS Settings,CN=([^,]+),/i.exec(dnOrName);
+  return m ? m[1] : dnOrName;
+}
+
 // Snake -> camel rename for known columns. Order matters for nested keys.
 const CAML_MAP = new Map([
   ['source_site', 'sourceSite'],
@@ -381,11 +392,15 @@ export function dashboardRouter({ config, logger, db }) {
         for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
 
         for (const l of linkRows) {
-          // self-loop guard
+          // self-loop guard (DN vs DN — both raw values, same identity)
           if (l.source_dc === l.dest_dc) continue;
+          // R93.12: link.source_dc/dest_dc are full NTDS Settings DN.
+          // catalogue dc_name is bare, so normalise both sides before any
+          // partner / catalogue lookup.
+          const destDc = extractBareDcName(l.dest_dc);
+          const peerDc = extractBareDcName(l.source_dc);
           // inbound-only: dest_dc is the receiver
-          if (!partnerMapByDc.has(l.dest_dc)) continue; // dest not in this site
-          const peerDc = l.source_dc;
+          if (!partnerMapByDc.has(destDc)) continue; // dest not in this site
           if (!allowedPeers.has(peerDc)) continue; // round-32 filter
           const peer = dcByName.get(peerDc);
           if (!peer) continue; // orphan DC
@@ -411,7 +426,7 @@ export function dashboardRouter({ config, logger, db }) {
           // every entry is inbound. peerDc alone is sufficient because
           // the same source DC can only have one latest link per
           // (source_dc, dest_dc) pair after the latest-per-pair subquery.
-          const targetMap = partnerMapByDc.get(l.dest_dc);
+          const targetMap = partnerMapByDc.get(destDc);
           const k = peerDc;
           const existing = targetMap.get(k);
           if (!existing) {
