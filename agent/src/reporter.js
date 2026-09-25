@@ -150,6 +150,15 @@ export function signedRequestJson({
       // X-Agent-Id lets the centre's middleware skip the body-first lookup
       // when body is empty (mirror of the agent-side convention).
       stamped['X-Agent-Id'] = agentId;
+      // R93.1 — centre's middleware (agent-token.js:171) reads hostname
+      // from `req.body?.hostname || req.headers['x-agent-hostname'] || ''`.
+      // For GET requests body is null so the first lookup misses; without
+      // X-Agent-Hostname the centre hashes with `hostname=''` while we
+      // hashed with the real hostname — HMAC mismatch → 401 'identity
+      // mismatch'. KDLFLOFADSRV2 stderr showed exactly this on every
+      // drainer poll. Stamp the hostname header so both sides hash over
+      // the same triple.
+      stamped['X-Agent-Hostname'] = hostname;
     }
   }
   // Token/signature prefix only — never log the full token or body. The

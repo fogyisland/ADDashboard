@@ -243,6 +243,11 @@ async function runAdRuntime({ config, logger }) {
     const authHeaders = {
       'X-Agent-Token': config.agentToken,
       'X-Agent-Id': config.agentId,
+      // R93.1 — also stamp X-Agent-Hostname. Centre's middleware reads
+      // hostname from `req.body?.hostname || req.headers['x-agent-hostname']
+      // || ''`; raw GETs have no body so without this header it hashes
+      // over hostname='' and our HMAC over the real hostname mismatches.
+      'X-Agent-Hostname': agentHost,
       'X-Agent-Signature': signRequest({
         hostname: agentHost,
         agentId: config.agentId,
