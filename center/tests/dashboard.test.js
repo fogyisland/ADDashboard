@@ -1177,6 +1177,103 @@ test("GET /api/dashboard/partner-port-health/all: R56 dedup — one partner per 
   assert.equal(partner.portHealth[0].ports.length, 1);
 });
 
+// R93.14: real-machine data on KDLFLOFADSRV2 has link.source_dc as full NTDS
+// Settings DN and link.dest_dc as bare DC name. Pre-R93.14 the handler's
+// partnerMapByDc.has(l.dest_dc) gate dropped every row because catalogue
+// keys are bare. Lock the contract: a DN-format source row pointing at a
+// bare-name dest DC in the catalogue must surface as a partner row.
+test("GET /api/dashboard/partner-port-health/all: surfaces partner rows when source_dc is full NTDS Settings DN (R93.14)", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const DN = (dc) =>
+    `CN=NTDS Settings,CN=${dc},CN=Servers,CN=KDL-ShangHaiJiuTing,CN=Sites,CN=Configuration,DC=shaphar,DC=net`;
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [
+        { site_id: 1, site_name: "KDL-ShangHaiLiuCheng", region_code: "SH", is_hub: 0, description: null },
+        { site_id: 2, site_name: "KDL-ShangHaiJiuTing",  region_code: "SH", is_hub: 0, description: null }
+      ]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "KDLFLOFADSRV2", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 1, discovered_at: ls, discovered_by_agent_id: "KDLFLOFADSRV2" },
+        { dc_name: "KDLJTWHADSRV1", site_id: 2, os_version: "Win2022", is_pdc: 0, is_gc: 0, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "KDLJTWHADSRV1" }
+      ]
+    },
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        // Real-DB pattern: source_dc is full NTDS Settings DN, dest_dc is bare.
+        { source_dc: DN("KDLJTWHADSRV1"), dest_dc: "KDLFLOFADSRV2",
+          naming_context: "__partner_naming__:0bd554d5", status_code: 0,
+          last_success_time: ls, last_attempt_time: la, duration_minutes: 5 }
+      ]
+    },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/partner-port-health/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  // Find the site containing KDLFLOFADSRV2; KDLFLOFADSRV2 must have a partner
+  // row pointing back at KDLJTWHADSRV1 (bare, after DN normalisation).
+  const fl = r.body.sites.find(s => s.siteName === "KDL-ShangHaiLiuCheng");
+  assert.ok(fl, "KDL-ShangHaiLiuCheng must be in sites[]");
+  const flDc = fl.dcs.find(d => d.dcName === "KDLFLOFADSRV2");
+  assert.ok(flDc, "KDLFLOFADSRV2 must be listed");
+  assert.ok(flDc.partners.length >= 1,
+    `expected at least one partner after DN normalisation, got ${flDc.partners.length}`);
+  assert.equal(flDc.partners[0].peerDc, "KDLJTWHADSRV1",
+    "peerDc must be bare (DN normalised)");
+  assert.equal(flDc.partners[0].direction, "in");
+});
+
+// R93.14 inverse sentinel: collector's R93.6.1 fallback path at
+// collect-replication.ps1:835-836 writes dest_dc as DN, source_dc as bare —
+// the inverse of the common shape. Locks both sides of the normalisation.
+test("GET /api/dashboard/partner-port-health/all: surfaces partner rows when dest_dc is full NTDS Settings DN (R93.14 inverse)", async () => {
+  const ls = new Date("2026-08-27T10:00:00Z");
+  const la = new Date("2026-08-27T10:00:30Z");
+  const DN = (dc) =>
+    `CN=NTDS Settings,CN=${dc},CN=Servers,CN=KDL-ShangHaiLiuCheng,CN=Sites,CN=Configuration,DC=shaphar,DC=net`;
+  const db = buildMockDb([
+    { match: /FROM\s+ad_sites\s+ORDER\s+BY\s+is_hub/i,
+      rows: [
+        { site_id: 1, site_name: "KDL-ShangHaiLiuCheng", region_code: "SH", is_hub: 0, description: null },
+        { site_id: 2, site_name: "KDL-ShangHaiJiuTing",  region_code: "SH", is_hub: 0, description: null }
+      ]
+    },
+    { match: /FROM\s+ad_dcs\s+d\s+INNER\s+JOIN\s+ad_sites/i,
+      rows: [
+        { dc_name: "KDLFLOFADSRV2", site_id: 1, os_version: "Win2022", is_pdc: 1, is_gc: 1, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 1, discovered_at: ls, discovered_by_agent_id: "KDLFLOFADSRV2" },
+        { dc_name: "KDLJTWHADSRV1", site_id: 2, os_version: "Win2022", is_pdc: 0, is_gc: 0, is_rid_master: 0, is_schema_master: 0, is_domain_naming_master: 0, is_infrastructure_master: 0, is_bridgehead: 0, discovered_at: ls, discovered_by_agent_id: "KDLJTWHADSRV1" }
+      ]
+    },
+    { match: /naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'/i,
+      rows: [
+        // Inverse: source bare, dest DN
+        { source_dc: "KDLJTWHADSRV1", dest_dc: DN("KDLFLOFADSRV2"),
+          naming_context: "__partner_naming__:9fd0efd6", status_code: 0,
+          last_success_time: ls, last_attempt_time: la, duration_minutes: 5 }
+      ]
+    },
+    { match: /site_matrix_refresh_seconds/i, rows: [{ config_value: "10" }] }
+  ]).standard();
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/partner-port-health/all")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200);
+  const fl = r.body.sites.find(s => s.siteName === "KDL-ShangHaiLiuCheng");
+  const flDc = fl.dcs.find(d => d.dcName === "KDLFLOFADSRV2");
+  assert.ok(flDc, "KDLFLOFADSRV2 must be listed");
+  assert.ok(flDc.partners.length >= 1,
+    `dest-side DN must still normalise, got ${flDc.partners.length} partners`);
+  assert.equal(flDc.partners[0].peerDc, "KDLJTWHADSRV1");
+});
+
 // ----- R67-T2: GET /api/dashboard/packages-runs (包执行状态监控) -----
 
 test('packages-runs: 401 when no token', async () => {

@@ -734,9 +734,21 @@ export function dashboardRouter({ config, logger, db }) {
           // out-bound side still surfaces in 复制状态概览 (R36) where the
           // partner grid enumerates both, but 复制伙伴端口健康监控 is
           // INBOUND-first.
+          //
+          // R93.14: catalogue keys (partnerMapByDc / dcByName / allowedPeers)
+          // are bare DC names; real-machine link rows can carry full NTDS
+          // Settings DN on either side (collect-replication.ps1:365-366
+          // writes bare, the R93.6.1 fallback at line 835-836 writes DN).
+          // Normalise both sides before the catalogue-side joins. The
+          // portHealthByPair indexer at line 706 is keyed by raw
+          // (source_dc, dest_dc), so its consumer lookup at line 771 below
+          // keeps raw DN — don't normalise that.
+          const destDc = extractBareDcName(l.dest_dc);
+          const peerDc = extractBareDcName(l.source_dc);
+
           const sides = [];
-          if (partnerMapByDc.has(l.dest_dc) && allowedPeers.has(l.source_dc)) {
-            sides.push({ dcName: l.dest_dc, peerDc: l.source_dc, direction: 'in' });
+          if (partnerMapByDc.has(destDc) && allowedPeers.has(peerDc)) {
+            sides.push({ dcName: destDc, peerDc, direction: 'in' });
           }
           if (sides.length === 0) continue;
 
