@@ -2,12 +2,14 @@
   <div class="layout" :class="{ 'sidebar-collapsed': !sidebarVisible }">
     <aside class="sidebar">
       <!-- 2026-09-25 R94: brand mark block — replaces the previous plain
-           <h3> with a 2-line product mark + tiny version chip. The
-           product name drops to two lines (AD / Dashboard · 管理) for a
-           more deliberate editorial-style mark that sits above the
-           search box as a visual anchor, instead of looking like a
-           forgotten page title. The "← 返回看板" link stays as the
-           operator's escape hatch into the frontend dashboard. -->
+           h3 heading with a 2-line product mark + tiny version chip.
+           The product name drops to two lines (AD / Dashboard / 管理)
+           for a more deliberate editorial-style mark. The "← 返回看板"
+           link stays as the operator's escape hatch into the frontend
+           dashboard.
+           2026-09-25 R97: search box removed per operator directive
+           "去掉搜索菜单". Brand mark + nav remain; menu uses the
+           native HTML details accordion for grouping, no inline filter. -->
       <router-link to="/" class="back">← 返回看板</router-link>
       <div class="brand">
         <div class="brand-mark">
@@ -16,42 +18,6 @@
         </div>
         <div class="brand-mark-meta">管理控制台</div>
       </div>
-      <!-- 2026-09-24 R92: sidebar menu search + scrollbar.
-           Per operator directive "平台管理后台的菜单能够展开和搜索,
-           同时展开之后提供滑动条". Search box renders only while the
-           sidebar is expanded; on collapse it's hidden so the collapsed
-           rail stays narrow. Query is intentionally NOT persisted in
-           localStorage — search is a transient operator action, not a
-           preference. The clear (✕) button only appears once the query
-           is non-empty so the input stays uncluttered on first paint.
-           2026-09-25 R94: visual polish — the search input drops the
-           1px var(--border) outline and replaces it with a hairline
-           bottom-rule + uppercase eyebrow label ("Search"). Operator
-           directive "视觉层级 / 排版打磨" — keep R92 behaviour, lift
-           the surface so it reads as a deliberate filter affordance
-           instead of a generic text input. -->
-      <div v-if="sidebarVisible" class="sidebar-search-wrap">
-        <label class="sidebar-search-label" for="sidebar-search-input">Search</label>
-        <div class="sidebar-search-field">
-          <input
-            id="sidebar-search-input"
-            v-model="searchQuery"
-            type="text"
-            class="sidebar-search sidebar-search-input"
-            placeholder="筛选菜单项..."
-            aria-label="搜索菜单"
-            data-test="sidebar-search"
-          />
-          <button
-            v-if="searchQuery"
-            type="button"
-            class="sidebar-search-clear"
-            title="清空搜索"
-            aria-label="清空搜索"
-            @click="searchQuery = ''"
-          >✕</button>
-        </div>
-      </div>
       <nav>
         <!-- 2026-08-28 round-54: visual hierarchy — level-1 title is now a
              dimmer/smaller/uppercase "Group Header" with right-aligned caret;
@@ -59,20 +25,17 @@
              accent + bg on active, hover-bg on hover. Operator directive
              "侧边栏层级感非常模糊" + "一级分类和二级子菜单左对齐齐平".
              R53 structure (5+1 groups, 19 nav-links) unchanged.
-             2026-09-24 R92: `v-for` source switched from `groups` to
-             `filteredGroups` so an active search hides groups whose items
-             all fail to match the query. When `searchQuery` is empty
-             (the default state on mount) `filteredGroups` is
-             structurally identical to `groups` — all 22 links, all 7
-             groups, in the original order — so the R53/R54/R75
-             regression tests continue to hold.
              2026-09-25 R94: each group now has an item counter chip on
              the right side of the title row (e.g. "5 / 4 / 4 / 2 / 2 / 2
              / 3") so the operator can scan density at a glance — a
              sparse group reads as "low-frequency parking zone", a dense
              one reads as "main working area". Counter is non-clickable
-             and lives outside the clickable summary area. -->
-        <details v-for="g in filteredGroups" :key="g.title" :open="g.open" class="nav-group">
+             and lives outside the clickable summary area.
+             2026-09-25 R97: `v-for` source reverted to `groups` (was
+             `filteredGroups` in R92–R96). No search → no filter. R53
+             regression tests for label/path order continue to hold
+             verbatim. -->
+        <details v-for="g in groups" :key="g.title" :open="g.open" class="nav-group">
           <summary class="nav-group-title">
             <span class="nav-group-title-main">
               <span class="icon">{{ g.icon }}</span>
@@ -90,13 +53,6 @@
             >{{ i.label }}</router-link>
           </div>
         </details>
-        <!-- R92: empty-state placeholder — appears only when an active
-             search has pruned every group. Tells the operator "your
-             query matched nothing" instead of leaving a blank sidebar
-             that looks like the menu failed to load. -->
-        <div v-if="searchQuery && filteredGroups.length === 0" class="sidebar-search-empty">
-          没有匹配的菜单项
-        </div>
       </nav>
     </aside>
     <main>
@@ -118,7 +74,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
 import { useTheme } from '../composables/useTheme.js';
@@ -142,37 +98,11 @@ function toggleSidebar() {
 }
 onMounted(loadSidebarVisible);
 
-// 2026-09-24 R92: menu search query. Held as a plain ref (no debounce —
-// the dataset is 22 items, synchronous substring scan is <1ms and adding
-// debounce would only complicate the input UX). Bound to <input v-model>
-// in the template; consumed by the `filteredGroups` computed below.
-// Intentionally NOT persisted to localStorage — search is a transient
-// operator action, not a preference. Reload = clean slate.
-const searchQuery = ref('');
-
-// 2026-09-24 R92: filteredGroups derived view over `groups`. Behaviour:
-//   - empty query → return all 7 groups with all items, in original
-//     order. This is the identity case the existing R53/R54/R75 tests
-//     depend on, so adding search must NOT shift any label or link.
-//   - non-empty query → substring match on `i.label.toLowerCase()`.
-//     Groups with zero surviving items are dropped (per operator
-//     decision "未命中 group 直接隐藏"). Surviving groups are forced
-//     to `open: true` so the operator doesn't have to manually expand
-//     the group to see their hits — search is a "show me what's there"
-//     action, not a "preserve collapsed state" action.
-const filteredGroups = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase();
-  if (!q) {
-    return groups.map(g => ({ ...g, open: true }));
-  }
-  return groups
-    .map(g => ({
-      ...g,
-      items: g.items.filter(i => i.label.toLowerCase().includes(q)),
-      open: true
-    }))
-    .filter(g => g.items.length > 0);
-});
+// 2026-09-24 R92: menu search query removed in R97 per operator
+// directive "去掉搜索菜单". Sidebar renders `groups` directly via the
+// native details accordion — no filter, no query state. The R53/R54/R75
+// tests that locked the un-filtered menu shape continue to pass
+// verbatim because the default state is structurally identical.
 
 // 2026-08-28 round-53: 5+1 top-level groups per operator directive. The 5 main
 // groups mirror the operator's explicit list exactly (labels, items, order).
@@ -200,7 +130,7 @@ const filteredGroups = computed(() => {
 // The /matrix route + SiteMatrixView component still exist (AppLayout
 // page in the frontend), but admin (AdminLayout) no longer surfaces it.
 const groups = [
-  { icon: '📊', title: '监控与诊断', items: [
+  { icon: '📊', title: '监控与诊断', open: true, items: [
     // R64: 复制状态概览 restored to R49 ops-console (per-DC partner tables).
     { label: '复制状态概览',         path: '/admin/site-replication-matrix/all' },
     // 2026-09-01 R74: 复制错误 — focused triage view for failed replication
@@ -212,7 +142,7 @@ const groups = [
     // R53: 包管理 moved here from 权限与账号 (operator's spec).
     { label: '包管理',               path: '/admin/packages' }
   ]},
-  { icon: '🛡️', title: 'AD 活动目录服务器', items: [
+  { icon: '🛡️', title: 'AD 活动目录服务器', open: true, items: [
     { label: 'AD 站点清单设置',     path: '/admin/sites-catalog' },
     { label: 'AD 域控清单设置',     path: '/admin/dcs-catalog' },
     // R53: 端口健康检查 renamed to AD 域控检查端口, moved from R52 监控与诊断.
@@ -220,14 +150,14 @@ const groups = [
     // R53: NEW placeholder — file push to AD DCs (mock-first per operator).
     { label: '文件推送功能',         path: '/admin/ad-file-push' }
   ]},
-  { icon: '💻', title: '成员服务器管理', items: [
+  { icon: '💻', title: '成员服务器管理', open: true, items: [
     { label: '成员服务器组',         path: '/admin/server-groups' },
     { label: '成员服务器',           path: '/admin/member-servers' },
     // R53: NEW placeholders (mock-first per operator directive).
     { label: '成员服务器文件推送',   path: '/admin/member-file-push' },
     { label: '成员服务器执行命令',   path: '/admin/member-command-exec' }
   ]},
-  { icon: '👥', title: '权限和账户', items: [
+  { icon: '👥', title: '权限和账户', open: true, items: [
     { label: '用户管理', path: '/admin/users' },
     { label: '角色管理', path: '/admin/roles' }
   ]},
@@ -237,11 +167,11 @@ const groups = [
   // Sits between 权限和账户 and 运维日志 — logical reading order:
   // account → AD operations → log review. 2 nav-links, brings total to
   // 6+1 = 7 groups + 23 nav-links (was 6 / 21 in R64.1).
-  { icon: '⚙️', title: '运维', items: [
+  { icon: '⚙️', title: '运维', open: true, items: [
     { label: 'AD 用户管理', path: '/admin/ad-users' },
     { label: 'AD 组管理',   path: '/admin/ad-groups' }
   ]},
-  { icon: '📋', title: '运维日志', items: [
+  { icon: '📋', title: '运维日志', open: true, items: [
     // R53: 审计日志 → 系统运维日志 (记录目前所有的系统变更日志).
     { label: '系统运维日志',         path: '/admin/audit' },
     // R53: 操作日志 → 心跳与状态执行日志 (记录收集到的心跳和状态日志).
@@ -250,7 +180,7 @@ const groups = [
   // R53: 6th group — system config orphans. Not in operator's spec but
   // these views exist and serve real functions (config / email / migrations).
   // Bottom position = lowest frequency = least screen real estate impact.
-  { icon: '🛠️', title: '系统设置', items: [
+  { icon: '🛠️', title: '系统设置', open: true, items: [
     { label: '版本升级', path: '/admin/migrations' },
     { label: '系统配置', path: '/admin/config' },
     { label: '邮件配置', path: '/admin/email-config' }
@@ -261,11 +191,18 @@ const groups = [
 <style scoped>
 /* ============================================================================
    2026-09-25 R94 — sidebar visual hierarchy / typography pass.
+   2026-09-25 R97 — sidebar search removed per operator directive
+                    "去掉搜索菜单". Search-related CSS (the 1px underlined
+                    field + 11px uppercase "Search" eyebrow label +
+                    ✕ clear glyph + empty-state placeholder) all dropped.
+                    Nav scroll container's max-height budget reverts from
+                    168px (R94) back to 130px (R52/R54 baseline) because
+                    the search region no longer claims vertical space.
 
    Scope: ops-console polish — typography, density, breathing room,
-   editorial brand mark. NOT changing any behaviour contract (search,
-   collapse, scroll, filter, R53/R54/R75 nav structure, R74 复制错误
-   placement, R64.1 站点矩阵 removal).
+   editorial brand mark. NOT changing any behaviour contract (collapse,
+   scroll, R53/R54/R75 nav structure, R74 复制错误 placement, R64.1 站点矩阵
+   removal). R92's search/filter contract is the one R97 retracts.
 
    Tokens referenced: var(--sidebar-bg) / var(--panel) / var(--border) /
    var(--text) / var(--muted) / var(--accent) / var(--input-bg).
@@ -274,7 +211,7 @@ const groups = [
    .nav-link.router-link-active are kept verbatim because the R54
    source-CSS test (admin-layout.test.js:361-366) regex-locks those
    literal hex strings. Visual upgrade only — no regression in any of
-   the 19 R53/R54/R75/R92 tests.
+   the 19 R53/R54/R75 tests (R97 also drops the 7 R92 search tests).
 
    Self-critique vs frontend-design AI-tells:
      - No cream background, no terracotta accent, no monospace labels,
@@ -286,9 +223,9 @@ const groups = [
        contract) but the padding inside the link is tightened so the
        active bar reads as "this row is selected" instead of "this row
        happens to be blue".
-     - Search input drops its 1px bordered-box look in favour of an
-       underlined field + 11px uppercase "Search" eyebrow label,
-       echoing how Linear / Notion sidebar filters present themselves.
+     - No search affordance — the menu is a fixed catalog of 7 groups /
+       22 links, intentionally browsable by scroll + accordion, not by
+       query. R97 makes this an explicit choice.
    ========================================================================== */
 
 .layout {
@@ -304,12 +241,11 @@ const groups = [
   padding: 18px 14px 16px 18px;                /* R94: tighter horizontal padding */
   overflow: hidden;
   /* 2026-09-24 R92: switch the sidebar to a vertical flex column so the
-     <input> search box + <nav> can size themselves independently.
-     `min-height: 0` is the critical bit — by default a flex item refuses
-     to shrink below its content size, which would let <nav> push the
-     topbar off-screen on short viewports instead of producing an inner
-     scrollbar. With `min-height: 0` set, the overflow-y rule on <nav>
-     actually fires.
+     search box + nav could size themselves independently.
+     2026-09-25 R97: search box removed, but the flex-column layout
+     stays — nav still needs to size independently so its overflow-y
+     rule produces a scrollbar instead of pushing the topbar off-screen
+     on short viewports. min-height: 0 is still the critical bit.
      2026-09-25 R94: add a hairline right border so the sidebar reads as
      a defined panel against the main content area — matches the panel
      chrome used by the topbar (var(--border)) so the whole app looks
@@ -340,9 +276,9 @@ const groups = [
 }
 .sidebar .back:hover { color: var(--accent); }
 
-/* R94: brand mark — replaces the previous plain <h3>. Two-line product
-   mark with a tiny meta chip ("管理控制台") so the sidebar top reads
-   like an editorial masthead, not a forgotten page title. */
+/* R94: brand mark — replaces the previous plain h3 heading. Two-line
+   product mark with a tiny meta chip ("管理控制台") so the sidebar top
+   reads like an editorial masthead, not a forgotten page title. */
 .brand {
   margin-bottom: 22px;
   padding: 0 2px;
@@ -374,100 +310,23 @@ const groups = [
   color: var(--muted);
 }
 
-/* R94: search — eyebrow label + hairline underline. R92 behaviour
-   (v-model bound, ✕ clear when non-empty, hidden when sidebar collapsed)
-   unchanged. The visual surface is now a deliberate filter field:
-     - 11px uppercase "Search" label above (same token family as the
-       nav-group-title so the sidebar reads as one typographic system).
-     - Input itself is borderless, only a 1px bottom rule that thickens
-       on focus and adopts the theme accent.
-     - ✕ button is a small flush text glyph against the right of the
-       underline, not a round form-field clear button — drops the
-       "form field" look.
-   The class name .sidebar-search is locked on the <input> by R92
-   test 4 (tests/admin-layout.test.js:402-405) via `input.sidebar-search`;
-   .sidebar-search-clear is locked by R92 test 11 (line 473-481). Don't
-   rename either. Wrapper class is renamed to .sidebar-search-wrap so
-   the R94 spacing rule (.sidebar-search-wrap { margin: 0 0 18px })
-   doesn't double-style the input. */
-.sidebar-search-wrap { margin: 0 0 18px; }
-.sidebar-search-label {
-  display: block;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.10em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0 0 6px 2px;
-}
-.sidebar-search-field { position: relative; }
-/* The <input> itself keeps the class `sidebar-search` from R92 + a
-   `sidebar-search-input` modifier hook so the rule lives here. */
-.sidebar-search-input,
-input.sidebar-search {
-  width: 100%;
-  padding: 6px 22px 6px 2px;
-  font-size: 13px;
-  font-family: inherit;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text);
-  box-sizing: border-box;
-  outline: none;
-  transition: border-color 0.12s ease;
-}
-.sidebar-search-input::placeholder,
-input.sidebar-search::placeholder { color: var(--muted); font-style: italic; }
-.sidebar-search-input:focus,
-input.sidebar-search:focus { border-bottom-color: var(--accent); }
-.sidebar-search-clear {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  font-size: 10px;
-  line-height: 1;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: color 0.12s ease;
-}
-.sidebar-search-clear:hover { color: var(--accent); }
-
-/* R94: empty-search placeholder — kept R92 muted-tone, but moved up to
-   align with the .nav-link text baseline so it visually reads as "I am
-   still a menu row, just empty right now". */
-.sidebar-search-empty {
-  padding: 14px 10px;
-  font-size: 12px;
-  color: var(--muted);
-  text-align: center;
-  letter-spacing: 0.02em;
-}
-
 /* R94: nav scroll container — R92 contract intact (max-height +
    overflow-y + themed scrollbar). Tighter gap between groups (was 6px
    on the nav level + 16px between groups, now 4px + 12px) so the menu
    feels compact but not claustrophobic.
-   The calc(100vh - X) needs adjustment because the R94 brand mark grew
-   taller than the R92 <h3>: was 130px, now 168px. */
+   R97: search box removed. The .sidebar-search-wrap (18px) +
+   .sidebar-search-label (~24px) + .sidebar-search-empty (~44px on
+   empty state) used to claim ~86px of vertical real estate; without
+   those the nav can claim more room. Brand mark + back link + top
+   padding totals ~130px, matching the R92 baseline before R94 grew
+   the brand mark. Using 130px restores the R52/R54 scroll budget. */
 .sidebar nav {
   display: flex;
   flex-direction: column;
   gap: 4px;
   flex: 1 1 auto;
   min-height: 0;
-  max-height: calc(100vh - 168px);
+  max-height: calc(100vh - 130px);
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
