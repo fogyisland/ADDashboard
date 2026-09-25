@@ -81,6 +81,53 @@ $productionOther = @(
   'README.md'       # scripts/ overview
 )
 
+# Dev-only scripts that MUST NOT ship in the mirror. They live in
+# source scripts/ for developer-box use but the operator's requirement
+# (per R89.x cleanup — "system 下面只有System的部分") is that
+# publish/system/ contains server-end runtime only, never dev tooling.
+# Pre-R89 these were git-tracked inside publish/system/scripts/ from
+# an older commit (before R88 non-wiping + before R82 build-publish-zip
+# rename), and sync-source-mirror's robocopy /MIR left them in place.
+#
+# The list here is the explicit cleanup path: sync-scripts-mirror
+# actively REMOVES these from the destination (in addition to copying
+# the allow-list). Adding a new production script does NOT require
+# touching this list — it only needs to be added to $productionScripts.
+# Adding a new dev-only script also does NOT require touching this
+# list (default behavior is "stays out of mirror"); the list is
+# specifically for files that pre-existed in the mirror and need to
+# be evicted on each sync.
+#
+# Dev-only files (not in mirror, also deleted from mirror at sync time):
+#   - build-publish-zip.ps1         : dev-box green-package builder (R82 retired)
+#   - force-restart-center.ps1      : dev helper, never used in prod ops
+#   - kcc-hub-spoke-analyzer.ps1    : dev diagnostic (R59-R65), not in runtime path
+#   - kill-server.ps1               : dev helper for stopping a misbehaving center
+#   - mock-daemon-start.ps1         : dev mock (R58+), never ships
+#   - read-center-ports.mjs         : dev introspection, not in runtime path
+#   - run-sandbox-cases.js          : dev sandbox runner
+#   - sign-token.mjs                : dev token-signing utility
+#   - smoke-test.ps1                : dev smoke harness
+#   - sync-scripts-mirror.ps1       : self-mirror, never ships (would change package.json)
+#   - verify-mirror.ps1             : dev sync verification
+#   - verify-sandbox.ps1            : dev sandbox verification
+#   - cdp-redirect.js               : dev Chrome DevTools helper
+$devOnlyFiles = @(
+  'build-publish-zip.ps1'
+  'cdp-redirect.js'
+  'force-restart-center.ps1'
+  'kcc-hub-spoke-analyzer.ps1'
+  'kill-server.ps1'
+  'mock-daemon-start.ps1'
+  'read-center-ports.mjs'
+  'run-sandbox-cases.js'
+  'sign-token.mjs'
+  'smoke-test.ps1'
+  'sync-scripts-mirror.ps1'
+  'verify-mirror.ps1'
+  'verify-sandbox.ps1'
+)
+
 # Verify each allow-listed script actually exists in source. Fail loudly if
 # someone removed a file from source without removing it from this list — a
 # silent drift here means the mirror diverges from source on next sync.
@@ -90,11 +137,25 @@ foreach ($s in $productionScripts + $productionOther) {
   }
 }
 
-# R88: NO MORE WIPE. Only copy the allow-list entries over the destination.
-# Anything else in publish/system/scripts/ (git-tracked dev-only helpers,
-# untracked local notes) stays put. To remove a tracked file, use git rm.
+# R89.x: TWO-PHASE sync.
+# Phase 1 — copy the production allow-list (matches pre-R89 behavior).
 foreach ($s in $productionScripts + $productionOther) {
   Copy-Item -LiteralPath (Join-Path $src $s) -Destination (Join-Path $dst $s) -Force
+}
+
+# Phase 2 — remove dev-only files that pre-existed in the mirror from
+# earlier commits. Sync-scripts-mirror no longer assumes "everything
+# else in the mirror is intentional" — the dev-only files explicitly
+# listed in $devOnlyFiles are evicted on every sync. If a future change
+# adds a new file to this list, the next sync removes it; if a future
+# change removes a file from this list, the next sync leaves the file
+# in place (no resurrection on delete from list — operator must `git rm`
+# to remove from git history).
+foreach ($f in $devOnlyFiles) {
+  $target = Join-Path $dst $f
+  if (Test-Path -LiteralPath $target) {
+    Remove-Item -LiteralPath $target -Force
+  }
 }
 
 # Mirror common/ separately — robocopy /MIR handles nested layout cleanly,

@@ -261,7 +261,11 @@ Describe 'install-center service recovery' {
     }
     # Logger must use a sync destination. We can't read the runtime
     # destination object directly, so we assert the literal is present.
-    foreach ($tree in @('center','publish\system\center','agent','publish\system\agent')) {
+    # R90 cleanup: agent is no longer mirrored under publish/system/agent/.
+    # Client-side agent lives at publish/installer/agentInstall/agent/
+    # and is verified by its own path. Server-side bundle contains only
+    # the two center trees (source tree + shipped mirror).
+    foreach ($tree in @('center','publish\system\center')) {
       $loggerPath = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '..') $tree) 'src\logger.js'
       $content = Get-Content $loggerPath -Raw
       $content | Should -Match 'pino\.destination\(' `

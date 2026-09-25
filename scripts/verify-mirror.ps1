@@ -58,11 +58,19 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 # `center/web` is the merged frontend workspace; we mirror its source but
 # skip `dist/` (build output, mirrored separately as center/dist → center/dist)
 # and `tests/` (frontend test files, not shipped to runtime users).
+#
+# R90 cleanup: `agent` is no longer a server-bundle source root. The
+# client-side agent lives at publish/installer/agentInstall/agent/ and
+# has its own dedicated sync + verify (sync-agentInstall-mirror.ps1 +
+# the publish/installer/ subtree). Including it here would force the
+# server bundle to also ship a redundant client copy — exactly the
+# publish/system/agent/ pollution this script used to flag.
 $roots = @(
   'center/src',
   'center/web',
-  'agent',
-  'db/migrations'
+  'db/migrations',
+  'db/schema',
+  'docs'
 )
 
 # Single-file roots: top-level files that ship alongside the mirrored

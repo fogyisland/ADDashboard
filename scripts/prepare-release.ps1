@@ -1,11 +1,14 @@
-# prepare-release.ps1 — one-shot release preparation. Runs the four sync
-# scripts in dependency order, then verifies the mirror. Replaces the manual
+# prepare-release.ps1 — one-shot release preparation. Runs the five sync
+# scripts in dependency order, then verifies each mirror. Replaces the manual
 # sequence operator used to run before every push:
 #
-#   1. .\scripts\sync-source-mirror.ps1     # center/src + center/web + agent + db/migrations
+#   1. .\scripts\sync-source-mirror.ps1     # center/src + center/web + db/migrations + db/schema + docs
 #   2. .\scripts\sync-dist.ps1              # center/dist (post build:web) → publish/system/center/dist
 #   3. .\scripts\sync-scripts-mirror.ps1    # scripts/{allow-list} → publish/system/scripts (R88+ no-wipe)
-#   4. .\scripts\verify-mirror.ps1          # assert byte-identical across all four mirrors
+#   4. .\installer\sync-agentInstall.ps1    # agent/ + scripts/{install,start,…} + common/ + README
+#                                          # → publish/installer/agentInstall/  (CLIENT green package)
+#   5. .\scripts\verify-mirror.ps1          # assert byte-identical for the server bundle
+#   6. .\installer\verify-agentInstall.ps1  # assert byte-identical for the client green package
 #
 # Pre-R88 each script ran independently with no shared "did the whole chain
 # succeed?" signal. Operators routinely missed step 2 (stale dist), 3 (drift),
@@ -14,14 +17,23 @@
 # pre-push hook can call it once instead of remembering four names.
 #
 # The script does NOT push, commit, or restart NSSM. It only stages
-# publish/system/ to be in sync with source. The operator reviews the diff
-# and commits when satisfied.
+# publish/system/ + publish/installer/agentInstall/ to be in sync with
+# source. The operator reviews the diff and commits when satisfied.
+#
+# R90: split the sync scope into two verify endpoints:
+#   - verify-mirror.ps1 (server-side publish/system/)
+#   - verify-agentInstall.ps1 (client-side publish/installer/agentInstall/)
+# R82/R12 previously merged them into one ship; the agentInstall/ bundle
+# ships to customer machines and is just as load-bearing — a drift here
+# is a customer-visible bug, not a dev-tree smell. Splitting the verify
+# surfaces "which half drifted" instead of a single FAIL that could mean
+# either.
 #
 # Usage:
 #   .\scripts\prepare-release.ps1
 #
 # Exit codes:
-#   0 — all four steps passed; publish/system/ is in sync with source
+#   0 — all six steps passed; both bundles in sync with source
 #   1 — one or more steps failed; see the [FAIL] line in the summary table
 #   2 — pre-flight failed (npm run build:web missing or stale); see the
 #       [PRE-FAIL] line in the summary table
@@ -31,17 +43,20 @@
 # (ProjectRoot = Resolve-Path(PSScriptRoot/..); $ErrorActionPreference = 'Stop').
 [CmdletBinding()]
 param(
-  [switch]$SkipBuildCheck   # skip the "is dist fresh?" pre-flight (debugging only)
+  [switch]$SkipBuildCheck,  # skip the "is dist fresh?" pre-flight (debugging only)
+  [switch]$SkipDist          # skip sync-dist (when center/dist hasn't been built yet — R90.x)
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
 $steps = @(
-  @{ Name = 'sync-source-mirror'; Script = 'sync-source-mirror.ps1';  Skip = $false }
-  @{ Name = 'sync-dist';          Script = 'sync-dist.ps1';           Skip = $false }
-  @{ Name = 'sync-scripts-mirror';Script = 'sync-scripts-mirror.ps1'; Skip = $false }
-  @{ Name = 'verify-mirror';      Script = 'verify-mirror.ps1';       Skip = $false }
+  @{ Name = 'sync-source-mirror';  Script = 'sync-source-mirror.ps1';   Skip = $false; Dir = 'scripts' }
+  @{ Name = 'sync-dist';           Script = 'sync-dist.ps1';            Skip = $SkipDist; Dir = 'scripts' }
+  @{ Name = 'sync-scripts-mirror'; Script = 'sync-scripts-mirror.ps1';  Skip = $false; Dir = 'scripts' }
+  @{ Name = 'sync-agentInstall';   Script = 'sync-agentInstall.ps1';    Skip = $false; Dir = 'installer' }
+  @{ Name = 'verify-mirror';       Script = 'verify-mirror.ps1';        Skip = $false; Dir = 'scripts' }
+  @{ Name = 'verify-agentInstall'; Script = 'verify-agentInstall.ps1';  Skip = $false; Dir = 'installer' }
 )
 
 function Invoke-Step {
@@ -105,9 +120,31 @@ if (-not $preflightOk) {
 # ---------- Run the four sync steps in order -------------------------------
 $results = @()
 foreach ($s in $steps) {
-  $r = Invoke-Step -Name $s.Name -Script $s.Script
-  $results += $r
-  if (-not $r.Ok) { break }   # stop on first failure; subsequent steps may depend on prior state
+  if ($s.Skip) {
+    Write-Host ""
+    Write-Host ("[skip ] {0,-22} (skip flag set)" -f $s.Name) -ForegroundColor Yellow
+    $results += @{ Name = $s.Name; Ok = $true; Detail = 'skipped' }
+    continue
+  }
+  $path = Join-Path (Join-Path $projectRoot $s.Dir) $s.Script
+  Write-Host ""
+  Write-Host ("[run  ] {0,-22} {1}\{2}" -f $s.Name, $s.Dir, $s.Script) -ForegroundColor Cyan
+  if (-not (Test-Path -LiteralPath $path)) {
+    Write-Host ("[FAIL ] {0,-22} script missing: {1}" -f $s.Name, $path) -ForegroundColor Red
+    $results += @{ Name = $s.Name; Ok = $false; Detail = 'script missing' }
+    break
+  }
+  $stdout = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $path 2>&1
+  $rc = $LASTEXITCODE
+  if ($rc -eq 0) {
+    Write-Host ("[ok   ] {0,-22} rc=0" -f $s.Name) -ForegroundColor Green
+    $results += @{ Name = $s.Name; Ok = $true; Detail = '' }
+  } else {
+    Write-Host ("[FAIL ] {0,-22} rc={1}" -f $s.Name, $rc) -ForegroundColor Red
+    Write-Host ($stdout -join "`n")
+    $results += @{ Name = $s.Name; Ok = $false; Detail = "rc=$rc" }
+    break   # stop on first failure; subsequent steps may depend on prior state
+  }
 }
 
 # ---------- Summary --------------------------------------------------------
@@ -125,11 +162,11 @@ $failed = $results | Where-Object { -not $_.Ok }
 if ($failed) {
   Write-Host ""
   Write-Host ("{0} of {1} steps failed" -f $failed.Count, $results.Count) -ForegroundColor Red
-  Write-Host "publish/system/ is NOT in sync with source — DO NOT push." -ForegroundColor Red
+  Write-Host "publish/ is NOT in sync with source — DO NOT push." -ForegroundColor Red
   exit 1
 } else {
   Write-Host ""
-  Write-Host "all steps passed — publish/system/ matches source. Review git status and commit." -ForegroundColor Green
+  Write-Host "all steps passed — publish/system/ + publish/installer/agentInstall/ match source. Review git status and commit." -ForegroundColor Green
   Write-Host "  git status publish/" -ForegroundColor Gray
   Write-Host "  git diff --stat HEAD publish/" -ForegroundColor Gray
   exit 0
