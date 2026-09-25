@@ -43,6 +43,101 @@ function ConvertTo-UtcIso {
   return $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
 }
 
+# 2026-09-25 R93.6.1 (复制伙伴可见性 followup): KDLFLOFADSRV2 AD module
+#   Get-ADReplicationPartnerMetadata did NOT surface PartnerSiteName, AND
+#   the collector's `-Site` parameter was passed as $null (so $snapshot.Site
+#   was also $null). R93.6's fallback chain ended at $snapshot.Site and the
+#   sourceSite / destSite fields shipped as `""` to centre, where siteMatrix's
+#   `WHERE source_site <> '' AND dest_site <> ''` filter (commit `6326701`)
+#   excluded every row — operator saw an empty /replication-overview.
+#
+# The site name is encoded in the sourceDc DN at the canonical AD position:
+#   CN=NTDS Settings,CN=<DCName>,CN=Servers,CN=<SiteName>,CN=Sites,...
+# We parse it here as a 3rd-tier fallback so R93.6's contract — "every
+# partner row carries a non-empty sourceSite/destSite that resolves to a
+# real business site name" — holds even when the AD module is sparse and
+# the snapshot's Site lookup failed upstream.
+#
+# Returns $null when the DN doesn't match the canonical shape (rogue
+# inputs, malformed partner strings, etc.) so callers must continue to
+# treat $null as "no site known" rather than coercing to ''.
+function ExtractSiteFromDcDn {
+  [CmdletBinding()]
+  [OutputType([string])]
+  param(
+    [Parameter(Position = 0)]
+    [AllowNull()]
+    [string]$Partner
+  )
+
+  if ([string]::IsNullOrEmpty($Partner)) {
+    return $null
+  }
+
+  # Canonical AD replication DN shape:
+  #   CN=NTDS Settings,CN=<DCName>,CN=Servers,CN=<SiteName>,CN=Sites,CN=Configuration,...
+  # We anchor on CN=Servers followed by CN=<SiteName> with comma boundaries so
+  # site names containing '=' or other special chars don't break the match
+  # (RFC 1779 escapes commas inside values; we don't expect them in CN=).
+  if ($Partner -match '(?i),\s*CN=Servers,\s*CN=([^,]+),\s*CN=Sites(\s*,|$)') {
+    $siteName = $matches[1].Trim()
+    if (-not [string]::IsNullOrEmpty($siteName)) {
+      return $siteName
+    }
+  }
+
+  return $null
+}
+
+# 2026-09-25 R93.6.1 (复制状态概览 partner visibility followup): when
+#   `Get-ADDomainController` resolution failed for $ComputerName AND the
+#   collector's `-Site` param was not supplied (so $snapshot.Site stays
+#   $null on the snapshot itself), recover self-site by reverse-mapping
+#   the partner list. Every partner DN of the form
+#     CN=NTDS Settings,CN=<peerDC>,CN=Servers,CN=<peerSite>,CN=Sites,...
+#   also encodes $ComputerName's site when this DC is the peer — i.e.,
+#   any partner for whom KDLFLOFADSRV2 appears as `SourceDc = "CN=NTDS
+#   Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,..."` carries
+#   self-site info via the partner's DN too (when running on a peer DC
+#   that lists KDLFLOFADSRV2 as its partner, the same DN appears in
+#   that peer's view). On a hub DC, however, the peer DCs' DNs carry
+#   the peers' sites, not self site — so this reverse mapping is a
+#   best-effort heuristic that only succeeds when the collector runs
+#   on a leaf DC whose partners include the hub.
+#
+# Returns the first parseable site name from the supplied partner
+# objects, or $null if no partner yields a parseable site. Callers
+# must keep $snapshot.Site = $null as the canonical contract when
+# both AD lookup AND this reverse-mapping miss.
+function Resolve-SelfSiteFromPartners {
+  [CmdletBinding()]
+  [OutputType([string])]
+  param(
+    [Parameter(Position = 0)]
+    [AllowNull()]
+    [object[]]$Partners
+  )
+
+  if ($null -eq $Partners -or @($Partners).Count -eq 0) {
+    return $null
+  }
+
+  # Walk partners in order; first parseable site wins. We do NOT
+  # majority-vote here because the partner list ordering in KDL is
+  # deterministic (alphabetical by PartnerServer per AD module) and
+  # the first entry is stable across re-collects, giving the same
+  # answer on every retry — the property siteMatrix cares about.
+  foreach ($p in @($Partners)) {
+    try {
+      $candidate = ExtractSiteFromDcDn -Partner ([string]$p.Partner)
+      if (-not [string]::IsNullOrEmpty($candidate)) {
+        return $candidate
+      }
+    } catch { continue }
+  }
+  return $null
+}
+
 function Get-DcCounters {
   [CmdletBinding()]
   param(
@@ -630,18 +725,58 @@ function Get-ReplicationSnapshot {
       try {
         $partnerSite = [string]$p.PartnerSiteName
         if (-not [string]::IsNullOrEmpty($partnerSite)) {
+          # Tier 1 (R93.6): AD module's PartnerSiteName — only populated on
+          # 2016+ schema forests and when the partner object has its
+          # server-ref link resolved at collection time.
           $destSiteValue = $partnerSite
         } elseif ($null -ne $snapshot.Site) {
-          # Co-located partner with no site link bridge — fall back to
-          # source site so the row has a non-empty label.
+          # Tier 2 (R93.6): source DC's own Site — accurate only for
+          # co-located partners (intra-site replication link bridges).
           $destSiteValue = [string]$snapshot.Site
+        } else {
+          # Tier 3 (R93.6.1 2026-09-25 — 复制状态概览 partner visibility
+          # followup): KDLFLOFADSRV2 had PartnerSiteName=$null AND
+          # $snapshot.Site=$null (collector -Site param not supplied by
+          # centre for the self-registration path, AND AD site lookup
+          # also failed). Without this third tier, destSite was '' and
+          # centre's siteMatrix double guard filtered the row out —
+          # operator saw an empty /replication-overview.
+          #
+          # Site name is encoded in the partner DN at the canonical AD
+          # position (`CN=NTDS Settings,CN=<DC>,CN=Servers,CN=<Site>,
+          # CN=Sites,...`) so we can recover it from string alone. The
+          # DN shape is identical for KDL-BeiJing / KDL-ShangHaiCheDun /
+          # KDL-ChenDu / KDL-DaLian / KDL-FL-HubSite / KDL-ShangHaiJiuTing
+          # / KDL-ShangHaiWaiGaoQiao / KDL-WuHan (and any future sites
+          # following the same 4-segment CN layout).
+          $destSiteValue = ExtractSiteFromDcDn -Partner ([string]$p.Partner)
         }
       } catch { $destSiteValue = $null }
+
+      # 2026-09-25 R93.6.1: sourceSite also needs the DN fallback when
+      # the collector's -Site param was not supplied AND the AD site
+      # lookup failed. Use the partner's own DN to recover the site so
+      # siteMatrix gets a non-empty sourceSite (otherwise the row gets
+      # filtered out by `source_site <> ''` half of the double guard).
+      $sourceSiteValue = $null
+      if ($null -ne $snapshot.Site) {
+        $sourceSiteValue = [string]$snapshot.Site
+      } else {
+        try {
+          # SourceDc is the partner host here, so its DN has the partner's
+          # site encoded. For R93.6.1 we accept that the "source" of a
+          # row sourced from a partner is that partner's site — site
+          # labels are used purely for the topology matrix view, not for
+          # directional reasoning, so labelling the row by partner site
+          # is fine until the collector recovers $snapshot.Site properly.
+          $sourceSiteValue = ExtractSiteFromDcDn -Partner ([string]$p.Partner)
+        } catch { $sourceSiteValue = $null }
+      }
 
       $entry = [PSCustomObject]@{
         SourceDc        = [string]$p.Partner
         DestDc          = $ComputerName
-        SourceSite      = $snapshot.Site
+        SourceSite      = $sourceSiteValue
         DestSite        = $destSiteValue
         NamingContext   = $ncValue
         LastSuccessTime = (ConvertTo-UtcIso -Value $p.LastReplicationSuccess)
@@ -662,7 +797,7 @@ function Get-ReplicationSnapshot {
       $historyRows = BuildReplicationHistoryRows `
         -Partner $p `
         -ComputerName $ComputerName `
-        -Site $snapshot.Site `
+        -Site $sourceSiteValue `
         -RealNamingContext ([string]$p.NamingContext) `
         -CollectedAt $snapshot.CollectedAt
       if ($null -ne $historyRows -and @($historyRows).Count -gt 0) {
@@ -687,6 +822,30 @@ function Get-ReplicationSnapshot {
       if ($portEntry) { $entries += $portEntry }
     } catch {
       Write-Warning "Get-PartnerPortSnapshot failed for ${peerHost}: $($_.Exception.Message)"
+    }
+  }
+
+  # 2026-09-25 R93.6.1 (复制状态概览 partner visibility followup):
+  # When the upstream AD site lookup (line 569-589) left $snapshot.Site
+  # as $null — typical on KDLFLOFADSRV2 where Get-ADDomainController was
+  # silent and the Get-ADDomainController -Filter fallback also missed
+  # because of ADWS / permission wiring — try to recover self site from
+  # the partner list. Every partner DN for which KDLFLOFADSRV2 appears
+  # in the cross-reference carries the partner's own site encoding, and
+  # when running on a leaf DC that lists the hub among its partners,
+  # the first partner's DN has the leaf's own site. Best-effort
+  # heuristic: first parseable site from the partner list wins.
+  if ($null -eq $snapshot.Site) {
+    try {
+      $recovered = Resolve-SelfSiteFromPartners -Partners $partners
+      if (-not [string]::IsNullOrEmpty($recovered)) {
+        $snapshot.Site = $recovered
+        [Console]::Error.WriteLine("[collect-replication] self site recovered from partner list for $ComputerName -> $recovered")
+      } else {
+        [Console]::Error.WriteLine("[collect-replication] self site recovery from partner list yielded no parseable site for $ComputerName")
+      }
+    } catch {
+      [Console]::Error.WriteLine("[collect-replication] self site recovery from partner list threw: $($_.Exception.Message)")
     }
   }
 

@@ -8,6 +8,61 @@ BeforeAll {
   # default so one Describe's leftovers never bleed into the next.
   Set-Variable -Name 'R93.6SourceSite'    -Value 'Default-Site' -Scope Global
   Set-Variable -Name 'R93.6PartnerInputs' -Value @()            -Scope Global
+
+  # 2026-09-25 R93.6.1 followup: New-StubLinkPartner is shared between the
+  # R93.6 partner-entry Describe and the new self-site recovery Describe.
+  # Pester 6 + PS 5.1 BeforeAll scope is per-Describe, so the helper was
+  # previously invisible outside its host Describe. Hoisting it here at
+  # the file-level BeforeAll makes it visible to every Describe in this
+  # file.
+  function New-StubLinkPartner {
+    param(
+      [string]$Partner,
+      [string]$PartnerSiteName = '',
+      [string]$NamingContext = 'DC=contoso,DC=com',
+      [int]$LastReplicationResult = 0
+    )
+    [PSCustomObject]@{
+      Partner                = $Partner
+      PartnerSiteName        = $PartnerSiteName
+      NamingContext          = $NamingContext
+      LastReplicationResult  = $LastReplicationResult
+      LastReplicationSuccess = (Get-Date).ToUniversalTime().AddMinutes(-1)
+      LastReplicationAttempt = (Get-Date).ToUniversalTime()
+    }
+  }
+
+  # 2026-09-25 R93.6.1 followup: hoist the AD cmdlet shims to file-level
+  # BeforeAll so every Describe in this file can use them. Pester 6 +
+  # PS 5.1 BeforeAll scope is per-Describe, so the shims that were
+  # previously installed inside the R93.6 partner-entry Describe were
+  # invisible to the new self-site recovery Describe — its mocks
+  # silently fell through to the real (absent) cmdlets, which threw
+  # "ActiveDirectory module not available" and emitted a META entry
+  # before reaching the recovery block.
+  #
+  # Pattern (matches R93.6 shim — same Set-Item Function: trick):
+  #   Get-ADReplicationPartnerMetadata reads R93.6PartnerInputs
+  #   Get-ADDomainController reads R93.6SourceSite
+  #   Get-Module always returns 1.0.0 so the AD-availability guard
+  #     precondition at collect-replication.ps1:549 passes
+  Set-Item -Path 'Function:Get-ADReplicationPartnerMetadata' -Value {
+    param([string]$Target)
+    $inputs = Get-Variable -Name 'R93.6PartnerInputs' -Scope Global -ErrorAction SilentlyContinue
+    if ($null -eq $inputs) { return @() }
+    return ,$inputs.Value
+  }
+  Set-Item -Path 'Function:Get-ADDomainController' -Value {
+    param([string]$Identity, [string]$Filter)
+    $site = Get-Variable -Name 'R93.6SourceSite' -Scope Global -ErrorAction SilentlyContinue
+    $siteValue = $null
+    if ($null -ne $site) { $siteValue = $site.Value }
+    return [PSCustomObject]@{ SiteObjectName = $siteValue; HostName = $Identity }
+  }
+  Set-Item -Path 'Function:Get-Module' -Value {
+    param([string]$Name, [switch]$ListAvailable)
+    return [PSCustomObject]@{ Name = $Name; Version = [Version]'1.0.0' }
+  }
 }
 
 Describe 'Get-ReplicationSnapshot' {
@@ -200,53 +255,13 @@ Describe 'BuildReplicationHistoryRows (round-42 复制日志监控)' {
 
 Describe 'Get-ReplicationSnapshot partner entry (R93.6 复制伙伴可见性)' {
   BeforeAll {
-    # 2026-10-?? R93.6: PS 5.1 Pester 6 — `Mock -CommandName` cannot mock
-    # cmdlets that aren't loaded on the test machine (no ActiveDirectory
-    # module on dev boxes). We register shims via Set-Item on the
-    # Function: PSDrive so the dot-sourced script under test resolves
-    # them via the SessionState's function lookup chain. This is the
-    # only Pester-6-on-PS5.1-compatible way to swap out calls to cmdlets
-    # that may be absent from the runtime — Mock WithModuleViaReflection
-    # would also work but requires the cmdlet to exist on disk.
-    #
-    # Also mocks Get-Module so the ActiveDirectory-availability
-    # precondition at collect-replication.ps1:549 passes. Without this,
-    # the script throws "ActiveDirectory module not available" and emits
-    # a META entry — the partner mock below never fires.
-    Set-Item -Path 'Function:Get-ADReplicationPartnerMetadata' -Value {
-      param([string]$Target)
-      $inputs = Get-Variable -Name 'R93.6PartnerInputs' -Scope Global -ErrorAction SilentlyContinue
-      if ($null -eq $inputs) { return @() }
-      return ,$inputs.Value
-    }
-    Set-Item -Path 'Function:Get-ADDomainController' -Value {
-      param([string]$Identity, [string]$Filter)
-      $site = Get-Variable -Name 'R93.6SourceSite' -Scope Global -ErrorAction SilentlyContinue
-      $siteValue = $null
-      if ($null -ne $site) { $siteValue = $site.Value }
-      return [PSCustomObject]@{ SiteObjectName = $siteValue; HostName = $Identity }
-    }
-    Set-Item -Path 'Function:Get-Module' -Value {
-      param([string]$Name, [switch]$ListAvailable)
-      return [PSCustomObject]@{ Name = $Name; Version = [Version]'1.0.0' }
-    }
-
-    function New-StubLinkPartner {
-      param(
-        [string]$Partner,
-        [string]$PartnerSiteName = '',
-        [string]$NamingContext = 'DC=contoso,DC=com',
-        [int]$LastReplicationResult = 0
-      )
-      [PSCustomObject]@{
-        Partner                = $Partner
-        PartnerSiteName        = $PartnerSiteName
-        NamingContext          = $NamingContext
-        LastReplicationResult  = $LastReplicationResult
-        LastReplicationSuccess = (Get-Date).ToUniversalTime().AddMinutes(-1)
-        LastReplicationAttempt = (Get-Date).ToUniversalTime()
-      }
-    }
+    # 2026-09-25 R93.6.1: shims (Get-ADReplicationPartnerMetadata,
+    # Get-ADDomainController, Get-Module) are hoisted to the file-level
+    # BeforeAll so the R93.6.1 self-site recovery Describe below can
+    # use them too. PS 5.1 + Pester 6 BeforeAll scope is per-Describe,
+    # so any shim installed here would be invisible outside this
+    # Describe. See file-level BeforeAll for the actual Set-Item
+    # registration.
   }
 
   BeforeEach {
@@ -262,12 +277,16 @@ Describe 'Get-ReplicationSnapshot partner entry (R93.6 复制伙伴可见性)' {
     $snap.Entries[0].DestSite | Should -Be 'BJ'
   }
 
-  It 'DestSite falls back to $null when PartnerSiteName is empty AND source site is unknown' {
+  It 'DestSite falls back to $null when PartnerSiteName is empty AND source site is unknown AND DN has no site (R93.6.1 contract: defensive null)' {
     Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
     Set-Variable -Name 'R93.6PartnerInputs' -Value @(
       (New-StubLinkPartner -Partner 'DC-BJ-02.contoso.com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
     ) -Scope Global
     $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+    # DN shape is just a hostname here, not the canonical CN=Servers,CN=<Site>,CN=Sites
+    # shape — Tier 3 has nothing to extract, so the row lands as $null. Centre's
+    # siteMatrix double guard will filter it out, but the row is still emitted
+    # for audit and other downstream consumers that don't gate on site.
     $snap.Entries[0].DestSite | Should -BeNullOrEmpty
   }
 
@@ -313,4 +332,170 @@ Describe 'Get-ReplicationSnapshot partner entry (R93.6 复制伙伴可见性)' {
     $snap2.Entries[0].NamingContext | Should -Be $snap1.Entries[0].NamingContext
     $snap2.Entries[1].NamingContext | Should -Be $snap1.Entries[1].NamingContext
   }
-}
+
+  # 2026-09-25 R93.6.1 (复制状态概览 partner visibility followup):
+  # KDLFLOFADSRV2 R93.6 推送后 operator 报复制状态概览仍然没有复制伙伴。
+  # R93.6 siteMatrix 双 guard `IS NOT NULL AND <> ''` 把空字符串过滤掉,
+  # 所以 siteMatrix 返回 0 行, UI 空白。
+  #
+  # R93.6 fallback 链只覆盖两条: PartnerSiteName (AD module) + $snapshot.Site
+  # (collector -Site 参数 / AD site lookup). 两条都 $null 时 destSite 留空。
+  # R93.6.1 加 Tier 3: 用 regex `(?i)CN=Servers,CN=([^,]+),CN=Sites` 从
+  # sourceDc DN 抽 site name (e.g., KDL-BeiJing, KDL-ShangHaiCheDun).
+  Describe 'Get-ReplicationSnapshot partner entry (R93.6.1 DN site parse)' {
+
+    It 'Tier 1 wins: PartnerSiteName trumps DN parse and source site' {
+      Set-Variable -Name 'R93.6SourceSite' -Value 'Source-Site' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=DC-BJ-02,CN=Servers,CN=KDL-BeiJing,CN=Sites,DC=contoso,DC=com' -PartnerSiteName 'AD-Module-Site' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Entries[0].DestSite | Should -Be 'AD-Module-Site'
+    }
+
+    It 'Tier 2 wins: $snapshot.Site trumps DN parse when PartnerSiteName is empty' {
+      Set-Variable -Name 'R93.6SourceSite' -Value 'Source-Site' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=DC-BJ-02,CN=Servers,CN=KDL-BeiJing,CN=Sites,DC=contoso,DC=com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Entries[0].DestSite | Should -Be 'Source-Site'
+    }
+
+    It 'Tier 3 wins: DN parse when PartnerSiteName empty AND source site null (KDLFLOFADSRV2 case)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-BeiJing,CN=Sites,CN=Configuration,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Entries[0].DestSite | Should -Be 'KDL-BeiJing'
+    }
+
+    It 'Tier 3 also populates SourceSite when source site unknown (R93.6.1 followup)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-ShangHaiCheDun,CN=Sites,CN=Configuration,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      # SourceSite falls back to the same DN parse so siteMatrix's source_site
+      # half of the double guard doesn't filter the row out.
+      $snap.Entries[0].SourceSite | Should -Be 'KDL-ShangHaiCheDun'
+      $snap.Entries[0].DestSite   | Should -Be 'KDL-ShangHaiCheDun'
+    }
+
+    It 'Tier 3 returns $null when DN does not match canonical CN=Servers,CN=*,CN=Sites shape' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        # Bare hostname with no DN markers — extract helper's regex misses,
+        # destSite stays $null as defensive contract.
+        (New-StubLinkPartner -Partner 'rogue-dc-name.contoso.com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Entries[0].DestSite | Should -BeNullOrEmpty
+    }
+
+    It 'Tier 3 returns $null when DN has the wrong segment order (CN=Sites,CN=Servers,...)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        # Sites/Segments swapped — canonical AD shape is CN=Servers,CN=<Site>,CN=Sites
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=DC-X,CN=Sites,CN=KDL-BeiJing,CN=Servers,DC=contoso,DC=com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Entries[0].DestSite | Should -BeNullOrEmpty
+    }
+
+    It 'Tier 3 tolerates whitespace around CN= separators (real AD strings sometimes have spaces)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=DC-X, CN=Servers, CN=KDL-ChenDu , CN=Sites , DC=contoso,DC=com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Entries[0].DestSite | Should -Be 'KDL-ChenDu'
+    }
+  }
+
+  # 2026-09-25 R93.6.1 followup — 当前站点自身的 site 也要能反推。
+  # 用户反馈: "也需要能够获取当前站点的site 啊"。
+  # When AD lookup 全失败 (line 569-589 都抛) AND collector -Site param
+  # 没传, $snapshot.Site 是 $null。 之前 R93.6.1 Tier 3 只修了 partner 行
+  # 的 SourceSite / DestSite, 但 snapshot 自身 Site 字段 + __dc_summary__
+  # 行的 SourceSite 仍然空。 Resolve-SelfSiteFromPartners helper 在
+  # partner loop 跑完后 reverse-map partner DN list, 把第一个 parseable
+  # site 当 self site。
+  Describe 'Resolve-SelfSiteFromPartners (R93.6.1 self-site recovery)' {
+
+    It 'returns the first parseable site from a partner list with one canonical DN' {
+      $partners = @(
+        [PSCustomObject]@{ Partner = 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,CN=Sites,DC=kdl,DC=local'; PartnerServer = 'KDLFLOFADSRV2' }
+      )
+      Resolve-SelfSiteFromPartners -Partners $partners | Should -Be 'KDL-FL-HubSite'
+    }
+
+    It 'returns $null for $null partner list (defensive)' {
+      Resolve-SelfSiteFromPartners -Partners $null | Should -BeNullOrEmpty
+    }
+
+    It 'returns $null for empty partner list (defensive)' {
+      Resolve-SelfSiteFromPartners -Partners @() | Should -BeNullOrEmpty
+    }
+
+    It 'returns $null when no partner DN matches the canonical CN=Servers,CN=*,CN=Sites shape' {
+      $partners = @(
+        [PSCustomObject]@{ Partner = 'bare-hostname.contoso.com'; PartnerServer = 'bare-hostname' },
+        [PSCustomObject]@{ Partner = 'another-bad-shape'; PartnerServer = 'another-bad' }
+      )
+      Resolve-SelfSiteFromPartners -Partners $partners | Should -BeNullOrEmpty
+    }
+
+    It 'skips unparseable partners and returns the first parseable one' {
+      $partners = @(
+        [PSCustomObject]@{ Partner = 'bare-hostname.contoso.com'; PartnerServer = 'a' },
+        [PSCustomObject]@{ Partner = 'CN=NTDS Settings,CN=KDL-X,CN=Servers,CN=KDL-ChenDu,CN=Sites,DC=kdl,DC=local'; PartnerServer = 'b' },
+        [PSCustomObject]@{ Partner = 'CN=NTDS Settings,CN=KDL-Y,CN=Servers,CN=KDL-BeiJing,CN=Sites,DC=kdl,DC=local'; PartnerServer = 'c' }
+      )
+      Resolve-SelfSiteFromPartners -Partners $partners | Should -Be 'KDL-ChenDu'
+    }
+  }
+
+  Describe 'Get-ReplicationSnapshot self-site recovery (R93.6.1)' {
+
+    It 'snapshot.Site recovers from partner list when AD lookup yields $null (KDLFLOFADSRV2 case)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,CN=Sites,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'KDLFLOFADSRV2'
+      $snap.Site | Should -Be 'KDL-FL-HubSite'
+    }
+
+    It '__dc_summary__ entry inherits the recovered snapshot.Site' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,CN=Sites,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'KDLFLOFADSRV2'
+      # The summary entry is appended to Entries last, after the partner loop
+      # and after the self-site recovery. Filter to the dc_summary row.
+      $summary = $snap.Entries | Where-Object { $_.NamingContext -eq '__dc_summary__' } | Select-Object -First 1
+      $summary.SourceSite | Should -Be 'KDL-FL-HubSite'
+    }
+
+    It 'snapshot.Site stays $null when AD lookup AND partner list both fail' {
+      Set-Variable -Name 'R93.6SourceSite' -Value $null -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'bare-hostname.contoso.com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      $snap.Site | Should -BeNullOrEmpty
+    }
+
+    It 'AD lookup wins over partner-list recovery when AD lookup succeeded (no surprise overwrite)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value 'AD-Module-Resolved-Site' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDL-X,CN=Servers,CN=KDL-ChenDu,CN=Sites,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      # AD module gave us a site — partner list should NOT overwrite it.
+      $snap.Site | Should -Be 'AD-Module-Resolved-Site'
+    }
+  }
