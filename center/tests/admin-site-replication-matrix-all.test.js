@@ -244,6 +244,112 @@ test('site-replication-matrix/all: secondary-DC partners must surface (R93.13 al
     `KDLBSWHADSRV1 (secondary peer) must surface; got partners=${JSON.stringify(peerDcs)}`);
 });
 
+// R95: catalogue `ad_sites` lists every AD site the operator has registered,
+// but `ad_dcs` only has rows for the DCs the agent has actually discovered.
+// When an operator pre-registers a site in ad_sites but no DC has reported
+// for it yet (or all DC rows for it got dropped by INNER JOIN due to a
+// site_id drift), the site should STILL appear in the matrix payload as
+// an empty-DCs entry — the matrix is an N×N site view, not a "currently
+// active" view. Frontend uses the empty `dcs: []` to render a "暂未注册 DC"
+// placeholder cell. Pre-R95 the handler did
+//   `if (dcList.length === 0) continue;`
+// at line 369, silently skipping empty sites and shrinking the matrix to
+// match only "sites with at least one DC" — which is exactly the bug
+// operator reported when 3 sites are registered but the matrix shows 2.
+//
+// Lock the contract: every site in ad_sites surfaces in primaries, even
+// when ad_dcs has no rows for it.
+test('site-replication-matrix/all: empty sites (no DC rows in ad_dcs) still surface in primaries (R95 catalogue mirror)', async () => {
+  const db = mockMatrixDb({
+    sites: [
+      fakeSite({ site_id: 'site-fl', site_name: 'KDL-FL-HubSite',  region_code: 'CN-FL', is_hub: true }),
+      fakeSite({ site_id: 'site-sh', site_name: 'KDL-ShangHai',   region_code: 'CN-SH', is_hub: false }),
+      // The third site has NO DC rows in ad_dcs — either the operator
+      // pre-registered it but no agent has reported yet, or every DC row
+      // for this site got dropped by INNER JOIN due to a site_id drift.
+      // Either way, R95 says the site must still surface in primaries
+      // so the matrix renders a 3×3 grid with a "暂未注册 DC" column/row
+      // for the empty site.
+      fakeSite({ site_id: 'site-empty', site_name: 'KDL-BeiJing-New', region_code: 'CN-BJ', is_hub: false })
+    ],
+    dcs: [
+      fakeDc({ dc_name: 'KDLFLOFADSRV2', site_id: 'site-fl' }),
+      fakeDc({ dc_name: 'KDLSHTOFADSRV1', site_id: 'site-sh' })
+      // NOTE: no DC rows for site-empty
+    ],
+    links: [
+      fakeLink({
+        source_dc: 'CN=NTDS Settings,CN=KDLSHTOFADSRV1,CN=Servers,CN=KDL-ShangHai,CN=Sites,CN=Configuration,DC=shaphar,DC=net',
+        dest_dc:   'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,CN=Sites,CN=Configuration,DC=shaphar,DC=net',
+        source_site: 'KDL-ShangHai', dest_site: 'KDL-FL-HubSite',
+        status_code: 0
+      })
+    ]
+  });
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp(db))
+    .get('/api/dashboard/site-replication-matrix/all')
+    .set('Authorization', `Bearer ${adminToken()}`);
+
+  assert.equal(res.status, 200);
+  const payload = res.body;
+  assert.ok(Array.isArray(payload.primaries), 'payload.primaries should be an array');
+  // R95 contract: primaries.length == ad_sites row count, not
+  // "ad_sites with at least one ad_dcs row" count. Pre-R95 the handler
+  // skipped the empty site, returning 2 primaries (one per site with DCs).
+  assert.equal(payload.primaries.length, 3,
+    `expected 3 primaries (one per ad_sites row), got ${payload.primaries.length}`);
+
+  // The empty site surfaces with dcs: [] and dcPartners: []. The front-end
+  // matrix renders this as a "暂未注册 DC" cell.
+  const empty = payload.primaries.find(p => p.siteName === 'KDL-BeiJing-New');
+  assert.ok(empty, 'KDL-BeiJing-New must be in primaries even when ad_dcs has no rows for it');
+  assert.equal(empty.dcs.length, 0, 'empty site should have dcs: []');
+  assert.equal(empty.dcPartners.length, 0, 'empty site should have dcPartners: []');
+  // siteName/isHub/regionCode must still be the catalogue values.
+  assert.equal(empty.siteName, 'KDL-BeiJing-New');
+  assert.equal(empty.isHub, false);
+  assert.equal(empty.regionCode, 'CN-BJ');
+});
+
+// R95 anti-regression sentinel: the cataloge-mirror contract from the
+// previous test (every ad_sites row in primaries, even with empty dcs).
+// Pre-R95 the handler did `if (dcList.length === 0) continue;` which
+// shrunk primaries.length to only the "sites with DC rows" subset.
+// This sentinel lives separately so a future refactor that drops the
+// mirror logic is caught.
+test('site-replication-matrix/all: primaries count mirrors ad_sites catalogue count (R95 sentinel)', async () => {
+  const db = mockMatrixDb({
+    sites: [
+      fakeSite({ site_id: 'site-fl', site_name: 'KDL-FL-HubSite',  region_code: 'CN-FL', is_hub: true }),
+      fakeSite({ site_id: 'site-sh', site_name: 'KDL-ShangHai',   region_code: 'CN-SH', is_hub: false })
+    ],
+    // dcs has only KDLFLOFADSRV2 in site-fl — site-sh has NO DCs at all.
+    dcs: [
+      fakeDc({ dc_name: 'KDLFLOFADSRV2', site_id: 'site-fl' })
+    ],
+    links: []
+  });
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp(db))
+    .get('/api/dashboard/site-replication-matrix/all')
+    .set('Authorization', `Bearer ${adminToken()}`);
+
+  assert.equal(res.status, 200);
+  // R95: 2 primaries (one per ad_sites row), not 1 (only the "site with
+  // DCs" subset).
+  assert.equal(res.body.primaries.length, 2,
+    `expected 2 primaries (one per ad_sites row), got ${res.body.primaries.length}`);
+
+  // The site without DCs still surfaces as an entry with empty dcs/dcPartners.
+  const sh = res.body.primaries.find(p => p.siteName === 'KDL-ShangHai');
+  assert.ok(sh, 'KDL-ShangHai must surface even when it has no DCs in ad_dcs');
+  assert.equal(sh.dcs.length, 0);
+  assert.equal(sh.dcPartners.length, 0);
+});
+
 // Pre-R93.12 sentinel: if a future refactor accidentally drops the
 // DN-to-bare-name normalisation, this test catches the regression.
 test('site-replication-matrix/all: DN link rows must surface partner entries (sentinel)', async () => {

@@ -366,9 +366,19 @@ export function dashboardRouter({ config, logger, db }) {
       const primaries = [];
       for (const s of siteRows) {
         const dcList = dcsBySite.get(s.site_id) || [];
-        if (dcList.length === 0) continue; // no DCs in this site — skip
+
+        // R95: matrix is an N×N site catalogue mirror, not a "currently
+        // active" view. Even sites with zero DCs in ad_dcs — either
+        // pre-registered but not yet discovered, or whose DCs all got
+        // dropped by INNER JOIN due to a site_id drift — must surface
+        // in primaries with `dcs: []` / `dcPartners: []`. The frontend
+        // renders those as a "暂未注册 DC" placeholder column/row.
+        // Operator-side this surfaces catalogue drift immediately (the
+        // matrix shape matches ad_sites row count, not "ad_sites with
+        // at least one ad_dcs row" count) — see
+        // tests/admin-site-replication-matrix-all.test.js R95 cases.
         const primaryEntry = dcList[0];
-        const primaryDc = primaryEntry.dcName;
+        const primaryDc = primaryEntry ? primaryEntry.dcName : null;
 
         // Partner allowlist: all within-site DCs + cross-site primary DCs.
         // round-36: the primary DC itself is a valid peer for sibling DCs
@@ -484,7 +494,13 @@ export function dashboardRouter({ config, logger, db }) {
 
         primaries.push({
           dcName: primaryDc,
-          isBridgehead: primaryEntry.isBridgehead,
+          // R95: empty-site surface — when the catalogue has the site row
+          // but `dcsBySite.get(s.site_id)` was empty (e.g. all DCs dropped
+          // by INNER JOIN due to site_id drift, or pre-registered site
+          // with no discovered DC yet), primaryEntry is undefined. Use
+          // null placeholders for the role flags so the row still pushes
+          // and the frontend can render a "暂未注册 DC" placeholder.
+          isBridgehead: primaryEntry ? primaryEntry.isBridgehead : null,
           siteId: s.site_id,
           siteName: s.site_name,
           regionCode: s.region_code,
@@ -492,6 +508,8 @@ export function dashboardRouter({ config, logger, db }) {
           // round-31: full DC list (kept for the "本站 DC 清单" panel).
           // round-36: partner info moves into dcPartners[]; the dcs list
           // remains the source of truth for site membership + role flags.
+          // R95: empty-site surface — `dcList.map(...)` returns `[]` when
+          // no DC rows landed in the catalogue for this site.
           dcs: dcList.map(d => ({
             dcName: d.dcName,
             isBridgehead: d.isBridgehead,
