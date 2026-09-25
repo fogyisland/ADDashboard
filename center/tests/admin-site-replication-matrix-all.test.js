@@ -170,6 +170,80 @@ test('site-replication-matrix/all: DN link rows match bare-name catalogue (R93.1
   assert.equal(flPeer.statusCode, 2);
 });
 
+// R93.13: real-machine data on KDLFLOFADSRV2 shows link.source_dc is a
+// full NTDS Settings DN whose bare host (e.g. KDLJTWHADSRV1) is a SECONDARY
+// DC in a remote site — NOT the remote site's primary. The route handler's
+// `allowedPeers` set was round-32 inherited from per-site primary-only
+// inbound filter (`本 site DC + cross-site primary`) and wrongly drops
+// secondary-DC sources. The matrix `/all` view is an N×N network-wide
+// perspective — every catalogue DC must surface as a peer regardless of
+// whether it's a site primary or not. Lock the contract with this test:
+// every catalogue DC that sources a link whose dest is in the current
+// site must land in the dest's `partners` list.
+test('site-replication-matrix/all: secondary-DC partners must surface (R93.13 allowedPeers fix)', async () => {
+  const db = mockMatrixDb({
+    sites: [
+      fakeSite({ site_id: 'site-fl',  site_name: 'KDL-FL-HubSite',  region_code: 'CN-FL', is_hub: true }),
+      // Two other sites — each has a *primary* (BJOFADSRV1 / WHOFADSRV1)
+      // and a *secondary* (JTWHADSRV1 / BSWHADSRV1). The 8-row real-machine
+      // pattern on KDLFLOFADSRV2 has dest=KDLFLOFADSRV2 (bare) and
+      // source=DN whose bare host is the *secondary* DC of the remote
+      // site. Pre-R93.13 this fails because allowedPeers only contains
+      // the site primary. We bridgehead-flag the secondary false so the
+      // primary sort still picks the primary first; the secondary must
+      // still appear as a peer.
+      fakeSite({ site_id: 'site-shjt', site_name: 'KDL-ShangHaiJiuTing', region_code: 'CN-SH', is_hub: false }),
+      fakeSite({ site_id: 'site-shbs', site_name: 'KDL-ShangHaiCheDun',  region_code: 'CN-SH', is_hub: false })
+    ],
+    dcs: [
+      fakeDc({ dc_name: 'KDLFLOFADSRV2', site_id: 'site-fl' }),
+      // site-shjt: primary first (so it becomes primaryBySiteId entry), then secondary
+      fakeDc({ dc_name: 'KDLBJOFADSRV1', site_id: 'site-shjt', is_bridgehead: true }),
+      fakeDc({ dc_name: 'KDLJTWHADSRV1', site_id: 'site-shjt', is_bridgehead: false }),
+      // site-shbs: same pattern
+      fakeDc({ dc_name: 'KDLWHOFADSRV1', site_id: 'site-shbs', is_bridgehead: true }),
+      fakeDc({ dc_name: 'KDLBSWHADSRV1', site_id: 'site-shbs', is_bridgehead: false })
+    ],
+    links: [
+      fakeLink({
+        source_dc: 'CN=NTDS Settings,CN=KDLJTWHADSRV1,CN=Servers,CN=KDL-ShangHaiJiuTing,CN=Sites,CN=Configuration,DC=shaphar,DC=net',
+        dest_dc:   'KDLFLOFADSRV2',
+        source_site: 'KDL-ShangHaiJiuTing', dest_site: 'KDL-FL-HubSite',
+        naming_context: '__partner_naming__:0bd554d5',
+        status_code: 0
+      }),
+      fakeLink({
+        source_dc: 'CN=NTDS Settings,CN=KDLBSWHADSRV1,CN=Servers,CN=KDL-ShangHaiCheDun,CN=Sites,CN=Configuration,DC=shaphar,DC=net',
+        dest_dc:   'KDLFLOFADSRV2',
+        source_site: 'KDL-ShangHaiCheDun', dest_site: 'KDL-FL-HubSite',
+        naming_context: '__partner_naming__:9fd0efd6',
+        status_code: 0
+      })
+    ]
+  });
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp(db))
+    .get('/api/dashboard/site-replication-matrix/all')
+    .set('Authorization', `Bearer ${adminToken()}`);
+
+  assert.equal(res.status, 200);
+  const fl = res.body.primaries.find(p => p.siteName === 'KDL-FL-HubSite');
+  assert.ok(fl, 'KDL-FL-HubSite must be in primaries');
+  const flDc = fl.dcPartners.find(d => d.dcName === 'KDLFLOFADSRV2');
+  assert.ok(flDc, 'KDLFLOFADSRV2 must be listed in dcPartners');
+  const peerDcs = flDc.partners.map(p => p.peerDc).sort();
+  // Secondary DCs from remote sites must appear as peers — they are
+  // catalogue-known DCs even though they are not the remote site primary.
+  // Pre-R93.13 these are filtered out by `allowedPeers` (which only
+  // contains site primaries), leaving KDLFLOFADSRV2 with 0 inbound
+  // partners. The real-machine data has 8 such rows.
+  assert.ok(peerDcs.includes('KDLJTWHADSRV1'),
+    `KDLJTWHADSRV1 (secondary peer) must surface; got partners=${JSON.stringify(peerDcs)}`);
+  assert.ok(peerDcs.includes('KDLBSWHADSRV1'),
+    `KDLBSWHADSRV1 (secondary peer) must surface; got partners=${JSON.stringify(peerDcs)}`);
+});
+
 // Pre-R93.12 sentinel: if a future refactor accidentally drops the
 // DN-to-bare-name normalisation, this test catches the regression.
 test('site-replication-matrix/all: DN link rows must surface partner entries (sentinel)', async () => {

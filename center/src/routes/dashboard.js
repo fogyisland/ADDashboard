@@ -380,9 +380,22 @@ export function dashboardRouter({ config, logger, db }) {
         // dest_dc` guard at the top of the link loop.
         const allowedPeers = new Set();
         for (const d of dcList) allowedPeers.add(d.dcName);
-        for (const [siteId, primaryName] of primaryBySiteId) {
-          if (siteId !== s.site_id) allowedPeers.add(primaryName);
-        }
+        // R93.13: matrix `/all` is an N×N network-wide view — allow every
+        // catalogue-known DC as a peer, including remote-site secondaries.
+        // The original `for (const [siteId, primaryName] of primaryBySiteId)`
+        // loop only loaded the *primary* DC of every remote site, so any
+        // link sourced from a secondary DC (e.g. KDLJTWHADSRV1 reporting
+        // inbound to KDLFLOFADSRV2 with a full NTDS Settings DN whose bare
+        // host is a ShangHaiJiuTing secondary) was dropped by the
+        // `!allowedPeers.has(peerDc)` filter and never landed in any
+        // partner map — empty matrix cells. Real-machine data on
+        // KDLFLOFADSRV2 has 8 such rows, all from secondaries.
+        // The dest-side gate (`partnerMapByDc.has(destDc)`) already keeps
+        // the inbound scope to the current site, so widening the peer
+        // side to all catalogue DCs is safe — out-of-site destinations
+        // are still filtered, but every catalogue DC that ever sources
+        // a link into this site now surfaces.
+        for (const d of dcRows) allowedPeers.add(d.dc_name);
 
         // round-36: build one partner map per DC in the site. Walk every
         // link, find the receiving DC inside this site, attach the partner
@@ -705,9 +718,10 @@ export function dashboardRouter({ config, logger, db }) {
 
         const allowedPeers = new Set();
         for (const d of dcList) allowedPeers.add(d.dcName);
-        for (const [siteId, primaryName] of primaryBySiteId) {
-          if (siteId !== s.site_id) allowedPeers.add(primaryName);
-        }
+        // R93.13: matrix `/all` is an N×N network-wide view — allow every
+        // catalogue-known DC as a peer, including remote-site secondaries.
+        // See sibling comment in the `/all` handler for the full rationale.
+        for (const d of dcRows) allowedPeers.add(d.dc_name);
 
         const partnerMapByDc = new Map();
         for (const d of dcList) partnerMapByDc.set(d.dcName, new Map());
