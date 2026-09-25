@@ -217,6 +217,10 @@ function Install-LocalAgent {
   # Prepend the bundled node dir to PATH as defense in depth — if npm.cmd
   # ever spawns a child that resolves `node` from PATH, it'll still find
   # the bundled one (avoids ABI drift if PATH has a different node.exe).
+  #
+  # Operator directive (2026-09-24): "我们需要在start.ps1 中构建node_modules"
+  # — confirmed the install-time npm install path. (Earlier same-day
+  # message asked for pre-built; this is the final ruling.)
   $env:PATH = $nodeDst + [IO.Path]::PathSeparator + $env:PATH
   $npmCmd = Join-Path $nodeDst 'npm.cmd'
   if (-not (Test-Path -LiteralPath $npmCmd)) {

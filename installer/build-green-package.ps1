@@ -1,3 +1,13 @@
+# build-green-package.ps1 — DEPRECATED as of R90. Use sync-agentInstall.ps1
+# (in-place, idempotent) + build-agentInstall-zip.ps1 (operator zip workflow)
+# instead. Kept here because git history still references it and operators
+# may have muscle-memory for the old command name; calling it now will
+# rebuild the staging tree but the move-to-final step below is still
+# destructive (it wipes publish/installer/agentInstall/). Prefer the new
+# scripts for any green-package workflow.
+#
+# Historical context (pre-R90):
+#
 # build-green-package.ps1 — assemble publish/installer/agentInstall/
 # (a "green" / portable agent bundle) and its zip.
 #

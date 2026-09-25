@@ -9,7 +9,7 @@
 // NEVER throws — returns null on total miss. Caller is responsible for
 // rewriting appsettings.json + retrying fetchConfig.
 
-import { requestJson } from './reporter.js';
+import { signedRequestJson } from './reporter.js';
 
 function range(start, end) {
   const out = [];
@@ -17,11 +17,21 @@ function range(start, end) {
   return out;
 }
 
-async function probeOnce({ host, port, agentToken, perPortTimeoutMs }) {
-  const r = await requestJson({
+// 2026-09-22 S82 — stamp X-Agent-Signature so the centre accepts the probe
+// after the 60s restart-grace window. Without it, an agent whose
+// appsettings.json points at a stale port never recovers: every probe 401s
+// and the scan keeps returning null. hostname/agentId may be undefined
+// during the very first boot (before config finishes loading) —
+// signedRequestJson treats that as "skip signature stamp" and falls back
+// to grace-window acceptance.
+async function probeOnce({ host, port, agentToken, perPortTimeoutMs, hostname, agentId }) {
+  const r = await signedRequestJson({
     method: 'GET',
     url: `http://${host}:${port}/config.json`,
-    headers: { 'X-Agent-Token': agentToken },
+    headers: {},
+    agentToken,
+    hostname,
+    agentId,
     timeoutMs: perPortTimeoutMs
   });
   // I8: 304 Not Modified on /config.json is a valid hit — it means "this is
@@ -55,6 +65,8 @@ async function mapWithConcurrency(items, concurrency, mapper, shouldStop) {
 export async function discoverCenterPort({
   host,
   agentToken,
+  hostname,
+  agentId,
   priorityPorts = [80, 443, 8080],
   rangeStart = 10000,
   rangeEnd = 60000,
@@ -94,7 +106,7 @@ export async function discoverCenterPort({
     concurrency,
     async ({ port }) => {
       if (signal?.aborted) return null;
-      const result = await probeOnce({ host, port, agentToken, perPortTimeoutMs });
+      const result = await probeOnce({ host, port, agentToken, perPortTimeoutMs, hostname, agentId });
       if (result) stopped = true;
       return result;
     },

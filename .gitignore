@@ -146,11 +146,30 @@ publish/installer/staging-agentInstall/
 # Green package build outputs are release artifacts — track them
 !publish/installer/agentInstall/
 !publish/installer/agentInstall.zip
-# ...but any node_modules that slips into the staged bundle must NEVER be
-# tracked (build-green-package.ps1 explicitly excludes it; this is defense
-# in depth). The bundle is node_modules-free by design — install-agent.ps1
-# runs `npm install --omit=dev` on the target machine instead.
-publish/installer/agentInstall/**/node_modules/
+# agentInstall/agent/node_modules is generated ON DEMAND on the
+# TARGET machine by install-agent.ps1 (called from start.ps1):
+#   `& <green>/node/npm.cmd install --omit=dev --no-audit --no-fund`
+# against <InstallPath>/package.json. As of R91.x, the green package
+# does NOT ship pre-built node_modules — operator directive 2026-09-24
+# clarified "我们需要在start.ps1 中构建node_modules" (build it during
+# install, not pre-bundle). Stays untracked because it's a runtime
+# build artifact (~50-80 MB) regenerated on every install from the
+# tracked package.json.
+#
+# EXCEPTION: agentInstall/node/node_modules/ stays untracked — it's the
+# Node 20 portable zip's internal node_modules/ (npm + npm-cli.js).
+# That tree is downloaded by Ensure-Node.ps1 from nodejs.org and is
+# regenerable from a single source URL; no need to carry it in git.
+publish/installer/agentInstall/agent/node_modules/
+publish/installer/agentInstall/node/node_modules/
 
 # Local session temp tokens (created by Claude Code hooks)
 *token*.txt
+
+# Local dev scratch (Claude Code ad-hoc checklists + progress notes)
+# These live at the repo root as the session's working memory; they
+# have no value to other developers and would clutter git history if
+# committed. Claude writes them under memory/ during interactive
+# sessions, then the operator decides whether to promote anything
+# into the long-term memory directory (~/.claude/projects/...) manually.
+memory/

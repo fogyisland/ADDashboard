@@ -513,6 +513,11 @@ await ((async () => {
     // operator sees nothing useful in start.bat console). The promise form
     // mirrors multi-port.js (server.js:528+) so error messages from a busy
     // port land on the rotated logger instead of being swallowed.
+    //
+    // R89: the original commit edf0bbe patched only the publish/ mirror;
+    // sync-source-mirror then overwrote it back from the source tree and
+    // the fix vanished. R90 closes the loop by patching the source too —
+    // both halves must agree or the next sync reverts the fix.
     const server = await new Promise((resolve, reject) => {
       const srv = apps.webApp.listen(finalConfig.listenPort, () => {
         logger.info({ port: finalConfig.listenPort, needsInit }, 'center listening (init mode)');

@@ -52,5 +52,26 @@ export function loadConfig(path) {
   if (missing.length > 0) {
     throw new Error(`agent config missing required key(s): ${missing.join(', ')}`);
   }
+  // 2026-09-24 R91.3 — reject centerUrl that doesn't look like an absolute
+  // URL with a scheme. Real install on KDLFLOFADSRV2 had appsettings.json
+  // with `"centerUrl": "Add-Content : 流不可读。"` after an operator-side
+  // `Add-Content` failure redirected stderr into the JSON file. The
+  // previous loadConfig accepted the string as-is and the agent crashed
+  // 30 lines deeper inside `new URL(url)` in reporter.js:13 with a stack
+  // trace that pointed at the wrong layer. Fail loudly at config-load
+  // time so the operator sees "your config is corrupt" instead of "the
+  // URL parser is broken".
+  //
+  // Acceptable shapes: anything matching RFC 3986 generic scheme syntax
+  // (`scheme://authority/...`): `http://x`, `https://x`, `ws://x` (future
+  // websocket probes), `tcp://x` (lab bench), even `file:///path` for local
+  // dev. The constraint we actually need is "has a scheme" — anything
+  // else is either a relative path, a bare hostname, or a stray error
+  // string from a redirected PowerShell `Add-Content` failure.
+  if (typeof cfg.centerUrl !== 'string' || !/^[a-z][a-z0-9+.-]*:\/\//i.test(cfg.centerUrl.trim())) {
+    throw new Error(
+      `agent config centerUrl is not a valid URL (missing scheme): ${JSON.stringify(cfg.centerUrl)}`
+    );
+  }
   return { ...DEFAULTS, ...cfg };
 }
