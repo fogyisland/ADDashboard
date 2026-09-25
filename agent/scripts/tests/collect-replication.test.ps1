@@ -412,6 +412,34 @@ Describe 'Get-ReplicationSnapshot partner entry (R93.6 复制伙伴可见性)' {
       $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
       $snap.Entries[0].DestSite | Should -Be 'KDL-ChenDu'
     }
+
+    # 2026-09-25 R93.8 — Tier 3 must fire when $snapshot.Site is the EMPTY
+    # STRING `""`, not just $null. R93.6.1's `($null -ne $snapshot.Site)`
+    # guard evaluated TRUE for `""`, so Tier 2 short-circuited with an empty
+    # value and Tier 3 never ran. Operator's KDLFLOFADSRV2 真机 data showed
+    # exactly this — every partner row had sourceSite="" destSite="" because
+    # $snapshot.Site was `""` on the Get-ADDomainController fallback path.
+    It 'Tier 3 wins: DN parse when $snapshot.Site is the empty string "" (R93.8 — KDLFLOFADSRV2 case)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value '' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-BeiJing,CN=Sites,CN=Configuration,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'KDLFLOFADSRV2'
+      $snap.Entries[0].DestSite   | Should -Be 'KDL-BeiJing'
+      $snap.Entries[0].SourceSite | Should -Be 'KDL-BeiJing'
+    }
+
+    It 'Tier 2 wins when $snapshot.Site is a non-empty string (regression guard: must not regress to Tier 3 when Tier 2 has data)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value 'Source-Site' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=DC-X,CN=Servers,CN=KDL-BeiJing,CN=Sites,DC=contoso,DC=com' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
+      # Tier 2 must still win when AD module provided a real site — Tier 3 is
+      # only a defensive fallback for the "" / $null case.
+      $snap.Entries[0].DestSite   | Should -Be 'Source-Site'
+      $snap.Entries[0].SourceSite | Should -Be 'Source-Site'
+    }
   }
 
   # 2026-09-25 R93.6.1 followup — 当前站点自身的 site 也要能反推。
@@ -497,5 +525,31 @@ Describe 'Get-ReplicationSnapshot partner entry (R93.6 复制伙伴可见性)' {
       $snap = Get-ReplicationSnapshot -ComputerName 'DC-BJ-01'
       # AD module gave us a site — partner list should NOT overwrite it.
       $snap.Site | Should -Be 'AD-Module-Resolved-Site'
+    }
+
+    # 2026-09-25 R93.8 — self-site recovery must also fire when
+    # $snapshot.Site is the EMPTY STRING `""`. R93.6.1's `($null -eq
+    # $snapshot.Site)` was FALSE for `""`, so the recovery block was
+    # skipped and the dc_summary entry inherited an empty SourceSite.
+    # KDLFLOFADSRV2 真机 data: 8 partner rows + 1 dc_summary row, all with
+    # sourceSite="" and destSite="" / null — the recovery should have
+    # populated KDL-FL-HubSite from the partner DN list.
+    It 'snapshot.Site recovers from partner list when AD lookup yields the empty string "" (R93.8)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value '' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,CN=Sites,CN=Configuration,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'KDLFLOFADSRV2'
+      $snap.Site | Should -Be 'KDL-FL-HubSite'
+    }
+
+    It '__dc_summary__ entry inherits recovered snapshot.Site when $snapshot.Site starts as "" (R93.8)' {
+      Set-Variable -Name 'R93.6SourceSite' -Value '' -Scope Global
+      Set-Variable -Name 'R93.6PartnerInputs' -Value @(
+        (New-StubLinkPartner -Partner 'CN=NTDS Settings,CN=KDLFLOFADSRV2,CN=Servers,CN=KDL-FL-HubSite,CN=Sites,CN=Configuration,DC=kdl,DC=local' -PartnerSiteName '' -NamingContext 'DC=contoso,DC=com')
+      ) -Scope Global
+      $snap = Get-ReplicationSnapshot -ComputerName 'KDLFLOFADSRV2'
+      $summary = $snap.Entries | Where-Object { $_.NamingContext -eq '__dc_summary__' } | Select-Object -First 1
+      $summary.SourceSite | Should -Be 'KDL-FL-HubSite'
     }
   }

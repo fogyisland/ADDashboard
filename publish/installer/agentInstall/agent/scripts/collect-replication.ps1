@@ -729,9 +729,14 @@ function Get-ReplicationSnapshot {
           # 2016+ schema forests and when the partner object has its
           # server-ref link resolved at collection time.
           $destSiteValue = $partnerSite
-        } elseif ($null -ne $snapshot.Site) {
+        } elseif (-not [string]::IsNullOrEmpty($snapshot.Site)) {
           # Tier 2 (R93.6): source DC's own Site — accurate only for
           # co-located partners (intra-site replication link bridges).
+          # R93.8 2026-09-25 — replace `$null -ne $snapshot.Site` with
+          # IsNullOrEmpty: on KDLFLOFADSRV2 $snapshot.Site is the empty
+          # string `""` (not $null) on the Get-ADDomainController fallback
+          # path, which let Tier 2 win with an empty value and short-
+          # circuited the Tier 3 DN fallback below.
           $destSiteValue = [string]$snapshot.Site
         } else {
           # Tier 3 (R93.6.1 2026-09-25 — 复制状态概览 partner visibility
@@ -759,7 +764,13 @@ function Get-ReplicationSnapshot {
       # siteMatrix gets a non-empty sourceSite (otherwise the row gets
       # filtered out by `source_site <> ''` half of the double guard).
       $sourceSiteValue = $null
-      if ($null -ne $snapshot.Site) {
+      if (-not [string]::IsNullOrEmpty($snapshot.Site)) {
+        # R93.8 2026-09-25 — `$null -ne $snapshot.Site` evaluated TRUE for
+        # the empty string `""`, short-circuiting the DN fallback. Real
+        # machine KDLFLOFADSRV2 fed $snapshot.Site = "" on the
+        # Get-ADDomainController fallback path (not $null), so the
+        # sourceSite came out as "" and centre's siteMatrix double guard
+        # `source_site <> ''` filtered every partner row out — empty UI.
         $sourceSiteValue = [string]$snapshot.Site
       } else {
         try {
@@ -835,7 +846,12 @@ function Get-ReplicationSnapshot {
   # when running on a leaf DC that lists the hub among its partners,
   # the first partner's DN has the leaf's own site. Best-effort
   # heuristic: first parseable site from the partner list wins.
-  if ($null -eq $snapshot.Site) {
+  if ([string]::IsNullOrEmpty($snapshot.Site)) {
+    # R93.8 2026-09-25 — `$null -eq $snapshot.Site` was FALSE for the empty
+    # string `""`, so on KDLFLOFADSRV2 (where $snapshot.Site is `""` not
+    # $null) the recovery block was skipped and the dc_summary entry
+    # inherited an empty SourceSite. Use IsNullOrEmpty so both the $null
+    # and "" cases fall through to the partner-list recovery.
     try {
       $recovered = Resolve-SelfSiteFromPartners -Partners $partners
       if (-not [string]::IsNullOrEmpty($recovered)) {
