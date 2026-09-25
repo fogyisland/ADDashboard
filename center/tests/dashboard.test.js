@@ -763,6 +763,57 @@ test("GET /api/dashboard/site-replication-matrix/pair-history: clamps limit to [
     .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
   assert.equal(r2.body.limit, 10);
 });
+
+// R101 — MSSQL dialect dispatch regression lock. R93.4 introduced a
+// function-form vs string-form helper split (MSSQL TOP takes a literal,
+// MySQL LIMIT takes a bound param). The handler must dispatch on the
+// actual backend dialect — db.dialect, set once in db.init() — not on
+// process.env.DB_DIALECT or db.pool.constructor.name. The old env+pool
+// hack returned false on KDLFLOFADSRV2 (NSSM service doesn't export
+// DB_DIALECT; db facade doesn't expose a pool), so the handler passed
+// the unevaluated MSSQL helper function to db.query. mssql driver's
+// rewritePlaceholders received a function and threw
+// "sqlStr.replace is not a function" → HTTP 500 on every /pair-history
+// call. This test pins the contract: when db.dialect === 'mssql', the
+// handler must invoke the function-form helper, bind [source, dest]
+// (no limit param), and return the rows. Without R101's fix, this test
+// fails with 500.
+test("GET /api/dashboard/site-replication-matrix/pair-history: MSSQL backend dispatches function-form helper (R101)", async () => {
+  const records = [];
+  const db = buildMockDb([
+    {
+      match: /FROM\s+ad_replication_history/i,
+      rows: [
+        { source_dc: 'DC-A', dest_dc: 'DC-B', naming_context: 'CN=Config', status_code: 0,
+          last_success_time: new Date('2026-08-28T01:00:00Z'),
+          last_attempt_time: new Date('2026-08-28T01:00:30Z'),
+          attempt_duration_ms: 1234, objects_transferred: 42,
+          error_message: null, collected_at: new Date('2026-08-28T01:00:30Z') }
+      ]
+    }
+  ], { dialect: 'mssql' }).withRecording(records);
+  _setDbForTest(db);
+  const app = buildApp();
+  const r = await supertest(app)
+    .get("/api/dashboard/site-replication-matrix/pair-history?source=DC-A&dest=DC-B&limit=10")
+    .set("Authorization", `Bearer ${adminToken(["read:dash"])}`);
+  assert.equal(r.status, 200, `expected 200, got ${r.status} body=${JSON.stringify(r.body)}`);
+  assert.equal(r.body.entries.length, 1);
+  assert.equal(r.body.entries[0].statusCode, 0);
+  // The MSSQL helper interpolates `TOP 10` into the SQL string; assert via
+  // the recorded call that the param count is 2 (source, dest) — not 3
+  // (mysql-style with limit) — and that the SQL contains the literal
+  // `TOP 10` produced by the function-form helper.
+  const historyCall = records.find(r =>
+    /FROM\s+ad_replication_history/i.test(r.sql)
+  );
+  assert.ok(historyCall, "ad_replication_history query must have been issued");
+  assert.equal(historyCall.params.length, 2,
+    `MSSQL backend must bind [source, dest] only — got ${JSON.stringify(historyCall.params)}`);
+  assert.deepEqual(historyCall.params, ['DC-A', 'DC-B']);
+  assert.match(historyCall.sql, /\bTOP\s+10\b/i,
+    "MSSQL helper must interpolate TOP <limit> literal into the SQL string");
+});
 // ----- PARTNER PORT HEALTH MONITOR (复制伙伴端口健康监控) — round-47 -----
 //
 // Renamed from 复制日志监控 (round-42) in round-47. The route mirrors

@@ -569,7 +569,7 @@ export function dashboardRouter({ config, logger, db }) {
         return res.status(400).json({ error: 'source and dest required' });
       }
       const db = getDb();
-      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding
+      // 2026-09-25 R93.4 / R101 — MSSQL TOP does not accept parameter binding
       // (only an integer literal). The SQL builder is function-form on
       // MSSQL (limit is interpolated); MySQL keeps the bound `LIMIT ?`
       // param. The earlier comment claiming "the helper rewrites LIMIT ?
@@ -577,8 +577,19 @@ export function dashboardRouter({ config, logger, db }) {
       // rewrite; the JS builder in db/sql.js does. Dialect dispatch:
       //   mssql → call as function with limit, bind [source, dest]
       //   mysql → use plain string, bind [source, dest, limit]
-      const isMssql = String(process.env.DB_DIALECT || '').toLowerCase() === 'mssql'
-        || (db?.pool?.constructor?.name || '').toLowerCase().includes('mssql');
+      //
+      // R101: dispatch on db.dialect (set once in db.init() at boot), NOT
+      // on process.env.DB_DIALECT or db.pool.constructor.name. The old
+      // env+pool hack returned false on MSSQL backends in production
+      // because (a) DB_DIALECT was not exported on the NSSM-managed
+      // service and (b) db.pool is undefined — db/index.js exposes the
+      // dialect as `db.dialect`, not via a pool reference. The mismatch
+      // caused the handler to pass the unevaluated MSSQL helper *function*
+      // to db.query, which the MSSQL driver received at
+      // rewritePlaceholders(sqlStr) → sqlStr.replace → TypeError
+      // "sqlStr.replace is not a function". KDLFLOFADSRV2 hit this on
+      // every pair-history request after R93.4 ship.
+      const isMssql = db.dialect === 'mssql';
       const sql = isMssql
         ? db.sql.dashboard.replicationLogPerPair(Number(limit))
         : db.sql.dashboard.replicationLogPerPair;
