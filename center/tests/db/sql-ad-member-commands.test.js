@@ -2,9 +2,15 @@
 //
 // Pure structural tests: assert placeholder counts, IN-list widths,
 // dialect-specific fragments (UTC_TIMESTAMP vs SYSUTCDATETIME,
-// LIMIT ? OFFSET ? vs TOP (?) OFFSET ? ROWS), and the JSON column
-// types. No DB connection — mirrors the pattern in
+// LIMIT ? OFFSET ? vs TOP n OFFSET ? ROWS — see R93.4 below), and the
+// JSON column types. No DB connection — mirrors the pattern in
 // tests/db/sql.test.js for other registries.
+//
+// 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding; the
+// 4 list queries + claimPick become functions so the integer limit is
+// interpolated by the builder (MySQL siblings keep `LIMIT ?`).
+// Mirror tests assert `typeof === 'function'` + call the builder with
+// an integer, following tests/sql/alert-events.test.js:183-191.
 //
 // Mirrors tests/db/sql-ad-admin-commands.test.js (R75's DB-level
 // coverage) but kept in the same file because the scope is small and
@@ -86,13 +92,20 @@ test('mssql adMemberCommands.insert mirrors mysql with SYSUTCDATETIME() + casts'
   assert.match(sql, /DATETIME2/);
 });
 
-test('mssql adMemberCommands.claimPick uses TOP (?) and CAST for status', () => {
-  const sql = buildSql('mssql').adMemberCommands.claimPick;
-  assert.match(sql, /SELECT TOP \(\?\) id FROM ad_member_commands/);
+test('mssql adMemberCommands.claimPick is a function that interpolates the integer limit', () => {
+  // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding (only an
+  // integer literal). claimPick is a function (limit) => `SELECT TOP N ...`
+  // so callers can dispatch by dialect — the service layer calls the function
+  // on MSSQL and skips it on MySQL. See alert-events.test.js:183-191 for the
+  // canonical pattern; mirror here.
+  const builder = buildSql('mssql').adMemberCommands.claimPick;
+  assert.equal(typeof builder, 'function');
+  const sql = builder(5);
+  assert.match(sql, /SELECT TOP 5 id FROM ad_member_commands/);
   assert.match(sql, /CAST\('queued' AS NVARCHAR\(16\)\)/);
   assert.match(sql, /CAST\(\? AS NVARCHAR\(128\)\)/);
-  // 2 placeholders: TOP, hostname
-  assert.strictEqual((sql.match(/\?/g) || []).length, 2);
+  // 1 placeholder: only hostname (TOP is inlined by the builder)
+  assert.strictEqual((sql.match(/\?/g) || []).length, 1);
 });
 
 test('mssql adMemberCommands.claim(N) emits N-? IN-list + hostname cast bind', () => {
@@ -112,13 +125,19 @@ test('mssql adMemberCommands.complete uses CASTs on every column', () => {
   assert.strictEqual((sql.match(/\?/g) || []).length, 5);
 });
 
-test('mssql adMemberCommands.listByHost uses TOP (?) + OFFSET ? ROWS', () => {
-  const sql = buildSql('mssql').adMemberCommands.listByHost;
-  assert.match(sql, /SELECT TOP \(\?\)/);
+test('mssql adMemberCommands.listByHost is a function with TOP <size> + OFFSET ? ROWS', () => {
+  // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding (only an
+  // integer literal). listByHost is a function (size) => `SELECT TOP N ...`
+  // so the limit is inlined; OFFSET stays as a bound param (OFFSET accepts
+  // integer binding fine — only TOP rejects it).
+  const builder = buildSql('mssql').adMemberCommands.listByHost;
+  assert.equal(typeof builder, 'function');
+  const sql = builder(20);
+  assert.match(sql, /SELECT TOP 20/);
   assert.match(sql, /CAST\(\? AS NVARCHAR\(128\)\)/);
   assert.match(sql, /OFFSET \? ROWS/);
-  // 3 placeholders: TOP, hostname, offset
-  assert.strictEqual((sql.match(/\?/g) || []).length, 3);
+  // 2 placeholders: hostname, offset (TOP is inlined by the builder)
+  assert.strictEqual((sql.match(/\?/g) || []).length, 2);
 });
 
 // ── cross-dialect invariants ───────────────────────────────────────────

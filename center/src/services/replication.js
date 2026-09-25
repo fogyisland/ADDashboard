@@ -137,14 +137,26 @@ export async function insertHistoryEntries(historyEntries) {
   return historyEntries.length;
 }
 
+// 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding; the
+// service layer dispatches the function-form builder on MSSQL (the
+// integer limit is interpolated by the SQL builder) and the plain
+// string on MySQL (where mysql2 accepts the `LIMIT ?` binding).
 export async function listRecent(limit = 100) {
   const db = getDb();
-  const { rows } = await db.query(db.sql.replication.listRecent, [limit]);
+  const sql = db.dialect === 'mssql'
+    ? db.sql.replication.listRecent(Number(limit))
+    : db.sql.replication.listRecent;
+  const params = db.dialect === 'mssql' ? [] : [limit];
+  const { rows } = await db.query(sql, params);
   return rows;
 }
 
 export async function listBySite(site, limit = 100) {
   const db = getDb();
-  const { rows } = await db.query(db.sql.replication.listBySite, [site, site, limit]);
+  const sql = db.dialect === 'mssql'
+    ? db.sql.replication.listBySite(Number(limit))
+    : db.sql.replication.listBySite;
+  const params = db.dialect === 'mssql' ? [site, site] : [site, site, limit];
+  const { rows } = await db.query(sql, params);
   return rows;
 }

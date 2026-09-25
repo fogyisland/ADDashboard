@@ -523,14 +523,21 @@ export function dashboardRouter({ config, logger, db }) {
         return res.status(400).json({ error: 'source and dest required' });
       }
       const db = getDb();
-      // MySQL binds [source, dest, limit]; MSSQL binds [limit, source, dest]
-      // because the SQL helper rewrites `LIMIT ?` to `TOP (?)` for MSSQL
-      // and the driver wrapper expects the LIMIT token to be the first
-      // bound param for MSSQL. Pass dialect-aware params via buildSql().
+      // 2026-09-25 R93.4 — MSSQL TOP does not accept parameter binding
+      // (only an integer literal). The SQL builder is function-form on
+      // MSSQL (limit is interpolated); MySQL keeps the bound `LIMIT ?`
+      // param. The earlier comment claiming "the helper rewrites LIMIT ?
+      // to TOP (?) for MSSQL" was wrong — the tedious driver does NOT
+      // rewrite; the JS builder in db/sql.js does. Dialect dispatch:
+      //   mssql → call as function with limit, bind [source, dest]
+      //   mysql → use plain string, bind [source, dest, limit]
       const isMssql = String(process.env.DB_DIALECT || '').toLowerCase() === 'mssql'
         || (db?.pool?.constructor?.name || '').toLowerCase().includes('mssql');
-      const params = isMssql ? [limit, source, dest] : [source, dest, limit];
-      const { rows } = await db.query(db.sql.dashboard.replicationLogPerPair, params);
+      const sql = isMssql
+        ? db.sql.dashboard.replicationLogPerPair(Number(limit))
+        : db.sql.dashboard.replicationLogPerPair;
+      const params = isMssql ? [source, dest] : [source, dest, limit];
+      const { rows } = await db.query(sql, params);
       const entries = rows.map(r => ({
         attemptAt: toIso(r.collected_at),
         statusCode: r.status_code,

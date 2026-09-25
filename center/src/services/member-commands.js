@@ -303,9 +303,15 @@ export async function claimForAgent(hostname, limit = 5) {
   }
   const db = getDb();
   const safeLimit = Math.max(1, Math.min(100, Number(limit) || 5));
+  // 2026-09-25 R93.4 — MSSQL TOP cannot be parameter-bound; see
+  // services/ad-admin-commands.js:resolveClaimPickSql for the full
+  // rationale. The same dialect dispatch applies here.
+  const claimPickSql = db.dialect === 'mssql'
+    ? db.sql.adMemberCommands.claimPick(Number(safeLimit))
+    : db.sql.adMemberCommands.claimPick;
   const { rows: idRows } = await db.query(
-    db.sql.adMemberCommands.claimPick,
-    [hostname, safeLimit]
+    claimPickSql,
+    db.dialect === 'mssql' ? [hostname] : [hostname, safeLimit]
   );
   if (!idRows || idRows.length === 0) return [];
   const ids = idRows.map(r => Number(r.id)).filter(Number.isFinite);
@@ -408,26 +414,32 @@ export async function listCommands({ hostname, status, page = 1, size = 50 } = {
   let listParams;
   let countSql;
   let countParams;
+  // 2026-09-25 R93.4 — MSSQL's `TOP` clause does not accept parameter
+  // binding (only an integer literal). SQL builders are function-form
+  // on MSSQL (limit interpolated), plain string on MySQL (LIMIT ? is
+  // bound). Service-layer dispatch mirrors ad-admin-commands.js:listCommands:
+  //   mssql → call listBy* as function with safeSize, bind [WHERE params, offset]
+  //   mysql → plain string, bind [WHERE params, safeSize, offset]
   if (hostname != null && status != null) {
     // Combined filter: hostname + status. Service runs hostname then
     // post-filters by status — combined queries are rare in real traffic.
-    listSql = db.sql.adMemberCommands.listByStatus;
-    listParams = isMssql ? [safeSize, status, offset] : [status, safeSize, offset];
+    listSql = isMssql ? db.sql.adMemberCommands.listByStatus(safeSize) : db.sql.adMemberCommands.listByStatus;
+    listParams = isMssql ? [status, offset] : [status, safeSize, offset];
     countSql = db.sql.adMemberCommands.countByStatus;
     countParams = [status];
   } else if (hostname != null) {
-    listSql = db.sql.adMemberCommands.listByHost;
-    listParams = isMssql ? [safeSize, hostname, offset] : [hostname, safeSize, offset];
+    listSql = isMssql ? db.sql.adMemberCommands.listByHost(safeSize) : db.sql.adMemberCommands.listByHost;
+    listParams = isMssql ? [hostname, offset] : [hostname, safeSize, offset];
     countSql = db.sql.adMemberCommands.countByHost;
     countParams = [hostname];
   } else if (status != null) {
-    listSql = db.sql.adMemberCommands.listByStatus;
-    listParams = isMssql ? [safeSize, status, offset] : [status, safeSize, offset];
+    listSql = isMssql ? db.sql.adMemberCommands.listByStatus(safeSize) : db.sql.adMemberCommands.listByStatus;
+    listParams = isMssql ? [status, offset] : [status, safeSize, offset];
     countSql = db.sql.adMemberCommands.countByStatus;
     countParams = [status];
   } else {
-    listSql = db.sql.adMemberCommands.listAll;
-    listParams = [safeSize, offset];
+    listSql = isMssql ? db.sql.adMemberCommands.listAll(safeSize) : db.sql.adMemberCommands.listAll;
+    listParams = isMssql ? [offset] : [safeSize, offset];
     countSql = db.sql.adMemberCommands.countAll;
     countParams = [];
   }
@@ -455,6 +467,19 @@ function tryParseJson(v) {
 function parseParamsJson(row) {
   if (!row) return row;
   return { ...row, params_json: tryParseJson(row.params_json) };
+}
+
+// 2026-09-25 R93.4 — MSSQL `TOP` cannot be parameter-bound. Inline the
+// limit on MSSQL, bind it on MySQL. The call site in claimForAgent picks
+// the right shape; the helper is the single source of truth for which
+// dialect inlines vs binds. Mirrors the equivalent helper in
+// services/ad-admin-commands.js so the two command-queue services stay
+// aligned.
+function resolveClaimPickSql(db, safeLimit) {
+  if (db.dialect === 'mssql') {
+    return db.sql.adMemberCommands.claimPick(Number(safeLimit));
+  }
+  return db.sql.adMemberCommands.claimPick;
 }
 
 // ── Test helpers ─────────────────────────────────────────────────────────
