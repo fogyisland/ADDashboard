@@ -226,14 +226,28 @@ test('agents list: reportRequestedAt is null when no pending request', async () 
 test('report-detail: returns entries for the most recent collected_at (capped at 100)', async () => {
   // The service fetches the most recent 100 entries via latestReportEntries;
   // we simulate the same set so the response shape can be verified end-to-end.
+  //
+  // 2026-09-25 R93.11: the SQL now applies a 30-min freshness floor in
+  // addition to the latest-snapshot correlated subquery. The mock's regex
+  // here matches both MySQL `MAX(collected_at)` and MSSQL `TOP 1
+  // collected_at` shapes, but does NOT inspect the UTC_TIMESTAMP() /
+  // DATEADD(MINUTE, -30, SYSUTCDATETIME()) gate that lives outside the
+  // matched snippet — so we anchor the fake `collected_at` to "now"
+  // (within the floor) instead of a hardcoded 2026-08-07 date that the
+  // 30-min filter would silently drop.
+  const recentCollected = new Date(Date.now() - 60 * 1000); // 1 min ago — in window
   const entries = [];
   for (let i = 0; i < 3; i++) {
-    entries.push(fakeReplicationRow({ source_dc: `src${i}`, dest_dc: `dst${i}` }));
+    entries.push(fakeReplicationRow({
+      source_dc: `src${i}`,
+      dest_dc: `dst${i}`,
+      collected_at: recentCollected
+    }));
   }
   const queryParams = [];
   const db = buildMockDb([
     {
-      match: /SELECT\s+collected_at\s*,\s*source_dc\s*,\s*dest_dc\s*,\s*source_site\s*,\s*dest_site\s*,\s*naming_context\s*,\s*status_code\s*,\s*error_message\s*,\s*last_success_time\s*,\s*last_attempt_time\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?\s+AND\s+collected_at\s*=\s*\(\s*SELECT\s+(?:MAX\s*\(\s*collected_at\s*\)|TOP\s+1\s+collected_at)\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?\s+AND\s+collected_at\s*>=\s*\?/is,
+      match: /SELECT\s+collected_at\s*,\s*source_dc\s*,\s*dest_dc\s*,\s*source_site\s*,\s*dest_site\s*,\s*naming_context\s*,\s*status_code\s*,\s*error_message\s*,\s*last_success_time\s*,\s*last_attempt_time\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?\s+AND\s+naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'\s*,\s*'META'\s*\)\s+AND\s+collected_at\s*>=\s*(?:UTC_TIMESTAMP\(\)\s*-\s*INTERVAL\s+30\s+MINUTE|DATEADD\s*\(\s*MINUTE\s*,\s*-30\s*,\s*SYSUTCDATETIME\(\)\s*\))\s+AND\s+collected_at\s*=\s*\(\s*SELECT\s+(?:MAX\s*\(\s*collected_at\s*\)|TOP\s+1\s+collected_at)\s+FROM\s+ad_replication_status\s+WHERE\s+agent_id\s*=\s*\?\s+AND\s+collected_at\s*>=\s*\?\s+AND\s+naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'\s*,\s*'META'\s*\)/is,
       onQuery: (sql, params) => {
         queryParams.push(...params);
         return { rows: entries };
@@ -255,6 +269,34 @@ test('report-detail: returns entries for the most recent collected_at (capped at
   assert.equal(res.body.entries[0].destDc, 'dst0');
   assert.equal(queryParams.length, 3);
   assert.deepEqual(queryParams.slice(0, 2), ['dc01', 'dc01']);
+});
+
+// 2026-09-25 R93.11 — the 30-min freshness floor (UTC_TIMESTAMP() - 30 MINUTE
+// on MySQL, DATEADD(MINUTE, -30, SYSUTCDATETIME()) on MSSQL) means an agent
+// whose latest snapshot is older than 30 minutes returns an empty payload
+// instead of cached stale data. The mock here uses an empty rows array
+// (the SQL filter would naturally drop any old row, but the mock bypasses
+// SQL — so we synthesize the empty response at the mock level). The
+// service is expected to translate the empty set to
+// `{ agentId, collectedAt: null, entries: [] }`.
+test('report-detail: returns empty payload when latest snapshot is outside the 30-min window', async () => {
+  const db = buildMockDb([
+    {
+      match: /SELECT\s+collected_at\s*,\s*source_dc\s*,\s*dest_dc[\s\S]*?FROM\s+ad_replication_status[\s\S]*?naming_context\s+NOT\s+IN\s*\(\s*'__dc_summary__'\s*,\s*'META'\s*\)[\s\S]*?collected_at\s*>=\s*(?:UTC_TIMESTAMP\(\)\s*-\s*INTERVAL\s+30\s+MINUTE|DATEADD\s*\(\s*MINUTE\s*,\s*-30\s*,\s*SYSUTCDATETIME\(\)\s*\))/is,
+      rows: []
+    }
+  ]).standard();
+  _setDbForTest(db);
+
+  const res = await supertest(buildApp())
+    .get('/api/admin/heartbeat-report/agents/dc01/report-detail')
+    .set('Authorization', `Bearer ${adminToken()}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.agentId, 'dc01');
+  assert.equal(res.body.collectedAt, null,
+    'collectedAt must be null when the latest in-window snapshot is missing');
+  assert.deepEqual(res.body.entries, [],
+    'entries must be empty when the latest in-window snapshot is missing');
 });
 
 test('GET /api/admin/heartbeat-report/agents: 401 without token', async () => {

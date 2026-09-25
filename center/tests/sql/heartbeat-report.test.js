@@ -313,6 +313,117 @@ test('db.sql.heartbeat.upsert preserves report_requested_at when param is null',
   }
 });
 
+// 2026-09-25 R93.11 — latestReportEntries MUST exclude the synthetic
+// META / __dc_summary__ rows the collector emits when AD module
+// enumeration fails (`source_dc='*' dest_dc='*' naming_context='META'`)
+// and partner-port rows. Without this filter the admin's
+// "agent report detail" modal shows a stale wildcard row alongside
+// real link data, and operators reported "依然会有很久以前的数据"
+// on KDLFLOFADSRV2. Mirror the matrix /all contract.
+test('db.sql.heartbeat latestReportEntries excludes META / __dc_summary__ rows', async (t) => {
+  const conn = await openTestConnection(t);
+  if (!conn) return;
+
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `__t_hb_filter_${suffix}`;
+  const recentAt = new Date(Math.floor((Date.now() - 5 * 60 * 1000) / 1000) * 1000);
+  const fmtUtc = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+           `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  };
+  try {
+    // Seed: 2 real link rows + 1 META wildcard + 1 __dc_summary__ row,
+    // all at the SAME recent collected_at so the latest-snapshot
+    // subquery picks up the whole batch together.
+    await conn.query(
+      `INSERT INTO ad_replication_status
+         (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context,
+          last_success_time, last_attempt_time, status_code, error_message)
+       VALUES
+         (?, ?, 'real-src-A', 'real-dst-A', NULL, NULL, 'DC=contoso,DC=com', NULL, NULL, 0, NULL),
+         (?, ?, 'real-src-B', 'real-dst-B', NULL, NULL, 'CN=Config', NULL, NULL, 0, NULL),
+         (?, ?, '*', '*', NULL, NULL, 'META', NULL, NULL, -1, 'stale META wildcard'),
+         (?, ?, agent_id, 'peer-dc', NULL, NULL, '__dc_summary__', NULL, NULL, 0, NULL)`,
+      [fmtUtc(recentAt), agentId,
+       fmtUtc(recentAt), agentId,
+       fmtUtc(recentAt), agentId,
+       fmtUtc(recentAt), agentId]
+    );
+
+    const since = new Date(Date.now() - 24 * 3600 * 1000);
+    const sql = sqlRegistry.latestReportEntries(agentId, since.toISOString(), 100);
+    const [rows] = await conn.query(sql, [agentId, agentId, since]);
+
+    // Only the 2 real link rows should survive — META + __dc_summary__
+    // are both filtered.
+    assert.equal(rows.length, 2,
+      `expected 2 real link rows, got ${rows.length} (META/__dc_summary__ must be excluded)`);
+    const namingContexts = rows.map((r) => r.naming_context).sort();
+    assert.deepEqual(namingContexts, ['CN=Config', 'DC=contoso,DC=com']);
+    assert.ok(!rows.some((r) => r.naming_context === 'META'),
+      'META wildcard row must be filtered out');
+    assert.ok(!rows.some((r) => r.naming_context === '__dc_summary__'),
+      '__dc_summary__ row must be filtered out');
+    assert.ok(!rows.some((r) => r.source_dc === '*' && r.dest_dc === '*'),
+      'star/wildcard source_dc/dest_dc rows must be filtered out');
+  } finally {
+    await conn.execute('DELETE FROM ad_replication_status WHERE agent_id = ?', [agentId]).catch(() => {});
+    await conn.end();
+  }
+});
+
+// 2026-09-25 R93.11 — latestReportEntries MUST apply a 30-minute freshness
+// floor (same as matrix /all). Without this gate, an agent that stops
+// reporting keeps returning its last cached snapshot for as long as the
+// history row sits in ad_replication_status — operators complained
+// "依然会有很久以前的数据" with the META wildcard alongside. The 24h
+// `since` arg is a defense-in-depth lower bound; the 30-min UTC clock
+// gate is the real enforcement.
+test('db.sql.heartbeat latestReportEntries drops snapshots older than 30 minutes', async (t) => {
+  const conn = await openTestConnection(t);
+  if (!conn) return;
+
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const agentId = `__t_hb_stale_${suffix}`;
+  // Two snapshots:
+  //   - one at 90 minutes ago (outside the 30-min floor, real link)
+  //   - one at 2 minutes ago (inside the 30-min floor, real link)
+  // The 90-min row must be dropped even though it's the only snapshot
+  // the agent ever produced.
+  const recentAt = new Date(Math.floor((Date.now() - 2 * 60 * 1000) / 1000) * 1000);
+  const staleAt  = new Date(Math.floor((Date.now() - 90 * 60 * 1000) / 1000) * 1000);
+  const fmtUtc = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+           `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  };
+  try {
+    await conn.query(
+      `INSERT INTO ad_replication_status
+         (collected_at, agent_id, source_dc, dest_dc, source_site, dest_site, naming_context,
+          last_success_time, last_attempt_time, status_code, error_message)
+       VALUES
+         (?, ?, 'recent-src', 'recent-dst', NULL, NULL, 'DC=contoso,DC=com', NULL, NULL, 0, NULL),
+         (?, ?, 'stale-src', 'stale-dst', NULL, NULL, 'DC=contoso,DC=com', NULL, NULL, 0, NULL)`,
+      [fmtUtc(recentAt), agentId,
+       fmtUtc(staleAt),  agentId]
+    );
+
+    const since = new Date(Date.now() - 24 * 3600 * 1000);
+    const sql = sqlRegistry.latestReportEntries(agentId, since.toISOString(), 100);
+    const [rows] = await conn.query(sql, [agentId, agentId, since]);
+
+    assert.equal(rows.length, 1,
+      `expected only the in-window row, got ${rows.length}`);
+    assert.equal(rows[0].source_dc, 'recent-src');
+    assert.equal(rows[0].dest_dc, 'recent-dst');
+  } finally {
+    await conn.execute('DELETE FROM ad_replication_status WHERE agent_id = ?', [agentId]).catch(() => {});
+    await conn.end();
+  }
+});
+
 test('db.sql.heartbeat latestReportEntries returns only the latest snapshot and caps it at 100', async (t) => {
   const conn = await openTestConnection(t);
   if (!conn) return;
