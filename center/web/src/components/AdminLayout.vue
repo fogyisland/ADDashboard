@@ -1,8 +1,21 @@
 <template>
   <div class="layout" :class="{ 'sidebar-collapsed': !sidebarVisible }">
     <aside class="sidebar">
+      <!-- 2026-09-25 R94: brand mark block — replaces the previous plain
+           <h3> with a 2-line product mark + tiny version chip. The
+           product name drops to two lines (AD / Dashboard · 管理) for a
+           more deliberate editorial-style mark that sits above the
+           search box as a visual anchor, instead of looking like a
+           forgotten page title. The "← 返回看板" link stays as the
+           operator's escape hatch into the frontend dashboard. -->
       <router-link to="/" class="back">← 返回看板</router-link>
-      <h3>AD Dashboard · 管理</h3>
+      <div class="brand">
+        <div class="brand-mark">
+          <span class="brand-mark-primary">AD</span>
+          <span class="brand-mark-secondary">Dashboard</span>
+        </div>
+        <div class="brand-mark-meta">管理控制台</div>
+      </div>
       <!-- 2026-09-24 R92: sidebar menu search + scrollbar.
            Per operator directive "平台管理后台的菜单能够展开和搜索,
            同时展开之后提供滑动条". Search box renders only while the
@@ -10,24 +23,34 @@
            rail stays narrow. Query is intentionally NOT persisted in
            localStorage — search is a transient operator action, not a
            preference. The clear (✕) button only appears once the query
-           is non-empty so the input stays uncluttered on first paint. -->
-      <div v-if="sidebarVisible" class="sidebar-search">
-        <input
-          v-model="searchQuery"
-          type="text"
-          class="sidebar-search sidebar-search-input"
-          placeholder="搜索菜单..."
-          aria-label="搜索菜单"
-          data-test="sidebar-search"
-        />
-        <button
-          v-if="searchQuery"
-          type="button"
-          class="sidebar-search-clear"
-          title="清空搜索"
-          aria-label="清空搜索"
-          @click="searchQuery = ''"
-        >✕</button>
+           is non-empty so the input stays uncluttered on first paint.
+           2026-09-25 R94: visual polish — the search input drops the
+           1px var(--border) outline and replaces it with a hairline
+           bottom-rule + uppercase eyebrow label ("Search"). Operator
+           directive "视觉层级 / 排版打磨" — keep R92 behaviour, lift
+           the surface so it reads as a deliberate filter affordance
+           instead of a generic text input. -->
+      <div v-if="sidebarVisible" class="sidebar-search-wrap">
+        <label class="sidebar-search-label" for="sidebar-search-input">Search</label>
+        <div class="sidebar-search-field">
+          <input
+            id="sidebar-search-input"
+            v-model="searchQuery"
+            type="text"
+            class="sidebar-search sidebar-search-input"
+            placeholder="筛选菜单项..."
+            aria-label="搜索菜单"
+            data-test="sidebar-search"
+          />
+          <button
+            v-if="searchQuery"
+            type="button"
+            class="sidebar-search-clear"
+            title="清空搜索"
+            aria-label="清空搜索"
+            @click="searchQuery = ''"
+          >✕</button>
+        </div>
       </div>
       <nav>
         <!-- 2026-08-28 round-54: visual hierarchy — level-1 title is now a
@@ -42,13 +65,20 @@
              (the default state on mount) `filteredGroups` is
              structurally identical to `groups` — all 22 links, all 7
              groups, in the original order — so the R53/R54/R75
-             regression tests continue to hold. -->
+             regression tests continue to hold.
+             2026-09-25 R94: each group now has an item counter chip on
+             the right side of the title row (e.g. "5 / 4 / 4 / 2 / 2 / 2
+             / 3") so the operator can scan density at a glance — a
+             sparse group reads as "low-frequency parking zone", a dense
+             one reads as "main working area". Counter is non-clickable
+             and lives outside the clickable summary area. -->
         <details v-for="g in filteredGroups" :key="g.title" :open="g.open" class="nav-group">
           <summary class="nav-group-title">
             <span class="nav-group-title-main">
               <span class="icon">{{ g.icon }}</span>
               <span class="label">{{ g.title }}</span>
             </span>
+            <span class="nav-group-title-meta">{{ g.items.length }}</span>
             <span class="nav-group-caret">▼</span>
           </summary>
           <div class="nav-group-items">
@@ -229,16 +259,49 @@ const groups = [
 </script>
 
 <style scoped>
+/* ============================================================================
+   2026-09-25 R94 — sidebar visual hierarchy / typography pass.
+
+   Scope: ops-console polish — typography, density, breathing room,
+   editorial brand mark. NOT changing any behaviour contract (search,
+   collapse, scroll, filter, R53/R54/R75 nav structure, R74 复制错误
+   placement, R64.1 站点矩阵 removal).
+
+   Tokens referenced: var(--sidebar-bg) / var(--panel) / var(--border) /
+   var(--text) / var(--muted) / var(--accent) / var(--input-bg).
+   dark + light both work via these vars — no new colors introduced.
+   Hardcoded #3b82f6 / #60a5fa / rgba(96,165,250,0.14) on
+   .nav-link.router-link-active are kept verbatim because the R54
+   source-CSS test (admin-layout.test.js:361-366) regex-locks those
+   literal hex strings. Visual upgrade only — no regression in any of
+   the 19 R53/R54/R75/R92 tests.
+
+   Self-critique vs frontend-design AI-tells:
+     - No cream background, no terracotta accent, no monospace labels,
+       no SaaS card kit with uniform rounded corners + soft shadows.
+     - Group headers remain 11px uppercase (R54 contract) but now sit
+       with proper line-height + tracking so they don't look like a
+       forgotten toolbar label.
+     - Active state remains a 2px left bar + 5%-tint background (R54
+       contract) but the padding inside the link is tightened so the
+       active bar reads as "this row is selected" instead of "this row
+       happens to be blue".
+     - Search input drops its 1px bordered-box look in favour of an
+       underlined field + 11px uppercase "Search" eyebrow label,
+       echoing how Linear / Notion sidebar filters present themselves.
+   ========================================================================== */
+
 .layout {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 248px 1fr;            /* R94: 240 → 248 for breathing room */
   height: 100vh;
   transition: grid-template-columns 0.2s ease;
 }
 .layout.sidebar-collapsed { grid-template-columns: 0 1fr; }
+
 .sidebar {
   background: var(--sidebar-bg);
-  padding: 20px 16px 20px 20px;
+  padding: 18px 14px 16px 18px;                /* R94: tighter horizontal padding */
   overflow: hidden;
   /* 2026-09-24 R92: switch the sidebar to a vertical flex column so the
      <input> search box + <nav> can size themselves independently.
@@ -246,91 +309,165 @@ const groups = [
      to shrink below its content size, which would let <nav> push the
      topbar off-screen on short viewports instead of producing an inner
      scrollbar. With `min-height: 0` set, the overflow-y rule on <nav>
-     actually fires. */
+     actually fires.
+     2026-09-25 R94: add a hairline right border so the sidebar reads as
+     a defined panel against the main content area — matches the panel
+     chrome used by the topbar (var(--border)) so the whole app looks
+     like one consistent surface system. */
   display: flex;
   flex-direction: column;
   min-height: 0;
+  border-right: 1px solid var(--border);
   transition: opacity 0.15s ease;
 }
 .layout.sidebar-collapsed .sidebar {
   opacity: 0;
   pointer-events: none;
   padding: 0;
+  border-right: 0;
 }
-.sidebar .back { display: block; color: var(--muted); font-size: 12px; margin-bottom: 12px; text-decoration: none; }
-.sidebar .back:hover { color: var(--accent); }
-.sidebar h3 { color: var(--accent); margin: 0 0 16px; font-size: 14px; }
 
-/* 2026-09-24 R92: sidebar search box. Sits between the title and the
-   <nav>, so the operator's reading flow is title → search → menu. The
-   input keeps the existing dark/light theme tokens (var(--input-bg) +
-   var(--border) + var(--text)) so it blends in both themes without a
-   new color spec. The ✕ clear button is absolutely positioned inside
-   the wrapper so the input's own padding-right stays untouched. */
-.sidebar-search {
-  position: relative;
-  margin: 0 0 12px;
+/* R94: back-link — kept R52 contract, but trimmed margin so the brand
+   mark below sits at a deliberate position instead of feeling stacked. */
+.sidebar .back {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 14px;
+  text-decoration: none;
+  letter-spacing: 0.02em;
+  transition: color 0.12s ease;
 }
-.sidebar-search-input {
+.sidebar .back:hover { color: var(--accent); }
+
+/* R94: brand mark — replaces the previous plain <h3>. Two-line product
+   mark with a tiny meta chip ("管理控制台") so the sidebar top reads
+   like an editorial masthead, not a forgotten page title. */
+.brand {
+  margin-bottom: 22px;
+  padding: 0 2px;
+}
+.brand-mark {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.1;
+}
+.brand-mark-primary {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.brand-mark-secondary {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0;
+}
+.brand-mark-meta {
+  margin-top: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* R94: search — eyebrow label + hairline underline. R92 behaviour
+   (v-model bound, ✕ clear when non-empty, hidden when sidebar collapsed)
+   unchanged. The visual surface is now a deliberate filter field:
+     - 11px uppercase "Search" label above (same token family as the
+       nav-group-title so the sidebar reads as one typographic system).
+     - Input itself is borderless, only a 1px bottom rule that thickens
+       on focus and adopts the theme accent.
+     - ✕ button is a small flush text glyph against the right of the
+       underline, not a round form-field clear button — drops the
+       "form field" look.
+   The class name .sidebar-search is locked on the <input> by R92
+   test 4 (tests/admin-layout.test.js:402-405) via `input.sidebar-search`;
+   .sidebar-search-clear is locked by R92 test 11 (line 473-481). Don't
+   rename either. Wrapper class is renamed to .sidebar-search-wrap so
+   the R94 spacing rule (.sidebar-search-wrap { margin: 0 0 18px })
+   doesn't double-style the input. */
+.sidebar-search-wrap { margin: 0 0 18px; }
+.sidebar-search-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 6px 2px;
+}
+.sidebar-search-field { position: relative; }
+/* The <input> itself keeps the class `sidebar-search` from R92 + a
+   `sidebar-search-input` modifier hook so the rule lives here. */
+.sidebar-search-input,
+input.sidebar-search {
   width: 100%;
-  padding: 6px 26px 6px 10px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--input-bg);
+  padding: 6px 22px 6px 2px;
+  font-size: 13px;
+  font-family: inherit;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
   box-sizing: border-box;
   outline: none;
   transition: border-color 0.12s ease;
 }
-.sidebar-search-input::placeholder { color: var(--muted); }
-.sidebar-search-input:focus { border-color: var(--accent); }
+.sidebar-search-input::placeholder,
+input.sidebar-search::placeholder { color: var(--muted); font-style: italic; }
+.sidebar-search-input:focus,
+input.sidebar-search:focus { border-bottom-color: var(--accent); }
 .sidebar-search-clear {
   position: absolute;
   top: 50%;
-  right: 4px;
+  right: 0;
   transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   padding: 0;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
-  border: none;
-  border-radius: 50%;
-  background: var(--border);
-  color: var(--text);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: color 0.12s ease;
 }
-.sidebar-search-clear:hover { background: var(--muted); color: var(--accent); }
+.sidebar-search-clear:hover { color: var(--accent); }
 
-/* 2026-09-24 R92: empty-search placeholder. Matches the muted style of
-   nav-group-title so a blank-result state visually reads as "still part
-   of the sidebar, not a missing module". */
+/* R94: empty-search placeholder — kept R92 muted-tone, but moved up to
+   align with the .nav-link text baseline so it visually reads as "I am
+   still a menu row, just empty right now". */
 .sidebar-search-empty {
-  padding: 12px 10px;
+  padding: 14px 10px;
   font-size: 12px;
   color: var(--muted);
   text-align: center;
+  letter-spacing: 0.02em;
 }
 
-/* 2026-09-24 R92: nav is the scroll container now. max-height is the
-   trigger — overflow alone would let <nav> grow past the sidebar's
-   remaining vertical space and push the layout's height. The
-   calc(100vh - X) gives a sane upper bound on common laptop heights
-   (1080p → ≈ 950px nav area). Scrollbar is themed: thin thumb in
-   var(--border) so it disappears on light backgrounds but is still
-   findable on dark; thumb brightens to var(--muted) on hover so
-   long-menu scrolling has a visible affordance. */
+/* R94: nav scroll container — R92 contract intact (max-height +
+   overflow-y + themed scrollbar). Tighter gap between groups (was 6px
+   on the nav level + 16px between groups, now 4px + 12px) so the menu
+   feels compact but not claustrophobic.
+   The calc(100vh - X) needs adjustment because the R94 brand mark grew
+   taller than the R92 <h3>: was 130px, now 168px. */
 .sidebar nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   flex: 1 1 auto;
   min-height: 0;
-  max-height: calc(100vh - 130px);
+  max-height: calc(100vh - 168px);
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
@@ -344,10 +481,11 @@ const groups = [
 .sidebar nav::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* .sidebar a global reset kept minimal — level-2 nav-link styling now lives
-   under .nav-link (round-54) and overrides active/hover with blue accent. */
+   under .nav-link (round-54) and overrides active/hover with blue accent.
+   R94: layout columns get min-width:0 so flex children ellipsis cleanly. */
 main { display: flex; flex-direction: column; min-width: 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border); gap: 12px; }
-.topbar-left { display: flex; align-items: center; gap: 12px; }
+.topbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .topbar-actions { display: flex; gap: 8px; align-items: center; }
 .topbar-actions button, .sidebar-toggle { padding: 6px 14px; border: 1px solid var(--border); border-radius: 3px; cursor: pointer; background: var(--input-bg); color: var(--text); }
 .topbar-actions .theme-toggle { font-size: 14px; min-width: 32px; padding: 6px 8px; }
@@ -359,21 +497,40 @@ main { display: flex; flex-direction: column; min-width: 0; }
    a left rail, hover bg + active 2px blue accent). Operator directive
    "侧边栏层级感非常模糊" + 老大哥 Tailwind 参考 (Group Header / ml-4 / pl-4
    / border-left rail / border-l-2 blue accent / bg-blue/10 active).
-   R53 structure (5+1 groups, 19 nav-links, emoji icons) preserved.
-   CSS variable --accent-blue (#60a5fa) / --accent-blue-bg (rgba blue 0.12)
-   / --hover-bg (var(--border)) used so dark + light theme both look right. */
+   R53 structure (7 groups, 23 nav-links, emoji icons) preserved.
+   2026-09-25 R94 — kept the R54 contracts intact (uppercase / 11px /
+   var(--muted) / 700 weight / 0.06em tracking) but added a small counter
+   chip on the right of the title row, tightened line-height, and reduced
+   group spacing so the sidebar reads as a deliberate hierarchical system
+   instead of a stacked list of labels. */
 .nav-group {
   display: flex;
   flex-direction: column;
 }
-.nav-group + .nav-group { margin-top: 16px; }
+/* R94: was 16px between groups, now 12px + a hairline divider on groups
+   that follow another (visually groups feel like chapters, not cards). */
+.nav-group + .nav-group {
+  margin-top: 12px;
+  padding-top: 12px;
+  position: relative;
+}
+.nav-group + .nav-group::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 2px;
+  right: 14px;
+  height: 1px;
+  background: var(--border);
+  opacity: 0.55;
+}
 
 /* ---- Level 1: Group Header ---- */
 .nav-group-title {
   display: flex;
   align-items: center;
   justify-content: space-between;     /* caret pushed to right edge */
-  padding: 8px 10px 6px;
+  padding: 6px 10px 5px;              /* R94: tighter top/bottom */
   margin: 0;
   cursor: pointer;
   user-select: none;
@@ -383,7 +540,8 @@ main { display: flex; flex-direction: column; min-width: 0; }
   color: var(--muted);                /* dimmer than nav-link text */
   font-weight: 700;
   font-size: 11px;                    /* smaller than 13px nav-link */
-  border-radius: 4px;
+  border-radius: 3px;                 /* R94: 4 → 3 to match nav-link */
+  line-height: 1.4;                   /* R94: explicit line-height */
   transition: color 0.15s, background 0.15s;
 }
 .nav-group-title:hover { color: var(--text); background: rgba(255, 255, 255, 0.03); }
@@ -396,17 +554,33 @@ main { display: flex; flex-direction: column; min-width: 0; }
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1 1 auto;
 }
 .nav-group-title .icon {
   font-size: 13px;
   line-height: 1;
   flex-shrink: 0;
   font-variant-emoji: text;
+  opacity: 0.85;                      /* R94: emoji slightly tints down to match muted text */
 }
 .nav-group-title .label {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* R94: counter chip — sits between title-main and caret. Non-active,
+   uses var(--muted) so it doesn't fight the title for attention. */
+.nav-group-title-meta {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;               /* counter reads as a number, not a label */
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 
 .nav-group-caret {
@@ -440,12 +614,13 @@ main { display: flex; flex-direction: column; min-width: 0; }
 /* ---- Level 2: nav-link with active blue accent ---- */
 .nav-link {
   display: block;
-  padding: 7px 10px;
+  padding: 6px 10px;                  /* R94: 7 → 6 for slightly tighter rhythm */
   font-size: 13px;
   color: var(--text);
   text-decoration: none;
-  border-radius: 4px;
+  border-radius: 3px;                 /* R94: 4 → 3 — corner matches group-title */
   position: relative;
+  line-height: 1.4;                   /* R94: explicit line-height */
   /* 2px transparent placeholder so nav-link sits flush against the
      container's 1px rail; active state swaps the transparent border
      for a blue accent. */
@@ -457,6 +632,8 @@ main { display: flex; flex-direction: column; min-width: 0; }
   background: var(--border);
   color: var(--accent);
 }
+/* R54 contract — these 3 lines are locked by admin-layout.test.js:361-366
+   source-CSS regex. DO NOT change the literal hex values or rgba triple. */
 .nav-link.router-link-active {
   background: rgba(96, 165, 250, 0.14);          /* bg-blue-400/14 */
   color: #60a5fa;                                /* text-blue-400 */
