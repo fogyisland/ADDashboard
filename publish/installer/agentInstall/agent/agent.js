@@ -296,12 +296,32 @@ async function runAdRuntime({ config, logger }) {
   // `refreshPortList()` and `runHealth` respectively.
   let cachedPortList = [];
   let latestPortResults = [];
+
+  // Center-configured heartbeat / report ports. Refreshed every 5min alongside
+  // the existing config refresh; null = no override (use centerUrl verbatim).
+  //
+  // 2026-09-25 R93.3 — hoisted ABOVE `refreshPortList()` so the initial
+  // `await refreshPortList()` on first boot reads `cachedPorts.heartbeatPort`
+  // without tripping a `let` TDZ ReferenceError. (The previous location at
+  // the bottom of this block put the declaration *after* the first call —
+  // fine when refreshPortList didn't reference the variable, but R93.3 adds
+  // `port: cachedPorts.heartbeatPort` so the declaration order matters.)
+  let cachedPorts = { heartbeatPort: null, reportPort: null };
+
   async function refreshPortList() {
     // 2026-09-22 S82 — stamp (hostname, agentId) so the centre accepts
     // GET /api/agent/ports after the 60s restart-grace window.
+    // 2026-09-25 R93.3 — pass `cachedPorts.heartbeatPort` so the request lands
+    // on the heartbeat app (8081) where /api/agent/ports is mounted. The web
+    // app (8080) returns 404 HTML for this path. `cachedPorts.heartbeatPort`
+    // is set by `refreshAgentPorts()` below from /config.json; if it has not
+    // been populated yet (first boot before the first config refresh) the
+    // port falls through to null and fetchPortList uses centerUrl as-is —
+    // same legacy behavior as before this fix, so a stale first tick still
+    // works (just gets 404 → cachedPortList = [] until the next tick).
     cachedPortList = await fetchPortList(
       config.centerUrl, config.agentToken,
-      { hostname: config.hostname || osInfo.hostname, agentId: config.agentId }
+      { hostname: config.hostname || osInfo.hostname, agentId: config.agentId, port: cachedPorts.heartbeatPort }
     );
   }
   // Initial refresh on startup, before any heartbeat fires.
@@ -309,8 +329,11 @@ async function runAdRuntime({ config, logger }) {
 
   // Center-configured heartbeat / report ports. Refreshed every 5min alongside
   // the existing config refresh; null = no override (use centerUrl verbatim).
-  let cachedPorts = { heartbeatPort: null, reportPort: null };
-
+  // R93.3 — declaration hoisted above refreshPortList() (see comment on the
+  // earlier `let cachedPorts = …`). The remaining `refreshAgentPorts()` /
+  // `refreshAgentPortsWithRecovery()` setters below mutate the SAME object
+  // because `let` hoists the binding (not the value) and the early
+  // declaration already initialized `{ heartbeatPort: null, reportPort: null }`.
   let consecutivePortFailures = 0;
 
   async function refreshAgentPorts() {

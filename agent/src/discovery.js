@@ -46,12 +46,64 @@ export function runDiscovery({ powerShellPath, psDiscoveryScriptPath, logger }) 
   });
 }
 
+// 2026-09-25 R93.3 — collect-discovery.ps1 emits the DC snapshot in
+// PascalCase (Name, SiteHint, OsVersion, WhenCreated, IsPdc, IsGc, …)
+// because PowerShell's [PSCustomObject]@{...} round-trips through
+// ConvertTo-Json -Compress with the original property names. The
+// centre's route (center/src/routes/agent.js:379) reads
+// `req.body.dc?.name` (camelCase) and the service
+// (center/src/services/discovery.js:upsertDiscoveredDc) reads
+// `dc.name / dc.siteHint / dc.osVersion / dc.whenCreated / dc.isPdc /
+// dc.isGc / dc.isRidMaster / dc.isSchemaMaster / dc.isDomainNamingMaster
+// / dc.isInfrastructureMaster`. Until R93.3 the agent forwarded the PS
+// output verbatim, so centre validation returned 400
+// `missing agentId/collectedAt/dc.name` on every discover post from
+// KDLFLOFADSRV2. Centralize the mapping here at the agent boundary so
+// future callers of postDiscovery() can pass either shape and get the
+// same camelCase wire contract.
+//
+// The mapping accepts BOTH PascalCase (PS output) AND camelCase (legacy
+// callers + the existing discovery.test.js fixture which uses camelCase
+// to assert round-trip shape). Same fallback convention as
+// reporter.js:toCamelEntry for replication entries — PascalCase first
+// because that's the dominant shape coming from PowerShell, camelCase
+// as the fallback so test stubs + future camelCase callers don't get
+// silently null'd. `null` / `undefined` inputs return null so the post
+// short-circuits instead of forwarding an empty dc to the centre.
+function mapDiscoveryDcToCamel(snap) {
+  if (!snap || typeof snap !== 'object') return null;
+  return {
+    name:                    snap.Name                   ?? snap.name                   ?? null,
+    siteHint:                snap.SiteHint               ?? snap.siteHint               ?? null,
+    osVersion:               snap.OsVersion              ?? snap.osVersion              ?? null,
+    whenCreated:             snap.WhenCreated            ?? snap.whenCreated            ?? null,
+    isPdc:                   Boolean(snap.IsPdc          ?? snap.isPdc),
+    isGc:                    Boolean(snap.IsGc           ?? snap.isGc),
+    isRidMaster:             Boolean(snap.IsRidMaster    ?? snap.isRidMaster),
+    isSchemaMaster:          Boolean(snap.IsSchemaMaster ?? snap.isSchemaMaster),
+    isDomainNamingMaster:    Boolean(snap.IsDomainNamingMaster ?? snap.isDomainNamingMaster),
+    isInfrastructureMaster:  Boolean(snap.IsInfrastructureMaster ?? snap.isInfrastructureMaster)
+  };
+}
+
 export function postDiscovery({ centerUrl, agentToken, port, payload, hostname, agentId }) {
+  // R93.3 — apply the PascalCase → camelCase mapping at this boundary so
+  // `payload.dc` always arrives at the centre with the keys its validation
+  // + service code expect. The caller (agent.js:startDiscoveryScheduler run)
+  // forwards the raw PS output as `payload.dc`; we rewrite it here. The
+  // surrounding payload (agentId, collectedAt) is already camelCase by
+  // convention and is left as-is.
+  const mappedDc = payload && payload.dc ? mapDiscoveryDcToCamel(payload.dc) : null;
+  const body = {
+    source: 'collect-discovery',
+    ...payload,
+    ...(mappedDc ? { dc: mappedDc } : {})
+  };
   return signedRequestJson({
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/discover`,
     headers: {},
-    body: { source: 'collect-discovery', ...payload },
+    body,
     timeoutMs: 30000,
     agentToken,
     hostname: String(hostname || ''),

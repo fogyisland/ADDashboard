@@ -37,6 +37,115 @@ test('postDiscovery POSTs JSON to /api/agent/discover with X-Agent-Token', async
   }
 });
 
+// 2026-09-25 R93.3 — collect-discovery.ps1 emits the DC snapshot in
+// PascalCase (Name, SiteHint, OsVersion, WhenCreated, IsPdc, …) because
+// PowerShell's [PSCustomObject]@{...} round-trips through
+// ConvertTo-Json -Compress with the original property names. The
+// centre's route (center/src/routes/agent.js:379) reads
+// `req.body.dc?.name` (camelCase) and validates required fields. Until
+// R93.3 the agent forwarded the PS output verbatim, so centre
+// validation returned 400 `missing agentId/collectedAt/dc.name` on
+// every discover post from KDLFLOFADSRV2.
+//
+// postDiscovery() now applies mapDiscoveryDcToCamel() at the agent
+// boundary so the wire always carries camelCase regardless of caller
+// shape. Lock the PascalCase → camelCase conversion in as a contract
+// so a future edit doesn't silently regress to forwarding PS output
+// verbatim. The dual-shape pattern (PascalCase ?? camelCase) is shared
+// with reporter.js:toCamelEntry for replication entries.
+test('postDiscovery converts PascalCase DC snapshot to camelCase wire (R93.3)', async () => {
+  let receivedReq = null;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      receivedReq = { method: req.method, url: req.url, headers: req.headers, body };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  await new Promise(r => server.listen(0, r));
+  const port = server.address().port;
+  try {
+    // Simulate exactly what collect-discovery.ps1 emits
+    const psDc = {
+      Name: 'DC01',
+      SiteHint: 'Default-First-Site-Name',
+      OsVersion: 'Windows Server 2019 Datacenter',
+      WhenCreated: '2020-01-15T08:00:00.000Z',
+      IsPdc: true,
+      IsGc: true,
+      IsRidMaster: false,
+      IsSchemaMaster: false,
+      IsDomainNamingMaster: false,
+      IsInfrastructureMaster: false
+    };
+    const result = await postDiscovery({
+      centerUrl: `http://127.0.0.1:${port}`,
+      agentToken: 'tok',
+      payload: { agentId: 'A1', collectedAt: '2026-09-25T00:00:00.000Z', dc: psDc }
+    });
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(receivedReq.body);
+    assert.equal(parsed.dc.name, 'DC01', 'PascalCase Name must map to camelCase name');
+    assert.equal(parsed.dc.siteHint, 'Default-First-Site-Name');
+    assert.equal(parsed.dc.osVersion, 'Windows Server 2019 Datacenter');
+    assert.equal(parsed.dc.whenCreated, '2020-01-15T08:00:00.000Z');
+    assert.equal(parsed.dc.isPdc, true);
+    assert.equal(parsed.dc.isGc, true);
+    assert.equal(parsed.dc.isRidMaster, false);
+    assert.equal(parsed.dc.isSchemaMaster, false);
+    assert.equal(parsed.dc.isDomainNamingMaster, false);
+    assert.equal(parsed.dc.isInfrastructureMaster, false);
+    // No PascalCase keys leaked through
+    assert.equal(parsed.dc.Name, undefined);
+    assert.equal(parsed.dc.SiteHint, undefined);
+    assert.equal(parsed.dc.IsPdc, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+// 2026-09-25 R93.3 — companion regression for the PascalCase test:
+// the mapper must accept BOTH shapes (legacy camelCase callers + the
+// first fixture test above must still pass). A future edit that drops
+// the camelCase fallback would regress the first test in this file
+// and silently null out half the dc payload.
+test('postDiscovery preserves camelCase dc payload when already camelCase (R93.3 dual-shape)', async () => {
+  let receivedReq = null;
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      receivedReq = { body };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+  });
+  await new Promise(r => server.listen(0, r));
+  const port = server.address().port;
+  try {
+    await postDiscovery({
+      centerUrl: `http://127.0.0.1:${port}`,
+      agentToken: 'tok',
+      payload: { agentId: 'A1', collectedAt: '2026-09-25T00:00:00.000Z',
+                 dc: { name: 'CAMEL-DC', siteHint: 'CamelSite', osVersion: 'Win2022',
+                       whenCreated: '2024-06-01T00:00:00.000Z',
+                       isPdc: true, isGc: false, isRidMaster: true, isSchemaMaster: false,
+                       isDomainNamingMaster: false, isInfrastructureMaster: true } }
+    });
+    const parsed = JSON.parse(receivedReq.body);
+    assert.equal(parsed.dc.name, 'CAMEL-DC');
+    assert.equal(parsed.dc.siteHint, 'CamelSite');
+    assert.equal(parsed.dc.isPdc, true);
+    assert.equal(parsed.dc.isGc, false);
+    assert.equal(parsed.dc.isRidMaster, true);
+    assert.equal(parsed.dc.isInfrastructureMaster, true);
+  } finally {
+    server.close();
+  }
+});
+
 test('runDiscovery parses PS stdout JSON', async () => {
   const fakeScript = 'C:/tmp/fake.ps1'; // not invoked; we mock by testing parser indirectly
   // We can't easily mock spawnSync without restructuring; instead test

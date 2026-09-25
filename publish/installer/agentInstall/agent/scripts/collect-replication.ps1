@@ -157,9 +157,17 @@ function BuildReplicationHistoryRows {
     [AllowNull()]
     [string]$Site = $null,
 
-    [Parameter(Mandatory = $true)]
+    # R93.3 — same Mandatory + AllowNull contradiction as -Site (see comment
+    # above). The caller (line 588 in Get-ReplicationSnapshot) casts the
+    # partner's NamingContext to [string], which produces "" when the
+    # partner row has no NC. PS rejects "" with "无法将参数绑定到参数
+    # 'RealNamingContext'，因为该参数为空字符串", killing every history
+    # row generation on KDLFLOFADSRV2 even though R93.2 had cleared -Site.
+    # Drop Mandatory = $true; AllowNull alone is the correct shape — PS
+    # accepts $null OR "" without complaint and we coalesce to "" at the
+    # use site ($hashInput interpolation already handles "" fine).
     [AllowNull()]
-    [string]$RealNamingContext,
+    [string]$RealNamingContext = $null,
 
     [Parameter()]
     [AllowNull()]
