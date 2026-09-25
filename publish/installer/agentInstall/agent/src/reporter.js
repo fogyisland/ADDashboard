@@ -7,10 +7,57 @@ import { URL } from 'node:url';
 // (hostname, agentId, body) don't agree with the token. Defense-in-depth
 // against token theft + replay from a different hostname.
 import { signRequest } from './lib/agent-identity.js';
+// 2026-09-25 R93 — diagnostic logging for HTTP path. The agent has had
+// `logLevel` in appsettings.json (config.js DEFAULTS) for ages, but the
+// reporter module was completely silent — `info` and `debug` lines never
+// landed, so operators hitting "401 invalid agent token" / "304 not
+// modified" / connection errors had no breadcrumb to follow. Each helper
+// below logs at the level that fits its purpose:
+//   - requestJson:  info on every call (method+url+timeoutMs), debug on
+//                   response (status + ms), error on transport failure or
+//                   non-2xx (status + truncated body)
+//   - signedRequestJson: debug on stamp (token/sig prefix only — never
+//                   the body — so logs don't leak payload)
+//   - postHeartbeat / postReport / fetchConfig: info on outcome (ok + ms)
+// Pin logLevel from appsettings.json so the operator can flip to 'debug'
+// and see full HTTP traffic without restarting anything else. NSSM
+// captures stderr to its log file so nothing disappears on service stop.
+import pino from 'pino';
+
+// Single pino instance for the whole reporter module — `pino` is happy to
+// be reused, and creating one per call would waste a fd + a sync dest per
+// `requestJson`. Component tag lets operators filter by module in pino-pretty.
+//
+// Reporter is imported BEFORE agent.js reads appsettings.json (signRequest
+// needs to be wired into all the wrappers). The level starts at the pino
+// default 'info'; agent.js calls _refreshLogLevel(config.logLevel) right
+// after loadConfig + createLogger, so the operator's `debug` setting
+// kicks in before the first heartbeat fires.
+let log = pino({
+  level: 'info',
+  base: { component: 'reporter' },
+  timestamp: pino.stdTimeFunctions.isoTime,
+}, pino.destination({ dest: 2, sync: true }));
+
+export function _refreshLogLevel(level) {
+  // Replace the bound level on the existing pino instance — pino re-reads
+  // `level` per write so we don't need a new instance. Keep the same
+  // destination + base so the component tag + ISO timestamps stay put.
+  if (typeof level === 'string' && level.length > 0) {
+    log.level = level;
+  }
+}
 
 export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
+  const started = Date.now();
+  log.info({ method, url, timeoutMs, hasBody: body !== undefined && body !== null }, 'http request');
   return new Promise((resolve) => {
-    const u = new URL(url);
+    let u;
+    try { u = new URL(url); }
+    catch (e) {
+      log.error({ method, url, err: e.message }, 'http request: bad URL');
+      return resolve({ ok: false, status: 0, error: `bad url: ${e.message}` });
+    }
     const lib = u.protocol === 'https:' ? https : http;
     const req = lib.request({
       method, hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
@@ -20,6 +67,7 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', () => {
+        const ms = Date.now() - started;
         // I8: capture the ETag header (if any) on every response so callers
         // can round-trip it back as If-None-Match on the next request.
         // res.headers keys are lower-cased by Node's HTTP layer.
@@ -31,24 +79,94 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
         // so we report `data: null` and let the caller compare etag. Only
         // 4xx/5xx (and 3xx other than 304) are failures.
         if (res.statusCode === 304) {
+          log.debug({ method, url, status: 304, ms, etag }, 'http response: 304 not modified');
           return resolve({ ok: true, status: 304, data: null, etag });
         }
         // For 2xx, treat empty body as ok with null data; for non-2xx, return as failure.
         // Avoid swallowing 2xx-with-html as a transport failure.
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          if (!data) return resolve({ ok: true, status: res.statusCode, data: null, etag });
-          try { return resolve({ ok: true, status: res.statusCode, data: JSON.parse(data), etag }); }
-          catch (e) { return resolve({ ok: true, status: res.statusCode, data: null, etag, error: `non-json body: ${e.message}` }); }
+          if (!data) {
+            log.debug({ method, url, status: res.statusCode, ms, etag }, 'http response: 2xx empty body');
+            return resolve({ ok: true, status: res.statusCode, data: null, etag });
+          }
+          try {
+            const parsed = JSON.parse(data);
+            log.debug({ method, url, status: res.statusCode, ms, etag, bytes: data.length }, 'http response: 2xx');
+            return resolve({ ok: true, status: res.statusCode, data: parsed, etag });
+          }
+          catch (e) {
+            // 2xx but body isn't JSON — surface as success with an error
+            // annotation so the caller can decide what to do (requestJson
+            // never auto-fails on a non-JSON 2xx because some endpoints
+            // legitimately return text).
+            log.debug({ method, url, status: res.statusCode, ms, etag, err: e.message, bytes: data.length }, 'http response: 2xx non-json');
+            return resolve({ ok: true, status: res.statusCode, data: null, etag, error: `non-json body: ${e.message}` });
+          }
         }
+        // Non-2xx — log the first 500 chars of body so the operator can
+        // see WHY (auth, validation, 5xx) without unbounded log spam.
+        const snippet = String(data).slice(0, 500);
+        log.error({ method, url, status: res.statusCode, ms, body: snippet }, 'http response: non-2xx');
         try { resolve({ ok: false, status: res.statusCode, data: JSON.parse(data) }); }
         catch { resolve({ ok: false, status: res.statusCode, data }); }
       });
     });
-    req.on('error', err => resolve({ ok: false, status: 0, error: err.message }));
+    req.on('error', err => {
+      const ms = Date.now() - started;
+      log.error({ method, url, err: err.message, ms }, 'http request: transport error');
+      resolve({ ok: false, status: 0, error: err.message });
+    });
     req.on('timeout', () => { req.destroy(new Error('timeout')); });
     if (body) req.write(JSON.stringify(body));
     req.end();
   });
+}
+
+// 2026-09-22 S82 followup — `requestJson` above doesn't auto-stamp the
+// signature header. Every caller that talks to the centre MUST include an
+// X-Agent-Signature after the 60s restart-grace window, otherwise the
+// centre rejects with 401 'identity mismatch'. POST callers already stamp
+// it manually (postHeartbeat / postReport / package-manager flush), but
+// three GET paths were missing it:
+//   - port-config-fetcher.js fetchPortList (GET /api/agent/ports)
+//   - port-scanner.js     probeOnce     (GET /config.json)
+//   - package-manager.js  syncFromCenter (GET /api/agent/packages)
+// `signedRequestJson` wraps `requestJson` so callers only need to pass
+// the identity triple (agentToken, hostname, agentId) — the helper stamps
+// the signature header for them. Callers that already stamp manually
+// (postHeartbeat / postReport) keep using `requestJson` to avoid
+// double-stamping.
+export function signedRequestJson({
+  method, url, headers = {}, body, timeoutMs,
+  agentToken, hostname, agentId
+}) {
+  const stamped = { ...headers };
+  if (typeof agentToken === 'string' && agentToken.length > 0) {
+    stamped['X-Agent-Token'] = agentToken;
+    if (typeof hostname === 'string' && typeof agentId === 'string') {
+      stamped['X-Agent-Signature'] = signRequest({
+        hostname, agentId, body: body ?? null, token: agentToken
+      });
+      // X-Agent-Id lets the centre's middleware skip the body-first lookup
+      // when body is empty (mirror of the agent-side convention).
+      stamped['X-Agent-Id'] = agentId;
+    }
+  }
+  // Token/signature prefix only — never log the full token or body. The
+  // prefix is enough to correlate "this is the same request across logs"
+  // without leaking credentials into stderr (which NSSM captures).
+  log.debug({
+    method,
+    url,
+    tokenPrefix: typeof stamped['X-Agent-Token'] === 'string'
+      ? stamped['X-Agent-Token'].slice(0, 8)
+      : null,
+    sigPrefix: typeof stamped['X-Agent-Signature'] === 'string'
+      ? stamped['X-Agent-Signature'].slice(0, 8)
+      : null,
+    hasBody: body !== undefined && body !== null,
+  }, 'signed request');
+  return requestJson({ method, url, headers: stamped, body, timeoutMs });
 }
 
 // Build base URL: if `port` is truthy, strip trailing :digits from centerUrl
@@ -133,6 +251,9 @@ export function postHeartbeat({ centerUrl, agentToken, port, payload }) {
       'X-Agent-Signature': signRequest({ hostname, agentId, body: bodyWithSource, token: agentToken }),
     },
     body: bodyWithSource,
+  }).then((r) => {
+    log.info({ ok: r.ok, status: r.status, agentId, endpoint: 'heartbeat' }, 'heartbeat POST complete');
+    return r;
   });
 }
 
@@ -144,6 +265,7 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
     collectedAt: snapshot.CollectedAt ?? snapshot.collectedAt,
     data: Array.isArray(snapshot.Entries) ? snapshot.Entries.map(toCamelEntry) : []
   };
+  const started = Date.now();
   return requestJson({
     method: 'POST',
     url: `${baseUrl({ centerUrl, port })}/api/agent/report`,
@@ -152,6 +274,16 @@ export function postReport({ centerUrl, agentToken, port, snapshot }) {
       'X-Agent-Signature': signRequest({ hostname: agentId, agentId, body, token: agentToken }),
     },
     body,
+  }).then((r) => {
+    log.info({
+      ok: r.ok,
+      status: r.status,
+      agentId,
+      endpoint: 'report',
+      entryCount: body.data.length,
+      ms: Date.now() - started,
+    }, 'report POST complete');
+    return r;
   });
 }
 
@@ -177,5 +309,13 @@ export function fetchConfig({ centerUrl, agentToken, ifNoneMatch = null }) {
     method: 'GET',
     url: `${centerUrl}/config.json`,
     headers
+  }).then((r) => {
+    log.info({
+      ok: r.ok,
+      status: r.status,
+      endpoint: 'config',
+      notModified: r.status === 304,
+    }, 'config GET complete');
+    return r;
   });
 }

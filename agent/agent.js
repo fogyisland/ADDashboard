@@ -1,7 +1,7 @@
 import { loadConfig } from './src/config.js';
 import { createLogger } from './src/logger.js';
 import { runCollector } from './src/collector.js';
-import { postReport, postHeartbeat, fetchConfig, signedRequestJson } from './src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, signedRequestJson, _refreshLogLevel } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { runDiscovery, postDiscovery, startDiscoveryScheduler } from './src/discovery.js';
 import { runHealthChecks } from './src/healthcheck.js';
@@ -50,6 +50,10 @@ const defaultConfigPath = joinPath(__dirname, 'appsettings.json');
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || defaultConfigPath;
 const config = loadConfig(configPath);
 const logger = createLogger({ component: 'agent', level: config.logLevel });
+// R93 — reporter.js boots with a default `info` level (it imports pino
+// before loadConfig runs). Hand it the operator's appsettings.json
+// logLevel so flipping to `debug` actually surfaces HTTP breadcrumbs.
+_refreshLogLevel(config.logLevel);
 
 // 2026-09-24 R91.2 — hoist osInfo to module top level so the early
 // boot paths (port scanner, refreshPortList inside runAdRuntime,
@@ -533,6 +537,9 @@ async function runAdRuntime({ config, logger }) {
     collect: () => runCollector({
       powerShellPath: config.powerShellPath,
       psScriptPath: config.psScriptPath,
+      // R93 — surface the operator's logLevel to runCollector so the
+      // collector's pino instance can emit info/error breadcrumbs.
+      level: config.logLevel,
       // I-3 — collect-replication.ps1's worst-case latency is bounded by the
       // partner metadata fetch (Get-ADReplicationPartnerMetadata) on the
       // largest hub. 2026-08-28 round-45: per-partner port probing is gone
