@@ -311,7 +311,11 @@ async function togglePartner(dcName, partner) {
   if (!attempts.value.has(key)) {
     loadingPair.value = key;
     try {
-      const r = await dashboardApi.getSiteReplicationMatrixPairHistory(partner.peerDc, dcName, 10);
+      // R108.1.1 — backend partner rows (dashboard.js:425) are inbound-only
+      // on dest_dc. Here dcName = catalog DC (DB dest_dc = receiver) and
+      // partner.peerDc = partner DC (DB source_dc = sender). API signature
+      // is getSiteReplicationMatrixPairHistory(destDc, sourceDc, limit).
+      const r = await dashboardApi.getSiteReplicationMatrixPairHistory(dcName, partner.peerDc, 10);
       attempts.value.set(key, Array.isArray(r.data?.entries) ? r.data.entries : []);
     } catch (e) {
       attempts.value.set(key, []);

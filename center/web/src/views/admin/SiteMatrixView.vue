@@ -627,6 +627,18 @@ function dcSlug(dcName) {
 // R80: same map is reused for dc-pair-cell state lookups
 // (dcPairState / dcPairGlyph / dcPairTooltip). Each entry already carries
 // sourceDc + destDc, so per-DC state is a .find() over the array.
+// cellMap aggregates all partner links for each (srcSite, dstSite) pair.
+// Each entry captures the per-direction DB identities:
+//   sourceDc = the partner's DB source_dc (i.e. dc.dcName, the catalog
+//     DC that initiated the replication attempt)
+//   destDc   = the partner's DB dest_dc   (i.e. partner.peerDc, the peer
+//     that received the attempt)
+// Display direction in the matrix is "row-dc → peer-dc" (DC of the row
+// sends to its peer). The pair-history API contract is
+// getSiteReplicationMatrixPairHistory(destDc, sourceDc, limit), which
+// matches the DB identities directly — see R72 test expectations and
+// the route's `WHERE source_dc = ? AND dest_dc = ?` at
+// sql.js:201 (MySQL) / :1166 (MSSQL).
 const cellMap = computed(() => {
   const map = new Map();
   for (const p of primaries.value) {

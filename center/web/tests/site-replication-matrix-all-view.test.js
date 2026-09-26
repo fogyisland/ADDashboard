@@ -227,8 +227,12 @@ test('round-45: clicking caret expands row + lazy-fetches pair-history', async (
   expect(dashboardApi.getSiteReplicationMatrixPairHistory).toHaveBeenCalledTimes(1);
   const callArgs = dashboardApi.getSiteReplicationMatrixPairHistory.mock.calls[0];
   // signature: getSiteReplicationMatrixPairHistory(destDc, sourceDc, limit)
-  expect(callArgs[0]).toBe('DC-BJ-02');
-  expect(callArgs[1]).toBe('DC-BJ-01');
+  // R108.1.1 — direction fix. Catalog DC (DC-BJ-01) is the RECEIVER (DB
+  // dest_dc), partner DC (DC-BJ-02) is the SENDER (DB source_dc). The
+  // previous assertion was inverted (DC-BJ-02 as destDc) and silently
+  // matched the wrong-direction API call. Now correct.
+  expect(callArgs[0]).toBe('DC-BJ-01'); // destDc = receiver (catalog DC)
+  expect(callArgs[1]).toBe('DC-BJ-02'); // sourceDc = sender (partner DC)
   expect(callArgs[2]).toBe(10);
 
   const attemptsRow = w.find('[data-test="attempts-DC-BJ-01-DC-BJ-02"]');
