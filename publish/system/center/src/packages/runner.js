@@ -28,6 +28,7 @@ import { packageScripts } from '../db/sql/package-scripts.js';
 import { packagePolicies } from '../db/sql/package-policies.js';
 import { packageRuns } from '../db/sql/package-runs.js';
 import { metricstore } from './metricstore.js';
+import * as lockoutService from '../services/lockout.js';
 
 const STDOUT_PREVIEW_LIMIT = 2048;
 const STDERR_PREVIEW_LIMIT = 2048;
@@ -225,6 +226,33 @@ export function packageRunner({ db, agentMw, getLogger }) {
             manifest: scriptRow.manifest,
             runs: [run]
           });
+          // R107.1 — ad_lockout_list is a v2 package whose metricstore row
+          // holds the whole events[] array as a single JSON column. The
+          // /api/lockout-events/search route reads the flattened per-event
+          // rows in ad_lockout_events, so we need a post-hook to split
+          // the array into individual upserts here. Best-effort: a single
+          // bad event doesn't fail the whole batch (the metricstore INSERT
+          // already succeeded). db.sql.lockout.upsertEvent is dispatched
+          // internally on db.dialect (R101 canonical pattern).
+          if (run.packageName === 'ad_lockout_list' && Array.isArray(run.metrics.events)) {
+            const etl = await lockoutService.upsertEvents(db, run.metrics.events, agentId, log);
+            log?.info?.({
+              event: 'lockout.etl',
+              packageName: run.packageName,
+              agentId,
+              count: run.metrics.events.length,
+              upserted: etl.upserted,
+              skipped: etl.skipped,
+              errors: etl.errors.length
+            }, 'lockout ETL complete');
+            if (etl.errors.length) {
+              result.errors.push({
+                packageName: run.packageName,
+                error: `lockout ETL ${etl.errors.length} event(s) failed`,
+                details: etl.errors.slice(0, 3)
+              });
+            }
+          }
         }
         result.processed++;
       } catch (e) {
