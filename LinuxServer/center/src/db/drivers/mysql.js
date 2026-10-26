@@ -58,6 +58,39 @@ function normalizeParams(params) {
   return params.map(normalizeParam);
 }
 
+// ---------------------------------------------------------------------------
+// R161.10 (2026-10-26) — 会话时区钉 UTC (导出来是为了能单测)。
+//
+// 为什么单独导出: 这一步是"审计时间对不对"的**全部**关键 —— 它必须
+//   (1) 在连接建立的**那一刻**就发出去 (早于任何业务查询), 且
+//   (2) 失败时**出声** (不静默)。
+// 埋在 createMysqlDriver 内部就只能靠静态断言去验, 行为本身验不到。
+// 导出来就能用假连接直接驱动它: 断言发出的 SQL 原文、断言失败路径
+//   真的打了日志、断言连接级 error 监听被挂上了。
+//
+// @param {object} conn        mysql2 的连接对象 (需要 .on 与 .query(sql, cb))
+// @param {(msg: string) => void} log  失败时的输出通道 (默认 console.error)
+// @returns {void}
+// ---------------------------------------------------------------------------
+export function pinSessionUtc(conn, log = console.error) {
+  // 连接级致命错误 (网络断开 / 协议错误)。mysql2 的池**不**给自己创建的
+  // 连接挂 'error' 监听 ⇒ 没有监听器就是 Node 的**未捕获异常**, 直接把
+  // 进程带走 (Node 对 EventEmitter 的 'error' 事件: 无监听即抛)。
+  // 这里接管并记一条 —— 既不静默, 也不让一次网络抖动把中心端带走。
+  conn.on('error', (err) => {
+    log(`[db:mysql] 连接级错误: ${err?.message || err}`);
+  });
+  conn.query("SET time_zone = '+00:00'", (err) => {
+    if (err) {
+      log(
+        `[db:mysql] SET time_zone='+00:00' 失败: ${err?.message || err} —— ` +
+        '会话时区未钉到 UTC: DEFAULT CURRENT_TIMESTAMP 落点 (审计时间 / created_at 等) ' +
+        '会按服务器本地时区写入, 读出来整体偏一个时区差。'
+      );
+    }
+  });
+}
+
 export function createMysqlDriver(config) {
   const pool = mysql.createPool({
     host: config.host,
@@ -134,6 +167,48 @@ export function createMysqlDriver(config) {
   });
 
   // -------------------------------------------------------------------------
+  // R161.10 (2026-10-26) — ★ 把 MySQL **会话时区**钉在 UTC (审计时间修根因) ★
+  //
+  // ★ 问题 (操作员 2026-10-26 问「这个审计时间是否有问题」):
+  //   MySQL 侧的 `DEFAULT CURRENT_TIMESTAMP` / `CURRENT_TIMESTAMP` 取的是
+  //   **会话时区**的当前时间 (会话时区默认 = 服务器 SYSTEM 时区; 本机是 UTC+8),
+  //   而 MSSQL 侧对应写法是 `DEFAULT sysutcdatetime()` —— **恒为 UTC**。
+  //   两边基线 DDL 是 1:1 对应关系 (MySQL 基线 49 处 `DEFAULT CURRENT_TIMESTAMP`
+  //   ↔ MSSQL 基线 48 处 `sysutcdatetime()`), 意图明显是"都存 UTC" ——
+  //   但 MySQL 侧只在"服务器时区恰好是 UTC"时才成立。
+  //
+  // ★ 为什么这会变成**显示偏一个时区差**:
+  //   池子配了 `timezone: 'Z'` (客户端侧) ⇒ mysql2 把库里读出来的 naive
+  //   DATETIME 字符串**当 UTC 解析**。于是 MySQL 用会话本地时间写进去的
+  //   '2026-10-26 21:16:50' 被当成 UTC 读出来, 前端 toLocaleString 渲染成
+  //   2026-10-27 05:16:50 ⇒ 审计时间 (以及所有 DEFAULT CURRENT_TIMESTAMP
+  //   落点的 created_at) 整整偏一个时区偏移。
+  //   MSSQL 侧因为默认就是 UTC ⇒ **零症状** —— 又是一族"MSSQL 无症状"的缺陷。
+  //
+  // ★ 修法: 每条**新建**连接上来就先 `SET time_zone = '+00:00'`。
+  //   - 会话变量 ⇒ 任何用户都有权限改 (改 GLOBAL 才需要 SUPER) ⇒ 不提权;
+  //   - 用 '+00:00' 偏移量而不是 'UTC' 名字 ⇒ 不依赖 mysql 的时区表
+  //     (时区表没导入时 `SET time_zone='UTC'` 会直接失败);
+  //   - 一次性改掉**整族**落点 (audit_logs / ad_license_request / ... 共 49 处
+  //     DEFAULT CURRENT_TIMESTAMP), 而不是逐个调用侧补时区 —— 逐个补的话
+  //     每加一张新表就复发一次。
+  //
+  // ★ 与客户端 `timezone: 'Z'` 的关系: 两者是**同一个约定**的两端 ——
+  //   客户端负责"读出来的 naive 串按 UTC 解释", 服务端负责"写进去的
+  //   CURRENT_TIMESTAMP 就是 UTC"。缺任何一端都会偏。
+  //
+  // ★ 顺序保证: mysql2 的池在 connect 回调里 **先 emit('connection') 再把连接
+  //   交给请求方** (lib/base/pool.js:100-105), 而同一条连接上的命令严格 FIFO
+  //   执行 ⇒ 这条 SET 一定排在请求方的第一条查询之前。拿到池里已存在的空闲
+  //   连接时, 说明它建好时就已经 SET 过了。
+  //
+  // ★ 历史数据: 本修法只对**新写的行**生效。修之前由 DB 默认值写进去的行
+  //   (会话本地时间) 仍然是偏的 —— 一次性修数据需要单独评估 (改审计历史
+  //   属于不可逆操作, 由操作员决定), 不在本改动范围内。
+  // -------------------------------------------------------------------------
+  pool.on('connection', (conn) => pinSessionUtc(conn));
+
+  // -------------------------------------------------------------------------
   // R161.6 — server 级连接池 (不绑定任何库)。
   //
   // 懒创建: 只有真的需要"连到 server 而不是某个库"时才建 —— 常规运行路径
@@ -164,6 +239,8 @@ export function createMysqlDriver(config) {
       multipleStatements: false,
       charset: 'utf8mb4'
     });
+    // R161.10 — server 级连接同样钉住会话时区 (与业务池同一个约定)。
+    serverPool.on('connection', pinSessionUtc);
     return serverPool;
   }
 

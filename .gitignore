@@ -103,6 +103,13 @@ Server/publish/
 
 # ---------- 审计报告（每次跑 check-*.mjs 都重写，带 generatedAt 时间戳）----------
 Server/scripts/audit/*.json
+# center/scripts/audit/*.mjs 的产物（static-scan / diff-mirrors / process-exit /
+# error-coverage）—— 每次跑都重写，**不是源码**。diff-mirrors.mjs 自己的排除
+# 清单（EXCLUDED_NAMES）也把这几个当"审计输出"处理，两边口径一致。
+Server/center/findings.json
+Server/center/mirror-diff.json
+Server/center/process-exit-findings.json
+Server/center/error-coverage-findings.json
 
 # ---------- 大件 / 含内部拓扑的导出物 ----------
 # Implementation.zip = 123MB 整包快照

@@ -458,9 +458,15 @@ export function createSystemSettingsV2Router({ db, requireAuth, requirePerm, log
       // limit 走 query, 但**夹死上限** —— 免得有人手敲 ?limit=999999 把表拉爆。
       const rawLimit = Number.parseInt(req.query.limit, 10);
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 100;
-      // mssql 侧是函数形式 (整数内联, R93.4 precedent — TOP (?) 会抛 error 1060),
-      // mysql 侧仍是 `LIMIT ?` 参数绑定。两边都收 (limit) + 一个数组参数, 由 helper 自己
-      // 决定用哪个 —— 调用点 0 分叉。
+      // ★ R161.10 (2026-10-26) — 两边方言现在**都是函数形式**, 行数上限整数内联
+      //   (mssql: R93.4 precedent `TOP (?)` 会抛 error 1060; mysql: `LIMIT ?` 会让
+      //   预处理语句的参数个数对不上 ⇒ mysqld_stmt_execute 报
+      //   "Incorrect arguments to mysqld_stmt_execute" ⇒ 端点 500)。
+      //   ⇒ 产出的 SQL 里**恰好 1 个 `?`** (instance_id), 与下面绑定的
+      //   [instanceId] 一一对应 —— 调用点 0 分叉, 两边行为完全一致。
+      //   ★ 不变量: **SQL 里的 `?` 个数必须等于绑定参数个数**。改这段 SQL 时
+      //     必须同步核对参数数组, 否则又是一次 500 (见 db/sql/license-request.js
+      //     文件头 R161.10 段)。
       const sqlText = typeof licenseRequestSql[db.dialect].listByInstance === 'function'
         ? licenseRequestSql[db.dialect].listByInstance(limit)
         : licenseRequestSql[db.dialect].listByInstance;
