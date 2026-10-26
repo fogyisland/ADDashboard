@@ -19,7 +19,7 @@
 // answer. The bundle SELECT comes from `db.sql.config.getAgentTokenBundle` —
 // the SQL registry owns dialect-specific strings so this module stays
 // dialect-agnostic.
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { writeAudit, writeAuditRequired } from './audit.js';
 
 // Renamed 2026-08-21 (UX redesign — auto-delivery replaces manual
@@ -223,5 +223,30 @@ export const AGENT_TOKEN_BUNDLE_KEYS = [
   'agent_token_rotated_at',
   'agent_token_version'
 ];
+
+// R161.9 — 生效中令牌的**指纹**（不是明文片段，也不是尾部几位）。
+//
+// 为什么不用"尾部 4 位":
+//   尾部 4 位是**凭据材料**。本项目的设计契约是"凡是读凭据材料必留审计"
+//   (services/audit.js 的 REVEAL_AUDIT + audit-classifier.js 的高危分类),
+//   唯一的明文出口是 GET /api/admin/agent-token/reveal, 每次调用写一条高危
+//   审计行。把 4 位明文挪到**无审计**的 GET /api/admin/agent-token 上 =
+//   把凭据材料从"有审计的路径"搬到"没审计的路径" —— 密码学上可忽略
+//   (16 bit / 384 bit)，但**方向是错的**，过不了安全评审。
+//
+// 为什么指纹可以:
+//   令牌是 randomBytes(48) = 48 字节 = 384 bit 熵。sha256 前缀对 384-bit
+//   输入不可逆 ⇒ 不泄露任何明文片段，也不落在"凭据材料"范畴，可以安全地
+//   出现在无审计的读路径上。
+//   语义与 SSH/GPG key fingerprint 一致 (ssh-keygen -l)：回答
+//   "现在生效的是哪一枚令牌"，而不是"令牌是什么"。
+//
+// 长度: 8 个十六进制字符 = 32 bit。对 384-bit 空间做单次猜测的成功率
+// 2^-352 —— 不构成任何可利用的信息泄漏，同时肉眼可辨、便于口述核对。
+export function fingerprintAgentToken(token) {
+  const t = typeof token === 'string' ? token : '';
+  if (!t) return '';
+  return createHash('sha256').update(t, 'utf8').digest('hex').slice(0, 8);
+}
 
 export { INTERNAL_GRACE_MS };

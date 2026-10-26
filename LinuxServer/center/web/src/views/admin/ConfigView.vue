@@ -44,7 +44,10 @@
                    agent_token_version counter. -->
               <template v-else-if="row.key === 'ad_agent_token'">
                 <div class="agent-token-row">
-                  <code class="token-mask">…{{ maskToken() }}</code>
+                  <code
+                    class="token-mask"
+                    title="当前生效令牌的指纹（sha256 前 8 位，不可逆）。生成新令牌后指纹会变；完整令牌请用「复制令牌」。"
+                  >…{{ maskToken() }}</code>
                   <span :class="['token-mode', `token-mode-${tokenState.mode}`]">
                     v{{ tokenState.version }}
                   </span>
@@ -358,7 +361,7 @@ const agentIpAddress = computed(() => {
 // the only time a plaintext token appears in this view is inside
 // AgentTokenRotateModal after a generate OR transiently in `copiedToken`
 // while the 复制令牌 button is showing "已复制 ✓" feedback.
-const tokenState = ref({ mode: 'single', version: 0, rotatedAt: null });
+const tokenState = ref({ mode: 'single', version: 0, rotatedAt: null, tokenFingerprint: '' });
 const showGenerateModal = ref(false);
 const generatedNewToken = ref(null);
 // 复制令牌 button transient state. `copiedToken` is the most-recently
@@ -447,12 +450,17 @@ function formatTs(s) {
 }
 
 function maskToken() {
-  // Server deliberately omits current token from /api/admin/agent-token
-  // response (only mode/version/rotatedAt). The mask shown here is
-  // purely decorative — "…a3f9" — to remind the operator something
-  // exists. The real value lives only in each agent's appsettings.json
-  // and inside AgentTokenRotateModal after a generate.
-  return 'a3f9';
+  // R161.9 — 这里以前返回硬编码常量 'a3f9'（注释写 "purely decorative"）。
+  // 后果: 无论生成多少次新令牌，界面上的"缩写"永远不变 ⇒ 操作员看到这行
+  // 无法判断它显示的是不是当前生效的那一枚令牌（看着像 bug，实际是假的）。
+  //
+  // 现在显示服务端算的**指纹**（GET /api/admin/agent-token 返回的
+  // tokenFingerprint = sha256(生效令牌) 前 8 位）：
+  //   · 随生成新令牌而变 —— 这正是操作员要的"会变的缩写"；
+  //   · 不可逆，不泄露明文片段，可以待在无审计的读路径上；
+  //   · 由服务端算，前端**不复制**哈希规则（避免两端算法漂移）。
+  // 完整令牌只在「复制令牌」的 reveal 响应里出现（那条路径写高危审计行）。
+  return tokenState.value.tokenFingerprint || '--------';
 }
 
 // 复制令牌: one-click reveal + clipboard. The "已复制 ✓ Agent1 v3"
@@ -508,6 +516,9 @@ async function onGenerateClick() {
       version: r.data.version ?? tokenState.value.version,
       rotatedAt: r.data.rotatedAt || new Date().toISOString()
     };
+    // R161.9 — 重新拉一次服务端状态，让这一行的指纹跟新令牌对上。
+    // 指纹由服务端算（前端不复制哈希规则），所以只能靠服务端回传。
+    await reloadTokenState();
     showGenerateModal.value = true;
   } catch (e) {
     notifyError(`生成新令牌失败: ${e?.response?.data?.error || e?.message || '未知错误'}`);
@@ -539,10 +550,19 @@ async function reloadTokenState() {
     tokenState.value = {
       mode: s.mode || 'single',
       version: typeof s.version === 'number' ? s.version : 0,
-      rotatedAt: s.rotatedAt || null
+      rotatedAt: s.rotatedAt || null,
+      tokenFingerprint: s.tokenFingerprint || ''
     };
   } catch {
-    tokenState.value = { mode: 'single', version: 0, rotatedAt: null };
+    // R161.9 — 失败时**保留**已持有的状态，不要重置成 v0/single。
+    // 原因: onGenerateClick 在生成新令牌后会调本函数拉指纹；如果这一次拉取
+    // 失败而这里重置，界面会显示 "v0 / single / 无指纹"，比旧状态更误导
+    // （操作员刚生成完新令牌，看到的却是"没有令牌"）。首次加载时保留的初始
+    // 值本来就等于旧的默认值，行为不变。
+    tokenState.value = {
+      ...tokenState.value,
+      tokenFingerprint: tokenState.value.tokenFingerprint || ''
+    };
   }
 }
 

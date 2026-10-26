@@ -14,7 +14,7 @@ import { listPorts, createPort, updatePort, deletePort } from '../services/ports
 import { getDb } from '../db/index.js';
 import { sha256Hex } from '../config.js';
 import * as email from '../services/email.js';
-import { rotateAgentToken, commitAgentToken, getAgentTokenState, revealAgentToken } from '../services/agent-token.js';
+import { rotateAgentToken, commitAgentToken, getAgentTokenState, revealAgentToken, fingerprintAgentToken } from '../services/agent-token.js';
 // 2026-10-01 R158.13 — parallel to agent-token import above. The
 // three client-settings routes below mirror agent-token's rotate/commit/
 // state triad but for appsettings tunables (heartbeatIntervalSeconds,
@@ -582,10 +582,19 @@ export function adminRouter({ config, logger, db }) {
       // confuse operators who read it as a "policy" they can change.
       // version is included so the ConfigView can pass it to the modal
       // for the progress-counter match.
+      //
+      // R161.9 — tokenFingerprint: 生效中令牌的 sha256 前 8 位，**不是**明文
+      // 片段。前端此前把这一格写死成常量 'a3f9'（"purely decorative"）⇒
+      // 生成多少次新令牌，界面上的缩写都不变，操作员无法判断这一行显示的
+      // 是不是当前生效的那一枚。
+      // 这里给的是指纹而不是尾部 4 位明文：明文片段是凭据材料，按本项目
+      // 契约必须走有审计的 reveal 路径；指纹不可逆，不属于凭据材料，可以
+      // 放在这个无审计的读路径上。详见 services/agent-token.js 的注释。
       res.json({
         mode: s.previous ? 'dual' : 'single',
         rotatedAt: s.rotatedAt || null,
-        version: s.version
+        version: s.version,
+        tokenFingerprint: fingerprintAgentToken(s.current)
       });
     } catch (e) {
       logger.error({ err: e }, 'agent token state get failed');
