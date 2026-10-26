@@ -413,6 +413,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { forestRegistryApi } from '../../api/admin.js';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 const activeTab = ref('forest');
 const tabs = [
@@ -454,10 +455,7 @@ function emptyDomain() {
 
 function fmtTs(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return formatDateTimeIso(iso, { withSeconds: false, fallback: iso });
 }
 
 // R158.37.1 — DC dropdown 行渲染。Vue <option> 不允许嵌套 <span>/<template>,

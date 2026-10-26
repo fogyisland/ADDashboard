@@ -75,6 +75,7 @@
 </template>
 
 <script setup>
+import { formatDateTime } from '../lib/timezone.js';
 defineProps({
   // R140 — preferred prop. Each entry: { siteName, rows: AgentRow[] }.
   // Old `rows` is kept for the admin HeartbeatReportMonitorView which
@@ -84,7 +85,7 @@ defineProps({
 });
 function badge(a) { return a.secondsSinceHeartbeat <= 120 ? 'ok' : 'stale'; }
 function statusText(a) { return a.secondsSinceHeartbeat <= 120 ? '在线' : '离线'; }
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 function portTone(p) {
   if (!p.ok || p.latencyMs == null) return 'ok-bad';
   if (p.latencyMs < 100) return 'ok-good';

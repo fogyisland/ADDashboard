@@ -161,6 +161,7 @@ import { adminApi } from '../../api/admin.js';
 import { useConfigValidation } from '../../composables/useConfigValidation.js';
 import { useDirtyState } from '../../composables/useDirtyState.js';
 import { notifyError } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 // Email config (smtp_*, alert_*) lives on its own page; this page is the
 // non-email core. The full set is filtered out of the audit so the two
@@ -445,8 +446,7 @@ async function loadAudit() {
 
 function formatTs(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 function maskToken() {

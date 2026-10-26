@@ -193,6 +193,7 @@ import {
   fetchAccountChangeDetail,
   fetchAccountManagementEvents
 } from '../api/account-change.js';
+import { formatDateTimeIso } from '../lib/timezone.js';
 
 const POLL_INTERVAL_MS = 30 * 1000;
 const POLL_INTERVAL_SEC = POLL_INTERVAL_MS / 1000;
@@ -444,20 +445,12 @@ onBeforeUnmount(() => {
 // 改变且 chartEl 存在, nextTick 重 render.
 watch(detailRows, async () => { /* placeholder for future cross-section */ });
 
-// ── formatters (跟 LockoutAccountsView 1:1 平行, CST deterministic) ──────
+// ── formatters (跟 LockoutAccountsView 1:1 平行, 显示时区 deterministic) ──────
+// R161.11 — 原来手算 `+8h` (硬编码 "CST"), 改显示时区就失效;
+//   现在走 lib/timezone.js (默认 Asia/Shanghai ⇒ 输出与原来逐字相同)。
 function formatTime(v) {
   if (!v) return '—';
-  const d = new Date(v);
-  if (!Number.isFinite(d.getTime())) return '—';
-  const cstMs = d.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(cstMs);
-  const yyyy = cst.getUTCFullYear();
-  const MM = String(cst.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(cst.getUTCDate()).padStart(2, '0');
-  const hh = String(cst.getUTCHours()).padStart(2, '0');
-  const mm = String(cst.getUTCMinutes()).padStart(2, '0');
-  const ss = String(cst.getUTCSeconds()).padStart(2, '0');
-  return `${yyyy}-${MM}-${DD} ${hh}:${mm}:${ss}`;
+  return formatDateTimeIso(v, { fallback: '—' });
 }
 
 // DN 长 string 缩略: "CN=张三,OU=IT,DC=corp,DC=local" → 留 head + "…" + tail.

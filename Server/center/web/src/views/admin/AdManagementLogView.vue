@@ -123,6 +123,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, h } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 import { notifyError } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const USER_ACTIONS = Object.freeze([
   'ad_user_search', 'ad_user_create', 'ad_user_password_reset',
@@ -197,7 +198,7 @@ const pageSize = 30;
 const fetchSize = 100;
 let timer = null;
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 function sevIcon(s)  { return s === 'high' ? '🔴' : s === 'medium' ? '🟡' : '🔵'; }
 function sevLabel(s) { return s === 'high' ? '高' : s === 'medium' ? '中' : '低'; }
 

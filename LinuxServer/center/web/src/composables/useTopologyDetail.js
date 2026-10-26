@@ -16,6 +16,7 @@
 // component's own `<script setup>`.
 import { ref, computed } from 'vue';
 import { dashboardApi } from '../api/dashboard.js';
+import { formatDateTime } from '../lib/timezone.js';
 
 export function useTopologyDetail(props) {
   // ── R69 node-click modal ─────────────────────────────────────────────
@@ -72,7 +73,7 @@ export function useTopologyDetail(props) {
     return 'err';                  // R158.45 binary class (template has ok/err rows)
   }
   function fmtTs(s) {
-    return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—';
+    return s ? formatDateTime(s) : '—';
   }
   function closeModal() { clickedNode.value = null; }
   function closeEdgeModal() {

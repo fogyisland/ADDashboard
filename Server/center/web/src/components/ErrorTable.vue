@@ -31,6 +31,7 @@
 </template>
 
 <script setup>
+import { formatDateTime } from '../lib/timezone.js';
 defineProps({ rows: { type: Array, default: () => [] } });
 const CODES = {
   1722: 'RPC 服务器不可用 - 检查防火墙 / 135-139,445 端口',
@@ -41,7 +42,7 @@ const CODES = {
   5:   '访问被拒绝 - 检查账户权限'
 };
 function explain(code) { return CODES[code] || '参见 Windows 错误码参考'; }
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 </script>
 
 <style scoped>

@@ -130,6 +130,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const errors = ref([]);
 const total = ref(0);
@@ -215,7 +216,7 @@ function shortNc(nc) {
 
 function fmt(s) {
   if (!s) return '—';
-  return new Date(s).toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s);
 }
 
 function fmtDuration(ms) {

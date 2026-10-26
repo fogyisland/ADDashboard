@@ -283,6 +283,7 @@ import {
   fetchFailedLogonByDc,                  // R158.57
   fetchFailedLogonTimeseriesByDc         // R158.57
 } from '../api/failed-logon.js';
+import { formatDateTimeIso, formatDateTimeMs, formatTimeOnly } from '../lib/timezone.js';
 
 const POLL_INTERVAL_MS = 30 * 1000;
 
@@ -366,19 +367,15 @@ const dcMiniTotal = computed(() =>
   dcMini.value.reduce((acc, d) => acc + (Number(d.eventCount) || 0), 0)
 );
 
-// R158.50 — CST time formatter (UTC +8). Mirrors OsBaselineView.vue:308
+// R158.50 — 图表时间轴 formatter. Mirrors OsBaselineView.vue:308
 // (R158.29) + DashboardView (R158.7) so every chart on the dashboard
-// uses the same Beijing-time axis. Deterministic regardless of browser
+// uses the same time axis. Deterministic regardless of browser
 // TZ (R158.7 lesson: toLocaleString breaks under cross-region operator).
-const fmtTsCst = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstH = (d.getUTCHours() + 8) % 24;
-  const cstM = d.getUTCMinutes();
-  return `${String(cstH).padStart(2, '0')}:${String(cstM).padStart(2, '0')}`;
-};
+// R161.11 — 原来手算 `+8h` (硬编码 "CST"), 改显示时区就失效。
+//   现在按**显示时区**算 (默认 Asia/Shanghai ⇒ 输出与原来逐字相同)。
+const fmtTsCst = (t) => formatTimeOnly(t, { withSeconds: false, fallback: '' });
 
-// R158.60.2 (2026-10-09) — full datetime with **ms precision** in CST,
+// R158.60.2 (2026-10-09) — full datetime with **ms precision**,
 // used by the reverse-chronological detail table's "时间" column. The
 // previous formatTime() called toLocaleString() which drops ms — so 3
 // same-second 4625 events from a single failed logon (Windows writes
@@ -389,36 +386,15 @@ const fmtTsCst = (t) => {
 //
 // DB column is datetime2(3) (sql.js ad_failed_logon_events R158.50
 // schema), so the centre already preserves ms end-to-end — we just
-// weren't rendering it. Mirrors fmtBucketCst's UTC+8 deterministic
-// approach (R158.7 lesson: toLocaleString breaks under cross-region
-// operator TZ).
-const fmtTsCstMs = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstMs = d.getTime() + 8 * 3600_000;
-  const cst = new Date(cstMs);
-  const MM = String(cst.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(cst.getUTCDate()).padStart(2, '0');
-  const hh = String(cst.getUTCHours()).padStart(2, '0');
-  const mm = String(cst.getUTCMinutes()).padStart(2, '0');
-  const ss = String(cst.getUTCSeconds()).padStart(2, '0');
-  const mmm = String(cst.getUTCMilliseconds()).padStart(3, '0');
-  return `${MM}-${DD} ${hh}:${mm}:${ss}.${mmm}`;
-};
+// weren't rendering it. Deterministic across operator TZ (R158.7 lesson).
+// R161.11 — 同样改成按显示时区算 (原来是硬编码 +8h)。
+const fmtTsCstMs = (t) => formatDateTimeMs(t, { fallback: '' });
 
 const fmtBucketCst = (t) => {
   // bucketStart is a UTC timestamp rounded to the hour. Render as
-  // MM-DD hh:mm in CST so 24h view (24 buckets) and 7d view (168
+  // MM-DD hh:mm so 24h view (24 buckets) and 7d view (168
   // buckets) both stay legible. Mirrors OsBaselineView's date axis.
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstMs = d.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(cstMs);
-  const MM = String(cst.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(cst.getUTCDate()).padStart(2, '0');
-  const hh = String(cst.getUTCHours()).padStart(2, '0');
-  const mm = String(cst.getUTCMinutes()).padStart(2, '0');
-  return `${MM}-${DD} ${hh}:${mm}`;
+  return formatDateTimeIso(t, { withYear: false, withSeconds: false, fallback: '' });
 };
 
 // 4625 LogonType values (per Microsoft docs). Mirror the field at the

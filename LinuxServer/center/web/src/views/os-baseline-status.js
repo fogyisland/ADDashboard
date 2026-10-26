@@ -6,6 +6,8 @@
 // the test suite (center/tests/os-baseline.test.js) imports them directly
 // to assert the operator-mandated thresholds verbatim.
 //
+// R161.11 — formatTime 改走 lib/timezone.js (显示时区), 见下方注释。
+//
 // 算法来源 (R116 v2 plan):
 //   - 磁盘已使用%: collected emit `disk_free` + `disk_total` (both JSON,
 //     per-drive **bytes** from CIM Win32_LogicalDisk FreeSpace/Size —
@@ -18,6 +20,9 @@
 //     偏高 > 正常. 任一 cpu/mem/disk 触发就升级.
 //   - disk_free 或 disk_total 缺失/破损 → 该格 N/A, 不混入合规状态
 //     (数据问题 ≠ 合规问题).
+
+// R161.11 — 时间戳渲染的单一真源 (显示时区)。纯函数模块, 不依赖 Vue runtime。
+import { formatDateTimeIso } from '../lib/timezone.js';
 
 export const OFFLINE_THRESHOLD_MS = 2 * 60 * 60 * 1000; // 2 小时
 // R158.30.3 — disk warn/red thresholds lifted from 50/80 to 70/90 to match
@@ -146,15 +151,14 @@ export function formatPct(pct) {
   return `${pct.toFixed(1)}%`;
 }
 
-// formatTime: 把 Date / ISO string / number → 本地时区 "YYYY-MM-DD HH:mm:ss".
+// formatTime: 把 Date / ISO string / number → 显示时区 "YYYY-MM-DD HH:mm:ss".
 // 给 .last-update / .absolute 这类绝对时间戳节点用.
+// R161.11 — 原来手搓 getFullYear/getMonth/... 取的是**浏览器本地时区**的墙上
+//   时间 ⇒ 换台机器/换个时区同一个时间戳显示成不同时间。现在统一走
+//   lib/timezone.js (显示时区), 与全站其它时间戳渲染一致。
 export function formatTime(raw) {
   if (raw === null || raw === undefined || raw === '') return '未知';
-  const d = raw instanceof Date ? raw : new Date(raw);
-  if (!Number.isFinite(d.getTime())) return '未知';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(raw, { fallback: '未知' });
 }
 
 // formatRelative: 把 lastSeenMs (epoch ms) 渲染成 "刚刚 / x 分钟前 / x 小时前

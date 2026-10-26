@@ -136,6 +136,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import HostLifecycleDialog from '../../components/HostLifecycleDialog.vue';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const status = ref('all');
 const kind = ref('all');
@@ -176,8 +177,7 @@ async function onResumeDone() {
 
 function fmt(s) {
   if (!s) return '-';
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? '-' : d.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s, { fallback: '-' });
 }
 </script>
 

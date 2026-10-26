@@ -314,6 +314,7 @@ import AdminLayout from '../../components/AdminLayout.vue';
 import AdCommandHistoryDrawer from './AdCommandHistoryDrawer.vue';
 import UserCreateModal from '../../components/admin/UserCreateModal.vue';
 import BatchPasswordResetModal from '../../components/admin/BatchPasswordResetModal.vue';
+import { formatDateTime, formatDateTimeIso } from '../../lib/timezone.js';
 
 const auth = useAuthStore();
 const currentUserId = computed(() => auth.user?.id);
@@ -639,18 +640,17 @@ function onSubmitted(kind, cmd) {
   setTimeout(runSearch, 2000);
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 
-// R158.35 — snapshot helpers. fmtSnapshotTime uses the same UTC→+8
-// formatter as DirectorySyncView's `fmt` so DailyOpsView and the admin
+// R158.35 — snapshot helpers. fmtSnapshotTime uses the same formatter as
+// DirectorySyncView's `fmt` so DailyOpsView and the admin
 // page agree on the displayed timestamp. snapshotStaleCls piggybacks
 // the EventlogView palette: fresh ≤ 30s, warn ≤ 120s, red > 120s.
+// R161.11 — 原来手搓 getFullYear/... (浏览器本地时区) ⇒ 换机器就变;
+//   现在统一按显示时区渲染 (默认 Asia/Shanghai ⇒ 与迁移前逐字相同)。
 function fmtSnapshotTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(iso, { fallback: iso });
 }
 const snapshotStaleCls = computed(() => {
   if (!snapshotMeta.value.snapshotAt) return 'snapshot-badge-empty';

@@ -189,6 +189,7 @@ import MemberServerEditDialog from '../../components/MemberServerEditDialog.vue'
 // R158.X.115 (2026-10-20) — 主机生命周期弹窗 (退役/暂停/恢复 三合一)。
 import HostLifecycleDialog from '../../components/HostLifecycleDialog.vue';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const OFFLINE_MINUTES = 30;
 
@@ -273,8 +274,7 @@ function serviceTypeLabel(t) { return SERVICE_TYPE_LABELS[t] || t; }
 
 function formatTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isFinite(d.getTime()) ? d.toLocaleString('zh-CN') : '—';
+  return formatDateTime(iso, { fallback: '—' });
 }
 
 const canAddPort = computed(() => {
@@ -428,7 +428,7 @@ async function onDelete(m) {
   await load();
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 
 onMounted(load);
 </script>

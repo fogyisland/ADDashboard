@@ -18,6 +18,14 @@ import EmailConfigView from './views/admin/EmailConfigView.vue';
 // appsettings.json. 本页把 5 个白名单字段 (heartbeat/polling/discovery/
 // healthCheck interval + logLevel) UI 化. perm 跟 email-config 同 umbrella.
 import ClientSettingsView from './views/admin/ClientSettingsView.vue';
+// R161.11 (2026-10-26) — 显示时区设置页. 操作员 directive
+//   「是否能够在系统设置中增加一个时区的菜单」+「这样计算时间就不会出错了,
+//   当前就是错的离谱」. 页面把「数据库会话时区 / 系统时区 / 是否已钉 UTC /
+//   当前 UTC 时间」摊开 (R161.10 审计时间偏 8 小时的根因面板), 并让操作员
+//   选显示时区 (存 system_config.app_display_timezone).
+//   perm 走 admin:users umbrella (跟同组 3 个 config 类页面一致),
+//   后端写端点再守一道 admin:config.
+import TimezoneView from './views/admin/TimezoneView.vue';
 // R158.102 (2026-10-14) — MCP server token admin page. 1:1 平行
 //   EmailConfigView 形状 (standalone AdminLayout page), 跟 backend
 //   /api/admin/mcp-token 4 endpoint 配对. perm 走 admin:users
@@ -362,6 +370,9 @@ const routes = [
   { path: '/admin/config', component: ConfigView, meta: { perm: 'admin:users' } },
   { path: '/admin/email-config', component: EmailConfigView, meta: { perm: 'admin:users' } },
   { path: '/admin/client-settings', component: ClientSettingsView, meta: { perm: 'admin:users' } },
+  // R161.11 (2026-10-26) — 显示时区设置. 1:1 平行 /admin/client-settings
+  //   (standalone AdminLayout page, 同一 sidebar 分组「系统设置」).
+  { path: '/admin/timezone', component: TimezoneView, meta: { perm: 'admin:users' } },
   // R158.102 (2026-10-14) — MCP 集成 standalone admin page. 类 email-config
   //   1:1 平行: 跟 /admin/config (agent-token rotate UI) 互不干扰, 独立
   //   /admin/mcp-token URL 便于 bookmark + audit 关联.

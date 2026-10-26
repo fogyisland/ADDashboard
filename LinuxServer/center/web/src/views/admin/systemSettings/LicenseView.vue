@@ -351,6 +351,7 @@ import { adminApi } from '../../../api/admin.js';
 // R161.7 — 许可证状态判定的唯一实现 (前端侧). 语义与后端
 //   src/services/license-state.js 的 envelope 形状 1:1 对齐.
 import { resolveLicenseView } from '../../../lib/licenseStatus.js';
+import { formatDateTime } from '../../../lib/timezone.js';
 
 // R158.LA-V1-delete (2026-10-15) — license ref 改 base32Status (读 localStorage cache, 0 调后端).
 //   V1 ADSPK 录入 (form/submit/submitting) + 撤销 (confirmDeactivate/deactivating) + 状态
@@ -457,6 +458,17 @@ const requestText = computed(() => request.value ? JSON.stringify(request.value,
 //   (带时分秒 + 中文斜杠), 跟操作员 directive "YYYY-MM-DD" 0 一致, 必新写.
 //   跟后端 toLocalYmd() (system-settings-v2.js) 1:1 平行: 浏览器 Date 跟 Node Date 都用
 //   系统本地时区 (getFullYear/getMonth/getDate), 0 受 UTC 偏移影响. 操作员明确 "0 是 UTC, 是本地时间".
+//
+// R161.11 — ★ **有意不走 lib/timezone.js**, 理由必须写清楚, 免得后人当漏改的 bug 又改一遍:
+//   这个值是一个**日历日期 (业务日期)**, 不是"某一瞬间" —— 它是 DATE 列
+//   `installed_at` 的取值, 也是申请单里的"今天", 语义上属于许可证业务的
+//   自然日, 不是"存储的 UTC 时间戳"。
+//   ⇒ 全站其它时间戳都按显示时区渲染 (lib/timezone.js), 但这一处**故意**留在
+//     本地日历日, 因为后端 license-state.js 的**试用期天数**就是按服务端的
+//     "今天"算的 (server-local toLocalYmd), 两边必须同一个框架, 否则
+//     申请日期跟试用天数可能差一天。
+//   ⇒ 显示时区 (系统设置 → 时区) 管的是**时刻怎么显示**; 日历日本身由
+//     许可证业务规则定, 两者不混。
 function formatYmd(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -755,7 +767,7 @@ function resetBase32() {
 function formatTime(s) {
   if (!s) return null;
   try {
-    return new Date(s).toLocaleString('zh-CN', { hour12: false });
+    return formatDateTime(s);
   } catch { return s; }
 }
 

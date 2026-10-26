@@ -111,6 +111,7 @@ import PackageDdlPreviewModal from '../../components/PackageDdlPreviewModal.vue'
 import UninstallSchemaConfirmModal from '../../components/UninstallSchemaConfirmModal.vue';
 import { usePackagesStore } from '../../stores/packages.js';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -232,7 +233,7 @@ async function doUninstall(confirmDropSchema) {
 
 function formatDate(s) {
   if (!s) return '-';
-  try { return new Date(s).toLocaleString('zh-CN', { hour12: false }); }
+  try { return formatDateTime(s); }
   catch { return s; }
 }
 </script>

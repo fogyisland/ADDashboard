@@ -70,6 +70,7 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { useInappNotificationsStore } from '../stores/inappNotifications.js';
 import { adminApi } from '../api/admin.js';
+import { formatDateTime } from '../lib/timezone.js';
 
 const store = useInappNotificationsStore();
 const router = useRouter();
@@ -100,9 +101,7 @@ function stateBadge(s) {
 function fmt(s) {
   if (!s) return '-';
   try {
-    const d = new Date(s);
-    if (!Number.isFinite(d.getTime())) return s;
-    return d.toLocaleString('zh-CN', { hour12: false });
+    return formatDateTime(s, { fallback: s });
   } catch { return s; }
 }
 

@@ -430,6 +430,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import AppLayout from '../components/AppLayout.vue';
 import { dashboardApi } from '../api/dashboard.js';
+import { formatDateTime, formatDateTimeIso } from '../lib/timezone.js';
 
 const packages = ref([]);
 const refreshSeconds = ref(10);
@@ -581,7 +582,7 @@ function renderTimelineChart() {
         const v = Array.isArray(params.value) ? params.value : [null, null];
         const ts = v[0];
         const dur = v[1];
-        const tsStr = ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—';
+        const tsStr = ts ? formatDateTime(ts) : '—';
         // R158.X+UI.tooltip (2026-10-19) — 操作员 directive "tooltips 给出
         // 一些内容" 加 3 行: 机器 (agentId == AD dc_name / member hostname),
         // 状态 (字面 + chip-style 跟卡片 summary pill 配色 1:1 平行), 错误
@@ -1000,11 +1001,11 @@ function truncate(s, n) {
 }
 function fmt(s) {
   if (!s) return '—';
-  return new Date(s).toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s);
 }
 function shortTime(s) {
   if (!s) return '—';
-  return new Date(s).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return formatDateTimeIso(s, { withYear: false });
 }
 
 function selectPackage(p, presetFilter = '') {

@@ -73,6 +73,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch as vueWatch } from 'vue';
 import { adAdminApi } from '../../api/ad-admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const props = defineProps({
   operatorId: { type: [Number, String], required: true }
@@ -138,7 +139,7 @@ function statusLabel(s) {
   return s || '—';
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 
 function redactPasswords(obj) {
   if (!obj || typeof obj !== 'object') return obj;

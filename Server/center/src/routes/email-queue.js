@@ -24,10 +24,19 @@
 // 鉴权: [userAuth, requirePerm('admin:config')], 跟 email-history 1:1 同 posture.
 // 0 改 email-history.js / 0 改 service 代码 (R158.69 决策 history 路由层
 // 不参与 service, queue 同理, retention 才是 outbox DELETE 唯一 service 路径).
+//
+// R161.11 (2026-10-26) — 列表端点降级 + 留痕:
+//   现场 500 的根因分类交给 utils/dbError.js 判; 表/列缺失 ⇒ 200 + 空列表 +
+//   degraded 标记 (页面能开, 空数据不再是错误); 其它错误 ⇒ 仍 500, 但**必定**
+//   落 pino error 日志 (此前 catch 只回 500, 服务端零日志 —— NSSM 丢弃 stderr,
+//   操作员只能看到"500"三个字)。降级/留痕逻辑跟 email-history 共用
+//   email-outbox-common.js, 1:1 平行。
 
 import express from 'express';
+import { handleListFailure, logRouteError, OUTBOX_DIAGNOSTICS_URL } from './email-outbox-common.js';
+import { classifyDbError } from '../utils/dbError.js';
 
-export function createEmailQueueRouter({ db, requireAuth, requirePerm }) {
+export function createEmailQueueRouter({ db, requireAuth, requirePerm, logger }) {
   const router = express.Router();
   const guard = [requireAuth, requirePerm('admin:config')];
 
@@ -60,7 +69,15 @@ export function createEmailQueueRouter({ db, requireAuth, requirePerm }) {
       const rawRows = result?.rows ?? result?.recordset ?? [];
       res.json({ rows: rawRows, count: rawRows.length, limit });
     } catch (err) {
-      res.status(500).json({ error: 'email-queue query failed', detail: err.message });
+      // R161.11 — 表/列缺失 ⇒ 降级成空列表 (200 + degraded); 其它 ⇒ 500。
+      // 两条路径都落 pino (email-outbox-common.handleListFailure 内统一处理)。
+      handleListFailure({
+        logger,
+        scope: 'email-queue',
+        err,
+        extra: { limit },
+        res
+      });
     }
   });
 
@@ -85,7 +102,16 @@ export function createEmailQueueRouter({ db, requireAuth, requirePerm }) {
       }
       res.json({ ok: true, affected, source, id });
     } catch (err) {
-      res.status(500).json({ error: 'email-queue retry failed', detail: err.message });
+      // 写操作不做降级 (降级成"成功"会骗操作员), 但**必须留痕**。
+      const info = classifyDbError(err);
+      logRouteError(logger, 'email-queue retry', err, info, { source, id });
+      res.status(500).json({
+        error: 'email-queue retry failed',
+        errorCode: info.code ?? null,
+        errorKind: info.kind,
+        detail: info.message,
+        diagnosticsUrl: OUTBOX_DIAGNOSTICS_URL
+      });
     }
   });
 
@@ -109,7 +135,15 @@ export function createEmailQueueRouter({ db, requireAuth, requirePerm }) {
       }
       res.json({ ok: true, affected, source, id });
     } catch (err) {
-      res.status(500).json({ error: 'email-queue delete failed', detail: err.message });
+      const info = classifyDbError(err);
+      logRouteError(logger, 'email-queue delete', err, info, { source, id });
+      res.status(500).json({
+        error: 'email-queue delete failed',
+        errorCode: info.code ?? null,
+        errorKind: info.kind,
+        detail: info.message,
+        diagnosticsUrl: OUTBOX_DIAGNOSTICS_URL
+      });
     }
   });
 

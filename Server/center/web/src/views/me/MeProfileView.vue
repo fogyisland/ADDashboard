@@ -21,12 +21,12 @@
         </tr>
         <tr><td>上次登录</td>
           <td>{{ profileState.data.lastLoginAt
-            ? new Date(profileState.data.lastLoginAt).toLocaleString()
+            ? formatDateTime(profileState.data.lastLoginAt)
             : '—' }}</td>
         </tr>
         <tr><td>创建于</td>
           <td>{{ profileState.data.createdAt
-            ? new Date(profileState.data.createdAt).toLocaleString()
+            ? formatDateTime(profileState.data.createdAt)
             : '—' }}</td>
         </tr>
       </tbody>
@@ -42,6 +42,7 @@
 //   children view onMounted load 1:1 平行.
 import { onMounted, reactive } from 'vue';
 import { meApi } from '../../api/me.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const profileState = reactive({ loading: false, data: null, error: '' });
 

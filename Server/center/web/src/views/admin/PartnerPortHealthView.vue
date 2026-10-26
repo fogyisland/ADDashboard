@@ -170,6 +170,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 // wrapper and the route perm gate (router.js) move.
 import AppLayout from '../../components/AppLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
+import { formatDateTime, formatDateTimeIso } from '../../lib/timezone.js';
 
 // 2026-08-28 round-47: 复制伙伴端口健康监控. Operator directive:
 // "在这边不叫复制日志监控了，改成复制伙伴端口健康监控名称" + "主要列出每个
@@ -308,7 +309,7 @@ function probeAtClass(partner) {
 
 function probeAtTitle(partner) {
   const at = partner?.portHealth?.[0]?.probeAt;
-  return at ? new Date(at).toLocaleString('zh-CN', { hour12: false }) : '无最近 30 分钟内探测数据';
+  return at ? formatDateTime(at) : '无最近 30 分钟内探测数据';
 }
 
 // R158.17.4 (2026-10-01) — "上报 agent" 单元格文本.
@@ -330,28 +331,23 @@ function probeAgentText(partner) {
 // Tabular-nums in CSS keeps columns aligned across rows.
 //
 // Render:
-//   - probeAt present  → yyyy-MM-dd HH:mm:ss in browser TZ
+//   - probeAt present  → yyyy-MM-dd HH:mm:ss in 显示时区
 //   - probeAt missing   → "—" (same as the relative column's empty state)
+// R161.11 — 原来手搓 getFullYear/... 取的是浏览器本地时区 ⇒ 换机器/换时区
+//   同一个时间戳显示成不同时间。现在走 lib/timezone.js (显示时区);
+//   仍是 ISO 风格 yyyy-MM-dd HH:mm:ss, 列宽逐行一致。
 function probeAtIsoText(partner) {
   const at = partner?.portHealth?.[0]?.probeAt;
   if (!at) return '—';
-  const d = new Date(at);
-  if (!Number.isFinite(d.getTime())) return '—';
-  // toLocaleString gives "2026/10/02 09:30:15" — operator asked for a
-  // machine-row timestamp; "/" separator makes the column narrower than
-  // dash separator so we use ISO-style yyyy-MM-dd HH:mm:ss for column
-  // alignment. Custom formatter keeps the field 19 chars wide across
-  // every row.
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(at, { fallback: '—' });
 }
 
 function probeAtIsoTitle(partner) {
   const at = partner?.portHealth?.[0]?.probeAt;
-  return at ? `probe 写入时刻: ${new Date(at).toLocaleString('zh-CN', { hour12: false })}` : '无最近 30 分钟内探测数据';
+  return at ? `probe 写入时刻: ${formatDateTime(at)}` : '无最近 30 分钟内探测数据';
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 
 // 2026-08-28 round-34.2: data staleness — derive max lastAttemptTime across
 // all partners × all sites × all DCs × all portHealth entries. Returns the

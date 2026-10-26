@@ -67,6 +67,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue';
 import { adminApi } from '../api/admin.js';
 import { notifyError } from '../lib/notify.js';
+import { formatDateTime } from '../lib/timezone.js';
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -141,8 +142,7 @@ async function onCommit() {
 
 function formatTs(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 // "3 分钟前" / "刚刚" relative time for the pending-agents list. The

@@ -61,16 +61,26 @@
                 T12-fix1 contract requires the input itself to stay empty while
                 the placeholder shows `********` so the operator can type a new
                 password to overwrite the existing one.
+
+                R161.11 (2026-10-26) — 外面套一个 <form>:
+                Chrome 会对"不在 form 里的 password 框"报
+                `[DOM] Password field is not contained in a form`
+                (操作员 2026-10-26 在控制台看到)。这不是功能故障, 但会让
+                浏览器把该框当"游离密码框" (不参与自动填充/密码管理器),
+                也会污染控制台。@submit.prevent 保证按回车不会触发提交/刷新。
+                只包这一个 input, 不动其它行 ⇒ 0 改保存语义 (保存走 save bar 按钮)。
               -->
               <template v-if="row.key === 'smtp_password'">
-                <input
-                  type="password"
-                  :value="''"
-                  :placeholder="passwordPlaceholder"
-                  autocomplete="new-password"
-                  class="has-password-mask"
-                  @input="onInput(row.key, $event.target.value)"
-                />
+                <form @submit.prevent>
+                  <input
+                    type="password"
+                    :value="''"
+                    :placeholder="passwordPlaceholder"
+                    autocomplete="new-password"
+                    class="has-password-mask"
+                    @input="onInput(row.key, $event.target.value)"
+                  />
+                </form>
               </template>
               <!--
                 smtp_secure is a boolean stored as the string 'true'/'false'.
@@ -457,6 +467,17 @@
             {{ emailHistoryLoading ? '加载中...' : '刷新' }}
           </button>
         </div>
+        <!-- R161.11 (2026-10-26) — 降级横幅: 服务端判定 outbox 表/列缺失
+             (数据库基线未完整应用) 时返回 200 + degraded。这不是"没有历史邮件",
+             而是"查不了" ⇒ 必须显眼, 并给出下一步 (看诊断端点)。 -->
+        <div v-if="historyDegraded" class="degraded-banner">
+          <strong>{{ emailHistoryMsg }}</strong>
+          <span class="degraded-hint">
+            数据库基线未完整应用, 邮件历史表缺失。诊断:
+            <code>GET /api/admin/system-settings-v2/email-outbox-diagnostics</code>
+            (管理员)
+          </span>
+        </div>
       </section>
 
       <section v-if="emailHistory.length" class="audit">
@@ -563,6 +584,15 @@
           <button class="token-action" :disabled="queueLoading" @click="loadEmailQueue">
             {{ queueLoading ? '加载中...' : '刷新' }}
           </button>
+        </div>
+        <!-- R161.11 (2026-10-26) — 降级横幅 (跟 history 1:1 平行)。 -->
+        <div v-if="queueDegraded" class="degraded-banner">
+          <strong>{{ queueMsg }}</strong>
+          <span class="degraded-hint">
+            数据库基线未完整应用, 邮件队列表缺失 —— 邮件**不会**被投递。诊断:
+            <code>GET /api/admin/system-settings-v2/email-outbox-diagnostics</code>
+            (管理员)
+          </span>
         </div>
       </section>
 
@@ -686,6 +716,7 @@ import ConfirmDialog from './ConfirmDialog.vue';
 import SystemAlertsView from './SystemAlertsView.vue';
 import { adminApi } from '../../api/admin.js';
 import { useDirtyState } from '../../composables/useDirtyState.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const EMAIL_KEYS = [
   'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_password', 'smtp_from',
@@ -908,8 +939,7 @@ function rollbackTitle(row) {
 
 function formatTs(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 function onRollbackClick(row) {
@@ -1153,6 +1183,9 @@ const emailHistory = ref([]);
 const emailHistoryMsg = ref('');
 const emailHistoryLoading = ref(false);
 const emailHistoryLoaded = ref(false);
+// R161.11 (2026-10-26) — 跟 queueDegraded 1:1 平行: 服务端降级 (表/列缺失)
+//   ⇒ 空列表 + 显式提示, 不能跟"真的没有已发送记录"混为一谈。
+const historyDegraded = ref(false);
 
 // ---- R158.100.B (2026-10-14) — 邮件队列 (7th tab) state + loader ----
 // 跟 history 1:1 平行: UNION ALL 跨 2 表, 只查 sent_at IS NULL (未发出).
@@ -1164,12 +1197,27 @@ const emailQueue = ref([]);
 const queueMsg = ref('');
 const queueLoading = ref(false);
 const emailQueueLoaded = ref(false);
+// R161.11 (2026-10-26) — 降级标记: 服务端判定"队列表缺失/结构不完整"时返回
+//   200 + { rows: [], degraded: true, reason, detail }。这**不是**空队列, 而是
+//   schema 漂移 ⇒ 页面必须显式提示, 否则操作员会以为"真的没有待发邮件"。
+const queueDegraded = ref(false);
 
 async function loadEmailQueue() {
   queueLoading.value = true;
   queueMsg.value = '加载中...';
+  queueDegraded.value = false;
   try {
     const r = await adminApi.listEmailQueue({ limit: 500 });
+    const body = r.data || {};
+    if (body.degraded) {
+      emailQueue.value = [];
+      queueDegraded.value = true;
+      const missing = body.missingTable
+        ? `缺表 ${body.missingTable}`
+        : (body.missingColumn ? `缺列 ${body.missingColumn}` : '');
+      queueMsg.value = `${body.reasonText || '邮件队列不可用'}${missing ? ` (${missing})` : ''} — ${body.detail || ''}`;
+      return;
+    }
     const rows = r.data?.rows || [];
     // status 字段前端算: attempt_count < max_attempts → pending, else exhausted
     emailQueue.value = rows.map((x) => ({
@@ -1182,7 +1230,11 @@ async function loadEmailQueue() {
   } catch (e) {
     const body = e?.response?.data;
     emailQueue.value = [];
-    queueMsg.value = `加载失败: ${body?.error || e?.message || String(e)}`;
+    // R161.11 — 把服务端的 detail (MySQL/MSSQL 的真实原因) 也显示出来。
+    //   此前只显示 body.error (= "email-queue query failed"), 真实原因被丢掉,
+    //   操作员只能在 DevTools 里翻。
+    queueMsg.value = `加载失败: ${body?.error || e?.message || String(e)}`
+      + (body?.detail ? ` — ${body.detail}` : '');
   } finally {
     queueLoading.value = false;
     emailQueueLoaded.value = true;
@@ -1216,12 +1268,24 @@ async function deleteQueueRow(row) {
 async function loadEmailHistory() {
   emailHistoryLoading.value = true;
   emailHistoryMsg.value = '加载中...';
+  historyDegraded.value = false;
   try {
     const r = await adminApi.listEmailHistory({
       days: historyDays.value,
       kind: historyKind.value,
       limit: 200,
     });
+    const body = r.data || {};
+    // R161.11 — 降级 (表/列缺失) ⇒ 空列表 + 显式提示, 不是"加载失败"。
+    if (body.degraded) {
+      emailHistory.value = [];
+      historyDegraded.value = true;
+      const missing = body.missingTable
+        ? `缺表 ${body.missingTable}`
+        : (body.missingColumn ? `缺列 ${body.missingColumn}` : '');
+      emailHistoryMsg.value = `${body.reasonText || '邮件历史不可用'}${missing ? ` (${missing})` : ''} — ${body.detail || ''}`;
+      return;
+    }
     emailHistory.value = r.data?.rows || [];
     const cnt = r.data?.count ?? emailHistory.value.length;
     emailHistoryMsg.value = cnt === 0
@@ -1230,7 +1294,8 @@ async function loadEmailHistory() {
   } catch (e) {
     const body = e?.response?.data;
     emailHistory.value = [];
-    emailHistoryMsg.value = `加载失败: ${body?.error || e?.message || String(e)}`;
+    emailHistoryMsg.value = `加载失败: ${body?.error || e?.message || String(e)}`
+      + (body?.detail ? ` — ${body.detail}` : '');
   } finally {
     emailHistoryLoading.value = false;
     emailHistoryLoaded.value = true;
@@ -1311,6 +1376,27 @@ onMounted(load);
 }
 .section-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
 .section-dirty { color: var(--status-pill-fg-warn); font-size: 12px; }
+
+/* R161.11 (2026-10-26) — 降级横幅: 服务端判定 outbox 表/列缺失时显示。
+   跟 .section-dirty (行内小字) 区分开: 这是"整个数据源不可用", 得显眼。 */
+.degraded-banner {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--status-pill-fg-warn);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--status-pill-fg-warn);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.degraded-banner strong { font-weight: 600; }
+.degraded-hint { color: var(--muted); }
+.degraded-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+}
 
 .t { width: 100%; border-collapse: collapse; background: var(--panel); }
 .t th, .t td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }

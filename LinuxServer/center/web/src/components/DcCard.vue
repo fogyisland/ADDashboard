@@ -88,6 +88,7 @@
 
 <script setup>
 import { computed } from 'vue';
+import { formatDateTime } from '../lib/timezone.js';
 
 const props = defineProps({ dc: { type: Object, required: true } });
 
@@ -104,8 +105,7 @@ function formatCount(n) {
 
 function formatTs(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 </script>
 

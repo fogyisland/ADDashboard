@@ -9,10 +9,16 @@
 //
 // 鉴权: [userAuth, requirePerm('admin:config')], 跟 reports.js 同 posture.
 // 不改 system-alerts.js / reports.js (operator "用到端点新建" 指令).
+//
+// R161.11 (2026-10-26) — 列表端点降级 + 留痕 (跟 email-queue.js 1:1 平行):
+//   表/列缺失 ⇒ 200 + 空列表 + degraded 标记; 其它错误 ⇒ 500 + errorCode/
+//   errorKind。两条路径都落 pino。共用逻辑见 email-outbox-common.js。
 
 import express from 'express';
+import { handleListFailure, logRouteError, OUTBOX_DIAGNOSTICS_URL } from './email-outbox-common.js';
+import { classifyDbError } from '../utils/dbError.js';
 
-export function createEmailHistoryRouter({ db, requireAuth, requirePerm }) {
+export function createEmailHistoryRouter({ db, requireAuth, requirePerm, logger }) {
   const router = express.Router();
   const guard = [requireAuth, requirePerm('admin:config')];
 
@@ -53,7 +59,14 @@ export function createEmailHistoryRouter({ db, requireAuth, requirePerm }) {
         limit,
       });
     } catch (err) {
-      res.status(500).json({ error: 'email-history query failed', detail: err.message });
+      // R161.11 — 表/列缺失 ⇒ 降级成空列表 (200 + degraded); 其它 ⇒ 500。
+      handleListFailure({
+        logger,
+        scope: 'email-history',
+        err,
+        extra: { days, kind, limit },
+        res
+      });
     }
   });
 
@@ -94,7 +107,16 @@ export function createEmailHistoryRouter({ db, requireAuth, requirePerm }) {
       // source 在后端注入, 前端不可信
       res.json({ row: { ...rawRows[0], source } });
     } catch (err) {
-      res.status(500).json({ error: 'email-history detail query failed', detail: err.message });
+      // 单行详情不做降级 (前端要靠它区分"没有这行"和"查不了"), 但必须留痕。
+      const info = classifyDbError(err);
+      logRouteError(logger, 'email-history detail', err, info, { source, id });
+      res.status(500).json({
+        error: 'email-history detail query failed',
+        errorCode: info.code ?? null,
+        errorKind: info.kind,
+        detail: info.message,
+        diagnosticsUrl: OUTBOX_DIAGNOSTICS_URL
+      });
     }
   });
 

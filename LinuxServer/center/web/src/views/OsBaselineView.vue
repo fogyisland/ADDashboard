@@ -257,6 +257,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import * as echarts from 'echarts';
 import { listOsBaseline, getOsBaselineTimeseries } from '../api/os-baseline.js';
 import AppLayout from '../components/AppLayout.vue';
+import { formatTimeOnly } from '../lib/timezone.js';
 import {
   OFFLINE_THRESHOLD_MS,
   computeStatus,
@@ -300,18 +301,14 @@ const chartLoading = ref(false);
 // canvas is reused (cheaper than dispose + init every 30s tick).
 const chartInstances = new Map();
 
-// R158.29 — CST time formatter (UTC +8 hh:mm). Centre is UTC; operator
-// wants Beijing time on the X-axis. Matches the same formula used on
-// DashboardView (R158.7) so the per-DC hub chart and the per-card OS
+// R158.29 — 图表 X 轴时间 formatter (hh:mm). Centre is UTC; operator
+// wants the display timezone on the X-axis. Matches the same helper used
+// on DashboardView (R158.7) so the per-DC hub chart and the per-card OS
 // baseline chart read identically. Deterministic regardless of browser
 // or centre host TZ.
-const fmtTsCst = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstH = (d.getUTCHours() + 8) % 24;
-  const cstM = d.getUTCMinutes();
-  return `${String(cstH).padStart(2, '0')}:${String(cstM).padStart(2, '0')}`;
-};
+// R161.11 — 原来手算 `+8h` (硬编码 "CST"), 改显示时区就失效。
+//   现在按**显示时区**算 (默认 Asia/Shanghai ⇒ 输出与原来逐字相同)。
+const fmtTsCst = (t) => formatTimeOnly(t, { withSeconds: false, fallback: '' });
 
 // R140 — bucket items by siteName. "未分配" bucket holds cards whose
 // siteName is null/empty (LEFT JOIN to ad_sites produced no match, or

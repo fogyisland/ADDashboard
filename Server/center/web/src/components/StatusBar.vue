@@ -30,6 +30,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue';
 import api from '../api/client.js';
+import { formatDateTime } from '../lib/timezone.js';
 const data = ref({});
 let timer = null;
 async function load() { try { const r = await api.get('/api/dashboard/overview'); data.value = r.data; } catch {} }
@@ -40,7 +41,7 @@ const healthRate = computed(() => {
   return t ? Math.round((h / t) * 100) : 100;
 });
 const healthClass = computed(() => healthRate.value === 100 ? 'ok' : (data.value.error > 0 ? 'err' : 'warn'));
-function formatTime(s) { if (!s) return '-'; return new Date(s).toLocaleString('zh-CN', { hour12: false }); }
+function formatTime(s) { if (!s) return '-'; return formatDateTime(s); }
 </script>
 
 <style scoped>

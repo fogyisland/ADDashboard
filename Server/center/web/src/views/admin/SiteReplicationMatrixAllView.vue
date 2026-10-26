@@ -324,6 +324,7 @@ import { dashboardApi } from '../../api/dashboard.js';
 // R158.Suppression (2026-10-15) — 操作员行级暂停告警 toggle. 跟 dashboardApi 兄弟,
 //   现成 adminApi.listAlertSuppressions/suppressAlert/unsuppressAlert 1:1 平行. 0 改其他 fetch.
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const primaries = ref([]);
 const refreshSeconds = ref(10);
@@ -636,7 +637,7 @@ function peerTypeLabel(p) {
   if (p.peerType === 'bridgehead') return '桥头';
   return '未知';
 }
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 
 onMounted(async () => {
   await load();

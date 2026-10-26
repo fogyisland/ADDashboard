@@ -124,6 +124,7 @@ import { memberCommandsApi } from '../../api/member-commands.js';
 import AdminLayout from '../../components/AdminLayout.vue';
 import MemberCommandHistoryDrawer from './MemberCommandHistoryDrawer.vue';
 import ExecuteCommandModal from '../../components/admin/ExecuteCommandModal.vue';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const auth = useAuthStore();
 const currentUserId = computed(() => auth.user?.id);
@@ -210,7 +211,7 @@ function statusLabel(s) {
   return s || '—';
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 function truncate(s, n) { return s && s.length > n ? s.slice(0, n) + '…' : s; }
 
 onMounted(async () => {

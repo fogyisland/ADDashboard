@@ -64,6 +64,16 @@ import { applyHeadroom } from '../services/license-quota.js';
 //   本文件只有 expires_at 一处是 DATETIME 列 (installed_at 是 VARCHAR(32),
 //   故意存 ISO, 不在此列)。
 import { toMysqlDatetime } from '../utils/datetime.js';
+// R161.11 (2026-10-26) — 时区单一真源 (显示时区 KV + 会话时钟探针 + IANA 校验).
+import {
+  DISPLAY_TIMEZONE_KEY,
+  STORAGE_CONTRACT,
+  isValidTimeZone,
+  listSupportedTimeZones,
+  normalizeDisplayTimeZone,
+  offsetMinutesFor,
+  readServerClock
+} from '../services/timezone.js';
 
 // R158.X.99.30.c (2026-10-19) — 本地时区 YYYY-MM-DD 纯日期 (0 必 toISOString UTC).
 //   1:1 平行前端 formatYmd helper (LicenseView.vue). Node.js Date 跟浏览器 Date
@@ -943,6 +953,201 @@ export function createSystemSettingsV2Router({ db, requireAuth, requirePerm, log
       logger.error({ err: e?.message, stack: e?.stack }, 'system-settings-v2 updateMcpIpWhitelist failed');
       res.status(500).json({ error: 'internal', detail: e?.message });
     }
+  });
+
+  // 16. GET /timezone (userAuth ONLY) — R161.11 (2026-10-26) — 时区单一真源 (读)
+  //
+  //   ★ 为什么是 userAuth 而不是 admin:config:
+  //     显示时区是**渲染层**的参数, 前台 (AppLayout) 也要用 ⇒ 任何登录用户
+  //     都要能读。跟 feature-flag-state (userAuth ONLY, 给 sidebar gate 用)
+  //     1:1 平行。写 (PUT) 仍是 admin:config。
+  //
+  //   ★ 为什么必须返回**服务器侧**的时钟证据:
+  //     R161.10 的现场事故 = 审计时间整整偏 8 小时, 而界面**没有任何**提示。
+  //     操作员只能靠"这个时间看着不对"发现 ⇒ 页面必须自己把
+  //     「会话时区 / 系统时区 / 是否已钉 UTC / 当前 UTC 时间」摊开给操作员看。
+  //     pinnedToUtc=false (MySQL 侧会话时区不是 UTC) ⇒ 说明
+  //     `DEFAULT CURRENT_TIMESTAMP` 还在按服务器本地时区写 ⇒ 时间会错。
+  //
+  //   wire shape:
+  //   {
+  //     displayTimezone: 'Asia/Shanghai',
+  //     displayTimezoneOffsetMinutes: 480,
+  //     storageContract: 'UTC',
+  //     server: { dialect, sessionTimeZone, systemTimeZone, sessionOffsetMinutes,
+  //                serverTimeUtc, serverTimeSession, pinnedToUtc },
+  //     supportedCount: 428
+  //   }
+  router.get('/api/admin/system-settings-v2/timezone', userAuth, async (req, res) => {
+    try {
+      const [cfgMap, clock] = await Promise.all([
+        getConfigMap(),
+        readServerClock(db)
+      ]);
+      const displayTimezone = normalizeDisplayTimeZone(cfgMap?.[DISPLAY_TIMEZONE_KEY]);
+      res.json({
+        displayTimezone,
+        displayTimezoneOffsetMinutes: offsetMinutesFor(displayTimezone),
+        storageContract: STORAGE_CONTRACT,
+        server: clock,
+        supportedCount: listSupportedTimeZones().length
+      });
+    } catch (e) {
+      logger.error({ err: e?.message, stack: e?.stack }, 'system-settings-v2 getTimezone failed');
+      res.status(500).json({ error: 'internal', detail: e?.message });
+    }
+  });
+
+  // 17. PUT /timezone (admin:config) — R161.11 (2026-10-26) — 写显示时区
+  //
+  //   body: { timezone: 'Asia/Shanghai' }
+  //   存储: system_config.app_display_timezone (走 db.sql.config.upsert ——
+  //   ★ 不能用 services/config.js 的 setConfig: 那是 UPDATE-only,
+  //   key 不存在时**静默 0 行** ⇒ 新 key 永远写不进去 (R161.11 踩坑点).
+  //   留痕: writeAudit 'update_display_timezone'。
+  router.put('/api/admin/system-settings-v2/timezone', userAuth, configPerm, async (req, res) => {
+    try {
+      const raw = req.body?.timezone;
+      const timezone = typeof raw === 'string' ? raw.trim() : '';
+      if (!isValidTimeZone(timezone)) {
+        return res.status(400).json({
+          error: 'invalid_timezone',
+          detail: '时区名必须是合法 IANA 名 (如 Asia/Shanghai / UTC), 不接受固定偏移串 (如 GMT+8)'
+        });
+      }
+      const actor = req.user?.sub ?? null;
+      await db.execute(db.sql.config.upsert, [DISPLAY_TIMEZONE_KEY, timezone]);
+      await writeAudit({
+        userId: actor,
+        action: 'update_display_timezone',
+        target: DISPLAY_TIMEZONE_KEY,
+        payload: { timezone, offsetMinutes: offsetMinutesFor(timezone) }
+      }, logger);
+      res.json({
+        ok: true,
+        displayTimezone: timezone,
+        displayTimezoneOffsetMinutes: offsetMinutesFor(timezone)
+      });
+    } catch (e) {
+      logger.error({ err: e?.message, stack: e?.stack }, 'system-settings-v2 updateTimezone failed');
+      res.status(500).json({ error: 'internal', detail: e?.message });
+    }
+  });
+
+  // 18. GET /email-outbox-diagnostics (admin:config) — R161.11 (2026-10-26)
+  //
+  //   ★ 为什么需要这个端点:
+  //     现场两个邮件端点 500, 而**服务端一行日志都没有** (路由 catch 不落 pino,
+  //     NSSM 又丢弃 stderr) ⇒ Claude 侧无法判定到底是"表不存在"还是"SQL 写错"。
+  //     这个端点让**服务器自己**把地面真相报出来: 哪些 outbox 表在不在、
+  //     关键列在不在、各表多少行、当前会话时区是什么。
+  //     操作员打开一个 URL 就能看到, 不需要装 mysql 客户端、不需要碰凭据。
+  //
+  //   ★ 探针复用 db.sql.probe (MySQL: information_schema + DATABASE();
+  //     MSSQL: INFORMATION_SCHEMA / sys.tables) —— 双方言同一份代码路径。
+  //   ★ 表名/列名来自下面两个**硬编码白名单**, 绝不接受请求参数 ⇒ 无注入面。
+  //
+  //   wire shape:
+  //   {
+  //     dialect: 'mysql',
+  //     tables: [{ name, exists, rows|null, error|null }],
+  //     columns: [{ table, column, exists }],
+  //     missingTables: [...],
+  //     missingColumns: [...],
+  //     server: { sessionTimeZone, systemTimeZone, pinnedToUtc, ... }
+  //   }
+  router.get('/api/admin/system-settings-v2/email-outbox-diagnostics', userAuth, configPerm, async (req, res) => {
+    // 白名单 (硬编码) —— 4 张 outbox + 2 张关联表。
+    const TABLE_WHITELIST = [
+      'system_alert_outbox',
+      'report_email_outbox',
+      'ad_notify_outbox',
+      'license_email_outbox',
+      'system_alerts',
+      'daily_reports'
+    ];
+    // 邮件列表/详情 SQL 真正用到的列 —— 少一列就会 ER_BAD_FIELD_ERROR。
+    const COLUMN_WHITELIST = [
+      ['system_alert_outbox', 'sent_at'],
+      ['system_alert_outbox', 'next_attempt_at'],
+      ['system_alert_outbox', 'attempt_count'],
+      ['system_alert_outbox', 'max_attempts'],
+      ['system_alert_outbox', 'alert_id'],
+      ['report_email_outbox', 'sent_at'],
+      ['report_email_outbox', 'next_attempt_at'],
+      ['report_email_outbox', 'attempt_count'],
+      ['report_email_outbox', 'max_attempts'],
+      ['report_email_outbox', 'report_id'],
+      ['report_email_outbox', 'kind'],
+      ['report_email_outbox', 'created_at']
+    ];
+
+    const dialect = db.dialect === 'mssql' ? 'mssql' : 'mysql';
+    const probeTableSql = db.sql?.probe?.table;
+    const probeColumnSql = db.sql?.probe?.column;
+
+    // 表存在性 + 行数 (逐表隔离: 一张表炸了不影响其它表)。
+    const tables = [];
+    for (const name of TABLE_WHITELIST) {
+      const entry = { name, exists: false, rows: null, error: null };
+      try {
+        if (probeTableSql) {
+          const probe = await db.execute(probeTableSql, [name]);
+          const probeRows = probe?.rows ?? probe?.recordset ?? [];
+          entry.exists = probeRows.length > 0;
+        }
+        if (entry.exists) {
+          const countSql = dialect === 'mssql'
+            ? `SELECT COUNT(*) AS n FROM [${name}]`
+            : `SELECT COUNT(*) AS n FROM \`${name}\``;
+          const counted = await db.execute(countSql, []);
+          const countRows = counted?.rows ?? counted?.recordset ?? [];
+          entry.rows = Number(countRows?.[0]?.n ?? 0);
+        }
+      } catch (e) {
+        entry.error = e?.message ?? String(e);
+      }
+      tables.push(entry);
+    }
+
+    // 列存在性 (只在表存在时才探, 否则列必然缺失, 没意义)。
+    const columns = [];
+    for (const [table, column] of COLUMN_WHITELIST) {
+      const entry = { table, column, exists: false };
+      try {
+        if (probeColumnSql) {
+          const probe = await db.execute(probeColumnSql, [table, column]);
+          const probeRows = probe?.rows ?? probe?.recordset ?? [];
+          entry.exists = probeRows.length > 0;
+        }
+      } catch (e) {
+        entry.error = e?.message ?? String(e);
+      }
+      columns.push(entry);
+    }
+
+    const missingTables = tables.filter((t) => !t.exists).map((t) => t.name);
+    const missingColumns = columns
+      .filter((c) => !c.exists && !missingTables.includes(c.table))
+      .map((c) => `${c.table}.${c.column}`);
+
+    // 服务器时钟 (顺带证明会话时区是否已钉 UTC —— R161.10 的验收点)。
+    let server = null;
+    try {
+      server = await readServerClock(db);
+    } catch (e) {
+      server = { error: e?.message ?? String(e) };
+    }
+
+    res.json({
+      dialect,
+      tables,
+      columns,
+      missingTables,
+      missingColumns,
+      server,
+      checkedAt: new Date().toISOString()
+    });
   });
 
   return router;

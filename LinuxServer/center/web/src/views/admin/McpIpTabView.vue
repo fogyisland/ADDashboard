@@ -123,6 +123,7 @@
 // McpReadTabView:170 import { adminApi } 范式.
 import { ref, computed, onMounted, watch } from 'vue';
 import { adminApi } from '../../api/admin.js';
+import { formatTimeOnly } from '../../lib/timezone.js';
 
 const loading = ref(false);
 const saving = ref(false);
@@ -327,7 +328,7 @@ async function onSave() {
     savedLines.value = linesText.value;
     savedEnabled.value = enabledLocal.value;
     savedCount.value = res.count ?? res.list?.length ?? 0;
-    lastSaved.value = new Date().toLocaleTimeString();
+    lastSaved.value = formatTimeOnly(new Date().toISOString());
   } catch (e) {
     lastError.value = '保存失败: ' + (e?.response?.data?.error || e?.message || String(e));
   } finally {

@@ -54,6 +54,7 @@
 import { ref, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { usePackagesStore } from '../../stores/packages.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const store = usePackagesStore();
 const packages = ref([]);
@@ -122,7 +123,7 @@ async function install(row) {
 
 function formatDate(s) {
   if (!s) return '-';
-  try { return new Date(s).toLocaleString('zh-CN', { hour12: false }); }
+  try { return formatDateTime(s); }
   catch { return s; }
 }
 </script>

@@ -150,6 +150,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const route = useRoute();
 const hostname = computed(() => decodeURIComponent(String(route.params.hostname || '')));
@@ -240,7 +241,7 @@ function typeLabel(t) {
   return TYPE_LABEL[t] || `${t}`;
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 function pctOrDash(v) {
   if (v === null || v === undefined) return '-';
   return Number(v).toFixed(1);

@@ -98,6 +98,20 @@ export const adminApi = {
   //   拼的 "Agent 连接地址".
   getAccessDomain: () => api.get('/api/admin/system-settings-v2/access-domain').then(r => r.data),
   updateAccessDomain: (domain) => api.put('/api/admin/system-settings-v2/access-domain', { domain }).then(r => r.data),
+  // R161.11 (2026-10-26) — 显示时区 (system_config.app_display_timezone).
+  //   getSystemTimezone  GET /api/admin/system-settings-v2/timezone
+  //     → { displayTimezone, displayTimezoneOffsetMinutes, storageContract,
+  //         server: { dialect, sessionTimeZone, systemTimeZone,
+  //                   sessionOffsetMinutes, serverTimeUtc, serverTimeSession,
+  //                   pinnedToUtc },
+  //         supportedCount }
+  //   updateSystemTimezone  PUT 同一 URL, body: { timezone: 'Asia/Shanghai' }
+  //     → { ok: true, displayTimezone, displayTimezoneOffsetMinutes }
+  //   ★ 读是 userAuth (渲染层参数, 前台也要用), 写是 admin:config。
+  //   ★ timezone 必须是 IANA 名 (Asia/Shanghai), 不接受 'GMT+8' 这类固定偏移串
+  //     —— 后端 isValidTimeZone 拒掉, 前端也照同样的规则拦一道。
+  getSystemTimezone: () => api.get('/api/admin/system-settings-v2/timezone').then(r => r.data),
+  updateSystemTimezone: (timezone) => api.put('/api/admin/system-settings-v2/timezone', { timezone }).then(r => r.data),
   // R158.X.99.28 (2026-10-19) — MCP IP 白名单 (system_config.mcp_ip_whitelist
   //   + mcp_ip_whitelist_enabled, 2 个 KV 合并 1 个 endpoint). 1:1 平行
   //   R158.113.c access_domain + R158.AdminEmail admin_email 范式 (复用

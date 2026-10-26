@@ -58,6 +58,7 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import api from '../../api/client.js';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 const props = defineProps({
   hostname: { type: String, required: true }
@@ -125,10 +126,7 @@ const heartbeatText = computed(() => {
 
 function fmtTs(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(iso, { fallback: iso });
 }
 
 function fmtRelative(iso) {

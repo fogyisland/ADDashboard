@@ -1033,6 +1033,10 @@ function latestRoundId(rounds) {
     // Auth contract 跟 reports.js / system-alerts.js 同 posture.
     app.use(createEmailHistoryRouter({
       db: getDb(),
+      // R161.11 (2026-10-26) — 把 pino logger 传进去。邮件历史/队列两个端点
+      //   此前 catch 只回 500 不落日志, NSSM 又丢弃 stderr ⇒ 页面 500 而服务端
+      //   零线索。现在每次失败都有 error 级日志 (Logs/center.<date>.<n>.log)。
+      logger,
       requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
@@ -1040,6 +1044,8 @@ function latestRoundId(rounds) {
     // 跟 history 1:1 平行, 3 endpoint (list / retry / delete). Auth contract 同.
     app.use(createEmailQueueRouter({
       db: getDb(),
+      // R161.11 (2026-10-26) — 同 email-history: logger 传进去, 失败必落 pino。
+      logger,
       requireAuth: userAuth({ db: getDb(), logger }),
       requirePerm: (perm) => requirePerm(perm)
     }));
@@ -1315,6 +1321,9 @@ function latestRoundId(rounds) {
     });
     const emailLoop = createEmailDeliveryLoop({
       db: getDb(),
+      // R161.11 (2026-10-26) — 投递链路的失败必须落 pino (此前只有 console.error,
+      //   而 NSSM AppStderr='' 把 stderr 丢掉了 ⇒ 邮件没发出去但日志零痕迹)。
+      logger,
       getIntervalSeconds: async () => {
         const v = await getSystemConfig();
         return Number(v.alert_eval_interval_seconds) || 60;

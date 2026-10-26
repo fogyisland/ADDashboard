@@ -43,7 +43,7 @@
           </tr>
           <tr>
             <td class="key-label">上次轮换时间</td>
-            <td>{{ state.rotatedAt ? new Date(state.rotatedAt).toLocaleString() : '—' }}</td>
+            <td>{{ state.rotatedAt ? formatDateTime(state.rotatedAt) : '—' }}</td>
           </tr>
           <tr>
             <td class="key-label">接入端点 (写端)</td>
@@ -183,6 +183,7 @@
 import { ref, onMounted, nextTick } from 'vue';
 import { adminApi } from '../../api/admin.js';
 import { notifyError, notifySuccess } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const state = ref({
   current_set: false,

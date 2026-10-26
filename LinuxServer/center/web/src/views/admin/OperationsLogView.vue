@@ -187,6 +187,7 @@ import { heartbeatReportApi } from '../../api/heartbeatReport.js';
 
 // 2026-08-27 round-39: 运维区统一日志 — 审计事件 + 心跳数据 + 报告数据.
 import { notifyError } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const refreshSeconds = ref(10);
 const polling = ref(false);
@@ -277,7 +278,7 @@ function reportRowClass(row) {
 }
 
 // ---- Common ----
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 function fmtRelative(s) {
   if (!s) return '—';
   const gap = Math.round((Date.now() - new Date(s).getTime()) / 1000);

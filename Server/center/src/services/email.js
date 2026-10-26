@@ -27,6 +27,9 @@
 
 import nodemailer from 'nodemailer';
 import { getConfig } from './config.js';
+// R161.11 (2026-10-26) — DB 错误分类 (双方言), 用于给投递链路的失败日志
+//   带上 kind。0 改任何行为, 只提供"看得懂"的日志字段。
+import { classifyDbError } from '../utils/dbError.js';
 
 export function maskPassword(cfg) {
   const masked = { ...cfg };
@@ -128,8 +131,20 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 //     drain-on-stop pattern are the contract. If a future requirement demands "skip the
 //     next tick if the previous is still running", the guard belongs in tick() body —
 //     not at the setInterval callback boundary.
-export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl, _deps = {} }) {
+export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfig, sendImpl, logger, _deps = {} }) {
   const sendFn = sendImpl || send;
+  // R161.11 (2026-10-26) — 错误必须落 pino。
+  //   此前本文件全部用 console.error 报错, 而 NSSM 服务的 AppStderr='' 把
+  //   stderr **整个丢弃** ⇒ 邮件投递链路 (读 outbox / 标记 sent / 退避重试)
+  //   的任何失败在服务端**零痕迹**。现场表现就是"邮件没发出去, 日志里什么都没有"。
+  //   logger 由 server.js 传入 (pino); 没有 logger 时退回 console.error。
+  const logError = (payload, message) => {
+    if (logger && typeof logger.error === 'function') {
+      logger.error(payload, message);
+      return;
+    }
+    console.error(`[email-outbox] ${message}`, payload);
+  };
   let interval = null;
   let inFlight = null;
   // S11 (2026-09-30) — tick-level reentry guard, separate from `running`.
@@ -180,7 +195,13 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
       return rows.map((r) => ({ ...r, _outboxTable: tag }));
     } catch (e) {
       clearTimeout(timeoutHandle);
-      console.error(`[email-outbox] ${tag} listPending failed:`, e.message);
+      // R161.11 — 落 pino (表缺失/连接断都要留痕)。用 classifyDbError 带上
+      //   kind, 让"队列表不存在"和"临时网络抖动"在日志里一眼可分。
+      const info = classifyDbError(e);
+      logError(
+        { err: e.message, kind: info.kind, code: info.code, errno: info.errno, number: info.number, table: tag },
+        `${tag} listPending failed`
+      );
       return [];
     }
   }
@@ -216,7 +237,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
       try {
         await db.execute(db.sql.reportRun.markStatus[db.dialect], ['success', null, row.report_id]);
       } catch (e) {
-        console.error('[email-outbox] markStatus success failed for run', row.report_id, ':', e.message);
+        logError({ err: e.message, runId: row.report_id }, 'markStatus success failed');
       }
     }
   }
@@ -247,7 +268,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
         await db.execute(sqlHelper.markExhausted, [row.id]);
       } catch (e) {
         // best-effort: 不让 markExhausted 失败中断 markFailed 主流程.
-        console.error('[email-outbox] markExhausted failed for id', row.id, ':', e.message);
+        logError({ err: e.message, outboxId: row.id }, 'markExhausted failed');
       }
     }
     // R158.69 (2026-10-10) — markFailed 同样回写 daily_reports.status.
@@ -261,7 +282,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
       try {
         await db.execute(db.sql.reportRun.markStatus[db.dialect], ['failed', errorMessage ?? 'unknown', row.report_id]);
       } catch (e) {
-        console.error('[email-outbox] markStatus failed failed for run', row.report_id, ':', e.message);
+        logError({ err: e.message, runId: row.report_id }, 'markStatus failed');
       }
     }
   }
@@ -356,7 +377,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
     // overlap entirely is the cleanest fix. The setInterval cadence
     // is already >= 10 s so the next tick is acceptable.
     if (tickInFlight) {
-      console.error('[email-outbox] tick skipped: previous tick still in flight');
+      logError({}, 'tick skipped: previous tick still in flight');
       return;
     }
     // R158.16 (2026-10-01) — email_enabled 总开关. 关闭时完全不读 outbox,
@@ -370,7 +391,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
       const cfg = await getSystemConfig();
       emailEnabled = String(cfg?.email_enabled ?? '0') === '1';
     } catch (err) {
-      console.error('[email-outbox] email_enabled read failed:', err.message);
+      logError({ err: err.message }, 'email_enabled read failed');
     }
     if (!emailEnabled) {
       // 关开关: 直接返. 不调用 listPending → DB 没负担; 不调 deliver
@@ -383,7 +404,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
       try {
         rows = await listPending();
       } catch (err) {
-        console.error('[email-outbox] listPending failed:', err.message);
+        logError({ err: err.message }, 'listPending failed');
         return;
       }
       for (const row of rows) {
@@ -392,7 +413,7 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
         } catch (err) {
           // Per-row failure must not abort the rest of the batch — one bad
           // outbox row's data corruption can't starve the others.
-          console.error('[email-outbox] deliver failed for outbox id', row.id, ':', err.message);
+          logError({ err: err.message, outboxId: row.id, table: row._outboxTable }, 'deliver failed');
         }
       }
     } finally {
@@ -409,9 +430,9 @@ export function createEmailDeliveryLoop({ db, getIntervalSeconds, getSystemConfi
       if (!running) return; // stop() fired before getIntervalSeconds resolved
       const intervalSec = Math.max(10, Number(raw) || 60);
       interval = setInterval(() => {
-        inFlight = tick().catch((e) => console.error('[email-outbox] tick failed:', e.message));
+        inFlight = tick().catch((e) => logError({ err: e.message }, 'tick failed'));
       }, intervalSec * 1000);
-    }).catch((e) => console.error('[email-outbox] start failed:', e.message));
+    }).catch((e) => logError({ err: e.message }, 'start failed'));
   }
 
   async function stop() {

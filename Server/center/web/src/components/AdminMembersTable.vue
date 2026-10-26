@@ -36,6 +36,7 @@
 
 <script setup>
 import { computed } from 'vue';
+import { formatDateTime } from '../lib/timezone.js';
 
 const props = defineProps({
   groupName: { type: String, required: true },
@@ -49,9 +50,7 @@ const countNoDn  = computed(() => props.members.length - countHasDn.value);
 function formatTs(ts) {
   if (!ts) return '—';
   try {
-    return new Date(ts).toLocaleString('zh-CN', {
-      timeZone: 'Asia/Shanghai', hour12: false
-    });
+    return formatDateTime(ts);
   } catch (_) {
     return String(ts);
   }

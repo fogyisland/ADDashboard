@@ -57,6 +57,7 @@ import { adminApi } from '../../../api/admin.js';
 import { useFeatureFlagsStore } from '../../../stores/featureFlags.js';
 // R161.6 — 判定走公共实现 (web/src/lib/featureFlag.js), 与后端口径一致。
 import { isFlagValueEnabled } from '../../../lib/featureFlag.js';
+import { formatDateTime } from '../../../lib/timezone.js';
 
 const rows = ref([]);
 const loading = ref(false);
@@ -160,10 +161,7 @@ async function toggle(row) {
 
 function formatUpdated(s) {
   if (!s) return '-';
-  try {
-    const d = new Date(s);
-    return d.toLocaleString('zh-CN', { hour12: false });
-  } catch { return s; }
+  return formatDateTime(s, { fallback: s });
 }
 
 let pollTimer = null;

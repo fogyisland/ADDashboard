@@ -251,6 +251,7 @@
 import { ref, reactive, computed, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const props = defineProps({
   targetType: { type: String, required: true }  // 'dc' | 'server'
@@ -430,7 +431,7 @@ async function downloadFile(t) {
 
 function toggle(taskId) { expanded[taskId] = !expanded[taskId]; }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 
 function fmtBytes(n) {
   if (n == null) return '—';

@@ -79,6 +79,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch as vueWatch } from 'vue';
 import { memberCommandsApi } from '../../api/member-commands.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const props = defineProps({
   hostname: { type: String, default: '' },
@@ -153,7 +154,7 @@ function statusLabel(s) {
   return s || '—';
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 
 function redactSensitive(obj) {
   if (!obj || typeof obj !== 'object') return obj;

@@ -40,6 +40,7 @@
 </template>
 
 <script>
+import { formatDateTime } from '../lib/timezone.js';
 export default {
   name: 'MemberAdminGroupsTable',
   props: {
@@ -60,7 +61,7 @@ export default {
     formatTime(t) {
       if (!t) return '—';
       try {
-        return new Date(t).toLocaleString('zh-CN', { hour12: false });
+        return formatDateTime(t);
       } catch {
         return String(t);
       }

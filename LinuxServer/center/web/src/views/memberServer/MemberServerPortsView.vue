@@ -79,6 +79,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { memberServerApi } from '../../api/member-server.js';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 const POLL_INTERVAL_MS = 30 * 1000;
 
@@ -117,11 +118,10 @@ function toMs(v) {
   const ms = new Date(v).getTime();
   return Number.isFinite(ms) ? ms : null;
 }
+// R161.11 — 手搓 getFullYear/... 取的是浏览器本地时区 ⇒ 换机器就变;
+//   现在统一按显示时区渲染 (默认 Asia/Shanghai ⇒ 与迁移前逐字相同)。
 function formatTime(d) {
-  const dd = d instanceof Date ? d : new Date(d);
-  if (!Number.isFinite(dd.getTime())) return '—';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${dd.getFullYear()}-${pad(dd.getMonth() + 1)}-${pad(dd.getDate())} ${pad(dd.getHours())}:${pad(dd.getMinutes())}:${pad(dd.getSeconds())}`;
+  return formatDateTimeIso(d, { fallback: '—' });
 }
 function formatRelative(ms) {
   if (ms == null) return '—';

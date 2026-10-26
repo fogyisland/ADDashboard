@@ -180,6 +180,7 @@ import AdminLayout from '../../components/AdminLayout.vue';
 import BulkImportDialog from '../../components/BulkImportDialog.vue';
 import HostLifecycleDialog from '../../components/HostLifecycleDialog.vue';
 import { adminApi, forestRegistryApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const sites = ref([]);
 const dcs = ref([]);
@@ -448,7 +449,7 @@ async function toggleFlag(dc, flagKey) {
   }
 }
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 
 onMounted(load);
 </script>

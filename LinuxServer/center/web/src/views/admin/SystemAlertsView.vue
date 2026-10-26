@@ -187,7 +187,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { adminApi } from '../../api/admin.js';
-import { fmtTsCstMs } from '../../lib/time.js';
+import { formatDateTimeMs } from '../../lib/timezone.js';
 import { notifySuccess, notifyError } from '../../lib/notify.js';
 
 const subTab = ref('firing');
@@ -236,7 +236,7 @@ function stateBadge(s) {
   if (s === 'acked') return 'off';
   return 'warn';
 }
-function fmt(s) { return s ? fmtTsCstMs(s) : '-'; }
+function fmt(s) { return s ? formatDateTimeMs(s, { fallback: '-' }) : '-'; }
 
 function parseJson(s) {
   if (s == null || s === '') return null;

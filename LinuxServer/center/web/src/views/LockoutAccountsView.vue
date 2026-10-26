@@ -254,6 +254,7 @@ import * as echarts from 'echarts';
 import AppLayout from '../components/AppLayout.vue';
 import { listRecentLockoutEvents, fetchLockoutTrend24h, fetchLockoutTrend } from '../api/lockout.js';
 import api from '../api/client.js';
+import { formatDateTime, formatDateTimeIso, formatDateOnly } from '../lib/timezone.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -489,35 +490,21 @@ const SERIES_COLORS = [
   '#84cc16'  // lime
 ];
 
-// R158.53 — CST (UTC+8) formatter for the bucket axis. Mirrors
+// R158.53 — 桶轴 formatter. Mirrors
 // FailedLogonView.vue:157 so the dashboard's chart axes stay aligned
 // across /lockout-accounts, /failed-logon-2h, and /os-baseline.
 // Deterministic regardless of browser TZ (R158.7 lesson: toLocaleString
 // breaks under cross-region operator).
-const fmtBucketCst = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstMs = d.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(cstMs);
-  const MM = String(cst.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(cst.getUTCDate()).padStart(2, '0');
-  const hh = String(cst.getUTCHours()).padStart(2, '0');
-  const mm = String(cst.getUTCMinutes()).padStart(2, '0');
-  return `${MM}-${DD} ${hh}:${mm}`;
-};
+// R161.11 — 原来是手算 `+8h` 的 "CST" 硬编码, 改显示时区就失效。
+//   现在走 lib/timezone.js, 按**显示时区**算 (默认 Asia/Shanghai ⇒ 输出
+//   与原来逐字相同, 改了时区则整条轴跟着走)。
+const fmtBucketCst = (t) =>
+  formatDateTimeIso(t, { withYear: false, withSeconds: false, fallback: '' });
 
 // R158.109.b — daily axis formatter (1:1 平行 fmtBucketCst, 但只取
 // MM-DD). pivotTrendForChart 返 isDaily=true 时, renderChart 用此
 // 替 fmtBucketCst. 24h/7d hourly 仍走 fmtBucketCst (R158.53 行为 0 改).
-const fmtDateCst = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstMs = d.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(cstMs);
-  const MM = String(cst.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(cst.getUTCDate()).padStart(2, '0');
-  return `${MM}-${DD}`;
-};
+const fmtDateCst = (t) => formatDateOnly(t, { withYear: false, fallback: '' });
 
 function renderChart() {
   if (!chartEl.value || !chartHasData.value) return;
@@ -590,8 +577,7 @@ function hexToRgba(hex, alpha) {
 
 function formatTime(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 function formatSubject(domain, user) {

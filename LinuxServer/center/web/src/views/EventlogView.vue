@@ -217,6 +217,7 @@ import * as echarts from 'echarts';
 import api from '../api/client.js';
 import { fetchEventlogTrend24h, fetchEventlogTrend } from '../api/eventlog.js';
 import AppLayout from '../components/AppLayout.vue';
+import { formatDateTime, formatDateTimeIso } from '../lib/timezone.js';
 
 // Channel order is fixed — matches collect.ps1 1.0.1 wire shape +
 // operator's exact wording for the 4 original channels plus the new
@@ -462,8 +463,7 @@ function sevLabel(sev) {
 
 function formatTime(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 // R158.17.4.5+1 (2026-10-02) — "上报时间" 绝对时刻 helpers. Source is
@@ -477,15 +477,12 @@ function formatTime(s) {
 function collectedAtIsoText(dc) {
   const at = dc.collectedAt;
   if (!at) return '—';
-  const d = new Date(at);
-  if (!Number.isFinite(d.getTime())) return '—';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(at, { fallback: '—' });
 }
 
 function collectedAtIsoTitle(dc) {
   const at = dc.collectedAt;
-  return at ? `summary 写入时刻: ${new Date(at).toLocaleString('zh-CN', { hour12: false })}` : '未收到 summary 行';
+  return at ? `summary 写入时刻: ${formatDateTime(at)}` : '未收到 summary 行';
 }
 
 // R158.108 (2026-10-16) — fetchEventlogTrendForWindow. 1:1 平行
@@ -661,20 +658,14 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-// R158.54 — CST (UTC+8) formatter. Mirrors LockoutAccountsView.vue:154
+// R158.54 — 桶轴 formatter. Mirrors LockoutAccountsView.vue:154
 // so dashboard axes align across /eventlog, /lockout-accounts,
 // /failed-logon-2h, /os-baseline.
-const fmtBucketCst = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstMs = d.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(cstMs);
-  const MM = String(cst.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(cst.getUTCDate()).padStart(2, '0');
-  const hh = String(cst.getUTCHours()).padStart(2, '0');
-  const mm = String(cst.getUTCMinutes()).padStart(2, '0');
-  return `${MM}-${DD} ${hh}:${mm}`;
-};
+// R161.11 — 原来是手算 `+8h` 的 "CST" 硬编码, 改显示时区就失效。
+//   现在走 lib/timezone.js, 按**显示时区**算 (默认 Asia/Shanghai ⇒ 输出
+//   与原来逐字相同, 改了时区则整条轴跟着走)。
+const fmtBucketCst = (t) =>
+  formatDateTimeIso(t, { withYear: false, withSeconds: false, fallback: '' });
 
 async function openDrill(dc, channel) {
   drillTarget.value = { dcName: dc.dcName, channel };

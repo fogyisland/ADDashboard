@@ -58,12 +58,13 @@
 import { ref, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTime } from '../../lib/timezone.js';
 const users = ref([]); const roles = ref([]); const editing = ref(null);
 const resetting = ref(null);
 const newPassword = ref('');
 const confirmPassword = ref('');
 const resetError = ref('');
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-'; }
+function fmt(s) { return s ? formatDateTime(s) : '-'; }
 async function load() { users.value = (await adminApi.listUsers()).data; roles.value = (await adminApi.listRoles()).data; }
 function openCreate() { editing.value = { username: '', password: '', role_id: roles.value[0]?.id, status: 1 }; }
 function openEdit(u) { editing.value = { id: u.id, username: u.username, role_id: roles.value.find(r => r.roleName === u.roleName)?.id, status: u.status ? 1 : 0 }; }

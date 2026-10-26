@@ -74,6 +74,7 @@
 //   workstationName 跟 lockout caller 字段名不同 (R158.1W.3 1:1 平行).
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue';
 import { fetchFailedLogonEvents, fetchDcOptions } from '../api/report-center.js';
+import { formatDateTime, formatTimeOnly } from '../lib/timezone.js';
 
 const PAGE_SIZE = 100;
 const chartRange = ref('all');
@@ -139,8 +140,8 @@ watch(searchUser, () => {
   searchDebounceHandle = setTimeout(() => { page.value = 1; load(); }, 300);
 });
 
-function formatTime(d) { if (!d) return ''; return new Date(d).toLocaleTimeString('zh-CN', { hour12: false }); }
-function formatTs(ts) { if (!ts) return '—'; return new Date(ts).toLocaleString('zh-CN', { hour12: false }); }
+function formatTime(d) { if (!d) return ''; return formatTimeOnly(d, { fallback: '' }); }
+function formatTs(ts) { if (!ts) return '—'; return formatDateTime(ts); }
 
 onMounted(() => { loadDcOptions(); load(); });
 onBeforeUnmount(() => { if (searchDebounceHandle) clearTimeout(searchDebounceHandle); });

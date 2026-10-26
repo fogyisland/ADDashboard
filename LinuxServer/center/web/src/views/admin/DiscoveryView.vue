@@ -166,6 +166,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import AppLayout from '../../components/AppLayout.vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const props = defineProps({
   // 'inbound' = UI label 入站 (anchor self = dest_dc, source_dc = 上游)
@@ -263,11 +264,11 @@ async function load() {
 
 function fmtTs(s) {
   if (!s) return '—';
-  return new Date(s).toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s);
 }
 
 function fmt(s) {
-  return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '-';
+  return s ? formatDateTime(s) : '-';
 }
 
 function fmtRelative(s) {

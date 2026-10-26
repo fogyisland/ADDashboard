@@ -207,6 +207,7 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } 
 import Popover from '../../components/Popover.vue';
 import { adAdminApi } from '../../api/ad-admin.js';
 import { adminApi } from '../../api/admin.js';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 const props = defineProps({
   dc: { type: String, required: true },
@@ -580,12 +581,11 @@ async function submitDelete() {
   }
 }
 
+// R161.11 — 原来手搓 getFullYear/... (浏览器本地时区) ⇒ 换机器就变;
+//   现在统一按显示时区渲染 (默认 Asia/Shanghai ⇒ 与迁移前逐字相同)。
 function fmt(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s;
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(s, { fallback: s });
 }
 
 watch(() => [props.dc, props.sam, props.dataSource], fetchUser);

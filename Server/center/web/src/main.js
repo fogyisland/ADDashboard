@@ -26,6 +26,16 @@ import { useAuthStore } from './stores/auth.js';
 //   0 推新 toast. 3 类 transition 推 (新 firing=error / recovered=success /
 //   acked=info), 跟 email 节流 (NOTIFY_THROTTLE_MINUTES=120) 完全解耦.
 import { useInappNotificationsStore } from './stores/inappNotifications.js';
+// R161.11 (2026-10-26) — 启动时拉一次服务端权威的显示时区.
+//   ★ 为什么必须在启动时拉: R161.10 的现场事故 = 审计时间整整偏 8 小时,
+//     而界面**没有任何**提示。前端如果只靠 localStorage / 浏览器本地时区,
+//     两个操作员在两台机器上看到的同一个时间戳会不一样 —— 排查时更迷惑。
+//     服务端 system_config.app_display_timezone 是唯一权威值。
+//   ★ 读端点是 userAuth (渲染层参数, 前台也要用), 所以跟 featureFlags 一样
+//     走 isLoggedIn gate; 拉不到时前端回落 localStorage / 浏览器本地时区,
+//     不阻塞渲染 (fail-soft: 时区拿不到不该让整个应用起不来)。
+import { adminApi } from './api/admin.js';
+import { applyServerTimezone } from './lib/timezone.js';
 
 const app = createApp(App);
 app.use(createPinia());
@@ -58,6 +68,19 @@ function startInappPolling() {
 
 if (auth.isLoggedIn) startFlagsPolling();
 if (auth.isLoggedIn) startInappPolling();
+if (auth.isLoggedIn) loadServerTimezone();
+
+// R161.11 (2026-10-26) — 拉服务端权威显示时区. 失败不阻塞应用 (fail-soft):
+//   拉不到就继续用 localStorage / 浏览器本地时区渲染, 后台日志会留痕。
+function loadServerTimezone() {
+  adminApi.getSystemTimezone()
+    .then((data) => {
+      if (data?.displayTimezone) applyServerTimezone(data.displayTimezone);
+    })
+    .catch((e) => {
+      console.warn('[main] 拉取服务端显示时区失败, 回落本地时区:', e?.message);
+    });
+}
 
 // 登录态变化:登入起 (token 由 null → string, _timer 还没建) ;
 // 登出停 (token 由 string → null, _timer 已建). 同一 callback 双方向
@@ -68,4 +91,6 @@ auth.$subscribe((_mut, state) => {
   // R158.X.99.34.d — in-app 跟 featureFlags 1:1 平行双方向覆盖.
   if (state.token && !inapp._timer) startInappPolling();
   if (!state.token && inapp._timer) inapp.stopPolling();
+  // R161.11 — 登录后拉一次服务端显示时区 (未登录时端点 401, 拉不到也无妨).
+  if (state.token) loadServerTimezone();
 });

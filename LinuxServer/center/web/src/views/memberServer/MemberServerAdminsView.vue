@@ -59,6 +59,7 @@
 <script>
 import MemberAdminGroupsTable from '../../components/MemberAdminGroupsTable.vue';
 import { memberServerApi } from '../../api/member-server.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 export default {
   name: 'MemberServerAdminsView',
@@ -145,7 +146,7 @@ export default {
           this.summary = Array.isArray(data.summary) ? data.summary : [];
         }
         this.errorCount = 0;
-        this.lastLoadedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+        this.lastLoadedAt = formatDateTime(new Date().toISOString());
       } catch (e) {
         // R158.100.8 — axios 拦截器 (client.js:34-45) 已对 401 做清 token +
         //   push /login, 这里只计 errorCount 供 chip 显示; 不重复弹 toast.

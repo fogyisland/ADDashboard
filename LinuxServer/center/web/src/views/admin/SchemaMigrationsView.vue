@@ -86,6 +86,7 @@ import { ref, computed, onMounted } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { listMigrations, dryRunMigration, upgrade as doUpgradeApi } from '../../api/migrations.js';
 import { notifyError, notifySuccess } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const rows = ref([]);
 const loading = ref(false);
@@ -123,8 +124,7 @@ function errMsg(e) {
 
 function formatTime(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 async function openContent() {

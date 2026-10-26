@@ -254,6 +254,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import { memberServerApi } from '../../api/member-server.js';
+import { formatDateTime, formatDateTimeIso } from '../../lib/timezone.js';
 
 const packages = ref([]);
 const refreshSeconds = ref(10);
@@ -333,11 +334,11 @@ function truncate(s, n) {
 }
 function fmt(s) {
   if (!s) return '—';
-  return new Date(s).toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s);
 }
 function shortTime(s) {
   if (!s) return '—';
-  return new Date(s).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return formatDateTimeIso(s, { withYear: false });
 }
 
 function selectPackage(p) {
@@ -497,7 +498,7 @@ function renderTimelineChart() {
         const v = Array.isArray(params.value) ? params.value : [null, null];
         const ts = v[0];
         const dur = v[1];
-        const tsStr = ts ? new Date(ts).toLocaleString('zh-CN', { hour12: false }) : '—';
+        const tsStr = ts ? formatDateTime(ts) : '—';
         const d = params.data || {};
         const agentLabel = d.agentId || '—';
         const statusKey = d.status || 'unknown';

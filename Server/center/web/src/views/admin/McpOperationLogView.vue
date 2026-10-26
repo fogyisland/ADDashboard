@@ -157,6 +157,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, h } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 import { notifyError } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 // R158.114 — 12 mcp.* action (R158.102 6 老 + R158.113 6 新). 1:1 平行
 //   listMcpOperations sql helper IN list 23 entry 里的 12 mcp.* 段 (sql.js
@@ -244,7 +245,7 @@ const pageSize = 30;
 const fetchSize = 100;
 let timer = null;
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 function sevIcon(s)  { return s === 'high' ? '🔴' : s === 'medium' ? '🟡' : s === 'info' ? 'ℹ️' : '🔵'; }
 function sevLabel(s) { return s === 'high' ? '高' : s === 'medium' ? '中' : s === 'info' ? '信息' : '低'; }
 // R158.114 — MCP 类别 chip. 1:1 平行 AdManagementLogView sev-chip 渲染但分 read / write.

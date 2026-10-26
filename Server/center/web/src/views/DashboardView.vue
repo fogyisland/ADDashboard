@@ -199,6 +199,7 @@ import OverviewPanel from '../components/OverviewPanel.vue';
 import AdminMembersTable from '../components/AdminMembersTable.vue';
 import api from '../api/client.js';
 import { dashboardApi } from '../api/dashboard.js';
+import { formatDateTime, formatTimeOnly } from '../lib/timezone.js';
 
 const EMPTY_OS_BASELINE = { total: 0, critical: 0, warning: 0, normal: 0, offline: 0 };
 const EMPTY_EVENTLOG    = { errorEvents: 0, warningEvents: 0, errorDcs: 0 };
@@ -430,22 +431,16 @@ function hubDcShortName(dcName) {
 
 function formatTime(s) {
   if (!s) return '—';
-  try { return new Date(s).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }); }
+  try { return formatDateTime(s); }
   catch { return s; }
 }
-// R158.7 — CST timestamp formatter (operator directive "x时间为UTC时
-// 间，要转成北京时间"). Metric `ts` is an ISO UTC string; we add an
-// explicit +8 hour offset rather than relying on `toLocaleString`
-// timezone so the result is deterministic regardless of the browser's
-// TZ (or the centre host's TZ — the centre is UTC). Returns hh:mm in
-// 24-hour CST.
-const fmtTs = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstH = (d.getUTCHours() + 8) % 24;
-  const cstM = d.getUTCMinutes();
-  return `${String(cstH).padStart(2, '0')}:${String(cstM).padStart(2, '0')}`;
-};
+// R158.7 — 图表时间轴 formatter (operator directive "x时间为UTC时
+// 间，要转成北京时间"). Metric `ts` is an ISO UTC string; the result must
+// be deterministic regardless of the browser's TZ (or the centre host's
+// TZ — the centre is UTC). Returns hh:mm in the **display timezone**.
+// R161.11 — 原来手算 `+8h` (硬编码 "CST"), 改显示时区就失效;
+//   现在走 lib/timezone.js (默认 Asia/Shanghai ⇒ 输出与原来逐字相同)。
+const fmtTs = (t) => formatTimeOnly(t, { withSeconds: false, fallback: '' });
 function formatPct(v) {
   if (v === null || v === undefined) return '—';
   return `${v.toFixed(1)}%`;

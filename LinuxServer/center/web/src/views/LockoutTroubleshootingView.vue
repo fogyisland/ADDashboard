@@ -66,6 +66,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AppLayout from '../components/AppLayout.vue';
 import { searchLockoutEvents } from '../api/lockout.js';
+import { formatDateTime } from '../lib/timezone.js';
 
 const route = useRoute();
 const router = useRouter();
@@ -111,8 +112,7 @@ async function drillDown(field, value) {
 
 function formatTime(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? s : d.toLocaleString();
+  return formatDateTime(s, { fallback: s });
 }
 
 onMounted(async () => {

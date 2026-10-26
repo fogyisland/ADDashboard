@@ -79,6 +79,7 @@ import { ref, computed, watch, h } from 'vue';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 import { notifyError } from '../../lib/notify.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 const tabs = [
   { key: 'security', icon: '🔒', label: '安全' },
@@ -100,7 +101,19 @@ const badges = ref({ security: 0, changes: 0, ops: 0, ad_management: 0 });
 const filters = ref({ timePreset: '', userId: null, severity: [] });
 const selected = ref(null);
 
-function fmt(s) { return s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : '—'; }
+// R161.11 — ★ 这一行是 R161.10 现场事故的收尾。
+//   操作员看到的现象: 一条真实发生在 2026-10-26 21:03 (CST) 的操作,
+//   审计页显示成 "2026/10/27 05:03:03" —— 整整偏 8 小时, 界面**没有任何**提示。
+//   两层根因, 两层修复:
+//     1. 存储层 (R161.10): MySQL 会话时区没钉 UTC ⇒ `DEFAULT CURRENT_TIMESTAMP`
+//        按会话时区写库。修法 = pinSessionUtc (每条连接 SET time_zone='+00:00')。
+//        ⇒ 现在库里存的一律是 UTC。
+//     2. 渲染层 (R161.11, 本文件): 后端返回的是 ISO-Z, 前端再按**浏览器本地时区**
+//        渲染就还是错的; 而且每个 view 各写各的 toLocaleString / 硬编码 +8h,
+//        同样的错会再来一次。修法 = 全站时间戳统一走 lib/timezone.js
+//        (显示时区, 单一真源), 系统设置里新增"时区"菜单让操作员自己定。
+//   本行 `formatDateTime(s)` 就是那条统一入口 —— 不要再改回 toLocaleString。
+function fmt(s) { return s ? formatDateTime(s) : '—'; }
 function sevIcon(s)  { return s === 'high' ? '🔴' : s === 'medium' ? '🟡' : '🔵'; }
 function sevLabel(s) { return s === 'high' ? '高' : s === 'medium' ? '中' : '低'; }
 

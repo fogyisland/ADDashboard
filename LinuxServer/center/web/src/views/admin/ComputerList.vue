@@ -98,6 +98,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
 import { adminApi } from '../../api/admin.js';
+import { formatDateOnly } from '../../lib/timezone.js';
 
 const PAGE_SIZE = 100; // R158.45.16 (2026-10-05) — operator "一页 100 个".
 
@@ -188,10 +189,7 @@ watch(
 
 function fmtTime(s) {
   if (!s) return '—';
-  const t = new Date(s).getTime();
-  if (Number.isNaN(t)) return '—';
-  const d = new Date(t);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return formatDateOnly(s, { fallback: '—' });
 }
 </script>
 

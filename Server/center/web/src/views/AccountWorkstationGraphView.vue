@@ -176,6 +176,7 @@ import * as echarts from 'echarts';
 import AppLayout from '../components/AppLayout.vue';
 import { fetchAccountWorkstationGraph } from '../api/failed-logon.js';
 import { useChartTheme } from '../composables/useChartTheme.js';
+import { formatDateTimeIso } from '../lib/timezone.js';
 
 const POLL_INTERVAL_MS = 120 * 1000;    // 120s polling (网络图比 line chart 重, R158.1W.4 拉到 2min 节流)
 
@@ -403,10 +404,7 @@ function setViewMode(m) {
 function formatTs(iso) {
   if (!iso) return '—';
   try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return formatDateTimeIso(iso, { withSeconds: false, fallback: iso });
   } catch (e) {
     return iso;
   }

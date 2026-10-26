@@ -227,6 +227,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import * as echarts from 'echarts';
 import { memberServerApi } from '../../api/member-server.js';
+import { formatTimeOnly } from '../../lib/timezone.js';
 import {
   OFFLINE_THRESHOLD_MS,
   computeStatus,
@@ -266,14 +267,10 @@ const chartSeries = ref({});
 const chartLoading = ref(false);
 const chartInstances = new Map();
 
-// R158.99.2 — CST time formatter (UTC +8 hh:mm). Same formula as AD view.
-const fmtTsCst = (t) => {
-  const d = new Date(t);
-  if (!Number.isFinite(d.getTime())) return '';
-  const cstH = (d.getUTCHours() + 8) % 24;
-  const cstM = d.getUTCMinutes();
-  return `${String(cstH).padStart(2, '0')}:${String(cstM).padStart(2, '0')}`;
-};
+// R158.99.2 — 图表 X 轴时间 formatter (hh:mm). Same helper as AD view.
+// R161.11 — 原来手算 `+8h` (硬编码 "CST"), 改显示时区就失效;
+//   现在按**显示时区**算 (默认 Asia/Shanghai ⇒ 输出与原来逐字相同)。
+const fmtTsCst = (t) => formatTimeOnly(t, { withSeconds: false, fallback: '' });
 
 // R158.99.2 — bucket items by siteName (same convention as AD view).
 const UNGROUPED_LABEL = '未分配';

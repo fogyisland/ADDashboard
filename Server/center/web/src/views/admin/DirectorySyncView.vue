@@ -312,6 +312,7 @@ import { useRouter } from 'vue-router';
 import AdminLayout from '../../components/AdminLayout.vue';
 import { adminApi } from '../../api/admin.js';
 import SnapshotTreePanel from './SnapshotTreePanel.vue';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 const router = useRouter();
 
@@ -744,10 +745,7 @@ function runTooltip(run) {
 // ---- 工具 ----
 function fmt(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(iso, { fallback: iso });
 }
 function fmtRelative(iso) {
   if (!iso) return '';

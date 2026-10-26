@@ -407,6 +407,7 @@ import { dashboardApi } from '../../api/dashboard.js';
 // R158.X.99.20 (2026-10-18) — 单次触发弹窗用 dcs-catalog 拉 DC 列表.
 // 复用 src/api/admin.js listDcsCatalog (1:1 平行 DcsCatalogView/FilePushView precedent).
 import { adminApi } from '../../api/admin.js';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 // R158.72.x.6 (2026-10-16) — PackageScheduleView 中文化 + 运行节奏说明.
 //   操作员 directive: "完成包的内容中文化, 不要大段看不懂的语言, 用口语化的语言
@@ -911,12 +912,9 @@ function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 }
 
-const fmt = (d) => {
-  const dt = d instanceof Date ? d : new Date(d);
-  if (isNaN(dt.getTime())) return '—';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
-};
+// R161.11 — 手搓 getFullYear/... 取的是浏览器本地时区 ⇒ 换机器就变;
+//   现在统一按显示时区渲染 (默认 Asia/Shanghai ⇒ 与迁移前逐字相同)。
+const fmt = (d) => formatDateTimeIso(d, { fallback: '—' });
 
 function onKeydown(e) {
   if (e.key !== 'Escape') return;

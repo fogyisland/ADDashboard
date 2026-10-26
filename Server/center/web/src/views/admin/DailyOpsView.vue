@@ -413,6 +413,7 @@ import { adAdminApi } from '../../api/ad-admin.js';
 // R158.44.7.10 (2026-10-05) — countUsersAndGroups → countUsersGroupsComputers
 // 加第 3 object class (computer). OU 树每个节点显示 👤/👥/💻 3 个计数.
 import { stripFirstRdn, firstRdnValue, countUsersGroupsComputers, buildOuTree } from '../../utils/ouTreeBuilder.js';
+import { formatDateTimeIso, formatTimeOnly, formatDateTime } from '../../lib/timezone.js';
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -1007,16 +1008,12 @@ async function loadDcHistory(hostname) {
 
 function fmt(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(iso);
 }
 
 function fmtTs(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatDateTimeIso(iso, { fallback: iso });
 }
 
 function fmtRelative(iso) {
@@ -1097,10 +1094,7 @@ onBeforeUnmount(() => {
 
 function fmtTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return formatTimeOnly(iso, { fallback: '—' });
 }
 </script>
 

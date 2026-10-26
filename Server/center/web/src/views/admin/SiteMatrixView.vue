@@ -553,6 +553,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import AppLayout from '../../components/AppLayout.vue';
 import { dashboardApi } from '../../api/dashboard.js';
+import { formatDateTimeIso } from '../../lib/timezone.js';
 
 // R153 — `direction` selects the matrix lens. Defaults to 'inbound' to
 // match the historical behaviour before the page split (rows = receiving
@@ -1246,11 +1247,8 @@ async function load() {
 
 function fmt(s) {
   if (!s) return '—';
-  // zh-CN short form keeps the legend + tooltip compact.
-  return new Date(s).toLocaleString('zh-CN', {
-    hour12: false, month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit'
-  });
+  // 'MM-DD HH:mm' short form keeps the legend + tooltip compact.
+  return formatDateTimeIso(s, { withYear: false, withSeconds: false, fallback: '—' });
 }
 
 onMounted(async () => {

@@ -35,7 +35,7 @@
              `filteredGroups` in R92–R96). No search → no filter. R53
              regression tests for label/path order continue to hold
              verbatim. -->
-        <details v-for="g in visibleGroups" :key="g.title" :open="g.open" class="nav-group">
+        <details v-for="g in visibleGroups" :key="g.title" :open="groupOpen(g)" @toggle="onGroupToggle(g, $event)" class="nav-group">
           <summary class="nav-group-title">
             <span class="nav-group-title-main">
               <span class="icon">{{ g.icon }}</span>
@@ -125,13 +125,76 @@ function loadSidebarVisible() {
   try {
     const v = localStorage.getItem('admin-sidebar-visible');
     if (v === 'false') sidebarVisible.value = false;
-  } catch { /* ignore */ }
+  } catch (e) {
+    // 读不到缓存 (隐私模式 / 配额满) 不是致命错误 —— 保持默认展开即可,
+    // 但必须留痕, 不能静默吞 (CLAUDE.md: 拒绝静默失败)。
+    console.warn('[AdminLayout] 读取侧边栏折叠状态失败, 使用默认值:', e?.message);
+  }
 }
 function toggleSidebar() {
   sidebarVisible.value = !sidebarVisible.value;
-  try { localStorage.setItem('admin-sidebar-visible', String(sidebarVisible.value)); } catch { /* ignore */ }
+  try {
+    localStorage.setItem('admin-sidebar-visible', String(sidebarVisible.value));
+  } catch (e) {
+    console.warn('[AdminLayout] 侧边栏折叠状态持久化失败 (本次会话内仍生效):', e?.message);
+  }
 }
 onMounted(loadSidebarVisible);
+
+// R161.11 (2026-10-26) — 菜单分组的展开/折叠状态**跨刷新持久化** + 默认折叠.
+//
+// ★ 操作员现场 (原话):
+//     「后台管理菜单，折叠了之后，刷新后不要再展开。以免总是要点开，默认折叠」
+//
+// ★ 改之前的真因 (不是"忘了存", 是**存不住**):
+//   1. 折叠状态压根没进 localStorage —— 分组用的是原生 `<details>`,
+//      用户点 summary 折叠的是 **DOM 上的 open 属性**, Vue 不知道, 刷新即丢。
+//   2. 模板写的是 `:open="g.open"`, 而 `g.open` 是 `groups` 这个**静态数组**
+//      里的常量 (永远是 true) ⇒ 任何一次 re-render (feature-flag store 拉到
+//      开关 / 主题切换 / auth 状态变化) 都会把 open 属性**打回 true**,
+//      用户刚折叠的分组当场弹回去。
+//   ⇒ 光"存起来"不够, 必须让**唯一真源**变成响应式的: 用户点 summary →
+//     toggle 事件 → 写进响应式 map → 模板 `:open` 读这个 map。
+//     两者永远是同一个值, Vue 不会再把用户的操作覆盖掉。
+//
+// ★ 默认折叠 (操作员 directive): 所有分组的 `open` 默认值改成 false,
+//   首次进入后台看到的是 6 个分组标题 (带条目计数), 点开需要的那个。
+const NAV_GROUPS_OPEN_KEY = 'admin-nav-groups-open';
+// { [分组标题]: true|false } —— 只存**被操作过**的分组, 没存过的走 g.open。
+const groupOpenMap = ref({});
+function loadGroupOpenMap() {
+  try {
+    const raw = localStorage.getItem(NAV_GROUPS_OPEN_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const clean = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === 'boolean') clean[k] = v;
+      }
+      groupOpenMap.value = clean;
+    }
+  } catch (e) {
+    console.warn('[AdminLayout] 读取菜单分组折叠状态失败, 使用默认值:', e?.message);
+  }
+}
+// 分组当前该展开还是折叠: 持久化值优先, 没有就用 groups 里的默认值 (默认折叠)。
+function groupOpen(g) {
+  const saved = groupOpenMap.value[g.title];
+  return typeof saved === 'boolean' ? saved : g.open;
+}
+// 原生 <details> 的 toggle 事件在用户点 summary 时触发 (DOM 的 open 已翻转)。
+function onGroupToggle(g, event) {
+  const open = !!(event?.target?.open);
+  if (groupOpen(g) === open) return;   // Vue patch 引发的回声, 不重复写
+  groupOpenMap.value = { ...groupOpenMap.value, [g.title]: open };
+  try {
+    localStorage.setItem(NAV_GROUPS_OPEN_KEY, JSON.stringify(groupOpenMap.value));
+  } catch (e) {
+    console.warn('[AdminLayout] 菜单分组折叠状态持久化失败 (本次会话内仍生效):', e?.message);
+  }
+}
+onMounted(loadGroupOpenMap);
 
 // 2026-09-24 R92: menu search query removed in R97 per operator
 // directive "去掉搜索菜单". Sidebar renders `groups` directly via the
@@ -164,8 +227,14 @@ onMounted(loadSidebarVisible);
 // per operator directive "站点矩阵 只在前台展现,后台不需要".
 // The /matrix route + SiteMatrixView component still exist (AppLayout
 // page in the frontend), but admin (AdminLayout) no longer surfaces it.
+// R161.11 (2026-10-26) — 8 个分组的 `open` 默认值统一改成 **false (默认折叠)**,
+//   操作员 directive "后台管理菜单，折叠了之后，刷新后不要再展开 …… 默认折叠"。
+//   每个分组的展开/折叠状态由 groupOpenMap (localStorage 'admin-nav-groups-open')
+//   覆盖, 见上面 groupOpen() / onGroupToggle()。
+//   ⚠ R53/R54/R75 既有测试锁的是 groups 数组的 label/path/顺序, 0 改它们;
+//     只动 open 这个**默认值**字段。
 const groups = [
-  { icon: '📊', title: '监控与诊断', open: true, items: [
+  { icon: '📊', title: '监控与诊断', open: false, items: [
     // R64: 复制状态概览 restored to R49 ops-console (per-DC partner tables).
     { label: '复制状态概览',         path: '/admin/site-replication-matrix/all' },
     // 2026-09-01 R74: 复制错误 — focused triage view for failed replication
@@ -199,7 +268,7 @@ const groups = [
     //   (operator decision: 不需要 outbound partner)。仅留入站。
     { label: '复制伙伴发现入站',     path: '/admin/partner-discover/inbound' }
   ]},
-  { icon: '🛡️', title: 'AD 活动目录服务器', open: true, items: [
+  { icon: '🛡️', title: 'AD 活动目录服务器', open: false, items: [
     { label: 'AD 站点清单设置',     path: '/admin/sites-catalog' },
     { label: 'AD 域控清单设置',     path: '/admin/dcs-catalog' },
     // R53: 端口健康检查 renamed to AD 域控检查端口, moved from R52 监控与诊断.
@@ -207,7 +276,7 @@ const groups = [
     // R53: NEW placeholder — file push to AD DCs (mock-first per operator).
     { label: '文件推送功能',         path: '/admin/ad-file-push' }
   ]},
-  { icon: '💻', title: '成员服务器管理', open: true, items: [
+  { icon: '💻', title: '成员服务器管理', open: false, items: [
     { label: '成员服务器组',         path: '/admin/server-groups' },
     { label: '成员服务器',           path: '/admin/member-servers' },
     // R53: NEW placeholders (mock-first per operator directive).
@@ -217,7 +286,7 @@ const groups = [
     // 摆在「成员服务器管理」组末尾, 让两类机器的下线管理一个入口可达。
     { label: '下线管理',             path: '/admin/server-lifecycle' }
   ]},
-  { icon: '👥', title: '权限和账户', open: true, items: [
+  { icon: '👥', title: '权限和账户', open: false, items: [
     { label: '用户管理', path: '/admin/users' },
     { label: '角色管理', path: '/admin/roles' }
   ]},
@@ -229,7 +298,7 @@ const groups = [
   // 2026-10-03 R158.37.2: operator "将运维菜单中的日常管理、AD用户管理、
   // AD组管理删除,因为这是日常管理中的操作" — those three entries now
   // live exclusively under /daily-ops (top-level), not under AdminLayout.
-  { icon: '⚙️', title: '运维', open: true, items: [
+  { icon: '⚙️', title: '运维', open: false, items: [
     // R158.35 (2026-10-03) - AD Directory Sync (LDAP 389/636) config +
     // manual trigger + run history. Operator directive "set up AD sync
     // in backend, then read accounts/groups in the daily-ops page" and
@@ -250,7 +319,7 @@ const groups = [
     // 注册" — 侧边栏文案改成中文。
     { label: '域和森林注册', path: '/admin/forest-registry' }
   ]},
-  { icon: '📋', title: '运维日志', open: true, items: [
+  { icon: '📋', title: '运维日志', open: false, items: [
     // R53: 审计日志 → 系统运维日志 (记录目前所有的系统变更日志).
     { label: '系统运维日志',         path: '/admin/audit' },
     // R53: 操作日志 → 心跳与状态执行日志 (记录收集到的心跳和状态日志).
@@ -271,7 +340,7 @@ const groups = [
   // R53: 6th group — system config orphans. Not in operator's spec but
   // these views exist and serve real functions (config / email / migrations).
   // Bottom position = lowest frequency = least screen real estate impact.
-  { icon: '🛠️', title: '系统设置', open: true, items: [
+  { icon: '🛠️', title: '系统设置', open: false, items: [
     { label: '版本升级', path: '/admin/migrations' },
     { label: '系统配置', path: '/admin/config' },
     { label: '邮件配置', path: '/admin/email-config' },
@@ -295,7 +364,18 @@ const groups = [
     //   system-settings 父路由 + 2 children 1:1 对齐. 严禁跟 R158.78
     //   system-alerts 混 — 走独立 /admin/system-settings/* namespace.
     { label: '功能开关',  path: '/admin/system-settings/feature-flags' },
-    { label: 'License 管理', path: '/admin/system-settings/license' }
+    { label: 'License 管理', path: '/admin/system-settings/license' },
+    // R161.11 (2026-10-26) — 时区设置页. 操作员 directive
+    //   「是否能够在系统设置中增加一个时区的菜单」+「这样计算时间就不会出错了，
+    //   当前就是错的离谱」。
+    //   背景: R161.10 的现场事故 = 审计时间整整偏 8 小时 (MySQL 会话时区没钉 UTC),
+    //   而界面没有任何提示。本页把「服务器会话时区 / 系统时区 / 是否已钉 UTC /
+    //   当前 UTC 时间 / 显示时区」全部摊开, 操作员一眼能看出时间对不对,
+    //   并能选择显示时区 (存 system_config.app_display_timezone)。
+    //   perm: 前端跟同组 3 个页面同一个 umbrella (router meta.perm =
+    //   'admin:users', 跟 /admin/system-settings 父路由 1:1), 后端写接口
+    //   再守一道 admin:config (GET 只要登录, 因为前台也要用显示时区)。
+    { label: '时区设置',  path: '/admin/timezone' }
   ]},
   // R158.110 (2026-10-16) — 报表中心 admin-only group. 4 items: 总览 /
   //   锁定账户 / 密码错误 / 账户变更. 走 /report-center parent + 4 children
@@ -307,7 +387,7 @@ const groups = [
   // R158.111.b (2026-10-16) — 删 3 top 聚合条目 (操作员 directive "3 个 top
   //   视图在报表中心没有意义, 去掉"). 7 items 改 4: 总览 + 3 流水. 0 改
   //   既有 6 group, 0 改 3 流水既有 label/path, 0 改后端.
-  { icon: '📈', title: '报表中心', open: true, items: [
+  { icon: '📈', title: '报表中心', open: false, items: [
     // R158.X.116.n — featureFlag 逐 item gate。「总览」只挂总闸: 它是 3 张
     //   卡片导航目录, 自身不拉数据, 卡片的可见性由 ReportCenterOverviewView
     //   按子闸各自判定 (3 把子闸都关时总览会空, 那时 3 张卡全隐)。

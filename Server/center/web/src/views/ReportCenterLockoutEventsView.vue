@@ -75,6 +75,7 @@
 //   0 改 ReportCenterLockoutView 既有 4 文件.
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue';
 import { fetchLockoutEvents, fetchDcOptions } from '../api/report-center.js';
+import { formatDateTime, formatTimeOnly } from '../lib/timezone.js';
 
 const PAGE_SIZE = 100;
 const chartRange = ref('all');        // 默认全部 (跟用户 directive "从开始以来到现在所有" 1:1)
@@ -143,8 +144,8 @@ watch(searchUser, () => {
   searchDebounceHandle = setTimeout(() => { page.value = 1; load(); }, 300);
 });
 
-function formatTime(d) { if (!d) return ''; return new Date(d).toLocaleTimeString('zh-CN', { hour12: false }); }
-function formatTs(ts) { if (!ts) return '—'; return new Date(ts).toLocaleString('zh-CN', { hour12: false }); }
+function formatTime(d) { if (!d) return ''; return formatTimeOnly(d, { fallback: '' }); }
+function formatTs(ts) { if (!ts) return '—'; return formatDateTime(ts); }
 
 onMounted(() => { loadDcOptions(); load(); });
 onBeforeUnmount(() => { if (searchDebounceHandle) clearTimeout(searchDebounceHandle); });

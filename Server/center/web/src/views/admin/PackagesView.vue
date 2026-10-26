@@ -445,6 +445,7 @@ import EditScriptModal from '../../components/admin/EditScriptModal.vue';
 import EditPolicyModal from '../../components/admin/EditPolicyModal.vue';
 import { packagesApi } from '../../api/packages.js';
 import { dashboardApi } from '../../api/dashboard.js';
+import { formatDateTime } from '../../lib/timezone.js';
 
 // R158.60.4 — 4 个 on-demand 包 (R158.56c-d ship) 单独标识. 这些包
 // 没有 agent.intervalSec, 走 R75 drainAdCommands → dispatchAdCommand
@@ -642,9 +643,7 @@ async function confirmDelete(it) {
 
 function fmt(s) {
   if (!s) return '—';
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return String(s);
-  return d.toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s, { fallback: String(s) });
 }
 
 // 包类型 / 包来源 — 后端返回的英文枚举值翻译成中文.
@@ -692,7 +691,7 @@ function lastRunLabel(s) {
 }
 function lastRunTime(s) {
   if (!s?.lastRunAt) return '—';
-  return new Date(s.lastRunAt).toLocaleString('zh-CN', { hour12: false });
+  return formatDateTime(s.lastRunAt);
 }
 
 // R158.60.4 — recent[] 单行 → 状态色 / 文字 (PackageRunsMonitorView 风格)
