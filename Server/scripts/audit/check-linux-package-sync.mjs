@@ -212,6 +212,26 @@ const ALLOWLIST = [
       '-Exclude 里明确排除了 tests)。⇒ 在目标机上它们要么报一堆假阳性, 要么直接失败 —— ' +
       '一个永远误报的审计脚本比没有更糟, 它训练操作员忽略审计输出。',
   },
+  {
+    tree: 'center/web',
+    side: 'source-only',
+    path: 'vitest.config.js',
+    reason:
+      '前端测试配置 (R161.13)。交付包用 `npm ci --omit=dev` 安装 —— vitest / jsdom / ' +
+      '@vue/test-utils 全是 devDependency, 目标机上**根本装不上**, 所以 "npm run test:web" ' +
+      '在交付包里必然是死脚本。把它发过去只会让操作员以为那条命令能用 (center/package.json ' +
+      '里的 test:web 脚本是照发的), 白白浪费一次排查。',
+  },
+  {
+    tree: 'center/web',
+    side: 'source-only',
+    path: 'tests',
+    dirPrefix: true,
+    reason:
+      '前端测试用例 (R161.13) —— 同上: 依赖 vitest/jsdom/@vue/test-utils, 目标机上跑不了。' +
+      '留一份跑不起来的测试在交付包里, 比没有测试更糟 (它会让人以为"装完就该有测试", ' +
+      '然后花时间去找为什么跑不起来)。',
+  },
 ];
 
 function allowlistMatch(treeId, side, relPath) {
