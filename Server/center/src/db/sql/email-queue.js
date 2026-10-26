@@ -19,9 +19,15 @@ export const emailQueue = {
     // WHERE: sent_at IS NULL (跟 history listSent 反, history 是已发出).
     // ORDER BY: next_attempt_at ASC, id ASC (跟 listPending 1:1, 老行排前).
     // LIMIT: UI cap 500 (跟 history listSent 一致).
+    //
+    // ★ R161.12 (2026-10-27) — kind_detail 必须带显式 COLLATE, 理由同
+    //   email-history.listSent 的注释 (现场 500: "Illegal mix of collations
+    //   for operation 'UNION'", MySQL 1271)。`CAST(NULL AS CHAR)` 跟随**连接**
+    //   collation, 与对侧列 collation (utf8mb4_unicode_ci) 不同就炸。
     listQueue: (limit) => `
       SELECT * FROM (
-        SELECT 'alert' AS source, alert_id AS ref_id, CAST(NULL AS CHAR) AS kind_detail,
+        SELECT 'alert' AS source, alert_id AS ref_id,
+               CONVERT(NULL USING utf8mb4) COLLATE utf8mb4_unicode_ci AS kind_detail,
                to_addrs, cc_addrs, subject, attempt_count, max_attempts,
                last_error, next_attempt_at, id
         FROM system_alert_outbox

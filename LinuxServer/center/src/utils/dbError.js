@@ -35,6 +35,11 @@ export const DB_ERROR_KIND = {
   SYNTAX: 'syntax',
   CONNECTION: 'connection',
   CONSTRAINT: 'constraint',
+  // ★ R161.12 (2026-10-27) — collation 冲突 (MySQL 1267/1271
+  //   "Illegal mix of collations for operation 'UNION'")。
+  //   **不**可降级: 它不是 schema 漂移, 是查询/连接层的真故障 ⇒ 必须 500
+  //   并把 kind 报出去, 否则前端只能显示一句看不懂的英文。
+  COLLATION: 'collation',
   OTHER: 'other'
 };
 
@@ -49,6 +54,9 @@ const MYSQL_CODE_KIND = new Map([
   // mysqld_stmt_execute" —— R161.10 记录的 prepared 协议坑)
   ['ER_PARSE_ERROR', DB_ERROR_KIND.SYNTAX],
   ['ER_WRONG_ARGUMENTS', DB_ERROR_KIND.SYNTAX],
+  // ★ R161.12 — collation 冲突 (1267 / 1271)。现场邮件两个界面 500 就是它。
+  ['ER_CANT_AGGREGATE_2COLLATIONS', DB_ERROR_KIND.COLLATION],
+  ['ER_CANT_AGGREGATE_NCOLLATIONS', DB_ERROR_KIND.COLLATION],
   // 约束类
   ['ER_DUP_ENTRY', DB_ERROR_KIND.CONSTRAINT],
   ['ER_NO_REFERENCED_ROW', DB_ERROR_KIND.CONSTRAINT],
@@ -92,7 +100,9 @@ const MYSQL_ERRNO_KIND = new Map([
   [1217, DB_ERROR_KIND.CONSTRAINT],      // ER_ROW_IS_REFERENCED
   [1451, DB_ERROR_KIND.CONSTRAINT],      // ER_ROW_IS_REFERENCED_2
   [1205, DB_ERROR_KIND.CONSTRAINT],      // ER_LOCK_WAIT_TIMEOUT
-  [1213, DB_ERROR_KIND.CONSTRAINT]       // ER_LOCK_DEADLOCK
+  [1213, DB_ERROR_KIND.CONSTRAINT],      // ER_LOCK_DEADLOCK
+  [1267, DB_ERROR_KIND.COLLATION],       // ER_CANT_AGGREGATE_2COLLATIONS
+  [1271, DB_ERROR_KIND.COLLATION]        // ER_CANT_AGGREGATE_NCOLLATIONS
 ]);
 
 // MSSQL 错误号 (err.number) → 类别。
@@ -109,7 +119,8 @@ const MSSQL_NUMBER_KIND = new Map([
   [547, DB_ERROR_KIND.CONSTRAINT],      // constraint conflict
   [471, DB_ERROR_KIND.CONSTRAINT],      // constraint conflict
   [18456, DB_ERROR_KIND.CONNECTION],    // login failed
-  [4060, DB_ERROR_KIND.CONNECTION]      // cannot open database
+  [4060, DB_ERROR_KIND.CONNECTION],     // cannot open database
+  [2402, DB_ERROR_KIND.COLLATION]       // Invalid collation
 ]);
 
 // message 兜底正则 —— 最后一层, 结构化字段全丢时的救命稻草。
@@ -123,6 +134,10 @@ const MESSAGE_PATTERNS = [
   [/invalid column name/i, DB_ERROR_KIND.COLUMN_MISSING],
   [/column .* doesn't exist/i, DB_ERROR_KIND.COLUMN_MISSING],
   [/incorrect arguments to mysqld_stmt_execute/i, DB_ERROR_KIND.SYNTAX],
+  // ★ R161.12 — collation 冲突 (现场邮件两个界面 500 的真因)。
+  //   注意 MySQL 5.7 的 1271 消息**不带** collation 明细, 只有一句
+  //   "Illegal mix of collations for operation 'UNION'" ⇒ message 兜底必须认它。
+  [/illegal mix of collations/i, DB_ERROR_KIND.COLLATION],
   [/you have an error in your sql syntax/i, DB_ERROR_KIND.SYNTAX],
   [/syntax error/i, DB_ERROR_KIND.SYNTAX],
   [/deadlock found/i, DB_ERROR_KIND.CONSTRAINT],

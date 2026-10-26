@@ -1139,12 +1139,71 @@ export function createSystemSettingsV2Router({ db, requireAuth, requirePerm, log
       server = { error: e?.message ?? String(e) };
     }
 
+    // ★ R161.12 (2026-10-27) — collation 证据。
+    //   现场邮件两个界面 500 = "Illegal mix of collations for operation 'UNION'",
+    //   而这类错误**只看 500 文本分不清**是"表缺列"还是"连接 collation 与 schema
+    //   不一致"。⇒ 这里把三件事摊开:
+    //     connection.charset/collation — 当前连接的字符集与 collation
+    //     tableCollation             — 两张 outbox 表的表级 collation
+    //     columnCollation            — UNION 涉及列的列级 collation
+    //   一眼就能看出"连接 utf8mb4_general_ci vs 列 utf8mb4_unicode_ci"。
+    let collation = null;
+    try {
+      const connInfoSql = dialect === 'mssql'
+        ? `SELECT CONVERT(nvarchar(64), SERVERPROPERTY('Collation')) AS server_collation`
+        : `SELECT @@character_set_connection AS charset_connection,
+                  @@collation_connection AS collation_connection,
+                  @@character_set_database AS charset_database,
+                  @@collation_database AS collation_database`;
+      const connRes = await db.execute(connInfoSql, []);
+      const connRows = connRes?.rows ?? connRes?.recordset ?? [];
+
+      const tableCollSql = dialect === 'mssql'
+        ? `SELECT t.name AS table_name, c.name AS collation_name
+             FROM sys.tables t
+             JOIN sys.columns c ON c.object_id = t.object_id
+            WHERE t.name IN ('system_alert_outbox','report_email_outbox')
+              AND c.name = 'subject'`
+        : `SELECT TABLE_NAME AS table_name, TABLE_COLLATION AS collation_name
+             FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME IN ('system_alert_outbox','report_email_outbox')`;
+      const tableRes = await db.execute(tableCollSql, []);
+      const tableRows = tableRes?.rows ?? tableRes?.recordset ?? [];
+
+      const columnCollSql = dialect === 'mssql'
+        ? `SELECT t.name AS table_name, c.name AS column_name, c.collation_name AS collation_name
+             FROM sys.tables t
+             JOIN sys.columns c ON c.object_id = t.object_id
+            WHERE t.name IN ('system_alert_outbox','report_email_outbox')
+              AND c.name IN ('to_addrs','cc_addrs','subject','last_error','kind')
+            ORDER BY t.name, c.name`
+        : `SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name,
+                  CHARACTER_SET_NAME AS charset_name, COLLATION_NAME AS collation_name
+             FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME IN ('system_alert_outbox','report_email_outbox')
+              AND COLUMN_NAME IN ('to_addrs','cc_addrs','subject','last_error','kind')
+            ORDER BY TABLE_NAME, COLUMN_NAME`;
+      const columnRes = await db.execute(columnCollSql, []);
+      const columnRows = columnRes?.rows ?? columnRes?.recordset ?? [];
+
+      collation = {
+        connection: connRows[0] ?? null,
+        tables: tableRows,
+        columns: columnRows
+      };
+    } catch (e) {
+      collation = { error: e?.message ?? String(e) };
+    }
+
     res.json({
       dialect,
       tables,
       columns,
       missingTables,
       missingColumns,
+      collation,
       server,
       checkedAt: new Date().toISOString()
     });

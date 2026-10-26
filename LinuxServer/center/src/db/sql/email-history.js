@@ -21,9 +21,23 @@ export const emailHistory = {
     // - sent_at IS NOT NULL: 排除仍在排队 (邮件没发出去, queue 中).
     // - sent_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? DAY): 时间窗.
     // - ORDER BY sent_at DESC, id DESC: 跨 union 排序, 限制 limit.
+    //
+    // ★ R161.12 (2026-10-27) — kind_detail 的 COLLATE 是**必需**的, 不是洁癖:
+    //   现场这两个端点 500, 报 "Illegal mix of collations for operation 'UNION'"
+    //   (MySQL 1271 ER_CANT_AGGREGATE_NCOLLATIONS)。
+    //   真因: UNION 的结果列 collation 由各分支聚合 ——
+    //     分支 1 的 `CAST(NULL AS CHAR)` 跟随**连接** collation,
+    //     分支 2 的 `report_email_outbox.kind` 是**列** collation (utf8mb4_unicode_ci),
+    //     两个隐式 collation 不同 ⇒ 无法聚合 ⇒ 1271。
+    //   写死 `CONVERT(NULL USING utf8mb4) COLLATE utf8mb4_unicode_ci` 后,
+    //   本查询**不再依赖连接 collation** (EXPLICIT collation 优先级高于隐式),
+    //   连接被谁改成 general_ci / latin1 都不会再炸这一条。
+    //   (根因那一端 —— 连接 charset 与 schema 对齐 —— 在
+    //    src/db/drivers/mysql.js 的 charset: 'utf8mb4_unicode_ci'。)
     listSent: (days, limit) => `
       SELECT * FROM (
-        SELECT 'alert' AS source, alert_id AS ref_id, CAST(NULL AS CHAR) AS kind_detail,
+        SELECT 'alert' AS source, alert_id AS ref_id,
+               CONVERT(NULL USING utf8mb4) COLLATE utf8mb4_unicode_ci AS kind_detail,
                to_addrs, cc_addrs, subject, attempt_count, max_attempts,
                last_error, sent_at, next_attempt_at, id
         FROM system_alert_outbox

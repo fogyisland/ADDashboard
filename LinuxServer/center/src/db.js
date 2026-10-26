@@ -38,7 +38,15 @@ export function initPool(config) {
     timezone: 'Z',
     dateStrings: false,
     multipleStatements: false,
-    charset: 'utf8mb4'
+    // ★ R161.12 (2026-10-27) — 必须写**全 collation 名**:
+    //   mysql2 的 `Charsets.UTF8MB4 = 45` (= utf8mb4_general_ci), 写
+    //   `charset: 'utf8mb4'` 会把连接 collation 降级成 general_ci, 而本项目
+    //   schema (75 张表 / 367 个字符串列) 全部是 utf8mb4_unicode_ci ⇒
+    //   "列 vs 常量" 的比较会撞 MySQL 1267/1271
+    //   ("Illegal mix of collations for operation 'UNION'" 等)。
+    //   业务池 (src/db/drivers/mysql.js) 已按同一约定修好; 本文件若被复活,
+    //   必须一起带过去。
+    charset: 'utf8mb4_unicode_ci'
   });
   // ★ R161.10 (2026-10-26) — 每条**新建**连接先钉住会话时区 (UTC)。
   //   mysql2/promise 的 PromisePool 用 inheritEvents 把底层池的 'connection'

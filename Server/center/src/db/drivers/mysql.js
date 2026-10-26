@@ -163,7 +163,43 @@ export function createMysqlDriver(config) {
     timezone: 'Z',
     dateStrings: false,
     multipleStatements: false,
-    charset: 'utf8mb4'
+    // ★★ R161.12 (2026-10-27) — charset 必须写**全 collation 名**, 不能写
+    //   'utf8mb4'!
+    //
+    // ★ 事故 (操作员现场): 邮件队列 + 邮件历史两个界面 500, 报
+    //   "Illegal mix of collations for operation 'UNION'" (MySQL 1271
+    //    ER_CANT_AGGREGATE_NCOLLATIONS)。表**都在**, 不是缺表。
+    //
+    // ★ 真因 (实测复现, 见下): mysql2 的 `Charsets.UTF8MB4 = 45` ——
+    //   也就是 **utf8mb4_general_ci**! 而 `Charsets.UTF8MB4_UNICODE_CI = 224`。
+    //   mysql2 的 connection_config.js:174 是
+    //       this.charsetNumber = options.charset
+    //         ? ConnectionConfig.getCharsetNumber(options.charset)   // ← 走这张表
+    //         : options.charsetNumber || Charsets.UTF8MB4_UNICODE_CI; // ← 默认是 224
+    //   ⇒ **写 `charset: 'utf8mb4'` 会把连接的 collation 从 224 降级成 45**,
+    //     而 mysql2 的**默认**恰恰是 224 (unicode_ci)。也就是说: 这一行把
+    //     连接**主动降级**了。
+    //
+    // ★ 为什么连接 collation 会毒死 UNION:
+    //   本项目基线 (db/migrations/mysql/1.0.0-baseline.sql) 里 **75 张表
+    //   全部**声明 `DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+    //   (实测库内 367 个字符串列也全是 unicode_ci)。而 UNION 的结果列
+    //   collation 由**各分支**的 collation 聚合决定:
+    //     - 分支 1 的 `CAST(NULL AS CHAR)` ⇒ 跟随**连接** collation = general_ci
+    //     - 分支 2 的 `report_email_outbox.kind` ⇒ 列 collation = unicode_ci
+    //   两个**隐式** collation 不同 ⇒ MySQL 无法聚合 ⇒ 1271。
+    //   实测: 连接 charset = 'utf8mb4' → collation_connection=general_ci → 报错;
+    //         不传 charset (默认 224)  → collation_connection=unicode_ci → 正常。
+    //
+    // ★ 为什么必须对齐而不是"改 SQL 绕开":
+    //   连接 collation 与 schema 不一致, **任何** "列 vs 字面量/常量" 的比较
+    //   都可能撞同一类错 (不止这两条 UNION)。把连接对齐到 schema 的契约,
+    //   是修**一族**问题而不是修一处症状。
+    //
+    // ★ 附带好处: 索引可用性。列上的索引是按列 collation (unicode_ci) 建的,
+    //   连接用 unicode_ci 比较时才能走索引; 用 general_ci 比较会退化成
+    //   全表扫 (甚至直接报 1267)。
+    charset: 'utf8mb4_unicode_ci'
   });
 
   // -------------------------------------------------------------------------
@@ -237,7 +273,10 @@ export function createMysqlDriver(config) {
       timezone: 'Z',
       dateStrings: false,
       multipleStatements: false,
-      charset: 'utf8mb4'
+      // ★ R161.12 — 同业务池: 写全 collation 名 (mysql2 的 'utf8mb4' = general_ci,
+      //   schema 用的是 unicode_ci)。server 级池也要对齐, 否则建库/探测阶段
+      //   的字符串比较同样可能撞 1267。
+      charset: 'utf8mb4_unicode_ci'
     });
     // R161.10 — server 级连接同样钉住会话时区 (与业务池同一个约定)。
     serverPool.on('connection', pinSessionUtc);
