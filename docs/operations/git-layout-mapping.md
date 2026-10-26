@@ -12,7 +12,7 @@
 | 作者 / 提交者 | `fogyisland <10853913@qq.com>`（仓库级 `git config`，非只靠全局） |
 | `origin` | `https://github.com/fogyisland/ADDashboard.git` |
 | 基线提交 | `21dec2b` — 1483 文件 / 366677 行 / 19.5 MB |
-| 是否已 push | **否**。按操作员指令，提交只在本地保留，直到显式指示 push |
+| 是否已 push | **是**。operator 显式指示「推送更新」后，已推到 **`origin/server-lineage`**；远程 `main` / `publish` / `feat/*` 三个分支**逐字节未动** |
 
 ```powershell
 # 看本地提交（不碰远程）
@@ -49,7 +49,7 @@ git log --oneline origin/main
 ⇒ **远程不是本地树的镜像，是一棵落后的旁支。** 本地有约 50 轮迭代
 （R109 ~ R161.7）从未进过版本控制。
 
-## 三、目录映射（推送时必须用这张表）
+## 三、目录映射（已按此表推送到 `server-lineage`）
 
 | 本地 | 远程 | 说明 |
 |---|---|---|
@@ -69,7 +69,7 @@ git log --oneline origin/main
 另一部分（如 `Server/agent/`、`Server/noadagent/`）在远程有别的落点。
 **推送前必须逐目录核对，不能整目录覆盖。**
 
-## 四、推送前要决定的三件事
+## 四、推送前要决定的三件事（**已全部定案，结论见 §9**）
 
 1. **历史怎么处理**
    本地基线 `21dec2b` 与远程 `main`（`b64d386`）**无共同祖先**。
@@ -152,3 +152,68 @@ git log --oneline origin/main
 
 `ADAgent/node/` 才有完整的 Node 20（含 `node.exe`，85 MB）⇒ Agent 绿包自包含。
 两处别混。
+
+## 九、推送定案 + 公开面清点
+
+### 9.1 三个决策的最终结论
+
+| 决策 | 结论 |
+|---|---|
+| 历史怎么处理 | **另开分支** —— 本地 `main` 推到 `origin/server-lineage`；远程 `main` / `publish` / `feat/wpf-metric-centric-redesign` **逐字节未动**。理由：远程 `main` 是一棵**落后的旁支**（R108 状态，13 个 route vs 本地 35 个），本地是 R161.9；两棵无共同祖先，强推会毁掉远程的 WPF 桌面应用那半边 |
+| `gh` 认证 | `gh` token 失效（`The token in keyring is invalid`）⇒ 走 `git push` + Git Credential Manager。**不影响推送**，只影响走 API 的那几条路 |
+| 推哪棵树 | 推本地树到新分支 `server-lineage`（1490+ 文件）。**没有**推到 `publish`（那是纯文档分支） |
+
+### 9.2 已推送分支里的内部标识清点（`git grep origin/server-lineage` 实测）
+
+> ⚠ **本文档只记"类别 + 命中量"，不记字面值。**
+> 字面值（私网 IP / 客户 AD 域名 / 域控主机名）留在内部记录里
+> （`C:\Users\徐鹏\.claude\projects\D--ToolDevelop-ADDashboard\memory\`）。
+> 理由：源码里**零散**出现是一回事；专门做一份"客户 AD 拓扑索引"是另一回事 ——
+> 后者等于把散落的线索整理成目录，是净增量的暴露，且必然落在**公开**分支上。
+> 复现命令：`git grep -cIE '<pattern>' origin/server-lineage`。
+
+| 标识类别 | 命中行 / 文件 | 性质 |
+|---|---|---|
+| 中心服务器私网 IP（RFC 1918 10/8） | 30 / 22 | 私网，**公网不可路由** |
+| 客户 AD 域名 | 22 / 20 | 客户 AD 基础设施标识 |
+| 客户 AD 域控 / 成员服务器主机名 | 394 / 191 | 客户 AD 基础设施标识 |
+| 生产库 dump 路径（`MSSQL15` / `D:\SQL\DATA\...`） | **0 / 0** | ✅ **没**被推上去 |
+| 部署路径（`D:\Implementation` / `D:\dashboard` / `C:\MemberServer`） | **0 / 0** | ✅ **没**被推上去 |
+| 凭据（`db.mysql.password` / `jwtSecret` / `agentToken` / `signature`） | **0** | ✅ **没**被推上去 |
+
+⇒ **公网上没有可路由的资产地址、没有生产库路径、没有部署路径、没有凭据。**
+剩下的敏感面 = 私网 IP + 客户 AD 域名 + 域控主机名目录。
+这三样**都不是凭据**，也**都不能从公网连过去**（域控名只在客户 AD 域内解析）。
+
+⚠ 这些值**已经**在远程分支的源码/注释里（推送前的第一次推送就带过去了）。
+本节的意义是**记账**：哪一类、多少、哪些已确认没出去。
+要真正抹掉需要重写历史（`git filter-repo`）+ 强推 + 通知所有克隆者 ——
+那是**不可逆**操作，须 operator 明确决定后再做。
+
+### 9.3 怎么判断一个私网 IP 是"真环境"还是"文档示例"
+
+★ **"都是私网地址"这个事实本身区分不了真假** —— 文档示例里的
+`192.168.1.5,10.0.0.1`（`collect.ps1` 注释中的 EventData proxy-chain 格式示例）
+和实测的中心服务器网卡地址**都是 RFC 1918**。判据要用：
+
+| 判据 | 真环境 | 文档示例 |
+|---|---|---|
+| 是否被 `getPrimaryIPv4()` 实测 | `system-settings-v2.js:106` 注明「本机实测 = <私网 IP>」 | — |
+| 是否与真实 AD 域名同源 | 同目录有客户 AD 域名 | 孤立出现 |
+| 上下文标注 | 实测 / 真实引用 | `# 中心地址（按实际）`（模板）、注释里的 URL **形状** |
+| 是否是**代码路径上的取值** | `getPrimaryIPv4()` 运行时算 | 注释 / 文档 / 探针脚本 |
+
+★ **注释里的示例值 ≠ 代码路径上的常量。** 判"是否泄露"前必须先追到**取值点** ——
+例如 `web/src/api/me.js:37` 看着像硬编码兜底 IP，实际是注释里写的响应字段**形状**，
+真值由 `GET /api/me/mcp-endpoint` 运行时算：配了 `access_domain` 就用**域名**，
+没配才用 `getPrimaryIPv4()` 的**本机真实 IP**。⇒ 代码里**没有任何写死的 IP 兜底**。
+
+### 9.4 唯一一处"硬编码 IP 出现在运行代码里"（R161.8 已修）
+
+`ADAgent/start-dashboard.ps1` / `MemberAgent/start-dashboard.ps1` 的端口冲突预检，
+原来把本机网卡地址写死成一个具体地址。换机后监听在 `192.168.x.x` 等
+**本机具体网卡地址**上的同名端口进程**检不出来** ⇒ 预检放行 ⇒ 真 bind 时才崩。
+R161.8 改为**运行时枚举本机所有单播地址** + 回环/通配符字面量。
+回归脚本见 `D:\Temp\r161-audit\port-precheck-regression.ps1`：
+在本机**真实网卡地址**上起一个 TCP 监听（既非 `127.0.0.1` 也非 `0.0.0.0`）→
+**老逻辑命中 0 / 新逻辑命中 1**，exit=0。
