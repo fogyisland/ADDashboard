@@ -111,7 +111,7 @@ git log --oneline origin/main
 | `Server/center/appsettings.json` | 含 `db.mysql.password` / `jwtSecret` / `agentToken` / `signature` |
 | `Server/center/.env` | 含初始化标记 |
 | `Server/center/data/instance_id` | 机器身份，与许可证绑定 |
-| `当前数据库结构.sql` | MSSQL **生产库** dump，含 `D:\SQL\DATA\MSSQL15.MSSQLSERVER\` 内部路径 |
+| `当前数据库结构.sql` | MSSQL **生产库** dump，含生产实例的内部安装路径 |
 | `Implementation.zip` | 123 MB 整包快照 |
 | `Server/node_modules/` `ADAgent/node/` `MemberAgent/node/` | 依赖与便携 Node 运行时（`ADAgent/node/` 单目录 85 MB） |
 | `ADAgent/nssm/` `MemberAgent/nssm/` | 下载来的 nssm 二进制 |

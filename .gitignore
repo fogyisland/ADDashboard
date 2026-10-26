@@ -107,5 +107,5 @@ Server/scripts/audit/*.json
 # ---------- 大件 / 含内部拓扑的导出物 ----------
 # Implementation.zip = 123MB 整包快照
 Implementation.zip
-# 当前数据库结构.sql = MSSQL 生产库 dump（含 D:\SQL\DATA\MSSQL15.MSSQLSERVER\ 路径）
+# 当前数据库结构.sql = MSSQL 生产库 dump（含生产实例的内部安装路径）
 当前数据库结构.sql
