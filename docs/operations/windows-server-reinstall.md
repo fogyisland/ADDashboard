@@ -351,10 +351,11 @@ node -v
 Get-ChildItem 'C:\Tools\nssm*\win64\nssm.exe','<ROOT>\nssm\nssm.exe' -ErrorAction SilentlyContinue
 ```
 
-> **中心端必须预装 Node.js**（`Server/node/` 里虽然带了 node，但 `start.ps1`
-> 并不把它挂到 PATH 上）。
-> **Agent 端不需要** —— Agent 绿包自带 Node 20 LTS 在 `<green>/node/`，
-> 自包含。
+> **中心端必须预装 Node.js**。开发树的 `Server/node/` 里**只有 corepack，
+> 没有 `node.exe`** ⇒ 中心端没有自带运行时，`install-center.ps1:139` 的
+> `Get-Command node.exe` 只能从 PATH 上找。
+> **Agent 端不需要** —— Agent 绿包自带**完整**的 Node 20 LTS 在 `<green>/node/`
+> （含 `node.exe`），自包含。
 >
 > 中心端构建前端需要 **vite**，它在 `node_modules` 里且是 devDependency ——
 > 生产机上如果只跑过 `npm install --omit=dev`，vite 会被剪掉 ⇒
@@ -371,11 +372,16 @@ cd <ROOT>                      # 绿色包根（含 start.ps1 / scripts/ / cente
 powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
 
-- **服务未注册** ⇒ 首次安装：`npm run build:web` 重建 dist →
+- **服务未注册** ⇒ 首次安装：`npm run build:web` 重建 dist
+  （**包内没有 `center/web/` 源码时会跳过重建**，直接用随包 dist）→
   `install-center.ps1 -InPlace`（服务直接指向 `<ROOT>\center`，**不复制文件**）→
   启动 → 探针 `/api/init/status`
 - **服务已注册** ⇒ 更新：重建 dist → `POST /api/system/update`
   （应用待执行迁移 + 干净退出，NSSM 带新代码和新 dist 重启）
+  探针不可达时回落到"直接重启服务"，迁移由服务自身启动时补上
+
+> 构建脚本名按包根 `package.json` 探测，顺序是 `build` → `build:web` →
+> `build:frontend`（`Server/` 与 `LinuxServer/` 都是 `build:web`）。
 
 **直接调安装脚本**（不走统一入口时）
 
@@ -529,6 +535,8 @@ Get-ScheduledTask -TaskName 'ADDashboardAgent-LogRetention' -ErrorAction Silentl
 | `-ComputerName` 必填 / 本地 vs 远程分流 | `ADAgent/install-agent.ps1:5`（Mandatory）、`:357-359`（`localhost`/`.`/本机名 ⇒ 本地分支） |
 | `-AgentType` 默认 `'ad'` | `ADAgent/install-agent.ps1:15`、`MemberAgent/install-agent.ps1:15` |
 | 中心端 Node 必须在 PATH | `Server/scripts/install-center.ps1:139`、`Server/start.ps1:185` |
+| 中心端无自带 node.exe | `Server/node/`（仅 corepack，**无** `node.exe`）；`ADAgent/node/` 才有 `node.exe` |
+| 构建脚本探测顺序 | `Server/start.ps1`（`Get-BuildScriptName`：`build` → `build:web` → `build:frontend`） |
 | 统一入口 `start.ps1`（装 or 更新） | `Server/start.ps1`（`:211` 调 `install-center.ps1 -InPlace`） |
 | Agent 统一入口 `start.ps1` | `ADAgent/README-green-install.md:11-24` |
 | Agent 绿包自带 Node 20 | `ADAgent/README-green-install.md:34` |
