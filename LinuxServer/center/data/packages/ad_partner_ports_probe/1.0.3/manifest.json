@@ -1,0 +1,13 @@
+{
+  "name": "ad_partner_ports_probe",
+  "version": "1.0.3",
+  "type": "gauge",
+  "description": "AD replication partner TCP port health probe. Peer list is centre-computed via GET /api/agent/inbound-partners (R151.2 2026-09-29); the agent only does the TcpClient.BeginConnect probe and emits the result to ad_replication_status.partner_port_status. Independent 15-minute cadence so port health stays fresh even when replication is broken. Data lands in the existing ad_replication_status table via a centre-side post-hook (see center/src/packages/runner.js). NO `database` block by design — this writes to an existing public table, not a new pkg_* schema.",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect.ps1",
+    "intervalSec": 900,
+    "timeoutMs": 60000
+  }
+}

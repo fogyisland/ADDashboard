@@ -1,0 +1,1 @@
+﻿Restart-Service ADReplicationAgent -Force; Start-Sleep 2; Get-Service ADReplicationAgent | Select-Object Name,Status

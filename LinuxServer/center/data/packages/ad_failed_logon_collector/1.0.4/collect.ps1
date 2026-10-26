@@ -1,0 +1,320 @@
+# collect.ps1 - ad_failed_logon_collector v1.0.4 (R158.50.7e)
+#
+# R158.50.7e (2026-10-07) — two operator-requested fixes on top of R158.50.7d:
+#   1. Skip machine accounts. 4625 events with TargetUserName ending in
+#      '$' (computer accounts, e.g. KDL-WGQSS-SH$) are authentication
+#      attempts to a machine account — these are not user accounts and
+#      pollute the /failed-logon-2h dashboard's per-user pivot. Filter
+#      them out before appending to $events.
+#   2. DisplayName lookups use the EVENT'S TargetDomainName, not
+#      $env:COMPUTERNAME. Pre-1.0.4 Get-UserDisplayNameCached passed
+#      $server (= $env:COMPUTERNAME = local DC hostname) as the -Server
+#      argument to Get-ADUser. Get-ADUser on the local SAM can't find
+#      cross-domain users (e.g. bdm in domain KDL.LOCAL where the local
+#      DC is KDLWGQWHADSRV1), so target_user_display_name always came
+#      back NULL. 1.0.4 passes the event's TargetDomainName so the LDAP
+#      query targets the right domain controller.
+#
+# R158.50.7d (2026-10-07) — fix `param([xml]$Ed, ...)` type-coercion
+# bug. R158.50.7c (1.0.2) fixed the cast path
+# `$xml = [xml]$e.ToXml()` → `XmlDocument.LoadXml()`, but the helper
+# functions Get-EventDataField / Get-EventDataInt still declared
+# `param([xml]$Ed, ...)`. PS5.1 parameter binding goes through
+# LanguagePrimitives.ConvertTo which does NOT auto-wrap XmlElement →
+# XmlDocument the way a return-value cast does. Caller passes
+# `$ed = $doc.DocumentElement.EventData` (XmlElement) → throws
+# "Cannot convert value 'System.Xml.XmlElement' to type
+# 'System.Xml.XmlDocument'" → outer try/catch fires → $errorCode |= 1
+# → events=[] → ETL upserted=0 → ad_failed_logon_events empty.
+# 1.0.3 changed param to [Parameter()] — accepts both XmlDocument and
+# XmlElement; .Data works on either.
+#
+# Reports Security event 4625 (An account failed to log on) entries from
+# the local Security log over the last 1800 seconds (30 minutes), as a JSON
+# array. Companion to ad_lockout_list/1.0.2 (4740) — same 24h displayName
+# cache, same EventData name-based extraction (R135), same error_code bit
+# semantics.
+#
+# Operator directive (R158.50): "在前台增加一个功能,统计密码错误次数,同时
+# 在包中新建一个统计2小时内的输错密码的账户、displayname、认证DC、IP地址
+# 用来写入数据库后,在前台dashboard增加一个显示24小时或者7天错误次数走向
+# 的图. 窗口为 1800 秒".
+#
+# Algorithm:
+#   1. Get-WinEvent -FilterXml (R158.50.5) for Security/4625 in last 1800s.
+#   2. 4625 EventData schema (per Microsoft docs):
+#        SubjectUserSid, SubjectUserName, SubjectDomainName, SubjectLogonId,
+#        TargetUserSid, TargetUserName, TargetDomainName, TargetLogonId,
+#        Status, FailureReason, LogonProcessName, LogonType,
+#        WorkstationName, CallerComputerName, IpAddress, IpPort,
+#        AuthenticationPackageName.
+#   3. IpAddress comma-separated → first non-empty non-dash segment.
+#   4. Filter machine accounts (TargetUserName ending in '$').
+#   5. DisplayName lookup: Get-ADUser -Server <TargetDomainName> (R158.50.7e).
+#      24h process-level cache to amortize LDAP roundtrips.
+#   6. error_code bit accumulator:
+#        1 = WinEvent query failed (RSAT absent or log unreadable)
+#        2 = ActiveDirectory RSAT module unavailable (description
+#            lookups skipped, 4625 events still flow with description=null)
+
+$ErrorActionPreference = 'Continue'
+
+# R136: force UTF-8 stdout.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$server            = $env:COMPUTERNAME
+$events            = @()
+$errorCode         = 0
+# R158.50.6 — propagate PS1 exception message into stdout JSON `error`,
+# so agent package-runner.js sets r.error → centre status='failed'.
+$lastErrorMessage  = $null
+
+# 24h process-level displayName cache (R139.1 pattern).
+$script:UserDescCache       = @{}
+$script:UserDescCacheExpiry = (Get-Date).AddHours(-1)
+
+function Reset-UserDescCacheIfExpired {
+  if ((Get-Date) -gt $script:UserDescCacheExpiry) {
+    $script:UserDescCache = @{}
+    $script:UserDescCacheExpiry = (Get-Date).AddHours(24)
+  }
+}
+
+function Get-UserDisplayNameCached {
+  # R158.50.7e — added $Domain param. Pre-1.0.4 this function only had
+  # $Sam + $Server, and $Server was always $env:COMPUTERNAME (the local
+  # DC). Get-ADUser against the local SAM can't resolve cross-domain
+  # users — displayName came back NULL for every cross-domain 4625
+  # (e.g. target_user_name='bdm' on KDLWGQWHADSRV1 where bdm is in
+  # the KDL.LOCAL domain). 1.0.4 passes $Domain = the event's
+  # TargetDomainName so LDAP targets the right domain.
+  param([string]$Sam, [string]$Domain)
+  if ([string]::IsNullOrWhiteSpace($Sam)) { return $null }
+  Reset-UserDescCacheIfExpired
+  $key = '{0}|{1}' -f $Domain, $Sam
+  $key = $key.ToLowerInvariant()
+  if ($script:UserDescCache.ContainsKey($key)) {
+    return $script:UserDescCache[$key]
+  }
+  $displayName = $null
+  try {
+    # -Server accepts either a domain DNS name (e.g. "kdl.local") or a
+    # specific DC hostname. The event's TargetDomainName is typically
+    # the NetBIOS domain ("KDL") which Get-ADUser treats as a domain
+    # name lookup. If TargetDomainName is blank we fall back to the
+    # local DC hostname ($server) which works for in-domain users.
+    $queryServer = if ([string]::IsNullOrWhiteSpace($Domain)) { $server } else { $Domain }
+    $u = Get-ADUser -Identity $Sam -Server $queryServer -Properties displayName -ErrorAction Stop
+    if ($null -ne $u -and $null -ne $u.displayName) {
+      $raw = [string]$u.displayName
+      if ($raw.Length -gt 254) { $raw = $raw.Substring(0, 254) }
+      $displayName = $raw
+    }
+  } catch {
+    # Silent skip — displayName stays null but the event still flows.
+    # Common failures: computer account SAM (target ends in $), expired
+    # account, AD trust outage, deleted user. None of these should
+    # block event collection.
+  }
+  $script:UserDescCache[$key] = $displayName
+  return $displayName
+}
+
+function Ensure-ActiveDirectoryModule {
+  if (-not (Get-Module -Name ActiveDirectory -ListAvailable)) {
+    throw 'ActiveDirectory RSAT module not available'
+  }
+  if (-not (Get-Module -Name ActiveDirectory)) {
+    Import-Module ActiveDirectory -ErrorAction Stop
+  }
+}
+
+function ConvertTo-UtcIso {
+  param($Value)
+  if ($null -eq $Value) { return $null }
+  $dt = $null
+  if ($Value -is [DateTime]) {
+    $dt = $Value
+  } else {
+    try {
+      $dt = [DateTime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+    } catch {
+      return $null
+    }
+  }
+  return $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+}
+
+# R158.50 — IpAddress first-segment normalizer. EventData IpAddress may
+# be "192.168.1.5,10.0.0.1" (proxy chain / dual stack) or "::1" or "-"
+# (anonymous). Always take first non-empty non-dash segment; if all
+# segments are dash/empty, return $null.
+function Get-IpAddressFirst {
+  param([string]$Raw)
+  if ([string]::IsNullOrWhiteSpace($Raw)) { return $null }
+  $parts = $Raw -split ','
+  foreach ($p in $parts) {
+    $t = $p.Trim()
+    if ([string]::IsNullOrEmpty($t)) { continue }
+    if ($t -eq '-') { continue }
+    return $t
+  }
+  return $null
+}
+
+# Helper: read one EventData field by Name (R135 name-based extraction).
+# R158.50.7d — type [xml] replaced with [Parameter()]. PS5.1
+# param type binding goes through LanguagePrimitives.ConvertTo which does
+# NOT auto-wrap System.Xml.XmlElement → System.Xml.XmlDocument the way
+# a return-value `[xml]` cast does. The caller passes
+#   $ed = $doc.DocumentElement.EventData   # this is XmlElement, not XmlDocument
+# so `param([xml]$Ed, ...)` throws "Cannot convert ..." on the first
+# 4625 in the window → outer try/catch fires → $errorCode |= 1 +
+# events=[]. Using [Parameter()] (no type) accepts both XmlDocument and
+# XmlElement — $Ed.Data works on either.
+function Get-EventDataField {
+  param([Parameter()]$Ed, [string]$FieldName)
+  [string]($Ed.Data | Where-Object { $_.Name -eq $FieldName } | Select-Object -First 1 -ExpandProperty '#text')
+}
+
+function Get-EventDataInt {
+  param([Parameter()]$Ed, [string]$FieldName)
+  $s = Get-EventDataField -Ed $Ed -FieldName $FieldName
+  if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+  try { return [int]$s } catch { return $null }
+}
+
+try {
+  $start = (Get-Date).AddSeconds(-1800)  # 1800s / 30min window
+  # R158.50.5 — FilterXml (FilterHashtable 100% fails under agent service).
+  $startIso = $start.ToUniversalTime().ToString('o')
+  $filterXml = @"
+<QueryList>
+  <Query Id="0" Path="Security">
+    <Select Path="Security">*[System[TimeCreated[@SystemTime>='$startIso'] and (EventID=4625)]]</Select>
+  </Query>
+</QueryList>
+"@
+  $raw   = Get-WinEvent -FilterXml $filterXml -ErrorAction SilentlyContinue 2>$null
+  if ($null -eq $raw) {
+    # 0 events in 30min window — normal at quiet DC. do not flag as error.
+  } else {
+  $skippedComputer = 0
+  # R158.52 — operator directive "零或空 / 避免数据错误": per-event
+  # try/catch so one corrupt 4625 event (malformed XML, missing field,
+  # displayName cache throw) doesn't drop the entire 30-min batch.
+  $skippedBadEvent = 0
+  foreach ($e in $raw) {
+    try {
+      # R158.50.7c — XmlDocument.LoadXml (was [xml]$e.ToXml() cast).
+      $doc = New-Object System.Xml.XmlDocument
+      $doc.LoadXml($e.ToXml())
+      $ed  = $doc.DocumentElement.EventData
+
+      $eventRecordId    = [int64]$e.RecordId
+      $occurredAt       = (ConvertTo-UtcIso -Value $e.TimeCreated)
+
+      $targetUserName     = Get-EventDataField -Ed $ed -FieldName 'TargetUserName'
+      $targetDomainName   = Get-EventDataField -Ed $ed -FieldName 'TargetDomainName'
+      $targetSid          = Get-EventDataField -Ed $ed -FieldName 'TargetSid'
+      $subjectUserName    = Get-EventDataField -Ed $ed -FieldName 'SubjectUserName'
+      $subjectDomainName  = Get-EventDataField -Ed $ed -FieldName 'SubjectDomainName'
+
+      # 4625 EventData (richer than 4740):
+      $ipAddressRaw       = Get-EventDataField -Ed $ed -FieldName 'IpAddress'
+      $ipAddress          = Get-IpAddressFirst -Raw $ipAddressRaw
+      $ipPort             = Get-EventDataField -Ed $ed -FieldName 'IpPort'
+      $logonType          = Get-EventDataInt   -Ed $ed -FieldName 'LogonType'
+      $logonProcessName   = Get-EventDataField -Ed $ed -FieldName 'LogonProcessName'
+      $authPackageName    = Get-EventDataField -Ed $ed -FieldName 'AuthenticationPackageName'
+      $workstationName    = Get-EventDataField -Ed $ed -FieldName 'WorkstationName'
+      $callerComputerName = Get-EventDataField -Ed $ed -FieldName 'CallerComputerName'
+      $failureReason      = Get-EventDataField -Ed $ed -FieldName 'FailureReason'
+      $status             = Get-EventDataField -Ed $ed -FieldName 'Status'
+
+      # R158.50.7e — filter machine accounts. SAMs ending in '$' are
+      # computer accounts; 4625 attempts on a machine account are not
+      # user-password attacks and they skew the /failed-logon-2h
+      # per-user pivot. Skip before any further work.
+      if ($targetUserName -like '*$') {
+        $skippedComputer++
+        continue
+      }
+
+      # R158.50.7e — use TargetDomainName for LDAP lookup so cross-domain
+      # 4625 events get the right displayName instead of NULL.
+      $targetUserDisplayName = (Get-UserDisplayNameCached -Sam $targetUserName -Domain $targetDomainName)
+
+      $events += [PSCustomObject]@{
+      EventRecordId           = $eventRecordId
+      OccurredAt              = $occurredAt
+      TargetUserName          = $targetUserName
+      TargetUserDisplayName   = $targetUserDisplayName
+      TargetDomainName        = $targetDomainName
+      TargetSid               = $targetSid
+      SubjectUserName         = $subjectUserName
+      SubjectDomainName       = $subjectDomainName
+      CallerComputerName      = $callerComputerName
+      IpAddress               = $ipAddress
+      IpPort                  = $ipPort
+      LogonType               = $logonType
+      LogonProcessName        = $logonProcessName
+      AuthenticationPackageName = $authPackageName
+      FailureReason           = $failureReason
+      Status                  = $status
+      WorkstationName         = $workstationName
+    }
+    } catch {
+      # R158.52 — per-event guard. A single corrupt 4625 (malformed XML,
+      # missing EventData, displayName cache throw) is skipped instead
+      # of dropping the entire 30-min batch.
+      $skippedBadEvent++
+      [Console]::Error.WriteLine("R158.52: skipped bad 4625 event record=$($e.RecordId): $($_.Exception.Message)")
+    }
+  }
+  # R158.50.7e — surface computer-account filter count in metrics so the
+  # operator can see what's being dropped (helps debug "missing" 4625).
+  if ($skippedComputer -gt 0) {
+    [Console]::Error.WriteLine("R158.50.7e: filtered $skippedComputer machine-account 4625 event(s)")
+  }
+  # R158.52 — surface per-event skip count for diagnostic.
+  if ($skippedBadEvent -gt 0) {
+    [Console]::Error.WriteLine("R158.52: skipped $skippedBadEvent malformed 4625 event(s)")
+  }
+  }
+} catch {
+  [Console]::Error.WriteLine("failedLogonEvents query failed: $($_.Exception.Message)")
+  # R158.50.6 — propagate message into stdout `error`.
+  $lastErrorMessage = "failedLogonEvents query failed: $($_.Exception.Message)"
+  $errorCode = $errorCode -bor 1
+}
+
+# Probe AD module once at the end (R158.31 lesson).
+try {
+  Ensure-ActiveDirectoryModule
+} catch {
+  [Console]::Error.WriteLine("ActiveDirectory module unavailable: $($_.Exception.Message)")
+  if (-not $lastErrorMessage) {
+    $lastErrorMessage = "ActiveDirectory module unavailable: $($_.Exception.Message)"
+  } else {
+    $lastErrorMessage = "$lastErrorMessage; ActiveDirectory module unavailable: $($_.Exception.Message)"
+  }
+  $errorCode = $errorCode -bor 2
+}
+
+$metrics = @{
+  agent_id    = $server
+  events      = @($events)
+  event_count = [int](@($events).Count)
+  error_code  = [int]$errorCode
+}
+
+# R158.50.6 — message -> stdout `error`, agent reporter -> r.error.
+# R158.50.7c — 'ok' placeholder for normal case (agent runner ignores
+# 'ok' string, DB `error` column stays null).
+$payload = @{
+  metrics = $metrics
+  error   = if ($lastErrorMessage) { $lastErrorMessage } else { 'ok' }
+}
+$payload | ConvertTo-Json -Compress -Depth 6
+exit 0

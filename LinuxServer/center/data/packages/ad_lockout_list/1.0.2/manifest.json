@@ -1,0 +1,27 @@
+{
+  "name": "ad-lockout-list",
+  "version": "1.0.3",
+  "type": "gauge",
+  "description": "R158.50.6 (2026-10-07) — add stdout `error` field with PS1 catch exception message, agent reporter forwards to centre run.error → status='failed'. R158.49 callerComputerName fix preserved. R158.50.5 FilterXml preserved.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_lockout_list",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "events":     { "type": "json" },
+      "event_count":{ "type": "int" },
+      "error_code": { "type": "int" }
+    }
+  }
+}

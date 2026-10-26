@@ -1,0 +1,15 @@
+{
+  "name": "ad-ad-account-quickfix",
+  "version": "1.0.0",
+  "type": "command",
+  "description": "R158.34 (2026-10-02) — AD 账户快速重置包。collect.ps1 接受 action+username+password 等参数执行快速重置设定 (解锁 + 重置密码 + 启用 + 同步 displayName/description/UAC 属性)。分发走 R75 AdCommandHistoryDrawer 机制 (ad_admin_commands queue + agent poll),不通过标准 collect 流程。本包提供 '包' 形态的存储 (中心仓 PUT script + agent syncFromCenter 拉取到本地) + 中心仓侧 POST /api/admin/ad-account/quickfix 端点入队命令, 域控 agent 通过 admin-commands channel 拉取并执行 PowerShell 重置逻辑。设计上等同把现有 R75 17 个 AD admin 命令聚合成单一 quickfix 入口 + 包化审计: 每条 quickfix 在 package_runs 写一行 (status=success/failed + action + target + operator + durationMs) 供 PackagesView 历史折叠查看。type=command 是新分类 — 既不是 gauge (无指标) 也不是 eventlog,语义是 'one-shot command with run history'。后续 R 可能加 ad_ad_account_audit 等同系列包。",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 30000,
+    "intervalSec": 3600
+  }
+}

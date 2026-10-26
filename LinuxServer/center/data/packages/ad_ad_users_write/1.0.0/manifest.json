@@ -1,0 +1,15 @@
+{
+  "name": "ad_ad_users_write",
+  "version": "1.0.0",
+  "type": "command",
+  "_type_note": "R158.56c-d (2026-10-09) — type=command 是 on-demand 包, 10 个 user_* commandType 共用本包 (PS1 内 switch 10 case). 故意不设 agent.intervalSec — PackageManager.reschedule 见到 type=command 直接 continue. 解 KDLBJOFADSRV1 user_create FormatException, ship via syncFromCenter 不动 agent bundle 版本. operator directive: 不要升级客户端, 直接升级package.",
+  "description": "R158.56c-d (2026-10-09) — AD user write-action dispatcher package. collect.ps1 接受 -CommandType <user_search|user_create|user_password_reset|user_enable|user_disable|user_unlock|user_set_attributes|user_set_manager|user_delete|user_list_groups> -ParamsPath <jsonfile>, PS1 内 switch-case 路由到 Get/New/Set-ADUser / Enable/Disable/Unlock-ADAccount / Set-ADAccountPassword / Remove-ADUser / Get-ADPrincipalGroupMembership. 替代静态 agent/scripts/ad-admin-users.ps1, 通过 syncFromCenter 推到 33 DC 而不 bump agent bundle.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000
+  }
+}

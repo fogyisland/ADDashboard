@@ -1,0 +1,376 @@
+{
+  "name": "AD Replication Dashboard",
+  "component": "center",
+  "version": "1.0.0",
+  "buildTime": "2026-10-23T00:00:00.000Z",
+  "gitCommit": "3a15817",
+  "rounds": [
+    {
+      "id": "R119",
+      "tag": "per-module-logs",
+      "shippedAt": "2026-09-27",
+      "summary": "per-module/per-route server-side log directory (logs/APP/) + R119.B boot version anchor + R119.B.UPGRADE build-manifest fingerprint"
+    },
+    {
+      "id": "R118.4",
+      "tag": "binary-stale-hypothesis",
+      "shippedAt": "2026-09-26",
+      "summary": "ship-publish-to-prod.ps1 + probe-r118-3-middleware-trace.mjs; first-line defence against prod binary serving stale R66-pre V0 mount chain"
+    },
+    {
+      "id": "R118.3",
+      "tag": "agent-cache-missing",
+      "shippedAt": "2026-09-26",
+      "summary": "probe-r118-3-middleware-trace.mjs; agent 真机缺 data/packages/ad_dc_overview/ 根因定位 — package_policies.enabled=0 假说"
+    },
+    {
+      "id": "R118",
+      "tag": "dc-overview-etl-root-cause",
+      "shippedAt": "2026-09-26",
+      "summary": "ad_dc_overview 0 行 server-side 5-layer wire 全绿诊断 + __dc_summary__ dead code 确认"
+    },
+    {
+      "id": "R118.1",
+      "tag": "package-name-column-fix",
+      "shippedAt": "2026-09-26",
+      "summary": "diagnostic SQL column name 误写 package_name → 改为 name（installed_packages.package_name 历史记忆污染教训）"
+    },
+    {
+      "id": "R117",
+      "tag": "servers-overview-perm-gate-fix",
+      "shippedAt": "2026-09-26",
+      "summary": "/api/dcs/summary 误挂 admin:users perm gate 导致前台 /servers-overview 空数据；改为 requireAuth 公共端点"
+    },
+    {
+      "id": "R116",
+      "tag": "os-baseline-frontpage",
+      "shippedAt": "2026-09-26",
+      "summary": "OS Baseline 前台 Grid 卡片页面；磁盘 ≥50% 黄 / ≥80% 红；AppLayout.vue sidebar 双 entry（eventlog + os-baseline）"
+    },
+    {
+      "id": "R115",
+      "tag": "mock-package-runs-emitter",
+      "shippedAt": "2026-09-26",
+      "summary": "mock-replication.mjs 补发 4 v2 包运行到 /api/agent/packages/report (dcOverview, lockoutSummary, lockoutList, eventlogCollector)"
+    },
+    {
+      "id": "R114",
+      "tag": "centre-remote-port-probe",
+      "shippedAt": "2026-09-26",
+      "summary": "Centre→Agent 远程端口探针架构；setInterval 60s tcpProbe；UI 中文化；system_settings cadence override"
+    },
+    {
+      "id": "R114.A",
+      "tag": "port-probe-mirror-fix",
+      "shippedAt": "2026-09-26",
+      "summary": "mirror port-probe-scheduler + port-status-remote 到 publish/system/；修复 prod ERR_MODULE_NOT_FOUND 全树 audit LESSON"
+    },
+    {
+      "id": "R112",
+      "tag": "eventlog-auth-page",
+      "shippedAt": "2026-09-26",
+      "summary": "eventlog monitoring 前台页面 (auth-required-no-perm)；ad_eventlog_* public tables；agent collect-eventlog.ps1"
+    },
+    {
+      "id": "R112.1",
+      "tag": "eventlog-collector-bug-fixes",
+      "shippedAt": "2026-09-26",
+      "summary": "collect-eventlog filename + severity + RecordId parity 修复"
+    },
+    {
+      "id": "R110",
+      "tag": "dc-overview-public-table",
+      "shippedAt": "2026-09-26",
+      "summary": "ad_dc_overview 公共表拆分 + lockout_count from v2 pkg；16 files；公共表 = omit manifest.database block"
+    },
+    {
+      "id": "R110.A",
+      "tag": "publish-mirror-sync",
+      "shippedAt": "2026-09-26",
+      "summary": "publish-mirror sync；3 mirror files byte-equal"
+    },
+    {
+      "id": "R110.A.1",
+      "tag": "dc-overview-migration",
+      "shippedAt": "2026-09-26",
+      "summary": "ad_dc_overview migration for existing installs；bootstrap + migrations 双轨 LESSON；新表 ship 必须同时落 migration + bootstrap"
+    },
+    {
+      "id": "R110.A.2",
+      "tag": "publish-mirror-drift-migrations",
+      "shippedAt": "2026-09-26",
+      "summary": "publish-mirror drift for migrations 026 + 027；prod install dir 缺 026/027；migrations 也必须 mirror LESSON"
+    },
+    {
+      "id": "R107",
+      "tag": "lockout-events-etl",
+      "shippedAt": "2026-09-25",
+      "summary": "LockoutTroubleshootingView empty-data root cause；centre-side ETL shipped；agent built-in not running"
+    },
+    {
+      "id": "R107.1",
+      "tag": "centre-side-etl-shipped",
+      "shippedAt": "2026-09-25",
+      "summary": "centre/src/services/lockout.js NEW + runner post-hook"
+    },
+    {
+      "id": "R108",
+      "tag": "partner-table-data-lag-probe",
+      "shippedAt": "2026-09-26",
+      "summary": "partner-table data lag 5-layer probe；Hypothesis D 命中 (ad_dcs 缺 site_id)"
+    },
+    {
+      "id": "R108.1",
+      "tag": "pair-history-followup",
+      "shippedAt": "2026-09-26",
+      "summary": "ad_replication_history 独立表；server-side extractBareDcName defence + agent-side ExtractBareDcFromDn helper"
+    },
+    {
+      "id": "R111",
+      "tag": "package-detail-endpoint",
+      "shippedAt": "2026-09-26",
+      "summary": "GET /api/admin/packages/:name detail endpoint；closes R66-T13 V0→V1 regression"
+    },
+    {
+      "id": "R100",
+      "tag": "publish-sync-r98-closure",
+      "shippedAt": "2026-09-25",
+      "summary": "publish/system/ sync closes R98；full tree diff byte-equal convention"
+    },
+    {
+      "id": "R98",
+      "tag": "rollback-r93-10-matrix",
+      "shippedAt": "2026-09-25",
+      "summary": "roll back R93.10 N×N matrix；R97 retract admin sidebar menu search"
+    },
+    {
+      "id": "R97",
+      "tag": "remove-sidebar-search",
+      "shippedAt": "2026-09-25",
+      "summary": "remove admin sidebar menu search；R92+R94 retract"
+    },
+    {
+      "id": "R95",
+      "tag": "catalogue-mirror",
+      "shippedAt": "2026-09-25",
+      "summary": "site-replication-matrix/all catalogue mirror"
+    },
+    {
+      "id": "R94",
+      "tag": "admin-menu-polish",
+      "shippedAt": "2026-09-25",
+      "summary": "admin sidebar visual hierarchy polish；RETROACTIVE by R97"
+    },
+    {
+      "id": "R93",
+      "tag": "agent-pino-logging",
+      "shippedAt": "2026-09-25",
+      "summary": "agent pino diagnostic logging"
+    },
+    {
+      "id": "R93.1",
+      "tag": "signed-hostname",
+      "shippedAt": "2026-09-25",
+      "summary": "stamp X-Agent-Hostname"
+    },
+    {
+      "id": "R93.2",
+      "tag": "batched-fixes",
+      "shippedAt": "2026-09-25",
+      "summary": "batched fix of 5 + 1 hidden"
+    },
+    {
+      "id": "R93.4",
+      "tag": "mssql-top-parameter-binding",
+      "shippedAt": "2026-09-25",
+      "summary": "MSSQL TOP (?) parameter binding sweep"
+    },
+    {
+      "id": "R93.5",
+      "tag": "post-r93-4-cleanup",
+      "shippedAt": "2026-09-25",
+      "summary": "post-R93.4 mock-vs-real cleanup"
+    },
+    {
+      "id": "R93.6",
+      "tag": "partner-site-visibility",
+      "shippedAt": "2026-09-25",
+      "summary": "复制状态概览 partner visibility"
+    },
+    {
+      "id": "R93.6.1",
+      "tag": "dn-site-parse",
+      "shippedAt": "2026-09-25",
+      "summary": "DN site parse (Tier 3) + self-site recovery"
+    },
+    {
+      "id": "R93.7",
+      "tag": "boot-order-swap",
+      "shippedAt": "2026-09-25",
+      "summary": "boot order swap"
+    },
+    {
+      "id": "R93.8",
+      "tag": "empty-string-site-gate",
+      "shippedAt": "2026-09-25",
+      "summary": "site fallback gates empty string"
+    },
+    {
+      "id": "R93.10",
+      "tag": "matrix-view",
+      "shippedAt": "2026-09-25",
+      "summary": "admin/site-replication-matrix/all N×N matrix；ROLLED BACK by R98"
+    },
+    {
+      "id": "R93.11",
+      "tag": "admin-report-detail-meta-filter",
+      "shippedAt": "2026-09-25",
+      "summary": "admin/report-detail 收回 META + 30min floor"
+    },
+    {
+      "id": "R93.12",
+      "tag": "matrix-dn-normalisation",
+      "shippedAt": "2026-09-25",
+      "summary": "site-replication-matrix/all NTDS Settings DN 归一化"
+    },
+    {
+      "id": "R93.13",
+      "tag": "allowed-peers-widened",
+      "shippedAt": "2026-09-25",
+      "summary": "site-replication-matrix/all allowedPeers widened"
+    },
+    {
+      "id": "R93.14",
+      "tag": "partner-port-health-dn-normalisation",
+      "shippedAt": "2026-09-25",
+      "summary": "partner-port-health/all sibling DN fix"
+    },
+    {
+      "id": "R92",
+      "tag": "admin-sidebar-search",
+      "shippedAt": "2026-09-25",
+      "summary": "admin sidebar menu search + scrollbar"
+    },
+    {
+      "id": "R99",
+      "tag": "mock-daemon-s82-fix",
+      "shippedAt": "2026-09-25",
+      "summary": "mock-daemon S82 identity binding"
+    },
+    {
+      "id": "R101",
+      "tag": "pair-history-dialect-dispatch",
+      "shippedAt": "2026-09-25",
+      "summary": "pair-history 500: dispatch on db.dialect"
+    },
+    {
+      "id": "R102",
+      "tag": "port-status-init-mode",
+      "shippedAt": "2026-09-25",
+      "summary": "\"端口检测似乎没跑\" was init-mode"
+    },
+    {
+      "id": "R103",
+      "tag": "pair-history-still-hitting",
+      "shippedAt": "2026-09-25",
+      "summary": "prod 8080 still hits pair-history 500"
+    },
+    {
+      "id": "R104",
+      "tag": "partner-port-real-dc-gap",
+      "shippedAt": "2026-09-25",
+      "summary": "partner-port 0 rows from real DCs"
+    },
+    {
+      "id": "R105",
+      "tag": "pair-history-dual-dialect-recheck",
+      "shippedAt": "2026-09-25",
+      "summary": "复制历史记录 MySQL+MSSQL 双支持再检查"
+    },
+    {
+      "id": "R106",
+      "tag": "pair-history-internal-500",
+      "shippedAt": "2026-09-25",
+      "summary": "pair-history 500 internal on prod"
+    },
+    {
+      "id": "R96",
+      "tag": "dialect-probe",
+      "shippedAt": "2026-09-25",
+      "summary": "boot-time dialect mismatch probe；init() 加 vendor-specific probe"
+    },
+    {
+      "id": "R91",
+      "tag": "publish-tree-scan-bundled-node",
+      "shippedAt": "2026-09-24",
+      "summary": "publish/ tree scan + bundled node policy；R91.2 osInfo TDZ hoist；drainer X-Agent-Signature stamping"
+    },
+    {
+      "id": "R91.4",
+      "tag": "drainer-signature-stamping",
+      "shippedAt": "2026-09-24",
+      "summary": "drainer X-Agent-Signature stamping；R78 wrappers + drainer caller 双 bug"
+    },
+    {
+      "id": "R91.4-followup",
+      "tag": "centre-token-cache-stale",
+      "shippedAt": "2026-09-25",
+      "summary": "centre token cache stale；_cache 进程启动 SELECT 一次后再不 reload"
+    },
+    {
+      "id": "R91.4-followup-push-script",
+      "tag": "push-agentInstall-script",
+      "shippedAt": "2026-09-25",
+      "summary": "push-agentInstall.ps1 deploy script；sync→verify→push 三步链路最后一段"
+    },
+    {
+      "id": "R89",
+      "tag": "init-mode-listen-handler",
+      "shippedAt": "2026-09-24",
+      "summary": "init-mode listen handler + mirror manifest gap"
+    },
+    {
+      "id": "R90",
+      "tag": "publish-tree-semantic-split",
+      "shippedAt": "2026-09-24",
+      "summary": "publish/ tree semantic split；publish/system/ vs publish/installer/agentInstall/"
+    },
+    {
+      "id": "R87",
+      "tag": "s82-get-signing",
+      "shippedAt": "2026-09-22",
+      "summary": "R87 — S82 GET signature gap"
+    },
+    {
+      "id": "R85",
+      "tag": "package-mgmt",
+      "shippedAt": "2026-09-19",
+      "summary": "R85 — package mgmt foundational work (m019 etc.)"
+    },
+    {
+      "id": "R85.1",
+      "tag": "publish-rebuild",
+      "shippedAt": "2026-09-20",
+      "summary": "publish rebuild for R85.1"
+    },
+    {
+      "id": "R86",
+      "tag": "fk-drift",
+      "shippedAt": "2026-09-21",
+      "summary": "Code Leftover Scan + R86 FK drift"
+    },
+    {
+      "id": "R66",
+      "tag": "package-mgmt-replace",
+      "shippedAt": "2026-09-05",
+      "summary": "R66 — package mgmt replace；init/scan/install/uninstall 全栈"
+    },
+    {
+      "id": "R158",
+      "tag": "release-1-0-0",
+      "shippedAt": "2026-10-23",
+      "summary": "程序版本号提升到 1.0.0. 真源是 build-manifest.json 的 version 字段 (server.js:466 优先读它, 两个 package.json 都不参与)。本条目同时补齐 R119 之后长期缺失的 rounds 记录"
+    }
+  ],
+  "features": "per-module-logs,module-logger,boot-version-anchor,build-manifest-fingerprint,agent-side-manifest-reader,baseline-frozen-1.0.0,dialect-parallel-mysql-mssql,feature-flag-gates,retention-sweeps,email-outbox-queue,weekly-report-cron,mcp-server,agent-heartbeat,file-push,member-server-pkg-exec,report-center,license-node-quota,rollback-hard-delete"
+}

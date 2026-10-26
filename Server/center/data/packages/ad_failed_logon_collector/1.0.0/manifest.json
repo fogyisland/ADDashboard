@@ -1,0 +1,15 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.1",
+  "type": "gauge",
+  "description": "R158.50 (2026-10-06) — 1800s (30-min) scan window of Security Event ID 4625 (An account failed to log on). Per-event rows land to public ad_failed_logon_events via centre-side post-hook (MERGE ON (dc_name, event_record_id)). Backs /failed-logon-2h dashboard (24h/7d line chart + reverse-chronological detail table). Manifest omits `database` block (公共表 by design — same architectural pivot as ad_eventlog_collector R112 and ad_admin_members R158.47). DisplayName enriched via cached Get-ADUser -Properties displayName (24h process-level hashtable; bit 2 in error_code if RSAT missing). IpAddress first-segment normalizer (R127/R158.49 lesson: proxy chain / dual stack / '-' anonymous). Centre-side 168h retention enforced by createFailedLogonRetentionLoop factory.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 1800
+  }
+}

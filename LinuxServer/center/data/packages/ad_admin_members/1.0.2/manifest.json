@@ -1,0 +1,16 @@
+{
+  "name": "ad_admin_members",
+  "version": "1.0.2",
+  "type": "gauge",
+  "description": "AD 管理员组成员 (Domain Admins + Enterprise Admins). One row per (domain_dn, group_name, member_sam), upserted centre-side via MERGE. Cadence 24h (admin group membership changes are infrequent). Data lands in public ad_admin_members table via a centre-side post-hook (see center/src/packages/runner.js); this manifest has NO `database` block by design (R110.A architectural pivot: 公共表, not pkg_* schema).  Single-DC semantic implemented via centre-side MERGE dedup on (domain_dn, group_name, member_sam) — every DC runs collect.ps1, the centre collapses duplicate rows. R158.72.x.15 (2026-10-17) — 操作员 directive 锁 '定义2点触发' = 切 daily 2:00 + Jitter 0~30min per-DC 范式, 1:1 平行 R158.72.x.13 6 包 (ad_account_change / ad_lockout_summary / ad_lockout_list / ad_failed_logon_collector / ad_dc_probe_inbound / ad_os_baseline) 跟 R158.72.x.14 ad_eventlog_collector 范式. 加 agent.cronExpr='0 2 * * *' (跟 aac 1:1 平行) 替代老 intervalSec=86400 setInterval 范式.  0 改 collect.ps1 / 0 改 SHA / 0 改 wire shape.  0 改 agent binary 0.1.7 已吃 cronExpr 路径 (R158.72.x.13 ship 闭合).  ship 闭合: 1) data/packages/ad_admin_members/1.0.2/manifest.json (本 file)  2) src/services/builtin-packages.js:468 version 1.0.1 → 1.0.2  3) src/services/cron-scheduler.js:85 之后 +1 行 ad_admin_members  4) 中心端 nssm restart ADDashboardCenter  5) ad_admin_members policy 走 builtin-seed-upgrade 写 cron_expr='0 2 * * *' (R158.72.x.14 1-click bug 已 ship 修 builtin-packages.js:992 字段名 = 驼峰)",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 86400,
+    "cronExpr": "0 2 * * *"
+  }
+}

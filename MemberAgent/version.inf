@@ -1,0 +1,31 @@
+; AD Dashboard Agent + Dashboard version manifest.
+;
+; Single source of truth for version. start.ps1, install-agent.ps1,
+; Register-ADDashboardAgent.ps1, agent.js, dashboard/server.js all read
+; from this file. Earlier versions (pre-0.1.1) read from package.json;
+; schema migration lives in start.ps1:Apply-AppsettingsSchemaMigration.
+;
+; Release process:
+;   1. Bump the three version numbers under [components]
+;   2. Bump [meta] updated date
+;   3. Append a note under release-notes
+;
+; NOTE: This file MUST stay ASCII-only. PowerShell 5.1 reads .inf files
+; without BOM via ANSI code page; non-ASCII bytes will desync the parser
+; (Chinese characters split mid-codepoint and the next line is dropped).
+; Keep comments in English.
+
+[meta]
+updated         = 2026-10-10
+release-notes   = https://internal/release-notes/0.1.4
+schema-version  = 2
+
+[components]
+; Overall package version, matches git tag
+version       = 0.1.4
+
+; agent process version (was agent/package.json pre-0.1.1)
+agent         = 0.1.4
+
+; dashboard process version (was dashboard/package.json pre-0.1.1)
+dashboard     = 0.1.3

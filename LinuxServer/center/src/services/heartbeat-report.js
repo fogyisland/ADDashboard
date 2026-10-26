@@ -1,0 +1,378 @@
+// Heartbeat/Report admin aggregator. Produces the per-agent view consumed by
+// the admin monitor UI (Task 7): for each agent in ad_agent_heartbeat, return
+// its current state plus a small "report summary" computed from the most
+// recent ad_replication_status snapshot (within REPORT_SUMMARY_LOOKBACK_HOURS).
+//
+// Used by GET /api/admin/heartbeat-report/{agents,dcs,agents/:id/report-detail}.
+// Only callable on the web app (per-route [userAuth, requirePerm('admin:users')]).
+
+import { getDb } from '../db/index.js';
+import { getConfig } from './config.js';
+// R161.5 (2026-10-26) — MySQL 5.7 的 DATETIME 列拒绝 ISO 8601 字符串。
+//   ad_replication_status.collected_at 是 DATETIME NOT NULL ⇒ 绑 ISO 会
+//   ER 1292 / 谓词退化。MSSQL 侧 datetime2 接受 ISO ⇒ 只在 MySQL 分支转。
+import { toMysqlDatetime } from '../utils/datetime.js';
+
+const REPORT_SUMMARY_LOOKBACK_HOURS = 24;
+const REPORT_DETAIL_LIMIT = 100;
+
+function toIsoOrNull(v) {
+  if (!v) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
+// 2026-08-24 round-12 T3 — thrown by requestReport() when the agent row is
+// not in ad_agent_heartbeat. The route layer (T5) catches this by `code`
+// and translates to 404; the service stays HTTP-agnostic.
+export class AgentNotFoundError extends Error {
+  constructor(agentId) {
+    super(`agent not found: ${agentId}`);
+    this.code = 'AGENT_NOT_FOUND';
+    this.agentId = agentId;
+  }
+}
+
+export const heartbeatReportService = {
+  async listAgents(db = null) {
+    const conn = db ?? getDb();
+    const { rows: agents } = await conn.query(conn.sql.heartbeat.agentsList);
+    const heartbeatStaleSeconds = await this._staleSeconds();
+    const heartbeatDefaultIntervalSeconds = await this._defaultIntervalSeconds();
+    return {
+      agents: await Promise.all(agents.map(async (row) => ({
+        agentId: row.agent_id,
+        agentVersion: row.agent_version,
+        lastHeartbeatAt: toIsoOrNull(row.last_heartbeat_at),
+        lastReportAt: toIsoOrNull(row.last_report_at),
+        lastReportStatus: row.last_report_status,
+        pendingQueueSize: Number(row.pending_queue_size) || 0,
+        // 2026-10-02 R158.28 — per-row heartbeat interval (seconds). NULL
+        // (pre-R158.28 agent) falls back to the centre default so the
+        // frontend statusOf can always compute a meaningful threshold.
+        heartbeatIntervalSeconds: Number(row.heartbeat_interval_seconds) || heartbeatDefaultIntervalSeconds,
+        // 2026-08-26 round-18 follow-up: surface report_requested_at so the
+        // 回报 button can flip to "已请求回报" / "回报(待清理)" after click.
+        // Previously the SQL selected it but the service never mapped it to
+        // the JSON, so the frontend always saw undefined → "回报" stuck.
+        reportRequestedAt: toIsoOrNull(row.report_requested_at),
+        // 2026-08-26 round-15: counts are aggregated in SQL over the
+        // 1-hour lookback. reportSummary is null only when the agent has
+        // NEVER produced a replication row — anything else (stale but
+        // historical, or recent) returns a summary so the UI can decide
+        // between ✅ / ⚠️ / 数据陈旧 / 未上传 without us duplicating that
+        // logic here.
+        reportSummary: row.last_report_at === null
+          ? null
+          : await this._summaryFor(conn, row.agent_id,
+              Number(row.success_count) || 0,
+              Number(row.fail_count) || 0,
+              Number(row.total_count) || 0)
+      }))),
+      heartbeatStaleSeconds,
+      heartbeatDefaultIntervalSeconds
+    };
+  },
+
+  async listDcs(db = null) {
+    const conn = db ?? getDb();
+    const { rows: dcs } = await conn.query(conn.sql.heartbeat.dcsList);
+    const heartbeatStaleSeconds = await this._staleSeconds();
+    const heartbeatDefaultIntervalSeconds = await this._defaultIntervalSeconds();
+    return {
+      agents: await Promise.all(dcs.map(async (row) => ({
+        agentId: row.agent_id,
+        agentVersion: row.agent_version,
+        lastHeartbeatAt: toIsoOrNull(row.last_heartbeat_at),
+        lastReportAt: toIsoOrNull(row.last_report_at),
+        lastReportStatus: row.last_report_status,
+        pendingQueueSize: Number(row.pending_queue_size) || 0,
+        // 2026-10-02 R158.28 — per-row heartbeat interval (seconds). NULL
+        // (pre-R158.28 agent) falls back to the centre default so the
+        // frontend statusOf can always compute a meaningful threshold.
+        heartbeatIntervalSeconds: Number(row.heartbeat_interval_seconds) || heartbeatDefaultIntervalSeconds,
+        siteName: row.site_name ?? null,
+        regionCode: row.region_code ?? null,
+        ipAddress: row.ip_address ?? null,
+        osVersion: row.os_version ?? null,
+        isPdc: !!row.is_pdc,
+        // 2026-08-26 round-18 follow-up: see listAgents comment.
+        reportRequestedAt: toIsoOrNull(row.report_requested_at),
+        reportSummary: row.last_report_at === null
+          ? null
+          : await this._summaryFor(conn, row.agent_id,
+              Number(row.success_count) || 0,
+              Number(row.fail_count) || 0,
+              Number(row.total_count) || 0)
+      }))),
+      heartbeatStaleSeconds,
+      heartbeatDefaultIntervalSeconds
+    };
+  },
+
+  // R158.79 (2026-10-12) — MemberServer heartbeat tab. Mirrors listDcs
+  //   shape but reads from ad_member_heartbeat (LEFT JOIN ad_member_servers +
+  //   ad_sites). 跟 AD 端 1:1 平行 (agentId, agentVersion, lastHeartbeatAt,
+  //   lastReportAt, lastReportStatus, pendingQueueSize, heartbeatIntervalSeconds,
+  //   reportRequestedAt) + 加 siteName (via LEFT JOIN ad_member_servers.site_id)
+  //   + agentType (固定 'non-ad' 标记, 让 operator 一眼区分). 0 reportSummary
+  //   (member-server 没 ad_replication_status 报告). 0 siteName 来源: m.site_id
+  //   + s.site_name via LEFT JOIN ad_sites.
+  async listMembers(db = null) {
+    const conn = db ?? getDb();
+    const { rows: members } = await conn.query(conn.sql.heartbeat.membersList);
+    const heartbeatStaleSeconds = await this._staleSeconds();
+    const heartbeatDefaultIntervalSeconds = await this._defaultIntervalSeconds();
+    return {
+      agents: members.map((row) => ({
+        agentId: row.hostname,           // member-server 1 agent = 1 host, hostname 跟 agentId 同值
+        agentVersion: row.agent_version,
+        lastHeartbeatAt: toIsoOrNull(row.last_heartbeat_at),
+        lastReportAt: toIsoOrNull(row.last_report_at),
+        lastReportStatus: row.last_report_status,
+        pendingQueueSize: Number(row.pending_queue_size) || 0,
+        heartbeatIntervalSeconds: Number(row.heartbeat_interval_seconds) || heartbeatDefaultIntervalSeconds,
+        // R158.79 — MemberServer 特有列 (跟 dcsList siteName 同 precedent,
+        //   但走 ad_member_servers.site_id 不是 ad_dcs.site_id)
+        siteName: row.site_name ?? null,
+        regionCode: row.region_code ?? null,
+        ipAddress: row.ip_address ?? null,
+        osVersion: row.os_version ?? null,
+        // R158.79 — agentType 固定 'non-ad' (跟 ad_member_servers.agent_type
+        //   + ad_member_heartbeat.agent_type 同 source, 让 operator 一眼
+        //   区分 member-server vs DC)
+        agentType: row.agent_type ?? 'non-ad',
+        reportRequestedAt: toIsoOrNull(row.report_requested_at)
+        // 0 reportSummary — member-server 没 ad_replication_status 报告
+        //   (跟 explore 决定一致, R158.79 view 端 v-if="tab !== 'member'"
+        //   包住报告表)
+      })),
+      heartbeatStaleSeconds,
+      heartbeatDefaultIntervalSeconds
+    };
+  },
+
+  async getLatestReportDetail(agentId, db = null) {
+    const conn = db ?? getDb();
+    const since = new Date(Date.now() - REPORT_SUMMARY_LOOKBACK_HOURS * 3600 * 1000).toISOString();
+    // R161.5 — 第三个 bind 落 ad_replication_status.collected_at (DATETIME NOT
+    //   NULL) ⇒ MySQL 侧必须 naive 格式; MSSQL 侧保留 ISO (零行为变化)。
+    const sinceParam = conn.dialect === 'mssql' ? since : toMysqlDatetime(since);
+    const query = conn.sql.heartbeat.latestReportEntries(agentId, sinceParam, REPORT_DETAIL_LIMIT);
+    const { rows } = await conn.query(query, [agentId, agentId, sinceParam]);
+    if (!rows.length) {
+      return { agentId, collectedAt: null, entries: [] };
+    }
+    // The SQL constrains rows to one snapshot, so every row has this timestamp.
+    const collectedAt = toIsoOrNull(rows[0].collected_at);
+    return {
+      agentId,
+      collectedAt,
+      entries: rows.map((r) => ({
+        sourceDc: r.source_dc,
+        destDc: r.dest_dc,
+        sourceSite: r.source_site,
+        destSite: r.dest_site,
+        namingContext: r.naming_context,
+        statusCode: r.status_code,
+        errorMessage: r.error_message,
+        lastSuccessTime: toIsoOrNull(r.last_success_time),
+        lastAttemptTime: toIsoOrNull(r.last_attempt_time)
+      }))
+    };
+  },
+
+  // 2026-08-24 round-12 T3 — set the report_requested_at flag for one agent
+  // so the next heartbeat ack tells it to ship a report immediately. The
+  // UPSERT is silent on existence (it would happily INSERT a stub row for
+  // an unknown agent), so we MUST SELECT 1 first to throw AgentNotFoundError
+  // before any write. The current flag is read once to compute alreadyPending
+  // (no race vs the agent consuming it — we don't care; the agent will treat
+  // the latest value as authoritative).
+  async requestReport(agentId, db = null) {
+    const conn = db ?? getDb();
+    const exists = await conn.execute(
+      'SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    const existsRows = exists?.rows ?? exists?.[0] ?? [];
+    if (existsRows.length === 0) {
+      throw new AgentNotFoundError(agentId);
+    }
+
+    const current = await conn.execute(
+      'SELECT report_requested_at FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    const currentRows = current?.rows ?? current?.[0] ?? [];
+    const alreadyPending = currentRows.length > 0 &&
+      currentRows[0].report_requested_at !== null &&
+      currentRows[0].report_requested_at !== undefined;
+
+    const requestedAt = new Date();
+    const sql = conn.sql.heartbeat.requestReport(agentId, requestedAt.toISOString());
+    await conn.execute(sql, [agentId, requestedAt]);
+
+    return { agentId, requestedAt, alreadyPending };
+  },
+
+  // 2026-08-26 round-19+: cascade-delete every row that references the
+  // given agent. Used by the heartbeat-table 删除 button when a host
+  // is decommissioned. Returns per-table affectedRow counts so the
+  // audit log can record what was removed. Throws AgentNotFoundError
+  // when the heartbeat row itself is missing — the route layer
+  // translates that to a 404. The four DELETEs are independent (no
+  // transaction) so a partial failure on one table doesn't poison the
+  // rest: the operator's intent is "remove this agent from view" and a
+  // stray replication row still visible would be misleading.
+  async deleteAgent(agentId, db = null) {
+    const conn = db ?? getDb();
+    const exists = await conn.execute(
+      'SELECT 1 FROM ad_agent_heartbeat WHERE agent_id = ?',
+      [agentId]
+    );
+    const existsRows = exists?.rows ?? exists?.[0] ?? [];
+    if (existsRows.length === 0) {
+      throw new AgentNotFoundError(agentId);
+    }
+
+    const heartbeatResult = await conn.execute(conn.sql.heartbeat.deleteHeartbeatRow(agentId), [agentId]);
+    const sourceResult    = await conn.execute(conn.sql.heartbeat.deleteReplicationBySource(agentId), [agentId]);
+    const destResult      = await conn.execute(conn.sql.heartbeat.deleteReplicationByDest(agentId), [agentId]);
+    const runsResult      = await conn.execute(conn.sql.heartbeat.deletePackageRuns(agentId), [agentId]);
+
+    const num = (r) => Number(r?.affectedRows ?? 0);
+    return {
+      agentId,
+      deleted: {
+        heartbeat:    num(heartbeatResult),
+        replication:  num(sourceResult) + num(destResult),
+        package_runs: num(runsResult)
+      }
+    };
+  },
+
+  // 2026-08-26 round-19+: remove the ad_dcs row only. The DC tab is a
+  // separate surface — removing a DC entry does NOT touch the heartbeat
+  // row (a host may still be reporting even after we stop tracking it as
+  // a DC). Throws DcNotFoundError on miss.
+  async deleteDc(dcName, db = null) {
+    const conn = db ?? getDb();
+    const result = await conn.execute(conn.sql.heartbeat.deleteDcRow(dcName), [dcName]);
+    const affected = Number(result?.affectedRows ?? 0);
+    if (affected === 0) {
+      const e = new Error(`dc not found: ${dcName}`);
+      e.code = 'DC_NOT_FOUND';
+      e.dcName = dcName;
+      throw e;
+    }
+    return { dcName, deleted: { dcs: affected } };
+  },
+
+  // R158.79 (2026-10-12) — MemberServer heartbeat 删除 button. Removes
+  //   only the ad_member_heartbeat row (single table, no cross-table
+  //   cascade — ad_member_servers inventory is independent, NOT
+  //   cascade-deleted). Throws MemberNotFoundError on miss; route layer
+  //   translates to 404. Mirrors deleteDc shape.
+  async deleteMember(hostname, db = null) {
+    const conn = db ?? getDb();
+    const result = await conn.execute(conn.sql.heartbeat.deleteMemberRow(hostname), [hostname]);
+    const affected = Number(result?.affectedRows ?? 0);
+    if (affected === 0) {
+      const e = new Error(`member heartbeat not found: ${hostname}`);
+      e.code = 'MEMBER_NOT_FOUND';
+      e.hostname = hostname;
+      throw e;
+    }
+    return { hostname, deleted: { member_heartbeat: affected } };
+  },
+
+  // 2026-08-26 round-15: counts are pre-computed in SQL (1-hour window).
+  // _summaryFor only does the latest-failure lookup, and only when the
+  // 1-hour window saw at least one failure — otherwise the dashboard's
+  // "错误摘要" column shows '—'. The earlier implementation iterated a
+  // full snapshot and accumulated counts inline; that's now redundant.
+  async _summaryFor(conn, agentId, successCount, failCount, totalCount) {
+    if (totalCount === 0) {
+      // Agent has a historical report (last_report_at non-null) but no
+      // rows in the 1-hour window — surface empty summary so the UI can
+      // still render a row.
+      return { totalLinks: 0, successCount: 0, failCount: 0, latestErrorMessage: null, latestFailedLink: null };
+    }
+    let latestErrorMessage = null;
+    let latestFailedLink = null;
+    if (failCount > 0) {
+      const { rows } = await conn.query(conn.sql.heartbeat.latestFailureFor(agentId), [agentId]);
+      if (rows.length > 0) {
+        latestErrorMessage = rows[0].error_message ?? null;
+        latestFailedLink = `${rows[0].source_dc}→${rows[0].dest_dc}`;
+      }
+    }
+    // 2026-08-27 round-39: surface the success rate as a percentage so the
+    // operator sees both the raw counts and the human-friendly number. The
+    // counts reset at midnight UTC (SQL window) so the percentage is
+    // implicitly "today's success rate". Math.round matches what the
+    // operator would expect (e.g. 6/7 = 85.7% → 86%). When totalLinks is 0
+    // (no rows in the today's window), we expose null instead of "NaN%" or
+    // "100%" so the UI can render '—' or '0/0' unambiguously.
+    const successRate = totalCount === 0
+      ? null
+      : Math.round((successCount / totalCount) * 100);
+    return {
+      totalLinks: totalCount,
+      successCount,
+      failCount,
+      successRate,
+      latestErrorMessage,
+      latestFailedLink
+    };
+  },
+
+  async _staleSeconds() {
+    const cfg = await getConfig();
+    return Number(cfg.heartbeat_stale_seconds) || 15;
+  },
+
+  // 2026-10-02 R158.28 — per-agent heartbeat tiering. Returns the configured
+  // default heartbeat interval (seconds) — used as the per-row fallback
+  // when the agent hasn't reported its own heartbeat_interval_seconds yet
+  // (NULL column → pre-R158.28 agent, or new heartbeat row inserted before
+  // the agent's next POST). Matches the centre-wide default seeded into
+  // system_config by the bootstrap (see services/config.js
+  // getAgentConfig heartbeatIntervalSeconds: defaults to 30 s).
+  async _defaultIntervalSeconds() {
+    const cfg = await getConfig();
+    return Number(cfg.heartbeat_interval_seconds) || 30;
+  },
+
+  // Probe state for the admin monitor UI (Task 7). Reads the three rows
+  // written by the 1 Hz self-probe loop and re-shapes them into camelCase
+  // entries keyed by port_role. The 30 s stale sentinel fires when ANY row's
+  // last_probe_at is older than 30 s OR ALL rows are still in the boot
+  // 'unknown' state (no probe tick has completed yet).
+  async listProbeStatus(db = null) {
+    const conn = db ?? getDb();
+    const { rows } = await conn.query(conn.sql.probeState.getAll);
+    const probes = {};
+    for (const row of rows) {
+      probes[row.port_role] = {
+        status: row.status,
+        latencyMs: row.latency_ms == null ? null : Number(row.latency_ms),
+        lastProbeAt: toIsoOrNull(row.last_probe_at),
+        lastUpAt: toIsoOrNull(row.last_up_at),
+        consecutiveFailures: Number(row.consecutive_failures) || 0
+      };
+    }
+    const now = Date.now();
+    const STALE_MS = 30_000;
+    const allUnknown = rows.length > 0 && rows.every((r) => r.status === 'unknown');
+    const anyStale = rows.some((r) => {
+      if (r.last_probe_at == null) return true;        // missing
+      const t = new Date(r.last_probe_at).getTime();
+      if (!Number.isFinite(t)) return true;             // NaN / Infinity (garbage string)
+      if (t > now) return true;                         // future (clock skew — probe hasn't happened yet)
+      return (now - t) > STALE_MS;                      // older than 30 s
+    });
+    return { probes, nowCenterProbeStale: allUnknown || anyStale };
+  }
+};

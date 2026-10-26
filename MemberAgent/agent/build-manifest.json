@@ -1,0 +1,118 @@
+{
+  "name": "AD Replication Dashboard Agent",
+  "component": "agent",
+  "version": "0.1.4",
+  "buildTime": "2026-10-10T00:00:00.000Z",
+  "gitCommit": "r158-61-5-2",
+  "rounds": [
+    {
+      "id": "0.1.4",
+      "tag": "file-push-boot-drain-and-warn-context",
+      "shippedAt": "2026-10-10",
+      "summary": "R158.61+5.2 (2026-10-10) — file-push drainer 12h+ silent failure 真因是 boot-time race (drainer httpGetJson 在 agentToken 解析前触发 → 401/connection 错 → 5s heartbeat pool 重复同一 broken call). 三处改动: (1) agent.js:783 setImmediate() 在 startHeartbeat 后立即 fire 一次 drainFilePush, 给一个 fresh stack, 失败的话 operator 立即看到 NSSM stderr 真因 (vs 12h+ 之后手动 restart 才相关); (2) file-push-drainer.js:80-103 non-2xx warn log 加 centerUrl/agentId/tokenPrefix 8 字符 (masking 跟 agent-identity.js signRequest 同), 让 operator grep NSSM stderr 立即判断 token rotation / DNS / port 错; (3) heartbeat-callbacks.js:107-116 summary 注释明确 0.1.4 boot-time fire 是这个 5s pool 的补充, summary 已有 drainer result 字段 (processed/delivered/failed/acked). 配合 R158.61+5 中心 case-insensitive claim (claim 5s/11s 命中), 走完 claim → download → write → ack 全链路. 0 主动 ship (operator directive 2026-10-09), 34 DC 仍 0.1.3, 等 operator 手 push."
+    },
+    {
+      "id": "0.1.3",
+      "tag": "r158-56c-user-group-scriptpath",
+      "shippedAt": "2026-10-08",
+      "summary": "R158.56c (2026-10-08) — ad-admin.js:300 锁 user_/group_ 命令的 scriptPath 强制走 dispatcher 内部 DEFAULT_SCRIPTS_DIR (= `agent/scripts/`), 不再信任 caller 注入的 scriptsDir (= cacheDir `<dataDir>/packages`). R158.40 (2026-10-03) 改 agent.js:692 scriptsDir 一刀切改成 cacheDir, dispatcher 内部用 caller 注入的 scriptsDir 拼所有 commandType 路径, user_/group_ 命令拼成 `<cacheDir>/ad-admin-*.ps1` ENOENT. KDLFLOFADSRV1 23:31 user_create + 23:42 group_create 失败 (exit_code=4294770688, errorMessage=`...data\\packages\\ad-admin-users.ps1...`) 即此因. fix 1 行 + 9 行注释解. 配套 agent.js:683 注释修正 (R158.40 注释错说'老命令不受影响' → 改措辞). 33 DC 0.1.2 远端需 R158.48 auto-upgrade 链路抓 0.1.3 bundle. 关联: R158.40 (caller 注入 cacheDir) / R158.50.7e (0.1.2 ship) / R158.48 (auto-upgrade 9-stage)."
+    },
+    {
+      "id": "0.1.2",
+      "tag": "finish-stderr-and-ok-placeholder",
+      "shippedAt": "2026-10-07",
+      "summary": "R158.50.7c (2026-10-07) — finish() 返回 shape 加 `stderr` 字段 (centre runner.js:545 期望, 之前永远 undefined → DB stderr_preview 只 banner). 配套 PS1 顶层 `error` 字段改 'ok' 占位符时, agent runner 200-209 优先级逻辑忽略 'ok' 字符串 (避免 DB error 列被 'ok' 污染). 真异常 / 捕获仍走 `ps1: <msg>` 路径 → centre runner.js:586 status='failed'. 配套 R158.50.7 (PS1 parse error stderr 提取) + R158.50.6 (parsed.error 覆盖) 一起下发. 0.1.1 bundle buildTime=2026-10-02 早于 R158.50.6/R158.50.7/R158.50.7c, 34 DC 全部 0.1.1 缺这 3 修复."
+    },
+    {
+      "id": "0.1.1",
+      "tag": "agent-centre-repo-align-real-machine",
+      "shippedAt": "2026-10-02",
+      "summary": "把 D 盘 C:\\agentInstall 真机 (R158.13+ 带 settings-delivery + writeAppsettingsPatchAtomic) 的功能反向同步到中心仓 D:\\dashboard\\agent. R158.13 已经在 centre 端 (services/client-settings.js) 实现了 settingsPatch envelope 推送, 但 agent 端 settings-delivery.js 模块中心仓之前漏了; KDLDLOFADSRV1 真机跑的是合并版 (R158.11.2 + R158.13), 而中心仓落后. 0.1.1 拉齐: 新增 src/settings-delivery.js + appsettings-writer.js writeAppsettingsPatchAtomic + agent.js applySettingsDelivery import + heartbeatRef slot + 3 处 call sites (AD scheduler inline / AD makeSendCallback / non-AD send). 不动现有 R158.11.2 SHA stamping / R155.7 bundle code."
+    },
+    {
+      "id": "R119",
+      "tag": "per-module-logs",
+      "shippedAt": "2026-09-27",
+      "summary": "Set-LogModule dual-write (logs/<module>.log + logs/APP/<module>.log) + Get-AgentManifest boot fingerprint"
+    },
+    {
+      "id": "R118.4",
+      "tag": "binary-stale-hypothesis",
+      "shippedAt": "2026-09-26",
+      "summary": "agent 真机 binary-stale 推论；probe-r118-3-middleware-trace"
+    },
+    {
+      "id": "R118.3",
+      "tag": "agent-cache-missing",
+      "shippedAt": "2026-09-26",
+      "summary": "agent 真机缺 data/packages/ad_dc_overview/ 目录；package_policies.enabled=0 假说"
+    },
+    {
+      "id": "R118",
+      "tag": "dc-overview-etl",
+      "shippedAt": "2026-09-26",
+      "summary": "agent 端 ad_dc_overview ETL 0 行根因定位"
+    },
+    {
+      "id": "R118.1",
+      "tag": "extract-bare-dc-from-dn",
+      "shippedAt": "2026-09-26",
+      "summary": "agent-side ExtractBareDcFromDn helper；server-side extractBareDcName defence"
+    },
+    {
+      "id": "R112",
+      "tag": "eventlog-collector",
+      "shippedAt": "2026-09-26",
+      "summary": "agent/scripts/collect.ps1 285 lines eventlog collector"
+    },
+    {
+      "id": "R112.1",
+      "tag": "eventlog-collector-bug-fixes",
+      "shippedAt": "2026-09-26",
+      "summary": "collect-eventlog filename + severity + RecordId parity 修复"
+    },
+    {
+      "id": "R93",
+      "tag": "agent-pino-logging",
+      "shippedAt": "2026-09-25",
+      "summary": "agent pino diagnostic logging"
+    },
+    {
+      "id": "R93.1",
+      "tag": "signed-hostname",
+      "shippedAt": "2026-09-25",
+      "summary": "X-Agent-Hostname stamping"
+    },
+    {
+      "id": "R91",
+      "tag": "bundled-node-policy",
+      "shippedAt": "2026-09-24",
+      "summary": "publish/ tree scan + bundled node policy；start.ps1 构建 node_modules"
+    },
+    {
+      "id": "R91.4",
+      "tag": "drainer-signature-stamping",
+      "shippedAt": "2026-09-24",
+      "summary": "drainer X-Agent-Signature stamping"
+    },
+    {
+      "id": "R89",
+      "tag": "init-mode-listen-handler",
+      "shippedAt": "2026-09-24",
+      "summary": "init-mode listen handler"
+    },
+    {
+      "id": "R87",
+      "tag": "s82-get-signing",
+      "shippedAt": "2026-09-22",
+      "summary": "S82 GET signature gap"
+    },
+    {
+      "id": "R66",
+      "tag": "package-mgmt-agent-side",
+      "shippedAt": "2026-09-05",
+      "summary": "R66 — package mgmt replace agent side"
+    }
+  ],
+  "features": "per-module-logs,set-log-module,get-agent-manifest,get-agent-version,boot-fingerprint"
+}

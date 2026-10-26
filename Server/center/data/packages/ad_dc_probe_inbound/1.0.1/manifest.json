@@ -1,0 +1,13 @@
+{
+  "name": "ad_dc_probe_inbound",
+  "version": "1.0.1",
+  "type": "gauge",
+  "description": "R155.3 — AD replication partner TCP port health probe (rename of ad_partner_ports_probe 1.0.3). Peer list is centre-computed via GET /api/agent/inbound-partners (R151.2 surface) — DCs that replicated TO this host in the last 30 minutes. The agent only does the TcpClient.BeginConnect probe and emits the result to ad_replication_status with naming_context='__partner_ports__:<sha256[0..8]>'. Row shape: source_dc=agent, dest_dc=peer. The dashboard's /partner-port-health/inbound endpoint anchors on source_dc so this package powers the operator's 入站 view ('I pull from these upstream sources'); /partner-port-health/outbound anchors on dest_dc and re-renders the SAME rows from the 'other agents probe me' (出战) view. 15-min cadence, independent of replication cycle. NO `database` block by design — public table contract.",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect.ps1",
+    "intervalSec": 900,
+    "timeoutMs": 60000
+  }
+}

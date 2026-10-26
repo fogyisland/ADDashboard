@@ -1,0 +1,17 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.7",
+  "type": "gauge",
+  "description": "R158.53 (2026-10-08) cadence 30min → 5min → 15min. Operator 反馈 /failed-logon-2h 走向图 '明细 17:12 vs 日志 17:29 差 17min 看着像 stale' (R158.53 freshness clarify), latency 来源是 agent 30min 轮询. 9:50 改 5min (1.0.6) 验证 R158.50.7e-agent-version-from-inf 链路真生效 (34/34 DC 1.0.6 first_run 9:50:31, 13min 内 60 runs / 34 agent = avg 8min/次, 折算 PS1 + 写库 2-3min overhead, 真 cadence 5min). 10:05 改 15min 折中: 比 30min 频 2 倍, 不像 5min 给 fleet 太大压力, 且与 ad_lockout_list 15min cadence 接近对齐 (密码错误 4625 / 账户锁定 4740 配对看, 同一时间窗比对). agent.intervalSec 1800 → 900, collect.ps1 内容不变 (R158.50.7l 链路), sha256 跟 1.0.5 一样. 34 DC agent 0.1.2+ 下次 syncFromCenter 拉新 manifest, package-manager.js:355 检 intervalSec 变化自动 reschedule (R157.8 链路).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 900,
+    "sha256": "9e58b16ab2705520490a1a8e3a87a4460d860c3523f9985f69a18334d8935ec1",
+    "size": 15148
+  }
+}

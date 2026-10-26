@@ -1,0 +1,53 @@
+{
+  "generatedAt": "2026-10-26T09:33:12.179Z",
+  "repoRoot": "D:\\ToolDevelop\\ADDashboard",
+  "summary": {
+    "errors": 0,
+    "warnings": 0,
+    "notes": 19
+  },
+  "allowlist": [
+    {
+      "tree": "center/scripts",
+      "side": "source-only",
+      "path": "publish-sync.mjs",
+      "reason": "Windows-only publish mirror tool: it rewrites hardcoded D:/dashboard -> D:/Implementation/Server paths. On a Linux host it would publish to the wrong place."
+    },
+    {
+      "tree": "center/scripts",
+      "side": "source-only",
+      "path": "_backup_pre_diag_cleanup_20261015_203424",
+      "dirPrefix": true,
+      "reason": "Stale backup directory that only exists in the source tree; not part of the product."
+    },
+    {
+      "tree": "center/scripts",
+      "side": "source-only",
+      "path": "audit",
+      "dirPrefix": true,
+      "reason": "源树开发工具, 不是产品的一部分。三个脚本各自依赖一棵**不随交付包发布**的树: static-scan.mjs 扫 agent/ (agent 是另一个交付物: 绿色包 ADAgent/MemberAgent), diff-mirrors.mjs 比 publish/ (发布镜像树, 只在源树里), run-all-dimensions.mjs 跑 center/tests/ (install-center.ps1 / upgrade-center.ps1 的 -Exclude 里明确排除了 tests)。⇒ 在目标机上它们要么报一堆假阳性, 要么直接失败 —— 一个永远误报的审计脚本比没有更糟, 它训练操作员忽略审计输出。"
+    }
+  ],
+  "findings": [],
+  "notes": [
+    "center/src: 182 source file(s) compared against the Linux package",
+    "center/web: 185 source file(s) compared against the Linux package",
+    "center/dist: 27 source file(s) compared against the Linux package",
+    "center/scripts: audit/diff-mirrors.mjs is intentionally source-only — 源树开发工具, 不是产品的一部分。三个脚本各自依赖一棵**不随交付包发布**的树: static-scan.mjs 扫 agent/ (agent 是另一个交付物: 绿色包 ADAgent/MemberAgent), diff-mirrors.mjs 比 publish/ (发布镜像树, 只在源树里), run-all-dimensions.mjs 跑 center/tests/ (install-center.ps1 / upgrade-center.ps1 的 -Exclude 里明确排除了 tests)。⇒ 在目标机上它们要么报一堆假阳性, 要么直接失败 —— 一个永远误报的审计脚本比没有更糟, 它训练操作员忽略审计输出。",
+    "center/scripts: audit/run-all-dimensions.mjs is intentionally source-only — 源树开发工具, 不是产品的一部分。三个脚本各自依赖一棵**不随交付包发布**的树: static-scan.mjs 扫 agent/ (agent 是另一个交付物: 绿色包 ADAgent/MemberAgent), diff-mirrors.mjs 比 publish/ (发布镜像树, 只在源树里), run-all-dimensions.mjs 跑 center/tests/ (install-center.ps1 / upgrade-center.ps1 的 -Exclude 里明确排除了 tests)。⇒ 在目标机上它们要么报一堆假阳性, 要么直接失败 —— 一个永远误报的审计脚本比没有更糟, 它训练操作员忽略审计输出。",
+    "center/scripts: audit/static-scan.mjs is intentionally source-only — 源树开发工具, 不是产品的一部分。三个脚本各自依赖一棵**不随交付包发布**的树: static-scan.mjs 扫 agent/ (agent 是另一个交付物: 绿色包 ADAgent/MemberAgent), diff-mirrors.mjs 比 publish/ (发布镜像树, 只在源树里), run-all-dimensions.mjs 跑 center/tests/ (install-center.ps1 / upgrade-center.ps1 的 -Exclude 里明确排除了 tests)。⇒ 在目标机上它们要么报一堆假阳性, 要么直接失败 —— 一个永远误报的审计脚本比没有更糟, 它训练操作员忽略审计输出。",
+    "center/scripts: publish-sync.mjs is intentionally source-only — Windows-only publish mirror tool: it rewrites hardcoded D:/dashboard -> D:/Implementation/Server paths. On a Linux host it would publish to the wrong place.",
+    "center/scripts: 8 source file(s) compared against the Linux package",
+    "db: 5 source file(s) compared against the Linux package",
+    "center/data/packages: 179 source file(s) compared against the Linux package",
+    "C2: 24 required path(s) checked",
+    "C3: 7 shell script(s) checked for BOM / CRLF / shebang / set flags",
+    "C4: 6 forbidden path(s) checked",
+    "C5: workspaces [center] checked against the lock",
+    "C6: 14 imported package name(s) checked against center/package.json dependencies",
+    "C7: 1 PM2 app definition(s) checked against the crash-loop invariant",
+    "C8: 14 built-in package(s) checked in center/data/packages, 14 manifest identity/migration verified",
+    "C9: no credential value found in the package manifests",
+    "C10: 2/2 tree(s) carry exactly one built-in package source (center/data/packages)"
+  ]
+}

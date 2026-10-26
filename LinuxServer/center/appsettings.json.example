@@ -1,0 +1,35 @@
+{
+  "_comment_本文件": "这是模板, 不是真值。真值由初始化向导(首次启动的 /init 流程)生成 center/appsettings.json —— 向导会测库、写入连接配置、创建管理员账号、生成 signature。不要直接复制本文件上线。",
+  "_comment_db": "数据库连接。dialect 可选 mssql | mysql。db/apply 步骤会测试连通性并写入真值。两个方言块都在这里, 改 dialect 即可切换, 不用动结构。",
+  "db": {
+    "dialect": "mssql",
+    "mssql": {
+      "server": "REPLACE_WITH_DB_HOST",
+      "port": 1433,
+      "database": "ADDashboard",
+      "user": "REPLACE_WITH_DB_USER",
+      "password": "REPLACE_WITH_DB_PASSWORD",
+      "encrypt": true,
+      "trustServerCert": true
+    },
+    "mysql": {
+      "host": "REPLACE_WITH_DB_HOST",
+      "port": 3306,
+      "database": "ADDashboard",
+      "user": "REPLACE_WITH_DB_USER",
+      "password": "REPLACE_WITH_DB_PASSWORD"
+    }
+  },
+  "_comment_listenPort": "中心 HTTP 端口。宝塔 Node 项目里填的端口要和这里一致。",
+  "listenPort": 8080,
+  "_comment_jwtSecret": "JWT 签名密钥, 32+ 字符随机。生成: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+  "jwtSecret": "REPLACE_WITH_JWT_SECRET",
+  "_comment_agentToken": "agent 上报用的共享令牌。Windows agent 侧 appsettings 要填同一个值, 否则心跳/配置会被拒。",
+  "agentToken": "REPLACE_WITH_AGENT_TOKEN",
+  "_comment_staticDir": "前端静态目录, 相对启动目录(center/)。保持 ./dist 即可。",
+  "staticDir": "./dist",
+  "_comment_logLevel": "应用级日志档位: info | error | debug。生产用 info。",
+  "logLevel": "info",
+  "_comment_env": "运行环境标记, 生产用 production。",
+  "env": "production"
+}

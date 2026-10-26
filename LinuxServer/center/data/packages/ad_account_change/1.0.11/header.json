@@ -1,0 +1,9 @@
+﻿{
+    "name":  "ad_account_change",
+    "version":  "1.0.11",
+    "scriptSha256":  "e20efd39cf00357426dd582bd4ad157602e04efd160bfbd62554a15498387e5a",
+    "scriptSize":  12295,
+    "entry":  "collect.ps1",
+    "publishedAt":  "2026-10-18T11:42:54.4491044Z",
+    "source":  "admin-upload-via-r158-x-99-20-aac-1-0-11-burst-fix"
+}

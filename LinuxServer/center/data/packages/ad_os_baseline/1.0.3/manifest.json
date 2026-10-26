@@ -1,0 +1,38 @@
+{
+  "name": "ad-os-baseline",
+  "version": "1.0.3",
+  "type": "gauge",
+  "description": "Windows member server baseline metrics (CPU, memory, disks, services, event log, hardware identity). R147 — adds BIOS info (manufacturer/name/version/release_date), CPU brand, total physical memory bytes, per-drive physical disk array (DriveType=3 only — local fixed disks, skips CD/network/RAM/virtual), and C: drive used percentage. Schema extended from 8 to 13 columns; v2 metricstore ingest is auto-discovery so centre/ingestRunV2 picks up new fields from metricSchema without ingest-code edits.",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 60
+  },
+  "database": {
+    "schemaName": "pkg_ad_os_baseline",
+    "migrations": [
+      "migrations/001_initial.sql",
+      "migrations/002_os_baseline_extra_fields.sql"
+    ],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":       { "type": "varchar(64)",  "nullable": false },
+      "ts":             { "type": "datetime",     "nullable": false },
+      "cpu_pct":        { "type": "double" },
+      "memory_pct":     { "type": "double" },
+      "disk_free":      { "type": "json" },
+      "disk_total":     { "type": "json" },
+      "services":       { "type": "json" },
+      "events":         { "type": "json" },
+      "bios_info":       { "type": "json" },
+      "cpu_brand":       { "type": "varchar(128)" },
+      "mem_total_bytes": { "type": "bigint" },
+      "disks":           { "type": "json" },
+      "c_used_pct":      { "type": "double" }
+    }
+  }
+}

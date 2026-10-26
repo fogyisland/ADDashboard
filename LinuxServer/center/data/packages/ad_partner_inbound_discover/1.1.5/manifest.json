@@ -1,0 +1,13 @@
+{
+  "name": "ad_partner_inbound_discover",
+  "version": "1.1.5",
+  "type": "gauge",
+  "description": "R158.11.5 -- operator-bumped version (was 1.1.4). 1.1.4 was already seeder-pushed to DB during this session; bumping again forces fresh SHA drift detection and re-pushes the ASCII-only collect.ps1 to all 34 agents without ambiguity. Behaviour identical to 1.1.4: pure 7-bit-clean ASCII (no Chinese characters anywhere in the .ps1), parses the partner DC name from the CN= segment of $p.Partner. Cadence: 1 hour (intervalSec=3600, R158.12 operator 2026-10-01 lowered from 300s — partner topology rarely changes, 5min was over-sampling).",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect_inbound_partner.ps1",
+    "intervalSec": 3600,
+    "timeoutMs": 60000
+  }
+}

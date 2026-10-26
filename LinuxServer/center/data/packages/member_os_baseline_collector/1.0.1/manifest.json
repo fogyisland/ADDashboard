@@ -1,0 +1,15 @@
+{
+  "name": "member_os_baseline_collector",
+  "version": "1.0.1",
+  "type": "gauge",
+  "description": "R158.86.4 (2026-10-12) — Member Server OS baseline 19 字段 (跟 ad_os_baseline 1.0.7 metricSchema 平行, 加 cpu_brand/bios_info/motherboard/system_info/mem_total_bytes/disks/services/events/memory_modules/network_info/motherboard/cpu/ips 14 JSON/标量字段). 1.0.0 ship 时精简到 5 字段 (cpu_pct/memory_pct/c_used_pct/disk_free_bytes/services_count) 漏了'品牌+分区' — operator 2026-10-12 反馈 'os baseline 少了很多内容, 例如品牌, 磁盘品牌和分区的内容'. 1.0.1 跟 ad_os_baseline 1.0.7 1:1 平行. 15min cadence 跟 R158.86.2 不变. 公共表 pattern (R158.78 + R158.86 precedent): manifest omits `database` block → runner.js post-hook 直接 UPSERT 到 ad_member_os_baseline (时序) + ad_member_os_baseline_latest (per-host latest). 19 字段 wire shape 跟 ad 端 1.0.7 metricSchema 同: { metrics: { agent_id, hostname, collected_at, cpu_pct, memory_pct, c_used_pct, disk_free, disk_total, disks[], services, events[], bios_info, cpu_brand, mem_total_bytes, system_info, network_info, memory_modules[], motherboard, cpu, ips[] } }. 中心端 retention 10d by createMemberOsBaselineRetentionLoop.",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 900
+  }
+}

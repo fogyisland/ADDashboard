@@ -1,0 +1,43 @@
+{
+  "name": "ad_os_baseline",
+  "version": "1.0.9",
+  "type": "gauge",
+  "description": "Windows member server baseline metrics (CPU, memory, disks, services, event log, hardware identity). R161.5 (2026-10-26) — 修复两处让整包从未生效的历史缺陷: ① manifest.name 写成连字符形式 ad-os-baseline, 与包目录名/DB 名 ad_os_baseline 不一致 ⇒ validateManifest 抛 INVALID_MANIFEST ⇒ seeder 在 installScript 之前就把这个包跳过 ⇒ pkg_ad_os_baseline schema 从未创建 ⇒ GET /api/os-baseline 500 (操作员报 'OS 基线结果不对'); ② 迁移文件 001_initial.sql 在历史 bump 中丢失 (每个版本目录只带自己那条增量迁移) ⇒ 表从来没有被建出来过. 1.0.9 一次给全 19 列建表 (MySQL 5.7 没有 ADD COLUMN IF NOT EXISTS, 包迁移又只能一条语句 ⇒ 唯一安全写法是 CREATE TABLE 时给全). PS1 内容与 1.0.8 一字不差 (只 bump 版本 + 补建表迁移), agent sync 拿到的 collect.ps1 sha 不变. 继承 R158.56c (3 个 JSON 列) + R158.30 (system_info/network_info/memory_modules) + R147 (bios/cpu_brand/disks).",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_os_baseline",
+    "migrations": [
+      "migrations/001_initial.sql"
+    ],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":       { "type": "varchar(64)",  "nullable": false },
+      "ts":             { "type": "datetime",     "nullable": false },
+      "cpu_pct":        { "type": "double" },
+      "memory_pct":     { "type": "double" },
+      "disk_free":      { "type": "json" },
+      "disk_total":     { "type": "json" },
+      "services":       { "type": "json" },
+      "events":         { "type": "json" },
+      "bios_info":       { "type": "json" },
+      "cpu_brand":       { "type": "varchar(128)" },
+      "mem_total_bytes": { "type": "bigint" },
+      "disks":           { "type": "json" },
+      "c_used_pct":      { "type": "double" },
+      "system_info":     { "type": "json" },
+      "network_info":    { "type": "json" },
+      "memory_modules":  { "type": "json" },
+      "motherboard":     { "type": "json" },
+      "cpu":             { "type": "json" },
+      "ips":             { "type": "json" }
+    }
+  }
+}

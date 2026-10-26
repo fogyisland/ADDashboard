@@ -1,0 +1,17 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.5",
+  "type": "gauge",
+  "description": "R158.50.7l (2026-10-08) supersedes 1.0.4 R158.50.7e. 1.0.4 used Get-ADUser -Server $TargetDomainName but the actual EventData TargetDomainName is the caller workstation hostname in cross-domain trust (verified on KDLFLOFADSRV2 2026-10-08: TargetDomainName='BJ-L-PF27GZN7' == CallerComputerName, not 'SPHKDL' the AD domain). Get-ADUser -Server <workstation> fails 'unable to contact server', displayName returned null. DB evidence on 4625 confirms: target_user_display_name populated with '184132' (a number, not a name). 1.0.5 reverts to the R139.1 default-Get-ADUser idiom (no -Server, queries the current user logon domain = local AD domain on a DC), which works for 99% of 4625 lockouts. Cache key simplified to SAM only; null lookups are NOT cached (R158.50.7e lesson — caching null locked the bad state for 24h). R158.50.7e machine-account filter preserved. R158.50.7d [xml] param fix preserved.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 1800,
+    "sha256": "9e58b16ab2705520490a1a8e3a87a4460d860c3523f9985f69a18334d8935ec1",
+    "size": 15148
+  }
+}

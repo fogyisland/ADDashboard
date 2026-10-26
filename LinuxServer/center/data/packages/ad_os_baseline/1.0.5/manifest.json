@@ -1,0 +1,42 @@
+{
+  "name": "ad-os-baseline",
+  "version": "1.0.5",
+  "type": "gauge",
+  "description": "Windows member server baseline metrics (CPU, memory, disks, services, event log, hardware identity). R158.52 (2026-10-08) hardening: $ErrorActionPreference Continue + accumulated $lastErrorMessage surfaced to centre as payload.error. Per-section try/catch ensures the partial-success run gets a diagnostic instead of a silent null. Switch from FilterHashtable to FilterXml (R158.50.5 / R158.50.7d proved Get-WinEvent -FilterHashtable 100% fails under agent service account). Wire shape unchanged. R158.30 — extends R147 hardware-identity fields: adds system_info (Win32_ComputerSystem manufacturer/model — distinct from BIOS vendor), serial_number inside bios_info (Win32_BIOS.SerialNumber), network_info (Win32_NetworkAdapterConfiguration IPEnabled IPv4 list with virtual-adapter skip filter), per-disk model+bus_type in disks[] (Get-PhysicalDisk — first-disk model is the dominant signal), and memory_modules (Win32_PhysicalMemory — array of {manufacturer, part_number, speed_mhz, capacity_bytes}). C: drive used percentage renamed in front-end from '磁盘已使用' to 'C 盘已使用' — collect.ps1 logic unchanged. Schema is a superset of 1.0.3; ALTER migration is idempotent via INFORMATION_SCHEMA / sys.columns guards so 1.0.3 rows keep working (new fields NULL until the agent re-runs).",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 60
+  },
+  "database": {
+    "schemaName": "pkg_ad_os_baseline",
+    "migrations": [
+      "migrations/001_initial.sql",
+      "migrations/002_os_baseline_extra_fields.sql",
+      "migrations/003_os_baseline_r158_30_fields.sql"
+    ],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":       { "type": "varchar(64)",  "nullable": false },
+      "ts":             { "type": "datetime",     "nullable": false },
+      "cpu_pct":        { "type": "double" },
+      "memory_pct":     { "type": "double" },
+      "disk_free":      { "type": "json" },
+      "disk_total":     { "type": "json" },
+      "services":       { "type": "json" },
+      "events":         { "type": "json" },
+      "bios_info":       { "type": "json" },
+      "cpu_brand":       { "type": "varchar(128)" },
+      "mem_total_bytes": { "type": "bigint" },
+      "disks":           { "type": "json" },
+      "c_used_pct":      { "type": "double" },
+      "system_info":     { "type": "json" },
+      "network_info":    { "type": "json" },
+      "memory_modules":  { "type": "json" }
+    }
+  }
+}

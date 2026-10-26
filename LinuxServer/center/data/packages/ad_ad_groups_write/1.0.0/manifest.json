@@ -1,0 +1,15 @@
+{
+  "name": "ad_ad_groups_write",
+  "version": "1.0.0",
+  "type": "command",
+  "_type_note": "R158.56c-d (2026-10-09) — type=command 是 on-demand 包, 8 个 group_* commandType 共用本包 (PS1 内 switch 8 case). 故意不设 agent.intervalSec — PackageManager.reschedule 见到 type=command 直接 continue. 解 R158.56c-d user_create FormatException 教训的姊妹分支, ship via syncFromCenter 不动 agent bundle 版本.",
+  "description": "R158.56c-d (2026-10-09) — AD group write-action dispatcher package. collect.ps1 接受 -CommandType <group_search|group_create|group_set_attributes|group_add_member|group_remove_member|group_set_members|group_delete|group_list_members> -ParamsPath <jsonfile>, PS1 内 switch-case 路由到 Get/New/Set-ADGroup / Add/Remove-ADGroupMember / Get-ADGroupMember. 替代静态 agent/scripts/ad-admin-groups.ps1, 通过 syncFromCenter 推到 33 DC.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000
+  }
+}

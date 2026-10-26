@@ -1,0 +1,13 @@
+{
+  "name": "ad_partner_inbound_discover",
+  "version": "1.1.4",
+  "type": "gauge",
+  "description": "R158.11.4 -- operator fix: 1.1.0..1.1.3 embedded Chinese (zh-CN) comments and strings inside Write-Warning calls; the PowerShell 5.1 host on each agent reads scripts with the system codepage (zh-CN = CP936/GB18030) while the dev box writes UTF-8 no-BOM, causing the script to silently fail to parse and the catch block to emit peers=[] exit 0. v1.1.4 strips every non-ASCII character so the file is 7-bit-clean ASCII. Behaviour on RSAT-equipped DC is identical to v1.1.3: parses the partner DC name from the CN= segment of $p.Partner (the second CN= immediately following CN=NTDS Settings). Cadence: 5 min (intervalSec=300).",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect_inbound_partner.ps1",
+    "intervalSec": 300,
+    "timeoutMs": 60000
+  }
+}

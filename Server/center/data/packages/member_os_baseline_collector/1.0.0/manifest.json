@@ -1,0 +1,15 @@
+{
+  "name": "member_os_baseline_collector",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "R158.86 (2026-10-12) — Member Server OS baseline metric. CPU + memory + C: disk + service state subset of ad_os_baseline 1.0.7, without AD-only fields (ad_replication_status / replication_link / failed_logons). 15min cadence (operator 2026-10-12 directive '每隔15分钟执行一次, 数据写入 MemberServer的 OS 基线状态'). Public-table pattern (R158.78 precedent): manifest omits `database` block → runner.js post-hook 直接 UPSERT 到 ad_member_os_baseline (时序) + ad_member_os_baseline_latest (per-host latest). 跟 ad_os_baseline 平行但独立, 数据不混 ad_os_baseline.metrics. 5 metrics wire shape: { metrics: { agent_id, hostname, collected_at, cpu_pct, memory_pct, c_used_pct, disk_free_bytes, services_count } }. 中心端 retention 10d by createMemberOsBaselineRetentionLoop.",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 900
+  }
+}

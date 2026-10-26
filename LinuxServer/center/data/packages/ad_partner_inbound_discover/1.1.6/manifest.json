@@ -1,0 +1,14 @@
+{
+  "name": "ad_partner_inbound_discover",
+  "version": "1.1.6",
+  "type": "gauge",
+  "description": "R158.X.99.12 (2026-10-17) -- R158.72.x.13 6 包范式 (daily 2:00 + Jitter 0~30min per-DC) 1:1 平行. intervalSec=0 走 R158.60.10 on-demand skip + R158.72.x.11 self-interval anchor 范式 (中心端 cron = 唯一 fire 源, agent 端 0.1.7 setTimeout 1 拍/天 0 setInterval). 0 引新 wrapper. 真因 = R158.X.99.10/11/12 chain 5 步 (0.1.6/0.1.7 binary 端老 reschedule 写死 60s 残留 + 5min center cron fire row 持续 + builtin-seed-upgrade 覆盖回 enabled=true). 1:1 平行 R158.72.x.13 ad_account_change 等 6 包范式. 必 nssm restart ADDashboardCenter (R158.111 lesson). 24h+72h 必 3 次 probe ≥80% cadence 收敛 否则 revert (跟 R158.72.x.13 锁 1:1 平行).",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect_inbound_partner.ps1",
+    "intervalSec": 0,
+    "cronExpr": "0 2 * * *",
+    "timeoutMs": 60000
+  }
+}

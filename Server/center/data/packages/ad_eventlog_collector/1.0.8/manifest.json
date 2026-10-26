@@ -1,0 +1,20 @@
+{
+  "name": "ad-eventlog-collector",
+  "version": "1.0.8",
+  "type": "gauge",
+  "description": "Windows Event Log warning/error counter rollups + drill-down event rows for 5 channels: System / Application / AD Web Services / DFSR / Security. v1.0.8 (R158.X.99.aec-1.0.8, 2026-10-18): operator directive cadence pause-fix. package_policies.interval_sec 0 -> 7200 (1:1 parallel R158.X.99.aelc.c precedent). Root cause of 24h 3784-row 1min cadence burst = agent binary 0.1.6/0.1.7 package-manager.js setInterval treating interval_sec=0 as 60s (lesson 14). Ship 1.0.8 with explicit intervalSec=7200 + cronExpr=\"0 */2 * * *\" so every install / refresh cycle pulls the canonical cadence (not the 0-default burst loop). collect.ps1 body 1:1 copy of v1.0.7 (no new logic — cadence-only fix). enabled=0 in package_policies retained (R158.X.99.aelc.b disable_for_close precedent, audit id 31597 2026-10-18 08:40) so no new package_runs rows until operator explicit re-enable. Wire shape unchanged (lesson 13 preserved). v1.0.7 (2026-10-17): manifest version bump; collect.ps1 body identical to v1.0.6. v1.0.6 (R158.50.7i, 2026-10-08): operator 5 channel Get-WinEvent -ErrorAction Stop case 1+2 mis-classified as partial; fixed with SilentlyContinue + post-branch. v1.0.5 (R158.52, 2026-10-08): $droppedCount field (1000-row limit tracking). v1.0.2 (R158.23, 2026-10-02): Security 4625/4776 severity info -> error. v1.0.1 (R154): scan window 25h -> 2h + Security channel (4625/4776). R158.31 (2026-10-02): intervalSec 900 -> 7200 to match SCAN_HOURS=2. Backs the public EventlogView (no-auth, R112). One summary row per (dc_name, channel, collected_at). Data lands in public ad_eventlog_events + ad_eventlog_summary via centre-side post-hook (see center/src/packages/runner.js); manifest has NO `database` block by design (公共表 architectural pivot, R110.A/R107.1/R112 precedent). 4h retention enforced by centre-side hourly sweep (createEventlogRetentionLoop, wired in server.js).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": [
+      "windows"
+    ],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 7200,
+    "cronExpr": "0 */2 * * *",
+    "sha256": "2350a0d1391049e640a3cda651e5f3ea014dfce09771521a42c012d0a6ebab33",
+    "size": 9228
+  }
+}

@@ -1,0 +1,108 @@
+# ============================================================
+# ADDashboard — 工作树根 .gitignore
+#
+# 判定口径与远程 fogyisland/ADDashboard 的 `origin/main:.gitignore` 一致
+# （那一份是本项目既有规范），此处只按**本地布局**改写路径。
+#
+# 本地 ⇄ 远程 目录对应:
+#   Server/center/     ⇄  center/
+#   Server/scripts/     ⇄  scripts/
+#   ADAgent/agent/      ⇄  agent/
+#   ADAgent/(绿包其余)   ⇄  installer/
+#   LinuxServer/        ⇄  publish/system/
+#   MemberAgent/        ⇄  （远程无对应）
+#
+# 绿包/agent 目录自带子级 .gitignore（ADAgent/.gitignore、
+# ADAgent/agent/.gitignore、MemberAgent/*.gitignore），那几份负责
+# node_modules / Logs / data/packages / appsettings 等；本文件只管
+# 根级 + Server/ + LinuxServer/ 这两棵没有子级规则的树。
+# ============================================================
+
+# ---------- 依赖与构建产物 ----------
+node_modules/
+dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# LinuxServer 是**交付包**（对应远程 publish/system/），它的 center/dist
+# 是随包发布的构建产物，必须入库 —— 远程同一口径
+# （!publish/system/center/dist/，理由见那边注释：避免服务器重建漂移）。
+!LinuxServer/center/dist/
+
+# ---------- 运行期安装标记 ----------
+# 目标机依赖指纹；残留会让下次安装跳过 npm install ⇒ 带着旧依赖启动。
+Server/center/.install-hash
+
+# ---------- 凭据与本地配置（绝不入库）----------
+.env
+.env.local
+*.local.env
+appsettings.json
+!appsettings.example.json
+!appsettings.json.example
+!.env.example
+
+# ---------- 日志与运行期输出 ----------
+*.log
+*.log.*
+Logs/
+logs/
+APP/
+FEATURE/
+
+# ---------- 运行期数据 ----------
+# instance_id = 机器身份（与许可证绑定）；license-requests / file-push = 运行期。
+# 但 data/packages/ 是 **seed 的源**（server.js 的 resolveBuiltinSourceDir()
+# 在本地布局下解析到 Server/center/data/packages），必须入库 —— 否则换机
+# 无源可 seed。
+Server/center/data/*
+!Server/center/data/packages/
+Server/center/data/instance_id
+Server/center/data/license-requests/
+Server/center/data/file-push/
+
+# 交付包里的运行期数据：包源入库，其余是运行期产物。
+LinuxServer/center/data/*
+!LinuxServer/center/data/packages/
+LinuxServer/center/data/license-requests/
+LinuxServer/center/data/file-push/
+
+# agent 侧 data/ = 从中心端 syncFromCenter 拉下来的运行时产物
+# （子级 .gitignore 已覆盖 ADAgent/MemberAgent 的 data/）。
+Server/agent/data/
+Server/noadagent/data/
+
+# ---------- 便携运行时（构建期下载/复制，不是源码）----------
+Server/node/
+ADAgent/node/
+MemberAgent/node/
+ADAgent/nssm/
+MemberAgent/nssm/
+nssm.zip
+
+# ---------- 本地工具状态 ----------
+.claude/
+.worktrees/
+.superpowers/brainstorm/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# ---------- 备份 / 临时 / 已隔离产物 ----------
+*.bak
+*.bak_*
+*token*.txt
+_removed_2026-10-25_tests-debug/
+Server/center/scripts/_backup_*/
+Server/publish/
+
+# ---------- 大件 / 含内部拓扑的导出物 ----------
+# Implementation.zip = 123MB 整包快照
+Implementation.zip
+# 当前数据库结构.sql = MSSQL 生产库 dump（含 D:\SQL\DATA\MSSQL15.MSSQLSERVER\ 路径）
+当前数据库结构.sql

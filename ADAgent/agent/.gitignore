@@ -1,0 +1,60 @@
+# Node
+node_modules/
+
+# Logs / 运行产物 — never commit
+Logs/
+*.log
+data/*.log
+data/*-submit.json
+data/*-results.json
+data/*-results-*.json
+data/probe-*.out.txt
+data/probe-*.log
+data/run-*.log
+data/submit-*.log
+data/manual-trigger*.log
+data/domain_consistency_*.log
+data/eventlog_*.log
+data/verify-out.log
+data/spa-bundle.js
+data/spa-paths.txt
+data/spa-context.txt
+data/pp-*.txt
+data/pkgruns-*.txt
+data/partner-probe-submit.json
+
+# agent queue + 缓存 — 包在 packages 下是 manifest 源码，保留
+data/report-queue.json
+
+# Per-package manifests (从 centre 拉下来的动态配置 — 重启 agent 会重新拉)
+# 2026-10-02: 整个 data/packages/ 现在是运行时产物(从 center syncFromCenter 拉取),
+# 绿色包内不预置任何包。保留 .gitkeep / README 让目录存在,避免 mkdirSync race。
+data/packages/*
+!data/packages/.gitkeep
+!data/packages/README.md
+
+# PowerShell psreadline / transcripts
+*.transcript.txt
+PSReadLine*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 凭据 / 真实配置 — token 不能进 git
+appsettings.json
+appsettings.*.json
+!appsettings.example.json
+!appsettings-mock-agent.json
+
+# R93.7 backup 已部署，不需要保留 bak
+*.bak
+
+# Diagnostic / 一次性脚本（保留 script 文件本身，但运行时产物已排除）

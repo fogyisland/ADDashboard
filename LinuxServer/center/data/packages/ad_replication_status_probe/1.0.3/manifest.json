@@ -1,0 +1,13 @@
+{
+  "name": "ad_replication_status_probe",
+  "version": "1.0.3",
+  "type": "gauge",
+  "description": "R158.15.3 (2026-10-01) -- 10min cadence agent probe of every (peer x NC) replication tuple. R158.17.1 bumped cadence from 15min to 10min to keep probe_history rows comfortably inside the v_partner_inbound 15min sliding window (cadence=15min left edge-of-window rows dropping out and reappearing as probe_state=none transitions). 1.0.3 re-publishes the R158.15.2 cmdlet pivot (Get-ADReplicationPartnerMetadata -Target $localcomputer -PartnerType Inbound) under a fresh version to force a deterministic cache refresh on every agent (1.0.2 had stale-cache issues -- agent's current.json said 1.0.2 but on-disk collect.ps1 still held the pre-pivot 1.0.0 Get-ADReplicationFailure -Partner text). Adds a version-fingerprint Write-Warning line at the top of the script so stale-cache detection becomes trivial. Same wire shape, same classification logic (success/error/partial). Pure 7-bit-clean ASCII PS1.",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect.ps1",
+    "intervalSec": 600,
+    "timeoutMs": 60000
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.9",
+  "type": "gauge",
+  "description": "R158.58 (2026-10-09) — collect.ps1 window 1800s → 900s. manifest.intervalSec 已经 900 (R158.53 1.0.7 cadence), 但 PS1 硬编码 window 1800s → 邻接 run 覆盖 15-min 重叠区, 每个 event 拉两次再靠 MSSQL MERGE ON (dc_name, event_record_id) 幂等去重. 1.0.8 把 PS1 window 对齐到 intervalSec (R158.58 operator choice '走 1.0.8 ship'), 消除 50% 重复 fetch 开销. agent.intervalSec 不变 (R158.53 已经是 900). 33 DC agent 0.1.2+ 下次 syncFromCenter (5min syncTimer) 拉新 manifest, package-manager.js:355 检 manifest hash 变化自动重拉 collect.ps1 + 重新 reschedule. PS5.1 parser-verify 必跑 (R158.50.7k audit).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 900,
+    "sha256": "9ba25c39df8a777573f60e1703a377a79c108255af738631fc21016a4a7c18d6",
+    "size": 15660
+  }
+}

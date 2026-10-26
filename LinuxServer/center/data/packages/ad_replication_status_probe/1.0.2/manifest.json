@@ -1,0 +1,13 @@
+{
+  "name": "ad_replication_status_probe",
+  "version": "1.0.2",
+  "type": "gauge",
+  "description": "R158.15.2 (2026-10-01) -- 15min cadence agent probe of every (peer x NC) replication tuple. Reads Get-ADReplicationPartnerMetadata -Target $localcomputer -PartnerType Inbound (canonical RSAT cmdlet, same as partner-discover 1.1.5 uses). For each (peer DC, naming_context) row we record LastReplicationSuccess / LastReplicationAttempt / ConsecutiveFailureCount / FailureCount + classify the row as success (LastReplicationSuccess within 7 days AND ConsecutiveFailureCount==0), error (ConsecutiveFailureCount>0), or partial (LastReplicationSuccess missing/older than 7 days). Emits one row per (peer, NC) to ad_replication_probe_history. Centre base URL resolved from $env:DASHBOARD_CENTER_PORT or $env:CENTER_URL fallback. Public-table contract: no `database` block. Pure 7-bit-clean ASCII PS1 (R158.11.4 lesson).",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect.ps1",
+    "intervalSec": 900,
+    "timeoutMs": 60000
+  }
+}
