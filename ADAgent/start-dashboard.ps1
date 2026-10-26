@@ -62,8 +62,25 @@ if (-not $effectivePort) {
 }
 
 # 端口冲突预检
+# R161.8 (2026-10-26) — 原实现把本机网卡地址**写死成某一个具体地址**
+#   (那是当初开发那台机器的 LAN 地址)。换机后的缺陷: 监听在 192.168.x.x /
+#   10.x.x.x 等**本机**地址上的同名端口进程检不出来 ⇒ 预检放行 ⇒ 真正 bind
+#   时才 EADDRINUSE 崩，且报错信息指向 start-dashboard 而不是真实占用者。
+#   改为运行时枚举本机所有单播地址 + 回环/通配符字面量。
+$localAddresses = @('127.0.0.1', '::1', '0.0.0.0', '::')
+try {
+  $localAddresses += @(
+    [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+      ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+      ForEach-Object { ($_.Address.ToString() -split '%')[0] } |
+      Where-Object { $_ }
+  )
+} catch {
+  Write-Warn2 "local address enumeration failed (fallback: loopback/wildcard only): $($_.Exception.Message)"
+}
+$localAddresses = @($localAddresses | Select-Object -Unique)
 $listener = Get-NetTCPConnection -LocalPort $effectivePort -State Listen -ErrorAction SilentlyContinue |
-  Where-Object { $_.LocalAddress -in @('127.0.0.1','::1','0.0.0.0','::','10.170.140.23') }
+  Where-Object { $localAddresses -contains ((([string]$_.LocalAddress) -split '%')[0]) }
 if ($listener) {
   throw "port $effectivePort is already in use (pid=$($listener[0].OwningProcess)). Re-run with -Port <other>."
 }
