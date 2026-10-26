@@ -101,6 +101,9 @@ _removed_2026-10-25_tests-debug/
 Server/center/scripts/_backup_*/
 Server/publish/
 
+# ---------- 审计报告（每次跑 check-*.mjs 都重写，带 generatedAt 时间戳）----------
+Server/scripts/audit/*.json
+
 # ---------- 大件 / 含内部拓扑的导出物 ----------
 # Implementation.zip = 123MB 整包快照
 Implementation.zip
