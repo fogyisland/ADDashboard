@@ -441,3 +441,66 @@ describe('D. 端点语义 — 过滤条件在 SQL 里, 不在 JS 侧', () => {
     assert.equal('signature' in row, false, '响应里绝不能带签名');
   });
 });
+
+// ---------------------------------------------------------------------------
+// E. 全树守卫 — 任何 mysql 连接池都必须钉住会话时区
+//
+// ★ 为什么需要这一组 (R161.10 收尾):
+//   修审计时间时发现 src/db.js (历史遗留的第二套连接池) **没有**钉会话时区,
+//   而它文件头的注释还写着"The session-level timezone is set to 'Z'" ——
+//   一句**错误**的说法 (timezone:'Z' 是客户端选项, 不是会话时区)。
+//   该文件目前没人 import (全树 grep 过) ⇒ 运行期无影响, 但它是一颗地雷:
+//   谁复活它, 谁就会把"DB 默认值写入的时间戳偏一个时区差"这个 bug 带回来。
+//   ⇒ 这一组守卫把"建池 ⇒ 必须钉时区"变成**结构性不变量**, 而不是靠人记得。
+// ---------------------------------------------------------------------------
+
+describe('E. 全树守卫 — 任何 mysql 连接池都必须钉住会话时区', () => {
+  function listJsFiles(dir) {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...listJsFiles(full));
+      else if (entry.isFile() && entry.name.endsWith('.js')) out.push(full);
+    }
+    return out;
+  }
+
+  function collectMysqlPoolFiles() {
+    const files = listJsFiles(path.join(CENTER_ROOT, 'src'));
+    const poolFiles = [];
+    for (const file of files) {
+      const code = stripJsComments(fs.readFileSync(file, 'utf8'));
+      const usesMysql2 = /from\s+['"]mysql2/.test(code) || /require\(\s*['"]mysql2/.test(code);
+      if (!usesMysql2) continue;
+      if (!/createPool\s*\(/.test(code)) continue;
+      poolFiles.push({ file, code, rel: path.relative(CENTER_ROOT, file).replace(/\\/g, '/') });
+    }
+    return poolFiles;
+  }
+
+  test('E1. 扫描口径本身有效 (至少认出 1 个 mysql 池文件)', () => {
+    const poolFiles = collectMysqlPoolFiles();
+    assert.ok(
+      poolFiles.length >= 1,
+      '一个 mysql 池文件都没认出来 —— 扫描口径坏了, 下面的守卫会变成哑巴'
+    );
+  });
+
+  test('E2. 每个 mysql 池文件都必须含 SET time_zone (会话时区钉扎)', () => {
+    const offenders = collectMysqlPoolFiles()
+      .filter((f) => !/SET\s+time_zone\s*=/.test(f.code))
+      .map((f) => f.rel);
+    assert.deepEqual(
+      offenders,
+      [],
+      '这些 mysql 池文件没有钉会话时区 (DB 默认值写入的时间戳会按服务器本地时区落点): ' +
+      offenders.join(', ')
+    );
+  });
+
+  test('E3. 已知的两个池 (生产 driver + 历史遗留 db.js) 都在守卫覆盖范围内', () => {
+    const rels = collectMysqlPoolFiles().map((f) => f.rel);
+    assert.ok(rels.includes('src/db/drivers/mysql.js'), '生产 driver 不在守卫覆盖范围内');
+    assert.ok(rels.includes('src/db.js'), '历史遗留 src/db.js 不在守卫覆盖范围内');
+  });
+});
