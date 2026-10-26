@@ -60,6 +60,8 @@ import { fileURLToPath } from 'node:url';
 import { buildSql } from '../src/db/sql.js';
 import { licenseRequest as licenseRequestSql, clampRowLimit } from '../src/db/sql/license-request.js';
 import { pinSessionUtc } from '../src/db/drivers/mysql.js';
+import { _setDbForTest, close } from '../src/db/index.js';
+import { listRecent, listBySite } from '../src/services/replication.js';
 import { createSystemSettingsV2Router } from '../src/routes/system-settings-v2.js';
 import { stripJsComments } from './helpers/strip-comments.js';
 
@@ -502,5 +504,98 @@ describe('E. 全树守卫 — 任何 mysql 连接池都必须钉住会话时区'
     const rels = collectMysqlPoolFiles().map((f) => f.rel);
     assert.ok(rels.includes('src/db/drivers/mysql.js'), '生产 driver 不在守卫覆盖范围内');
     assert.ok(rels.includes('src/db.js'), '历史遗留 src/db.js 不在守卫覆盖范围内');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F. "LIMIT ? 只能绑整数" 这一族 —— 全量排查的收口
+//
+// ★ 排查口径 (R161.10.2): sql.js 的 mysql 侧共有 28 个 key 的 SQL 含
+//   `LIMIT ?` / `OFFSET ?` (65 处占位符)。逐个核对**活**调用点之后:
+//   - 15 个 key 在 **helper 层**就自守整数 (Number.isInteger 校验 / Number());
+//   - 剩下的活调用点也都在**服务层**过了整数闸门 (Math.floor(Number(...)) 等);
+//   ⇒ 唯一真实的缺陷在 **services/replication.js 的两个函数**: mysql 分支绑的是
+//     **未经数字化**的 limit (字符串 ⇒ mysql2 预处理协议拒执行 ⇒ 500),
+//     mssql 分支只 Number() 不截断 (12.7 ⇒ 内联出 `TOP 12.7` = 语法错误)。
+//     这两个函数当前没有调用点, 但属于"复活即炸"的同族地雷。
+//
+// ★ 这一组把"整数闸门"钉成可执行的事实:
+//   - utils/limit.js 的 clampRowLimit 是**唯一**实现;
+//   - services/replication.js 的两条分支都必须绑**同一个**整数;
+//   - sql.js 的 mssql builder 必须内联出**整数**。
+// ---------------------------------------------------------------------------
+
+describe('F. LIMIT ?/OFFSET ? 只能绑整数 —— 全量排查收口', () => {
+  test('F1. clampRowLimit 是唯一实现 (utils/limit.js), 三处都走它', () => {
+    // 1) canonical 实现的行为
+    assert.equal(clampRowLimit(50), 50);
+    assert.equal(clampRowLimit('50'), 50);
+    assert.equal(clampRowLimit(12.7), 12);
+    assert.equal(clampRowLimit('abc'), 100);
+    assert.equal(clampRowLimit(0), 100);
+    assert.equal(clampRowLimit(-5), 1);
+    assert.equal(clampRowLimit(5000), 1000);
+
+    // 2) license-request.js 只是 re-export (不再自带一份实现)
+    const lrCode = stripJsComments(
+      fs.readFileSync(path.join(CENTER_ROOT, 'src/db/sql/license-request.js'), 'utf8')
+    );
+    assert.match(lrCode, /from\s+'\.\.\/\.\.\/utils\/limit\.js'/,
+      'license-request.js 必须从 utils/limit.js 取闸门, 不能自带一份');
+    assert.doesNotMatch(lrCode, /export\s+function\s+clampRowLimit/,
+      'license-request.js 里不该再有本地实现');
+
+    // 3) sql.js 的 mssql builder 不再自己夹取
+    const sqlCode = stripJsComments(fs.readFileSync(path.join(CENTER_ROOT, 'src/db/sql.js'), 'utf8'));
+    assert.doesNotMatch(sqlCode, /Math\.max\(1,\s*Math\.min\(1000,\s*Number\(/,
+      'sql.js 里还有自己夹取的副本 ⇒ 统一到 utils/limit.js');
+
+    // 4) services/replication.js 走同一个闸门
+    const repCode = stripJsComments(fs.readFileSync(path.join(CENTER_ROOT, 'src/services/replication.js'), 'utf8'));
+    assert.match(repCode, /clampRowLimit/, 'services/replication.js 必须用 clampRowLimit');
+  });
+
+  test('F2. sql.js 的 mssql builder 内联出的是整数 (12.7 → TOP 12)', () => {
+    const mssql = buildSql('mssql');
+    const sqlText = mssql.replication.listRecent(12.7);
+    assert.match(sqlText, /SELECT TOP 12 /, `内联出来的不是整数: ${sqlText}`);
+    assert.doesNotMatch(sqlText, /TOP 12\.7/, '浮点被内联进 TOP 了 ⇒ MSSQL 语法错误');
+    const siteSql = mssql.replication.listBySite(12.7);
+    assert.match(siteSql, /SELECT TOP 12 /, `内联出来的不是整数: ${siteSql}`);
+  });
+
+  test('F3. mysql 分支绑的是**数字**, 不是字符串 (services/replication.js)', async () => {
+    const calls = [];
+    const fakeDb = {
+      dialect: 'mysql',
+      sql: buildSql('mysql'),
+      async query(sql, params) { calls.push({ sql, params }); return { rows: [] }; },
+      async execute(sql, params) { calls.push({ sql, params }); return { rows: [], affectedRows: 0 }; },
+      async close() {}
+    };
+    _setDbForTest(fakeDb);
+    try {
+      await listRecent('50');
+      await listBySite('SITE-A', '25');
+    } finally {
+      await close();                      // 把全局 db facade 复位成未初始化
+    }
+
+    assert.equal(calls.length, 2, '两个函数各发一次查询');
+    const [recent, bySite] = calls;
+
+    assert.equal(recent.params.length, 1, 'listRecent 只绑 1 个参数 (LIMIT)');
+    assert.equal(typeof recent.params[0], 'number', 'LIMIT 参数必须是 number');
+    assert.equal(recent.params[0], 50, '字符串 "50" 必须被整数化成 50');
+
+    assert.equal(bySite.params.length, 3, 'listBySite 绑 3 个参数 (site, site, LIMIT)');
+    assert.equal(typeof bySite.params[2], 'number', 'LIMIT 参数必须是 number');
+    assert.equal(bySite.params[2], 25, '字符串 "25" 必须被整数化成 25');
+  });
+
+  test('F4. mysql 侧 listRecent / listBySite 的占位符个数 = 绑定参数个数', () => {
+    const mysql = buildSql('mysql');
+    assert.equal(countPlaceholders(mysql.replication.listRecent), 1, 'listRecent: 1 个 LIMIT ?');
+    assert.equal(countPlaceholders(mysql.replication.listBySite), 3, 'listBySite: 2 个 site + 1 个 LIMIT ?');
   });
 });

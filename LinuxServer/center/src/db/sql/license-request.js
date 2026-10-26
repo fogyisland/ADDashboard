@@ -54,21 +54,17 @@
 //   Number('12.7') = 12.7 ⇒ 内联出来是 `LIMIT 12.7` / `TOP 12.7`
 //   —— MySQL/MSSQL 都是语法错误。现在统一走 clampRowLimit(): 截断到整数。
 // ---------------------------------------------------------------------------
+//
+// ★ R161.10.2 (2026-10-26) — 整数闸门搬家到 src/utils/limit.js。
+//   本文件原来自己定义 clampRowLimit(); 全树排查"LIMIT ? 绑非整数"这一族时
+//   发现 sql.js 的 mssql builder 与 services/replication.js 也在做同一件事
+//   (各自一份 Math.max/Math.min 夹取) ⇒ 三份实现、两份还漏了"截断到整数"。
+//   ⇒ 统一到**唯一**闸门 src/utils/limit.js (见该文件的完整语义说明),
+//     本文件继续 re-export, 保持既有 import 路径不变。
 
-/**
- * 行数上限的**整数化**闸门 (两边方言共用)。
- *
- * 语义与老 mssql 夹取逐字等价 (0 → 100, 负数 → 1, 非数 → 100, >1000 → 1000),
- * 额外保证产物一定是**正整数** —— 内联进 SQL 因此没有任何注入面。
- *
- * @param {unknown} limit 任意输入 (query 参数 / 字符串 / null)
- * @returns {number} 1..1000 的正整数
- */
-export function clampRowLimit(limit) {
-  const n = Number(limit);
-  const v = Number.isFinite(n) ? Math.trunc(n) : 100;
-  return Math.max(1, Math.min(1000, v || 100));
-}
+import { clampRowLimit } from '../../utils/limit.js';
+
+export { clampRowLimit };
 
 export const licenseRequest = {
   mysql: {

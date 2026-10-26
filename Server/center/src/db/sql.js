@@ -12,6 +12,11 @@
 //   normalizeParam 只转换 Date 实例、字符串原样透传 ⇒ 绑 ISO 会 ER 1292。
 //   MSSQL 侧 datetime2 接受 ISO ⇒ MSSQL 段保持原样 (零行为变化)。
 import { toMysqlDatetime } from '../utils/datetime.js';
+// R161.10.2 (2026-10-26) — "行数上限" 的唯一整数闸门 (utils/limit.js)。
+//   本文件里凡是把上限**内联**进 SQL 的 builder (MSSQL 的 `TOP n`) 都必须
+//   过它: 内联出来是 `TOP 12.7` 时 MSSQL 是语法错误; 绑 `LIMIT ?` 时 mysql2
+//   的预处理协议也只吃整数 (见 utils/limit.js 文件头的完整说明)。
+import { clampRowLimit } from '../utils/limit.js';
 import { memberServers } from './sql/member-servers.js';
 // R158.X.115 (2026-10-20) — 主机生命周期状态 (退役 / 暂停管控) helper.
 //   ad_dcs + ad_member_servers 两张目录表的 decommissioned_at /
@@ -3764,8 +3769,8 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       // bound through sp_executesql and raised error 1060 on every operator
       // request to the 复制状态概览 view. Function-form so the integer is
       // inlined; the MySQL sibling keeps `LIMIT ?` because mysql2 accepts it.
-      listRecent: (limit) => `SELECT TOP ${Math.max(1, Math.min(1000, Number(limit) || 100))} source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
-      listBySite: (limit) => `SELECT TOP ${Math.max(1, Math.min(1000, Number(limit) || 100))} source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
+      listRecent: (limit) => `SELECT TOP ${clampRowLimit(limit)} source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status ORDER BY collected_at DESC`,
+      listBySite: (limit) => `SELECT TOP ${clampRowLimit(limit)} source_dc, dest_dc, source_site, dest_site, status_code, collected_at FROM ad_replication_status WHERE source_site = ? OR dest_site = ? ORDER BY collected_at DESC`,
       // R151.3 — MSSQL mirror of mysql.replication.partnersCountBoth.
       // SUM(CASE WHEN …) is portable across both dialects; only the time
       // bound is rewritten (`? - INTERVAL ? MINUTE` → `DATEADD(MINUTE, -?, ?)`).

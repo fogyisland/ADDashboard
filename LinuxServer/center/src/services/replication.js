@@ -3,6 +3,8 @@
 
 import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
+// R161.10.2 (2026-10-26) — 行数上限的唯一整数闸门 (见 utils/limit.js)。
+import { clampRowLimit } from '../utils/limit.js';
 
 // Coerce a value to either null or string. The tedious MSSQL driver validates
 // parameters at the protocol layer (tedious/lib/data-types/nvarchar.js:121-128):
@@ -215,22 +217,32 @@ export async function insertHistoryEntries(historyEntries) {
 // service layer dispatches the function-form builder on MSSQL (the
 // integer limit is interpolated by the SQL builder) and the plain
 // string on MySQL (where mysql2 accepts the `LIMIT ?` binding).
+//
+// ★ R161.10.2 (2026-10-26) — 两条分支现在共用**同一个**整数闸门。
+//   改之前: mssql 分支 `Number(limit)` (不截断 ⇒ 12.7 会内联出 `TOP 12.7`
+//   = 语法错误), mysql 分支直接绑**原值** (字符串 / 浮点 ⇒ mysql2 预处理协议
+//   拒执行 ⇒ "Incorrect arguments to mysqld_stmt_execute" ⇒ 端点 500)。
+//   改之后: clampRowLimit() 一次性把值变成 1..1000 的正整数, 两边行为一致。
+//   ★ 这两个函数当前**没有调用点** (全树 grep 过) —— 但它们是"复活即炸"的
+//     同族地雷 (helper 从未被调用 ≠ helper 是对的), 所以就地修好。
 export async function listRecent(limit = 100) {
   const db = getDb();
+  const safeLimit = clampRowLimit(limit);
   const sql = db.dialect === 'mssql'
-    ? db.sql.replication.listRecent(Number(limit))
+    ? db.sql.replication.listRecent(safeLimit)
     : db.sql.replication.listRecent;
-  const params = db.dialect === 'mssql' ? [] : [limit];
+  const params = db.dialect === 'mssql' ? [] : [safeLimit];
   const { rows } = await db.query(sql, params);
   return rows;
 }
 
 export async function listBySite(site, limit = 100) {
   const db = getDb();
+  const safeLimit = clampRowLimit(limit);
   const sql = db.dialect === 'mssql'
-    ? db.sql.replication.listBySite(Number(limit))
+    ? db.sql.replication.listBySite(safeLimit)
     : db.sql.replication.listBySite;
-  const params = db.dialect === 'mssql' ? [site, site] : [site, site, limit];
+  const params = db.dialect === 'mssql' ? [site, site] : [site, site, safeLimit];
   const { rows } = await db.query(sql, params);
   return rows;
 }
