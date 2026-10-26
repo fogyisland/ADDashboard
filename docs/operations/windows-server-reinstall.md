@@ -390,9 +390,10 @@ cd <ROOT>\scripts
 powershell -ExecutionPolicy Bypass -File .\install-center.ps1 -InPlace -ListenPort 8080
 ```
 
-不带 `-InPlace` 时脚本做完整 6 步：建目录 → 校验 node → 构建前端（缺 vite 时
+不带 `-InPlace` 时脚本走**完整部署流程**：建目录 → 校验 node → 构建前端（缺 vite 时
 先补装 dev 依赖）→ **停旧服务** → 拷文件（排除 `node_modules` / `tests` /
-`appsettings.json` / `.install-hash` / `Logs`）→ 装依赖 → 注册 NSSM → 启动 → 探针。
+`appsettings.json` / `.install-hash` / `Logs`）→ 装依赖 → 写 `signature`+`installedAt`
+→ 注册 NSSM → 配服务恢复策略 → 启动 → 探针。
 
 > ⚠️ **它会先停掉正在跑的服务**再覆盖文件。旧实现不停服 ⇒ `server.js` /
 > `dist` 被就地覆盖而进程还在跑 ⇒ **跑的还是旧代码**，但脚本照样打印
