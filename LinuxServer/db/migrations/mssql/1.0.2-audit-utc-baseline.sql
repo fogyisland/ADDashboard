@@ -1,5 +1,13 @@
 -- R161.16 (2026-10-27) — audit_logs 旧基准行的前像备份表 (MSSQL)
 --
+-- ★ verify 标记 (R161.17) —— 本文件**建表**, 所以必须声明它建的表叫什么:
+--   init 向导的 backfillMigrations 在往 schema_migrations 登记 'applied'
+--   之前, 会先探针验证这张表是不是真的在库里; 探针不过 ⇒ **不登记** ⇒
+--   启动迁移 (upgrade) 会真的把这个文件跑一遍, 把表建出来。
+--   没有这个标记 ⇒ backfill 会**无条件**把本文件登记成 applied 而**从不执行**
+--   ⇒ 全新安装出来的库永远缺这张表 (R161.17 的现场)。
+-- verify: table audit_logs_utc_baseline_backup
+--
 -- 背景 / 与 MySQL 版的差异:
 --   MSSQL 基线里 audit_logs.created_at 是
 --       DATETIME2 NOT NULL DEFAULT sysutcdatetime()

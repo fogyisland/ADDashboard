@@ -264,6 +264,47 @@ if (-not $InPlace) {
   }
 }
 
+# 4.2 (R161.17, 2026-10-27) — 把 db/ 装到**安装目录的上一级**。
+#
+#   init 向导的建库步骤 (POST /api/init/db/apply) 要读
+#     <repoRoot>/db/migrations/<dialect>/1.0.0-baseline.sql
+#   而 repoRoot 由 src/init/schema-applier.js 的 resolveRepoRoot() 现场解析:
+#     1. ADDASHBOARD_REPO_ROOT 环境变量
+#     2. <进程 cwd>/..        ← 默认布局命中的就是这一条
+#     3. <进程 cwd>/../..
+#     4. <进程 cwd> 本身
+#   服务的 AppDirectory = $InstallPath ⇒ 进程 cwd = 安装目录 ⇒ 命中第 2 条
+#   ⇒ db/ 必须待在**安装目录的上一级**。
+#
+#   ★ 旧实现只拷 center/, 从不拷 db/:
+#     - 默认布局 (InstallPath = <root>\Center, 与源树 <root>\center 同一个
+#       目录) 靠"源树里本来就有 db/"侥幸能跑;
+#     - 但操作员把 -InstallPath 指到别处 (例如 D:\ADDashboard\Center) 时,
+#       上一级没有 db/ ⇒ resolveRepoRoot 找不到基线 ⇒ init 向导在建库那一步
+#       直接报「找不到基线文件」⇒ **向导在自定义安装路径下完全不可用**。
+#   这里把 db/ 拷到 <安装目录上一级>\db, 与 Linux 交付包的布局一致
+#   (LinuxServer/db 与 LinuxServer/center 平级)。
+#
+#   缺 db/ 时**当场抛** —— 少拷一个目录, 却让操作员在向导第 3 步撞上
+#   「找不到基线文件」, 现场离原因十万八千里。
+$dbSrc = Join-Path $projectRoot 'db'
+if (-not (Test-Path -LiteralPath $dbSrc)) {
+  throw "the db/ directory (baseline + migrations) is missing at $dbSrc — the init wizard cannot build the schema without it"
+}
+$installAbs = if (Test-Path -LiteralPath $InstallPath) {
+  (Resolve-Path -LiteralPath $InstallPath).Path
+} else {
+  [System.IO.Path]::GetFullPath($InstallPath)
+}
+$installParent = Split-Path -Parent $installAbs
+if (-not $installParent) { $installParent = $projectRoot }
+$dbTarget = Join-Path $installParent 'db'
+$dbCopy = Copy-DirectoryContent -SourceDir $dbSrc -TargetDir $dbTarget
+Write-Info $dbCopy.Message
+if ($dbCopy.Status -eq 'same-path') {
+  Write-Info "db/ already sits next to the install directory ($dbTarget) — nothing to copy"
+}
+
 # 4.5 (R158.License-config.install, 2026-10-15) — 在 NSSM register 前, 幂等写
 #   appsettings.json.signature + installedAt. 调中心 license-validator.js 的
 #   ensureSignatureAndInstalledAt (跟 server.js lazy 写同一函数, 0 在 PS 端再写

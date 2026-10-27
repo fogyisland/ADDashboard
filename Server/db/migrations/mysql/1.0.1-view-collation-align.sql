@@ -1,6 +1,18 @@
 -- ============================================================================
 -- R161.14 (2026-10-27) — v_partner_inbound.probe_state 的 collation 对齐
 --
+-- ★ verify 标记 (R161.17) —— 本文件重建 v_partner_inbound 视图, 所以必须
+--   声明它建的视图叫什么:
+--   init 向导的 backfillMigrations 在往 schema_migrations 登记 'applied'
+--   之前, 会先探针验证这个视图是不是真的在库里; 探针不过 ⇒ **不登记** ⇒
+--   启动迁移 (upgrade) 会真的把这个文件跑一遍, 把视图重建出来。
+--   没有这个标记 ⇒ backfill 会**无条件**把本文件登记成 applied 而**从不执行**
+--   ⇒ 新装出来的库里那个视图保留着**基线冻结前**的旧 collation。
+--   (基线里已经带了同样的显式 COLLATE, 所以新装库的探针会通过 ——
+--    这正是本标记想要的语义: "迁移的效果已经在库里了", 而不是
+--    "迁移被跑过了"。两者对 schema 的结论是一样的。)
+-- verify: table v_partner_inbound
+--
 -- 背景
 -- ----
 -- v_partner_inbound 视图里的 probe_state 列是**字面量派生**的:

@@ -2,7 +2,8 @@ import express from 'express';
 import { randomBytes } from 'node:crypto';
 import { withOneShotFacade } from './db-tester.js';
 import { getWizardFacade, closeWizardFacade } from './wizard-facade.js';
-import { applyAll, backfillMigrations } from './schema-applier.js';
+import { applyAll, backfillMigrations, resolveRepoRoot } from './schema-applier.js';
+import { createMigrationsService } from '../services/migrations.js';
 import { createAdmin, AdminConflictError } from './admin-creator.js';
 import { writeConfig } from './config-writer.js';
 import { writeMarker } from './marker.js';
@@ -20,7 +21,7 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
   const deps = _deps ?? {
     withOneShotFacade, applyAll, createAdmin, writeConfig,
     getWizardFacade, closeWizardFacade, writeMarker,
-    backfillMigrations
+    backfillMigrations, createMigrationsService, resolveRepoRoot
   };
   const r = express.Router();
 
@@ -104,10 +105,52 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
       // The init wizard has no audit user / data dir at this stage, so
       // both callbacks are null — the JS helper's writeAudit guard
       // short-circuits cleanly.
-      await deps.backfillMigrations(dialect, db, {
+      const backfill = await deps.backfillMigrations(dialect, db, {
         getDataDir: null,
-        writeAudit: null
+        writeAudit: null,
+        logger
       });
+      // R161.17 (2026-10-27) — **登记账本 ≠ 迁移真的跑过**。
+      //   backfillMigrations 只在 verify 探针通过时才把迁移登记成 'applied';
+      //   探针不过 (比如 1.0.2 的备份表在新库里还不存在) ⇒ 它**不登记** ⇒
+      //   这条迁移就是待办。此时必须把它真的跑掉, 否则 init 向导"建库成功"
+      //   之后交出去的是一棵**残库**。
+      //   ★ 现场 (R161.17 的实测): 全新安装出来的库与源库的唯一差异就是
+      //     audit_logs_utc_baseline_backup 这张表 —— 因为 backfill 把
+      //     1.0.2 无条件登记成 applied 而**从不执行**, 随后的 upgrade()
+      //     又因为"已 applied"把它跳过 ⇒ 这张表永远建不出来 ⇒
+      //     services/audit-utc-baseline.js 的自愈回填在缺表时直接放弃 ⇒
+      //     R161.16 的审计时间修复在**全新安装的部署上从来没生效过**。
+      //   修法: 向导把待补的迁移真的跑掉 (用的是迁移引擎本身, 不另写一套)。
+      const pending = (backfill && Array.isArray(backfill.skipped)) ? backfill.skipped : [];
+      if (pending.length > 0) {
+        logger.warn({
+          pending: pending.map((p) => ({ file: p.file, version: p.version, missing: p.missing }))
+        }, 'backfill 跳过了若干迁移 (verify 探针未通过) — 立即用迁移引擎补跑');
+      }
+      const repoRoot = deps.resolveRepoRoot({});
+      const migrations = deps.createMigrationsService({
+        db,
+        logger,
+        getRepoRoot: () => repoRoot,
+        writeAudit: null,
+        getDataDir: null
+      });
+      const upgrade = await migrations.upgrade({ appliedBy: 'init-wizard' });
+      if (!upgrade.ok) {
+        const detail = upgrade.migrations.failed
+          .map((f) => `${f.version}: ${f.errorMessage}`)
+          .join('; ');
+        throw new Error(`编号迁移执行失败 — ${detail || '未知错误'}`);
+      }
+      if (upgrade.migrations.applied.length > 0) {
+        logger.info(
+          { applied: upgrade.migrations.applied.map((m) => m.version) },
+          'init 向导补跑了待办的编号迁移'
+        );
+      }
+      applied.migrations = upgrade.migrations.applied;
+      applied.pendingMigrations = pending;
       res.json(applied);
     } catch (e) {
       // MSSQL wraps the actionable error in `precedingErrors[]` — the top-level

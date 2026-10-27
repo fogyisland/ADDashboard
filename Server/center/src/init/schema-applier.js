@@ -354,7 +354,12 @@ function resolveMigrationsDir(repoRoot, dialect) {
 // Each fallback candidate is only accepted if it actually contains a db/
 // subdir; otherwise we keep looking. Falling back to cwd/.. at the end
 // preserves the legacy default so the ENOENT surfaces where to look.
-function resolveRepoRoot(opts) {
+//
+// R161.17 (2026-10-27) — 导出给 init 向导用: 向导的 /db/apply 之后要跑
+//   待补的编号迁移, 而迁移引擎 (services/migrations.js) 需要同一个 repoRoot
+//   才能找到 db/migrations/<dialect>/。两处各自解析的话, 解析结果可能不同
+//   (cwd 在两次调用之间变了), 那就会出现"基线从 A 读、迁移从 B 读"的分裂。
+export function resolveRepoRoot(opts) {
   if (opts.repoRoot) return opts.repoRoot;
   const cwd = process.cwd();
   const candidates = [
@@ -614,7 +619,17 @@ export async function backfillMigrations(dialect, db, opts = {}) {
       if (markers.length > 0) {
         const { ok, missing } = await verifyMarkers(db, markers);
         if (!ok) {
-          logger.warn?.({ file: f, version, missing }, 'verify markers missing — skipping backfill');
+          // ★ R161.17 (2026-10-27) — 措辞要说清"缺的是**库里的产物**", 不是
+          //   "文件里没写标记"。文件里的标记明明在 (markers.length > 0),
+          //   探针查的是**这些标记指向的表/列/索引在不在库里** —— 不在, 说明
+          //   这个迁移的产物还没落到这个库上, 所以**不能登记成 applied**。
+          //   旧措辞 "verify markers missing" 会被读成"文件里没声明标记",
+          //   而那条路径 (markers.length === 0) 恰恰是**直接登记**的, 一旦读反
+          //   就会得出完全相反的结论。
+          logger.warn?.(
+            { file: f, version, missing },
+            'verify 探针未通过 (标记指向的对象不在库里) — 不登记为 applied, 留给迁移引擎真的跑一遍'
+          );
           skipped.push({ file: f, version, missing });
           skippedVersions.add(version);
           continue;
