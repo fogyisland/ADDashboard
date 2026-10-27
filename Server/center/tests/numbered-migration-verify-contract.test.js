@@ -74,9 +74,75 @@ function stripComments(sql) {
  *   · transaction / session 都只是把 execute 转发出去。
  * 它让"新装路径"可以在**不连真库**的前提下跑完整条链。
  */
+// CREATE TABLE 里不是列的表级约束关键字 (未加引号时)。
+// 注意: 形如 key 的列名在 MySQL 侧必须写成反引号形式 —— 加了引号就按列处理。
+const NON_COLUMN_TOKENS = new Set([
+  'CONSTRAINT', 'PRIMARY', 'UNIQUE', 'FOREIGN', 'CHECK', 'KEY', 'INDEX',
+  'PERIOD', 'FULLTEXT', 'SPATIAL'
+]);
+
+/**
+ * 从 CREATE TABLE 语句里抽出列名与内联外键约束名。
+ * 需要括号深度感知的顶层逗号切分 —— 列定义里到处是 DECIMAL(18,2) /
+ * NVARCHAR(MAX) / CONVERT(BINARY(32), ...) 这种带逗号的括号。
+ */
+function parseCreateTable(stmt) {
+  const openIdx = stmt.search(
+    /CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+[`\[\]"]?[A-Za-z0-9_]+[`\[\]"]?\s*\(/i
+  );
+  if (openIdx < 0) return null;
+  const open = stmt.indexOf('(', openIdx);
+  let depth = 0, inStr = false, close = -1;
+  for (let i = open; i < stmt.length; i++) {
+    const ch = stmt[i];
+    if (inStr) { if (ch === "'") inStr = false; continue; }
+    if (ch === "'") { inStr = true; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') { depth--; if (depth === 0) { close = i; break; } }
+  }
+  if (close < 0) return null;
+  const body = stmt.slice(open + 1, close);
+  const parts = [];
+  let d = 0, cur = '', str = false;
+  for (const ch of body) {
+    if (str) { cur += ch; if (ch === "'") str = false; continue; }
+    if (ch === "'") { str = true; cur += ch; continue; }
+    if (ch === '(') d++;
+    else if (ch === ')') d--;
+    if (ch === ',' && d === 0) { parts.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur);
+  const columns = [];
+  const foreignKeys = [];
+  for (const part of parts) {
+    const raw = part.trim();
+    if (!raw) continue;
+    // 内联外键: CONSTRAINT <name> FOREIGN KEY ...
+    // ★ 约束名可能是 [name] (MSSQL) 或 `name` (MySQL) —— 都要认。
+    const fk = /^CONSTRAINT\s+[\[`]?([A-Za-z0-9_]+)[\]`]?\s+FOREIGN\s+KEY/i.exec(raw);
+    if (fk) { foreignKeys.push(fk[1]); continue; }
+    // 列名: MSSQL 用 [name], MySQL 用 `name`, 或裸 name。
+    // ★ 旧写法 /^([`\[]?)([A-Za-z0-9_]+)\1/ 只能匹配**反引号**形式 ——
+    //   MSSQL 的 [name] 因为收尾的 \1 要求再出现一个 '[' 而**永远匹配不上**
+    //   ⇒ 基线里 75 张表的所有列都没登记进 columns 集合 ⇒
+    //   任何以"基线里的列"为标记的迁移都会被假库误判成"缺列"。
+    const token = /^(\[[^\]]*\]|`[^`]*`|[A-Za-z0-9_]+)/.exec(raw);
+    if (!token) continue;
+    const literal = token[1];
+    const isQuoted = literal[0] === '[' || literal[0] === '`';
+    const name = isQuoted ? literal.slice(1, -1) : literal;
+    if (!isQuoted && NON_COLUMN_TOKENS.has(name.toUpperCase())) continue;
+    columns.push(name);
+  }
+  return { columns, foreignKeys };
+}
+
 function createFakeDb(dialect = 'mysql') {
   const objects = new Set();       // 已存在的表/视图名
   const indexes = new Set();       // 已存在的索引名 (限定名 <table>.<index>)
+  const columns = new Set();       // 已存在的列 (限定名 <table>.<column>)
+  const foreignKeys = new Set();   // 已存在的外键 (限定名 <table>.<constraint>)
   const ledger = new Map();        // version -> row
   const executed = [];             // 跑过的每一条语句
   const probes = [];               // 探针问过的每个 (kind, name)
@@ -103,11 +169,38 @@ function createFakeDb(dialect = 'mysql') {
     //   先剥注释: 基线的注释里也会提到 CREATE INDEX 的名字, 不剥就会把
     //   "注释里提过" 误当成 "真建出来了"。
     const clean = stripComments(stmt);
-    const idxRe = /CREATE\s+(?:UNIQUE\s+|NONCLUSTERED\s+|CLUSTERED\s+)?INDEX\s+\[?([A-Za-z0-9_]+)\]?\s+ON\s+\[?([A-Za-z0-9_]+)\]?/gi;
+    // MSSQL 侧可以是 `CREATE UNIQUE NONCLUSTERED INDEX` (两个修饰词连用),
+    // 所以修饰词必须**可重复**, 不能只允许一个。
+    const idxRe = /CREATE\s+(?:UNIQUE\s+|NONCLUSTERED\s+|CLUSTERED\s+)*INDEX\s+\[?([A-Za-z0-9_]+)\]?\s+ON\s+\[?([A-Za-z0-9_]+)\]?/gi;
     let im;
     while ((im = idxRe.exec(clean)) !== null) {
       indexes.add(`${im[2].toLowerCase()}.${im[1].toLowerCase()}`);
     }
+
+    // 列 (R161.18): 两条来源 ——
+    //   ① CREATE TABLE 的列定义 (基线里 75 张表的**全部**列都在这儿);
+    //   ② ALTER TABLE ... ADD [col] (MSSQL 的 hash 计算列走这条:
+    //      ALTER TABLE [t] ADD [c] AS CONVERT(BINARY(32), ...) PERSISTED)。
+    const tableName = (m && m[1]) || (m2 && m2[1]);
+    if (tableName) {
+      const parsed = parseCreateTable(clean);
+      if (parsed) {
+        for (const c of parsed.columns) columns.add(`${tableName.toLowerCase()}.${c.toLowerCase()}`);
+        for (const fk of parsed.foreignKeys) foreignKeys.add(`${tableName.toLowerCase()}.${fk.toLowerCase()}`);
+      }
+    }
+    // ADD CONSTRAINT 是外键/PK, 不是列 —— 必须先排除, 否则会把 CONSTRAINT
+    // 当成列名登记进去。
+    if (!/ADD\s+CONSTRAINT/i.test(clean)) {
+      const colRe = /ALTER\s+TABLE\s+\[?`?([A-Za-z0-9_]+)`?\]?\s+ADD\s+(?:COLUMN\s+)?\[?`?([A-Za-z0-9_]+)`?\]?/i;
+      const cm = clean.match(colRe);
+      if (cm) columns.add(`${cm[1].toLowerCase()}.${cm[2].toLowerCase()}`);
+    }
+
+    // 外键 (R161.18): ALTER TABLE ... ADD CONSTRAINT [fk] FOREIGN KEY ...
+    const fkRe = /ALTER\s+TABLE\s+\[?`?([A-Za-z0-9_]+)`?\]?\s+ADD\s+CONSTRAINT\s+\[?`?([A-Za-z0-9_]+)`?\]?\s+FOREIGN\s+KEY/i;
+    const fm = clean.match(fkRe);
+    if (fm) foreignKeys.add(`${fm[1].toLowerCase()}.${fm[2].toLowerCase()}`);
   }
 
   async function exec(sql, params) {
@@ -151,7 +244,12 @@ function createFakeDb(dialect = 'mysql') {
       return { rows: objects.has(String(params[0]).toLowerCase()) ? [{ ok: 1 }] : [] };
     }
     if (sql === 'PROBE_COLUMN') {
-      return { rows: [] };
+      probes.push({ kind: 'column', name: `${params[0]}.${params[1]}` });
+      return { rows: columns.has(`${params[0]}.${params[1]}`.toLowerCase()) ? [{ ok: 1 }] : [] };
+    }
+    if (sql === 'PROBE_FOREIGNKEY') {
+      probes.push({ kind: 'foreignkey', name: `${params[0]}.${params[1]}` });
+      return { rows: foreignKeys.has(`${params[0]}.${params[1]}`.toLowerCase()) ? [{ ok: 1 }] : [] };
     }
     if (sql === 'PROBE_INDEX') {
       // 标记点名是 '<table>.<index>' (verify-marker.js 的约定)。
@@ -168,7 +266,7 @@ function createFakeDb(dialect = 'mysql') {
   const db = {
     dialect,
     sql: {
-      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN', index: 'PROBE_INDEX' },
+      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN', index: 'PROBE_INDEX', foreignKey: 'PROBE_FOREIGNKEY' },
       schemaMigrations: {
         upsert: 'UPSERT_LEDGER',
         findByVersion: 'FIND_BY_VERSION',
@@ -181,7 +279,7 @@ function createFakeDb(dialect = 'mysql') {
     session: async (work) => work({ execute: exec })
   };
 
-  return { db, objects, indexes, ledger, executed, probes };
+  return { db, objects, indexes, columns, foreignKeys, ledger, executed, probes };
 }
 
 const silentLogger = {
@@ -254,7 +352,7 @@ describe('B. 标记指名的产物必须真的由这个迁移建出来', () => {
         if (markers.length === 0) return;
         const body = stripComments(content);
         for (const m of markers) {
-          if (!['table', 'column', 'index'].includes(m.kind)) {
+          if (!['table', 'column', 'index', 'foreignkey'].includes(m.kind)) {
             assert.fail(`未知的 verify 标记类型 ${m.kind}`);
           }
           const parts = m.name.split('.');
@@ -297,7 +395,7 @@ describe('D. 端到端: 走一遍新装路径, 每条标记指名的产物都必
   for (const dialect of DIALECTS) {
     test(`${dialect}: applyAll → backfill → upgrade 之后, 标记指名的产物全部就位`, async () => {
       const fake = createFakeDb(dialect);
-      const { db, objects, indexes, ledger } = fake;
+      const { db, objects, indexes, columns, foreignKeys, ledger } = fake;
 
       // 1. 建库 (跑基线)
       await applyAll(dialect, db, {
@@ -337,7 +435,11 @@ describe('D. 端到端: 走一遍新装路径, 每条标记指名的产物都必
           // 表/视图看 objects; 索引 (点号限定名) 看 indexes。
           const present = m.kind === 'index'
             ? indexes.has(m.name.toLowerCase())
-            : objects.has(m.name.toLowerCase());
+            : m.kind === 'column'
+              ? columns.has(m.name.toLowerCase())
+              : m.kind === 'foreignkey'
+                ? foreignKeys.has(m.name.toLowerCase())
+                : objects.has(m.name.toLowerCase());
           assert.ok(
             present,
             `${dialect}/${file} 声明要建 ${m.name}, 但新装路径跑完之后它**不在库里** —— `
@@ -564,4 +666,254 @@ describe('H. 存量部署: 基线里后加的索引必须被编号迁移补上',
       assert.equal(ledger.get('1.0.3')?.status, 'applied', '1.0.3 的账本状态不是 applied');
     });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R161.18 (2026-10-28) — MSSQL 收敛迁移 (1.0.4 ~ 1.0.9) 的专项回归网。
+//
+// 背景 (实测): 生产形状的 MSSQL 库跟仓库基线**结构不同** ——
+//   · 75 张表: 一致;
+//   · 基线二级索引 154 个: 库里只有 26 个 ⇒ **缺 127 个** (8 唯一 + 119 非唯一);
+//   · hash 计算列: 基线 3 个, 库里 **0 个** ⇒ P0 (4 条 MSSQL MERGE 的 ON 子句
+//     直接引用它们 ⇒ 必然 Msg 207);
+//   · 外键: 基线 23 个, 库里 22 个 ⇒ 缺 fk_dc_overview_site。
+// 根因与 R161.17 同源: 基线只在**建库**时跑一次, 之后新增的 DDL 到不了存量库。
+//
+// 本组钉住的是**这些迁移自身的形状**, 而不是"它们建了啥" (那是 A~D 组的事):
+//   I-1 编号迁移的**文件顺序**必须与**语义版本顺序**一致 —— 迁移引擎用
+//        readdirSync().sort(), 那是**字典序**: '1.0.10' 排在 '1.0.2' **前面**
+//        ⇒ 版本号一旦到两位数, 迁移顺序就乱了。
+//   I-2 每个 CREATE INDEX 前面必须有**形状守卫** —— 按名字判重不够:
+//        SQL Server 的索引名只在**表内**唯一, 客户库的 PK/唯一约束是
+//        SSMS 自动名 ⇒ 只按名字判重会造出重复索引。
+//   I-3 每个 UNIQUE 索引前面必须有**重复数据预检** —— 建唯一索引遇到重复行
+//        会失败; 迁移必须**报出诊断**而不是偷偷删数据。
+//   I-4 外键前必须有**孤儿预检**, 且必须排在 ADD CONSTRAINT **之前**。
+//   I-5 hash 列迁移必须排在**使用它的唯一索引迁移之前**。
+//   I-6 端到端: "老一代库" ⇒ 探针不过 ⇒ 不登记 ⇒ upgrade 之后全部补齐。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 语义版本比较 (只按数字段比, 不做字符串比)。 */
+function cmpVersion(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+describe('I. MSSQL 收敛迁移 (R161.18): 顺序 / 守卫 / 端到端', () => {
+  const MSSQL_MIG = resolve(MIG_ROOT, 'mssql');
+  // 收敛迁移 (基线之后的那些) —— 顺序敏感, 都要逐个断言形状。
+  const CONVERGENCE = [
+    '1.0.4-mssql-hash-columns.sql',
+    '1.0.5-mssql-unique-indexes.sql',
+    '1.0.6-mssql-secondary-indexes-1.sql',
+    '1.0.7-mssql-secondary-indexes-2.sql',
+    '1.0.8-mssql-secondary-indexes-3.sql',
+    '1.0.9-mssql-dc-overview-site-fk.sql'
+  ];
+
+  test('I-1 编号迁移的文件顺序必须与语义版本顺序一致 (引擎用的是字典序)', () => {
+    for (const dialect of DIALECTS) {
+      const files = numberedFiles(dialect);   // 字典序 (readdirSync().sort())
+      const versions = files.map((f) => f.match(NUMBERED_RE)[1]);
+      for (let i = 1; i < versions.length; i++) {
+        assert.ok(
+          cmpVersion(versions[i - 1], versions[i]) < 0,
+          `${dialect}: 迁移引擎用 readdirSync().sort() ⇒ **字典序**执行, `
+          + `但 "${files[i - 1]}" 的版本 (${versions[i - 1]}) 不小于 "${files[i]}" (${versions[i]}) `
+          + '⇒ 执行顺序与版本顺序不一致。'
+          + '★ 字典序陷阱: \'1.0.10\' < \'1.0.2\' ⇒ 版本号到两位数就会乱序。'
+          + '本仓库约定: 编号迁移最多到 1.0.9 (要加新的请重新评估排序方案)。'
+        );
+      }
+    }
+  });
+
+  test('I-2 每个 CREATE INDEX 前面必须有形状守卫 (按名字判重会造重复索引)', () => {
+    let checked = 0;
+    for (const file of CONVERGENCE) {
+      const content = readFileSync(resolve(MSSQL_MIG, file), 'utf8');
+      const stmts = splitSqlStatements(content);
+      for (const stmt of stmts) {
+        if (!/CREATE\s+(?:UNIQUE\s+|NONCLUSTERED\s+|CLUSTERED\s+)*INDEX/i.test(stmt)) continue;
+        checked++;
+        assert.match(
+          stmt,
+          /IF\s+NOT\s+EXISTS/i,
+          `${file}: CREATE INDEX 没有 IF NOT EXISTS 守卫 ⇒ 重复执行会报 "索引已存在"`
+        );
+        assert.match(
+          stmt,
+          /sys\.index_columns/i,
+          `${file}: CREATE INDEX 的守卫只按**名字**判重, 没有比对键列 ⇒ `
+          + 'SQL Server 的索引名只在表内唯一, 客户库同名不同形的索引会被漏判 ⇒ 造出重复索引'
+        );
+        assert.match(
+          stmt,
+          /sys\.columns/i,
+          `${file}: 守卫必须比对**键列名** (sys.columns), 不能只比数量`
+        );
+        assert.match(
+          stmt,
+          /is_unique\s*=\s*[01]/i,
+          `${file}: 守卫必须比对唯一性 (is_unique) —— 同名不同唯一性的索引是不同的对象`
+        );
+      }
+    }
+    assert.ok(checked > 0, '一条 CREATE INDEX 都没扫到 —— 断言成了哑巴 (文件被改名或被删了?)');
+  });
+
+  test('I-3 每个 UNIQUE 索引前面必须有重复数据预检 (绝不偷偷删数据)', () => {
+    const file = '1.0.5-mssql-unique-indexes.sql';
+    const content = readFileSync(resolve(MSSQL_MIG, file), 'utf8');
+    const stmts = splitSqlStatements(content);
+    const creates = stmts.filter((s) => /CREATE\s+UNIQUE\s+/i.test(s));
+    const raisers = stmts.filter((s) => /RAISERROR/i.test(s));
+    assert.ok(creates.length > 0, '一个唯一索引都没扫到 —— 断言成了哑巴');
+    assert.equal(
+      raisers.length,
+      creates.length,
+      `${file}: 建了 ${creates.length} 个唯一索引, 却只有 ${raisers.length} 个重复数据预检 —— `
+      + '唯一索引遇到重复行会失败, 迁移必须**先报出诊断** (RAISERROR) 而不是让语句莫名其妙地挂掉'
+    );
+    for (const r of raisers) {
+      assert.match(r, /GROUP\s+BY/i, `${file}: 重复数据预检必须用 GROUP BY ... HAVING COUNT(*) > 1`);
+      assert.match(r, /HAVING\s+COUNT\(\s*\*\s*\)\s*>\s*1/i, `${file}: 重复数据预检的 HAVING 条件写错了`);
+      assert.doesNotMatch(
+        r,
+        /\bDELETE\b|\bUPDATE\b|\bTRUNCATE\b/i,
+        `${file}: 重复数据预检里出现了写操作 —— 迁移**绝不自动删/改业务数据**, 只能报错让人来处理`
+      );
+    }
+  });
+
+  test('I-4 外键迁移必须有孤儿预检, 且排在 ADD CONSTRAINT 之前', () => {
+    const file = '1.0.9-mssql-dc-overview-site-fk.sql';
+    const content = readFileSync(resolve(MSSQL_MIG, file), 'utf8');
+    const stmts = splitSqlStatements(content);
+    const orphanIdx = stmts.findIndex((s) => /RAISERROR/i.test(s) && /ad_sites/i.test(s) && /NOT\s+EXISTS/i.test(s));
+    const addIdx = stmts.findIndex((s) => /ADD\s+CONSTRAINT/i.test(s));
+    assert.ok(orphanIdx >= 0, `${file}: 没有找到孤儿预检 —— 有孤儿行时建外键会失败, 必须提前报出诊断`);
+    assert.ok(addIdx >= 0, `${file}: 没有找到 ADD CONSTRAINT —— 断言成了哑巴`);
+    assert.ok(
+      orphanIdx < addIdx,
+      `${file}: 孤儿预检(第 ${orphanIdx + 1} 批) 必须排在 ADD CONSTRAINT(第 ${addIdx + 1} 批) **之前** `
+      + '—— splitSqlStatements 按语句拆批, 块里的 RETURN 会退出整批, 顺序反了就等于没有预检'
+    );
+    assert.doesNotMatch(
+      content,
+      /\bDELETE\b[^;]*ad_dc_overview/i,
+      `${file}: 孤儿处理不得出现 DELETE —— 迁移只报错, 清理孤儿是人的决定`
+    );
+  });
+
+  test('I-5 hash 列迁移必须排在使用它的唯一索引迁移之前', () => {
+    const files = numberedFiles('mssql');
+    const hashIdx = files.findIndex((f) => f.startsWith('1.0.4-'));
+    const uniqIdx = files.findIndex((f) => f.startsWith('1.0.5-'));
+    assert.ok(hashIdx >= 0 && uniqIdx >= 0, '1.0.4 / 1.0.5 必须存在 —— 断言成了哑巴');
+    assert.ok(
+      hashIdx < uniqIdx,
+      'hash 计算列的迁移必须排在唯一索引迁移之前 —— '
+      + 'uq_admin_member / uq_ous_dn / uq_ugm 的键里含 hash 列, 列不在 ⇒ 索引建不出来'
+    );
+    // 反向锚定: 唯一索引的键列里真的出现了 hash 列 (防止将来有人改了 1.0.5 却忘了改顺序)。
+    const uniq = readFileSync(resolve(MSSQL_MIG, '1.0.5-mssql-unique-indexes.sql'), 'utf8');
+    for (const hashCol of ['domain_dn_hash', 'distinguished_name_hash', 'group_dn_hash']) {
+      assert.match(
+        uniq,
+        new RegExp(`\\[${hashCol}\\]`, 'i'),
+        `1.0.5 里没有用到 hash 列 ${hashCol} —— I-5 的前提变了, 请重新评估 1.0.4/1.0.5 的先后`
+      );
+    }
+  });
+
+  test('I-6 端到端: 老一代 MSSQL 库 ⇒ 探针不过 ⇒ 不登记 ⇒ upgrade 之后全部补齐', async () => {
+    const fake = createFakeDb('mssql');
+    const { db, indexes, columns, foreignKeys, ledger } = fake;
+
+    await applyAll('mssql', db, {
+      createDatabase: false,
+      databaseName: 'fake_db',
+      repoRoot: SERVER_ROOT,
+      logger: silentLogger
+    });
+
+    const HASH_COLS = [
+      'ad_admin_members.domain_dn_hash',
+      'ad_ous_snapshot.distinguished_name_hash',
+      'ad_user_group_memberships.group_dn_hash'
+    ];
+    const UNIQUE_IDX = [
+      'ad_admin_commands.ux_ad_admin_commands_task_id',
+      'ad_admin_members.uq_admin_member',
+      'ad_failed_logon_events.uq_failed_logon_dc_record',
+      'ad_ous_snapshot.uq_ous_dn',
+      'ad_dc_inbound_partners.uq_inbound_partner',
+      'ad_dc_outbound_partners.uq_outbound_partner',
+      'ad_user_group_memberships.uq_ugm',
+      'system_alert_suppressions.uq_sas_kind_scope'
+    ];
+    const FK = 'ad_dc_overview.fk_dc_overview_site';
+
+    // ★ 先断言基线**确实**建出了这些产物 —— 否则下面的 delete 是在删不存在的东西,
+    //   整组断言就成了哑巴 (恒真 ⇒ 什么也没验)。
+    for (const c of HASH_COLS) {
+      assert.ok(columns.has(c), `模拟前提没成立: 基线跑完之后假库里就该有列 ${c} —— 假库坏了, 不是被测代码坏了`);
+    }
+    for (const i of UNIQUE_IDX) {
+      assert.ok(indexes.has(i), `模拟前提没成立: 基线跑完之后假库里就该有索引 ${i} —— 假库坏了`);
+    }
+    assert.ok(foreignKeys.has(FK), `模拟前提没成立: 基线跑完之后假库里就该有外键 ${FK} —— 假库坏了`);
+
+    // 模拟"旧一代"库: 这三样都还没有 (这正是生产形状的 MSSQL 库的形状)
+    for (const c of HASH_COLS) columns.delete(c);
+    for (const i of UNIQUE_IDX) indexes.delete(i);
+    foreignKeys.delete(FK);
+    for (const c of HASH_COLS) assert.ok(!columns.has(c), '模拟失败: 列没能从假库里删掉');
+    for (const i of UNIQUE_IDX) assert.ok(!indexes.has(i), '模拟失败: 索引没能从假库里删掉');
+    assert.ok(!foreignKeys.has(FK), '模拟失败: 外键没能从假库里删掉');
+
+    // 探针不过 ⇒ 三条迁移都不能被登记成 applied
+    const backfill = await backfillMigrations('mssql', db, {
+      repoRoot: SERVER_ROOT,
+      getDataDir: null,
+      writeAudit: null,
+      logger: silentLogger
+    });
+    for (const v of ['1.0.4', '1.0.5', '1.0.9']) {
+      assert.ok(
+        !ledger.has(v),
+        `探针不过 ⇒ 账本里不能出现 ${v} 这一行 (登记了 = upgrade 会跳过 = 永远补不上) `
+        + `skipped=${JSON.stringify(backfill.skipped)}`
+      );
+    }
+
+    // 迁移引擎真的跑一遍 ⇒ 全部补齐
+    const svc = createMigrationsService({
+      db,
+      logger: silentLogger,
+      getRepoRoot: () => SERVER_ROOT,
+      writeAudit: null,
+      getDataDir: null
+    });
+    const up = await svc.upgrade({ appliedBy: 'test' });
+    assert.ok(up.ok, `upgrade 失败: ${JSON.stringify(up.migrations.failed)}`);
+
+    for (const c of HASH_COLS) {
+      assert.ok(columns.has(c), `迁移跑完列 ${c} 还是不在 —— columns=[${[...columns].join(', ')}]`);
+    }
+    for (const i of UNIQUE_IDX) {
+      assert.ok(indexes.has(i), `迁移跑完索引 ${i} 还是不在 —— indexes=[${[...indexes].join(', ')}]`);
+    }
+    assert.ok(foreignKeys.has(FK), '迁移跑完外键 fk_dc_overview_site 还是不在');
+    for (const v of ['1.0.4', '1.0.5', '1.0.9']) {
+      assert.equal(ledger.get(v)?.status, 'applied', `${v} 的账本状态不是 applied`);
+    }
+  });
 });

@@ -3174,7 +3174,15 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                 SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS
                  WHERE TABLE_SCHEMA = DATABASE()
                    AND TABLE_NAME = ? AND INDEX_NAME = ?
-               ) AS idx LIMIT 1`
+               ) AS idx LIMIT 1`,
+      // R161.18 — 外键约束探针。TABLE_CONSTRAINTS 的 TABLE_NAME 是**挂着
+      //   约束的那张表** (子表), CONSTRAINT_NAME 是约束名; CONSTRAINT_TYPE
+      //   过滤掉 UNIQUE / PRIMARY KEY —— MySQL 里它们也住在同一张系统表里。
+      foreignKey: `SELECT 1 AS ok FROM information_schema.TABLE_CONSTRAINTS
+                    WHERE CONSTRAINT_SCHEMA = DATABASE()
+                      AND TABLE_NAME = ?
+                      AND CONSTRAINT_NAME = ?
+                      AND CONSTRAINT_TYPE = 'FOREIGN KEY' LIMIT 1`
     },
     // Non-AD server management (migration 014). Eight tables total split
     // across five domains so services can scope their reads: member-servers
@@ -6705,7 +6713,14 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                 FROM sys.indexes i
                 JOIN sys.tables t ON i.object_id = t.object_id
                WHERE t.name = ? AND i.name = ?
-                 AND i.is_hypothetical = 0 AND i.type > 0`
+                 AND i.is_hypothetical = 0 AND i.type > 0`,
+      // R161.18 — 外键约束探针。sys.foreign_keys.parent_object_id 是**挂着
+      //   约束的那张表** (子表), 与 information_schema.TABLE_CONSTRAINTS 的
+      //   TABLE_NAME 语义一致 ⇒ 两个方言的标记写法可以完全平行。
+      foreignKey: `SELECT TOP 1 1 AS ok
+                    FROM sys.foreign_keys f
+                    JOIN sys.tables t ON f.parent_object_id = t.object_id
+                   WHERE t.name = ? AND f.name = ?`
     },
     // Non-AD server management (migration 014). See mysql counterpart.
     memberServers: memberServers.mssql,

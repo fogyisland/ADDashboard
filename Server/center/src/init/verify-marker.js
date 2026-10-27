@@ -1,13 +1,14 @@
 // Parses `-- verify: table X` / `-- verify: column X.Y` / `-- verify: index X.Y`
-// markers from the top of a SQL migration file. Returns an array of
-// {kind, name} objects. Returns [] when no markers are present.
+// / `-- verify: foreignkey X.Y` markers from the top of a SQL migration file.
+// Returns an array of {kind, name} objects. Returns [] when no markers are present.
 //
 // Grammar (each kind takes exactly ONE name — use multiple lines for multiple
 // artifacts; this keeps every marker trivially correct vs. a comma-list parser):
 //
-//   -- verify: table    <table_name>
-//   -- verify: column   <table>.<column>
-//   -- verify: index    <table>.<index_name>
+//   -- verify: table      <table_name>
+//   -- verify: column     <table>.<column>
+//   -- verify: index      <table>.<index_name>
+//   -- verify: foreignkey <table>.<constraint_name>
 //
 // Scan rules:
 //   - only the first 50 non-empty lines (marker must live near the top so
@@ -16,13 +17,20 @@
 //     outside any block-comment wrapping);
 //   - the keyword is case-insensitive;
 //   - whitespace between the tokens is collapsed.
-//   - only singular `table` / `column` / `index` keywords are accepted.
-//     Plural forms (`tables`, `columns`, `indexes`) and comma-separated
+//   - only singular `table` / `column` / `index` / `foreignkey` keywords are
+//     accepted. Plural forms (`tables`, `columns`, `indexes`) and comma-separated
 //     lists are intentionally rejected so the migration file can't paper
 //     over a half-finished change with one lazy marker — split into one
 //     marker per artifact instead.
+//
+// R161.18 (2026-10-28) — 新增 `foreignkey` 类型。
+//   起因: 外键迁移 (R161.18 的 1.0.9) 建的产物是**外键约束**, 而契约里
+//   只有 table/column/index 三种 ⇒ 写 `-- verify: foreignkey ...` 会被解析器
+//   **整个忽略** ⇒ 该文件被当成"没有标记" ⇒ backfillMigrations **无条件**
+//   登记成 applied 而从不执行 ⇒ 外键永远建不出来 (而且没有任何告警)。
+//   这跟 R161.17 修掉的"1.0.2 没有标记 ⇒ 从未执行"是**同一个坑的两条腿**。
 const MAX_SCAN_LINES = 50;
-const MARKER_RE = /^\s*--\s*verify:\s*(table|column|index)\s+(\S+)\s*$/i;
+const MARKER_RE = /^\s*--\s*verify:\s*(table|column|index|foreignkey)\s+(\S+)\s*$/i;
 
 export function parseVerifyMarker(sql) {
   const lines = sql.split('\n').slice(0, MAX_SCAN_LINES);
@@ -65,12 +73,14 @@ export function parseVerifyMarker(sql) {
 // db.init() time, so the probe SQL is read from db.sql.probe — the dialect is
 // baked into the strings, not selected here.
 //
-//   kind='table'  -> probe.table  with params [name]
-//   kind='column' -> probe.column with params [table, column]
-//                    (the marker name is '<table>.<column>', split on first '.')
-//   kind='index'  -> probe.index  with params [table, index_name]
-//                    (same dotted convention as 'column'; an unqualified
-//                    index name is reported missing rather than guessed at)
+//   kind='table'      -> probe.table  with params [name]
+//   kind='column'     -> probe.column with params [table, column]
+//                        (the marker name is '<table>.<column>', split on first '.')
+//   kind='index'      -> probe.index  with params [table, index_name]
+//                        (same dotted convention as 'column'; an unqualified
+//                        index name is reported missing rather than guessed at)
+//   kind='foreignkey' -> probe.foreignKey with params [table, constraint_name]
+//                        ('<child_table>.<constraint_name>' —— 约束挂在**子表**上)
 export async function verifyMarkers(db, markers) {
   const probe = db.sql.probe;
   const missing = [];
@@ -99,6 +109,15 @@ export async function verifyMarkers(db, markers) {
       }
       const { rows } = await db.query(probe.index, [m.name.slice(0, dot), m.name.slice(dot + 1)]);
       if (!rows || rows.length === 0) missing.push(`index ${m.name}`);
+    } else if (m.kind === 'foreignkey') {
+      const dot = m.name.indexOf('.');
+      if (dot < 0) {
+        // 约束名必须带表限定 —— 否则探针没法知道该查哪张表的约束。
+        missing.push(`foreignkey ${m.name} (malformed)`);
+        continue;
+      }
+      const { rows } = await db.query(probe.foreignKey, [m.name.slice(0, dot), m.name.slice(dot + 1)]);
+      if (!rows || rows.length === 0) missing.push(`foreignkey ${m.name}`);
     }
   }
   return { ok: missing.length === 0, missing };
