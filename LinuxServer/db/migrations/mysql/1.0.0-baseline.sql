@@ -1140,6 +1140,18 @@ SELECT
   pd.site_id       AS peer_site_id,
   ps.site_name     AS peer_site_name,
   ps.is_hub        AS peer_site_is_hub,
+  -- R161.14 (2026-10-27): probe_state 外面套显式 COLLATE utf8mb4_unicode_ci。
+  --   原因: 这一列是**字面量派生**的 (CASE ... THEN 'error' END), MySQL 把
+  --   字面量的 collation = **建视图那条连接**的 collation 冻结进视图定义里。
+  --   建视图时若连接是 general_ci (老版本驱动 charset:'utf8mb4' 就是它),
+  --   这一列就永久是 utf8mb4_general_ci, 而全库其它 75 张表都是
+  --   utf8mb4_unicode_ci ⇒ 全库唯一的 collation 不一致点。
+  --   后果: 连接一旦改成 unicode_ci (R161.12), 任何 `probe_state = 'x'`
+  --   或 `... UNION ALL SELECT 'x'` 都会 1267/1271 "Illegal mix of collations"。
+  --   显式 COLLATE (coercibility=EXPLICIT) 优先级最高 ⇒ 不受建视图连接
+  --   的 collation 影响, 也不受以后查询连接 collation 的影响。
+  --   MSSQL 侧不需要这一步: SQL Server 的强制转换规则里列永远赢字面量,
+  --   且列的 collation 是**库级**的 (不能硬编码 COLLATE 名, 客户库各不相同)。
   (SELECT CASE
        WHEN MAX(CASE WHEN h.status_code = 2 THEN 1 ELSE 0 END) = 1 THEN 'error'
        WHEN MAX(CASE WHEN h.status_code = 0 THEN 1 ELSE 0 END) = 1 THEN 'success'
@@ -1147,7 +1159,7 @@ SELECT
    FROM ad_replication_probe_history h
    WHERE h.source_dc = i.dest_dc AND h.dest_dc = i.source_dc
      AND h.attempt_at >= UTC_TIMESTAMP() - INTERVAL 15 MINUTE
-  ) AS probe_state,
+  ) COLLATE utf8mb4_unicode_ci AS probe_state,
   (SELECT MAX(h.attempt_at) FROM ad_replication_probe_history h
    WHERE h.source_dc = i.dest_dc AND h.dest_dc = i.source_dc
      AND h.attempt_at >= UTC_TIMESTAMP() - INTERVAL 15 MINUTE
