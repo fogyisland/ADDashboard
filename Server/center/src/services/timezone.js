@@ -168,26 +168,109 @@ export function offsetMinutesFor(timeZone, at = new Date()) {
 // ★ pinnedToUtc 的语义: "应用写出来的 DEFAULT CURRENT_TIMESTAMP 是不是 UTC"。
 //   MySQL: 取决于 @@session.time_zone (钉成 '+00:00' ⇒ 是 UTC)。
 //   MSSQL: `DEFAULT sysutcdatetime()` 恒定 UTC ⇒ 恒 true。
+//
+// ---------------------------------------------------------------------------
+// R161.15 (2026-10-27) — 探针 SQL 的作用域与字符集 (两处真故障, 都让整个
+// /timezone 端点 500 —— 而这个端点正是操作员判断"时间到底准不准"的唯一依据)
+// ---------------------------------------------------------------------------
+//
+// ★ 故障 1: `@@system.time_zone` 里的 'system' **不是** MySQL 的作用域。
+//   MySQL 的系统变量作用域只有 GLOBAL / SESSION / LOCAL 三个。
+//   写错作用域 ⇒ MySQL 报 ER_VARIABLE_IS_NOT_STRUCT (errno 1272):
+//     "Variable 'time_zone' is not a variable component
+//      (can't be used as XXXX.variable_name)"
+//   ⇒ GET /api/admin/system-settings-v2/timezone 500, 前端只能"回落本地时区",
+//     页面上的「服务器时钟」证据面板整块消失 (操作员原话: 时间算得不对)。
+//   ⇒ 拿 OS 时区名的正确写法是**不带作用域**的 `@@system_time_zone`
+//     (它是一个独立名字的系统变量, 不是 "system 作用域下的 time_zone")。
+//
+// ★ 故障 2: `@@system_time_zone` 的值在**中文版 Windows** 上不是 UTF-8。
+//   MySQL 5.7 把这个变量声明成 character_set_system (=utf8), 但它装的是
+//   OS 的 ANSI 代码页名 (CP936/GBK 字节) ⇒ 客户端按 UTF-8 解必然乱码。
+//   真库实测 (2026-10-27): 原始字节 D6D0B9FAB1EAD7BCCAB1BCE4 正是
+//   "中国标准时间" 的 GBK 编码 (UTF-8 应为 E4B8AD...), 直接读出来是
+//   "?й???׼ʱ?"。
+//   服务端的 CONVERT(... USING gbk) **救不了**: MySQL 认为源是 utf8,
+//   非法字节在转换当场就被替换成 '?', 信息当场丢失 (实测 8 个 '?')。
+//   ⇒ 唯一无损的路: 用 HEX() 把原始字节以 **ASCII** 取回 (走线不依赖任何
+//     字符集), 再在 JS 里按"先 UTF-8、失败再 GBK"的顺序解
+//     (见 decodeSystemTimeZoneName)。
+export const MYSQL_CLOCK_SQL = `SELECT @@session.time_zone AS session_tz,
+       HEX(@@system_time_zone) AS system_tz_hex,
+       UTC_TIMESTAMP() AS now_utc,
+       NOW() AS now_session,
+       TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), NOW()) AS offset_min`;
+
+// MSSQL 侧: 恒定 UTC, 且 SERVERPROPERTY('TimeZone') 返回的是 SQL Server
+// 自己的 Unicode 字符串 (没有 MySQL 那个字符集坑), 直接用即可。
+export const MSSQL_CLOCK_SQL = `SELECT CONVERT(VARCHAR(33), SYSUTCDATETIME()) AS now_utc,
+       CONVERT(VARCHAR(33), SYSDATETIMEOFFSET()) AS now_session,
+       DATEDIFF(MINUTE, SYSUTCDATETIME(), SYSDATETIMEOFFSET()) AS offset_min,
+       CONVERT(VARCHAR(64), SERVERPROPERTY('TimeZone')) AS system_tz`;
+
+// 读不到 / 解不出来时的**如实**取值。
+// ★ 绝不猜一个时区名出来 —— 这个字段是操作员判断"时间准不准"的依据,
+//   猜出来的名字比"未知"更坏 (会让人以为已经查清了)。
+export const UNKNOWN_TIME_ZONE = 'UNKNOWN';
+
+/**
+ * 严格解码一段字节。字节序列不合法时返回 null (不抛)。
+ *
+ * @param {Buffer|Uint8Array} bytes 原始字节
+ * @param {string} label TextDecoder 的编码标签 ('utf-8' / 'gbk')
+ * @returns {string|null} 解出来的字符串; 不合法则 null
+ */
+function decodeStrict(bytes, label) {
+  try {
+    // fatal:true ⇒ 遇到非法字节序列直接抛 (而不是静默替换成 U+FFFD)。
+    return new TextDecoder(label, { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 MySQL 的 @@system_time_zone 原始字节 (HEX 形态) 解成可读的系统时区名。
+ *
+ * @param {string|null|undefined} hexValue HEX() 取回的原始字节 (十六进制)
+ * @returns {string} 可读的时区名; 读不到/解不出来 ⇒ 'UNKNOWN'
+ */
+export function decodeSystemTimeZoneName(hexValue) {
+  const hex = typeof hexValue === 'string' ? hexValue.trim() : '';
+  // ★ Buffer.from(x, 'hex') 对非法输入是**宽容**的:
+  //     '435354ZZ' → 'CST' (静默截断!), '435' → 'C' (吞掉半个字节)
+  //   ⇒ 必须先自己严格校验, 否则脏数据会静默变成半个时区名。
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
+    return UNKNOWN_TIME_ZONE;
+  }
+  const bytes = Buffer.from(hex, 'hex');
+  if (bytes.length === 0) return UNKNOWN_TIME_ZONE;
+  // 先按 UTF-8 解 (Linux / 绝大多数部署: 这个变量本来就是 UTF-8 字节;
+  // ASCII 名字 'CST'/'UTC' 在两种编码下结果完全一致, 不受影响)。
+  const utf8 = decodeStrict(bytes, 'utf-8');
+  if (utf8 !== null && utf8.length > 0) return utf8;
+  // 再按 GBK 解 (中文版 Windows: 变量值装的是 ANSI 代码页字节)。
+  const gbk = decodeStrict(bytes, 'gbk');
+  if (gbk !== null && gbk.length > 0) return gbk;
+  // 两种都解不了 ⇒ 如实报未知。
+  return UNKNOWN_TIME_ZONE;
+}
+
 export async function readServerClock(db) {
   const dialect = db?.dialect === 'mssql' ? 'mssql' : 'mysql';
-  const sql = dialect === 'mssql'
-    ? `SELECT CONVERT(VARCHAR(33), SYSUTCDATETIME()) AS now_utc,
-              CONVERT(VARCHAR(33), SYSDATETIMEOFFSET()) AS now_session,
-              DATEDIFF(MINUTE, SYSUTCDATETIME(), SYSDATETIMEOFFSET()) AS offset_min,
-              CONVERT(VARCHAR(64), SERVERPROPERTY('TimeZone')) AS system_tz`
-    : `SELECT @@session.time_zone AS session_tz,
-              @@system.time_zone AS system_tz,
-              UTC_TIMESTAMP() AS now_utc,
-              NOW() AS now_session,
-              TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), NOW()) AS offset_min`;
+  const sql = dialect === 'mssql' ? MSSQL_CLOCK_SQL : MYSQL_CLOCK_SQL;
 
   const { rows } = await db.query(sql, []);
   const row = rows?.[0] || {};
 
   const sessionTimeZone = dialect === 'mssql'
     ? 'UTC (sysutcdatetime)'
-    : String(row.session_tz ?? 'UNKNOWN');
-  const systemTimeZone = String(row.system_tz ?? 'UNKNOWN');
+    : String(row.session_tz ?? UNKNOWN_TIME_ZONE);
+  // MySQL 侧的系统时区名是**原始字节** (HEX) ⇒ 必须按字符集解;
+  // MSSQL 侧 SERVERPROPERTY('TimeZone') 本身就是字符串, 直接用。
+  const systemTimeZone = dialect === 'mssql'
+    ? String(row.system_tz ?? UNKNOWN_TIME_ZONE)
+    : decodeSystemTimeZoneName(row.system_tz_hex);
   const sessionOffsetMinutes = Number(row.offset_min ?? 0) || 0;
 
   // ★ MSSQL 没有会话时区概念, 但它的 DEFAULT 恒定 UTC ⇒ 恒 true。

@@ -38,7 +38,11 @@ import {
   offsetMinutesFor as serverOffsetMinutesFor,
   listSupportedTimeZones as serverListSupportedTimeZones,
   normalizeSqlTimestamp,
-  readServerClock
+  readServerClock,
+  decodeSystemTimeZoneName,
+  MYSQL_CLOCK_SQL,
+  MSSQL_CLOCK_SQL,
+  UNKNOWN_TIME_ZONE
 } from '../src/services/timezone.js';
 
 import {
@@ -620,7 +624,7 @@ describe('H. 服务端时钟探针 (MySQL + MSSQL 双方言)', () => {
   test('MySQL: 会话偏移 0 (已钉 UTC) ⇒ pinnedToUtc=true', async () => {
     const db = makeDb('mysql', {
       session_tz: '+00:00',
-      system_tz: 'CST',
+      system_tz_hex: '435354',          // HEX('CST')
       now_utc: new Date('2026-10-26T13:03:03.000Z'),
       now_session: new Date('2026-10-26T13:03:03.000Z'),
       offset_min: 0
@@ -637,7 +641,7 @@ describe('H. 服务端时钟探针 (MySQL + MSSQL 双方言)', () => {
   test('MySQL: 会话偏移 480 (没钉 UTC) ⇒ pinnedToUtc=false (页面必须能报警)', async () => {
     const db = makeDb('mysql', {
       session_tz: 'SYSTEM',
-      system_tz: 'CST',
+      system_tz_hex: '435354',          // HEX('CST')
       now_utc: new Date('2026-10-26T13:03:03.000Z'),
       now_session: new Date('2026-10-26T21:03:03.000Z'),
       offset_min: 480
@@ -666,5 +670,173 @@ describe('H. 服务端时钟探针 (MySQL + MSSQL 双方言)', () => {
     const clock = await readServerClock(db);
     assert.equal(clock.pinnedToUtc, true, '查不到行不该谎报"没钉 UTC"');
     assert.equal(clock.sessionOffsetMinutes, 0);
+  });
+
+  test('MySQL: 系统时区走 HEX ⇒ 中文 Windows 上不是乱码', async () => {
+    // ★ 真库实测 (2026-10-27): @@system_time_zone 的原始字节是
+    //   D6D0B9FAB1EAD7BCCAB1BCE4 = "中国标准时间" 的 **GBK** 编码。
+    //   MySQL 5.7 声明它是 utf8, 客户端按 UTF-8 解必然乱码。
+    //   ⇒ 必须用 HEX() 取回原始字节, 在 JS 里解。
+    const db = makeDb('mysql', {
+      session_tz: '+00:00',
+      system_tz_hex: 'D6D0B9FAB1EAD7BCCAB1BCE4',
+      now_utc: new Date('2026-10-26T13:03:03.000Z'),
+      now_session: new Date('2026-10-26T13:03:03.000Z'),
+      offset_min: 0
+    });
+    const clock = await readServerClock(db);
+    assert.equal(clock.systemTimeZone, '中国标准时间', 'GBK 字节必须解回真名, 不能是乱码');
+  });
+
+  test('MySQL: 探针 SQL 走 HEX 取原始字节 (不走 CONVERT, 那一路是有损的)', () => {
+    assert.match(MYSQL_CLOCK_SQL, /HEX\s*\(\s*@@system_time_zone\s*\)/,
+      '必须用 HEX(@@system_time_zone) 取回原始字节');
+    assert.doesNotMatch(MYSQL_CLOCK_SQL, /CONVERT\s*\(/i,
+      'CONVERT(... USING gbk) 在服务端就丢字节 (实测 8 个 "?"), 不可用');
+    assert.doesNotMatch(MYSQL_CLOCK_SQL, /@@system\./,
+      '"@@system." 不是合法作用域 (MySQL 只有 GLOBAL/SESSION/LOCAL)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I. 探针 SQL 的作用域契约 (R161.15) —— 全仓扫描, 钉死 1272 这一族
+// ---------------------------------------------------------------------------
+
+describe('I. 探针 SQL 作用域契约 (R161.15: ER_VARIABLE_IS_NOT_STRUCT / errno 1272)', () => {
+  // MySQL 的系统变量**作用域**只有这三个。写第四个 ⇒ 服务端直接报
+  //   ER_VARIABLE_IS_NOT_STRUCT (errno 1272):
+  //   "Variable 'time_zone' is not a variable component
+  //    (can't be used as XXXX.variable_name)"
+  // ⇒ 端点 500。R161.15 的真凶就是 `@@system.time_zone`。
+  const VALID_SCOPES = new Set(['global', 'session', 'local']);
+
+  // 带作用域的写法: @@<scope>.<var>
+  const SCOPED_RE = /@@\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+
+  test('扫描面非空 (守卫本身不许空转)', () => {
+    const files = collectSourceFiles(path.join(CENTER_ROOT, 'src'));
+    assert.ok(files.length > 50, `扫描面过小: ${files.length}`);
+  });
+
+  test('src/ 全仓: 带作用域的 @@ 必须用 GLOBAL/SESSION/LOCAL', () => {
+    const files = collectSourceFiles(path.join(CENTER_ROOT, 'src'));
+    const violations = [];
+    let scopedCount = 0;
+    for (const file of files) {
+      // ★ 必须剥注释: 注释里写着 `@@system.time_zone` (反面教材/故障说明),
+      //   那不是可执行 SQL, 不该让守卫变红。
+      const src = stripJsComments(readFileSync(file, 'utf8'));
+      SCOPED_RE.lastIndex = 0;
+      let m;
+      while ((m = SCOPED_RE.exec(src)) !== null) {
+        scopedCount += 1;
+        const scope = m[1].toLowerCase();
+        if (!VALID_SCOPES.has(scope)) {
+          violations.push(`${path.relative(CENTER_ROOT, file)}: @@${m[1]}.${m[2]}`);
+        }
+      }
+    }
+    assert.deepEqual(violations, [],
+      `非法作用域的 @@ 变量 (MySQL 会报 errno 1272):\n${violations.join('\n')}`);
+    assert.ok(scopedCount > 0, '扫描面里一个带作用域的 @@ 都没有 ⇒ 守卫空转');
+  });
+
+  test('src/ 全仓: 不带作用域的 @@ 变量名不许含点 (含点就说明写成了作用域形式)', () => {
+    const files = collectSourceFiles(path.join(CENTER_ROOT, 'src'));
+    const violations = [];
+    for (const file of files) {
+      const src = stripJsComments(readFileSync(file, 'utf8'));
+      // 逐个 @@ 出现位置, 看它后面跟的名字里有没有点。
+      const re = /@@\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        const after = src.slice(m.index + m[0].length);
+        // @@name 后面紧跟 (空白)* '.' ⇒ 说明是 @@scope.var 形式, 上面那条已查。
+        if (/^\s*\./.test(after)) continue;
+        // @@name 后面跟别的标识符字符 ⇒ 变量名被拆开了, 写法有问题。
+        if (/^[A-Za-z0-9_]/.test(after)) {
+          violations.push(`${path.relative(CENTER_ROOT, file)}: @@${m[1]} 后面又跟了字符`);
+        }
+      }
+    }
+    assert.deepEqual(violations, [], violations.join('\n'));
+  });
+
+  test('探针 SQL 的别名与读取端一致 (别名对不上 ⇒ 永远读到 undefined)', () => {
+    // MYSQL_CLOCK_SQL 里的别名集合必须覆盖 readServerClock 读到的所有 row.* 键
+    // (MySQL 分支); MSSQL_CLOCK_SQL 同理 (MSSQL 分支)。
+    const mysqlAliases = new Set(
+      [...MYSQL_CLOCK_SQL.matchAll(/\bAS\s+([A-Za-z_][A-Za-z0-9_]*)/gi)].map((m) => m[1].toLowerCase())
+    );
+    const mssqlAliases = new Set(
+      [...MSSQL_CLOCK_SQL.matchAll(/\bAS\s+([A-Za-z_][A-Za-z0-9_]*)/gi)].map((m) => m[1].toLowerCase())
+    );
+
+    for (const alias of ['session_tz', 'system_tz_hex', 'now_utc', 'now_session', 'offset_min']) {
+      assert.ok(mysqlAliases.has(alias), `MySQL 探针 SQL 缺少别名 ${alias}`);
+    }
+    for (const alias of ['now_utc', 'now_session', 'offset_min', 'system_tz']) {
+      assert.ok(mssqlAliases.has(alias), `MSSQL 探针 SQL 缺少别名 ${alias}`);
+    }
+    // MSSQL 侧用裸字符串 (SERVERPROPERTY 返回 Unicode), 不需要 HEX。
+    assert.ok(!mssqlAliases.has('system_tz_hex'), 'MSSQL 侧不该有 system_tz_hex');
+  });
+
+  test('两个方言的探针 SQL 不许混用对方的函数', () => {
+    assert.doesNotMatch(MYSQL_CLOCK_SQL, /SYSUTCDATETIME|SYSDATETIMEOFFSET|SERVERPROPERTY|DATEDIFF/i,
+      'MySQL 探针 SQL 里出现了 MSSQL 专有函数');
+    assert.doesNotMatch(MSSQL_CLOCK_SQL, /UTC_TIMESTAMP|TIMESTAMPDIFF|\bHEX\s*\(|\bNOW\s*\(/i,
+      'MSSQL 探针 SQL 里出现了 MySQL 专有函数');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// J. @@system_time_zone 的字节解码 (R161.15 的第二处故障)
+// ---------------------------------------------------------------------------
+
+describe('J. @@system_time_zone 原始字节的解码', () => {
+  // GBK 编码的 "中国标准时间" (真库 2026-10-27 实测的原始字节)
+  const GBK_HEX = 'D6D0B9FAB1EAD7BCCAB1BCE4';
+  // UTF-8 编码的 "中国标准时间"
+  const UTF8_HEX = 'E4B8ADE59BBDE6A087E58786E697B6E997B4';
+
+  test('GBK 字节解回中文时区名 (中文版 Windows 的真实现场)', () => {
+    assert.equal(decodeSystemTimeZoneName(GBK_HEX), '中国标准时间');
+  });
+
+  test('UTF-8 字节也解得对 (Linux / 英文 Windows 的常态)', () => {
+    assert.equal(decodeSystemTimeZoneName(UTF8_HEX), '中国标准时间');
+  });
+
+  test('ASCII 名字 (CST / UTC) 两边编码一样 ⇒ 原样', () => {
+    assert.equal(decodeSystemTimeZoneName('435354'), 'CST');   // HEX('CST')
+    assert.equal(decodeSystemTimeZoneName('555443'), 'UTC');   // HEX('UTC')
+  });
+
+  test('非法 HEX 一律报 UNKNOWN (绝不半截字符串)', () => {
+    // ★ '4353' 是**偶数**长度、合法 hex ⇒ 解出 'CS' 是**正确**行为, 不在此列。
+    //   真正该拒的是: 奇数长度 ('435' → Buffer.from 会吞掉半个字节)、
+    //   混进非 hex 字符 ('435354ZZ' → Buffer.from 静默截成 'CST')、
+    //   带前缀/带空格、空、非字符串。
+    for (const bad of ['', '   ', 'ZZ', '435', '435354ZZ', '0x435354', '43 53 54', null, undefined, 123]) {
+      assert.equal(decodeSystemTimeZoneName(bad), UNKNOWN_TIME_ZONE,
+        `非法输入 ${JSON.stringify(bad)} 必须报 UNKNOWN`);
+    }
+    // 偶数长度的合法 hex 照常解 (这是 MySQL HEX() 的正常输出形态)。
+    assert.equal(decodeSystemTimeZoneName('4353'), 'CS');
+  });
+
+  test('★ Buffer.from(x,"hex") 的宽容性不会漏到线上 (它会把 "435354ZZ" 截成 "CST")', () => {
+    // 这条是本组最关键的一条: 若哪天有人图省事去掉严格校验,
+    // "435354ZZ" 会静默变成 "CST" —— 脏数据被当成合法时区名报出去。
+    assert.equal(Buffer.from('435354ZZ', 'hex').toString('latin1'), 'CST',
+      '前提断言: Node 的 Buffer.from 确实是宽容的 (所以我们自己必须严格)');
+    assert.equal(decodeSystemTimeZoneName('435354ZZ'), UNKNOWN_TIME_ZONE,
+      '我们自己的解码必须比 Buffer.from 严格');
+  });
+
+  test('解不出时如实报 UNKNOWN (不猜一个时区名出来)', () => {
+    // 合法 HEX 但不是任何已知编码 ⇒ 两条路都失败。
+    assert.equal(decodeSystemTimeZoneName('FFFEFFFF'), UNKNOWN_TIME_ZONE);
   });
 });
