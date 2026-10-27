@@ -933,7 +933,7 @@ const VARIANTS = {
     },
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
-      upsert: `INSERT INTO system_config (config_key, config_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = UTC_TIMESTAMP()`,
+      upsert: `INSERT INTO system_config (config_key, config_value, updated_at) VALUES (?, ?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = UTC_TIMESTAMP()`,
       setAgentToken: `INSERT INTO system_config (config_key, config_value) VALUES ('agent_token', ?) ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = UTC_TIMESTAMP()`,
       getAgentTokenBundle: `SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_version')`,
       // R158.102 (2026-10-14) — MCP server token bundle. Four rows
@@ -966,7 +966,16 @@ const VARIANTS = {
       }
     },
     audit: {
-      write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
+      // R161.16 (2026-10-27) — created_at 显式写成 UTC, 不再依赖列默认值。
+      //   MySQL 基线: created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      //   ⇒ DEFAULT 取的是**会话时区**的墙钟。R161.10 之前没钉会话时区,
+      //     于是"钉之前"的行存的是服务器本地墙钟 (本机 CST +480 分钟),
+      //     前端又统一把 naive DATETIME 当 UTC 解读 ⇒ 那批行整体晚 8 小时。
+      //   显式 UTC_TIMESTAMP() 让写入不再依赖会话时区 —— 这是根因修复:
+      //     即便将来有人漏掉 SET time_zone, 新写入的行依然是真 UTC。
+      //   MSSQL 版用 SYSUTCDATETIME() (该基线的 DEFAULT 本来就是 UTC),
+      //     两边占位符个数保持一致 (4 个)。
+      write: 'INSERT INTO audit_logs (user_id, action, target, payload, created_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP())',
       // SELECT for paginated listing. The dialect owns both pagination syntax
       // and parameter order: callers pass semantic (size, offset) values.
       list: (where) => ({
@@ -4601,7 +4610,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
     },
     config: {
       getAll: 'SELECT config_key, config_value FROM system_config',
-      upsert: `MERGE INTO system_config AS t USING (SELECT ? AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`,
+      upsert: `MERGE INTO system_config AS t USING (SELECT ? AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value, updated_at) VALUES (s.config_key, s.config_value, SYSUTCDATETIME());`,
       setAgentToken: `MERGE INTO system_config AS t USING (SELECT 'agent_token' AS config_key, ? AS config_value) AS s ON t.config_key = s.config_key WHEN MATCHED THEN UPDATE SET config_value = s.config_value, updated_at = SYSUTCDATETIME() WHEN NOT MATCHED THEN INSERT (config_key, config_value) VALUES (s.config_key, s.config_value);`,
       getAgentTokenBundle: `SELECT config_key, config_value FROM system_config WHERE config_key IN ('agent_token_current', 'agent_token_previous', 'agent_token_rotated_at', 'agent_token_version')`,
       // R158.102 (2026-10-14) — MCP server token bundle. Four rows
@@ -4634,7 +4643,14 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       }
     },
     audit: {
-      write: 'INSERT INTO audit_logs (user_id, action, target, payload) VALUES (?, ?, ?, ?)',
+      // R161.16 (2026-10-27) — created_at 显式写成 UTC, 不再依赖列默认值。
+      //   MSSQL 基线: created_at DATETIME2 NOT NULL DEFAULT sysutcdatetime()
+      //   ⇒ DEFAULT 本来就恒为 UTC; 这里仍然显式写出来, 是为了让两个方言
+      //     的写入语义完全一致 (不依赖"某个方言的 DEFAULT 恰好是对的")。
+      //   MySQL 版用 UTC_TIMESTAMP() —— 见上面 mysql 块的同款注释 (那才是
+      //     真正的缺陷面: CURRENT_TIMESTAMP 取会话时区墙钟)。
+      //   两边占位符个数保持一致 (4 个)。
+      write: 'INSERT INTO audit_logs (user_id, action, target, payload, created_at) VALUES (?, ?, ?, ?, SYSUTCDATETIME())',
       // SELECT for paginated listing. The dialect owns both pagination syntax
       // and parameter order: callers pass semantic (size, offset) values.
       list: (where) => ({

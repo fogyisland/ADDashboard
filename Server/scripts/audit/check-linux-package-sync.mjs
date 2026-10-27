@@ -39,6 +39,11 @@
 //                          payloads must be byte-identical (sha256) between
 //                          the source tree and the Linux package, except for
 //                          an explicit, reasoned allowlist.
+//   C1b entry-point drift — the single-file mirrors that no directory tree
+//                          covers (center/server.js). R161.16: R161.11's
+//                          logger wiring never reached the Linux package's
+//                          entry point, so the "mail 500 with zero log
+//                          lines" symptom stayed alive on the Linux side.
 //   C2  required paths  — the package must actually contain what the runtime
 //                          needs (server.js, dist/index.html, the baseline
 //                          SQL, the lifecycle scripts, ...).
@@ -183,6 +188,35 @@ const TREE_PAIRS = [
   },
 ];
 
+// Single-file mirror pairs — the entry points that do NOT live inside any
+// compared directory tree.
+//
+// TREE_PAIRS covers center/src, center/web, center/dist, center/scripts,
+// db and center/data/packages. `center/server.js` is the **process entry
+// point** and lives directly under center/ — so no tree pair ever covered
+// it, and the drift detector had been blind to it.
+//
+// Measured (R161.16, 2026-10-27): R161.11 wired the pino logger into the
+// email history / email queue / delivery-loop routers, but the hand-copy
+// checklist only carried center/src/** over to the Linux package — the
+// entry point itself was left behind. The Linux deployment therefore ran
+// the routers WITHOUT a logger, i.e. the exact "mail 500 with zero log
+// lines" symptom R161.11 set out to remove, still live on the Linux side.
+//
+// center/package.json is deliberately NOT listed: it is frozen on the
+// Windows side by the `.install-hash` contract (editing it forces a full
+// reinstall on the target machine), and the two sides are legitimately
+// allowed to differ — the Linux manifest declares `zod` explicitly while
+// the Windows one gets it hoisted from the workspace lock.
+const FILE_PAIRS = [
+  {
+    id: 'center/server.js',
+    from: join(SOURCE, 'center', 'server.js'),
+    to: join(LINUX, 'center', 'server.js'),
+    why: 'the process entry point — every boot-time wiring change lands here',
+  }
+];
+
 // Intentional differences. Every entry MUST carry a reason — an unexplained
 // allowlist entry is exactly how a hand-copy rots.
 const ALLOWLIST = [
@@ -308,6 +342,33 @@ function checkPayloadDrift() {
 
     notes.push(`${pair.id}: ${sourceFiles.length} source file(s) compared against the Linux package`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// C1b — single-file mirror drift
+//
+// Same rule as C1 (byte-identical, or the fix never shipped), applied to the
+// entry points that no compared directory tree covers.
+// ---------------------------------------------------------------------------
+function checkFilePairDrift() {
+  for (const pair of FILE_PAIRS) {
+    if (!existsSync(pair.from)) {
+      addFinding('C1b-file', 'error',
+        `source tree is missing: ${toPosix(relative(repoRoot, pair.from))}`);
+      continue;
+    }
+    if (!existsSync(pair.to)) {
+      addFinding('C1b-file', 'error',
+        `the Linux package is missing: ${toPosix(relative(repoRoot, pair.to))}`);
+      continue;
+    }
+    if (sha256(pair.from) !== sha256(pair.to)) {
+      addFinding('C1b-file', 'error',
+        `the Linux package copy differs from the source: ${pair.id} — ${pair.why}`,
+        pair.id);
+    }
+  }
+  notes.push(`C1b: ${FILE_PAIRS.length} single-file mirror pair(s) compared`);
 }
 
 // ---------------------------------------------------------------------------
@@ -866,6 +927,7 @@ function checkStrayPackageSources() {
 // Run
 // ---------------------------------------------------------------------------
 checkPayloadDrift();
+checkFilePairDrift();
 checkRequiredPaths();
 checkShellHygiene();
 checkForbiddenPaths();

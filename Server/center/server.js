@@ -768,6 +768,31 @@ function latestRoundId(rounds) {
     } catch (err) {
       logger.warn({ err: err.message }, 'R158.56.1 audit taskId backfill failed; non-fatal');
     }
+    // R161.16 (2026-10-27) — audit_logs 时间戳基准的单一真源 + 旧基准行回填。
+    //   缺陷面: MySQL 基线 audit_logs.created_at 是
+    //     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ⇒ DEFAULT 取**会话时区**
+    //     的墙钟。R161.10 之前中心端没钉会话时区, 于是"钉之前"写下的那些行
+    //     存的是服务器本地墙钟 (本机 CST +480 分钟), 而前端统一把 naive
+    //     DATETIME 当 UTC 解读 ⇒ /admin/audit 的「变更」「安全」两个 tab
+    //     整体晚 8 小时。
+    //   本次做两件事:
+    //     1) 向前: sql.js 的 audit.write 改成显式写 UTC_TIMESTAMP() /
+    //        SYSUTCDATETIME(), 新写入的行不再依赖会话时区 (根因修复)。
+    //     2) 向后: 从 audit_logs 自己的 payload 里反推每行的写入基准, 找出
+    //        旧基准行的分界, 落进 system_config 的单一真源, 并按真源把旧
+    //        基准行平移成真 UTC (前像先落 audit_logs_utc_baseline_backup,
+    //        可逆、可审计)。
+    //   判定不出来时**只 warn 一行数据都不改** —— 宁可让老行晚 8 小时显示,
+    //   也不能把本来对的行改错。
+    try {
+      const { ensureAuditUtcBaseline } = await import('./src/services/audit-utc-baseline.js');
+      const r = await ensureAuditUtcBaseline({ logger });
+      if (r && r.status !== 'skipped' && r.status !== 'no_db') {
+        logger.info({ component: 'audit-utc-baseline', ...r }, 'R161.16 audit UTC baseline');
+      }
+    } catch (err) {
+      logger.warn({ err: err.message }, 'R161.16 audit UTC baseline failed; non-fatal');
+    }
     // R158.38.4 (2026-10-03) — backfill root domains for forests created
     // before this round. createForest now auto-inserts a role='root' row, but
     // pre-R158.38.4 forests have none. Run once at startup; idempotent.
