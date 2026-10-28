@@ -285,10 +285,15 @@ async function handleMemberEventlogTrend24h(db, args, { logger, _svcMemberEventl
 // 就把可用数据挡掉.
 async function resolveDomainSyncState(db, domainName) {
   try {
-    const { rows } = await db.query(
-      `SELECT TOP 1 sync_enabled FROM ad_forest_domain WHERE LOWER(domain_name) = LOWER(?)`,
-      [domainName]
-    );
+    // R161.20 — 方言分叉。`SELECT TOP 1` 是 T-SQL 语法, MySQL 直接报 1064;
+    //   而下面那个 catch 把错误吞成 {known:true, enabled:true} ⇒ 在 MySQL 上
+    //   "该域已关闭同步" 这条分支**永远走不到**(调用方拿到的是"同步正常"的
+    //   假象)。与 routes/admin.js 手动触发路径、directory-sync-loop.js 的
+    //   _pickDcForDomain 同模式 (isMssql ? TOP 1 : LIMIT 1)。
+    const sql = db.dialect === 'mssql'
+      ? `SELECT TOP 1 sync_enabled FROM ad_forest_domain WHERE LOWER(domain_name) = LOWER(?)`
+      : `SELECT sync_enabled FROM ad_forest_domain WHERE LOWER(domain_name) = LOWER(?) LIMIT 1`;
+    const { rows } = await db.query(sql, [domainName]);
     if (!rows || rows.length === 0) return { known: false, enabled: false };
     return { known: true, enabled: rows[0].sync_enabled == null ? true : Boolean(Number(rows[0].sync_enabled)) };
   } catch (e) {

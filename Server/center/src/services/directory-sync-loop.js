@@ -266,8 +266,12 @@ export function createDirectorySyncLoop({ getSystemConfig, logger }) {
     let dcName;
     let domainName;
     try {
-      const { rows } = await db.query(
-        `SELECT TOP 1 fd.domain_name, d.dc_name
+      // R161.20 — 方言分叉。`SELECT TOP 1` 是 T-SQL 语法, MySQL 报 1064 ⇒
+      //   legacy fallback 路径在 MySQL 上**永远走不下去**(catch 只 warn 一句
+      //   "ad_dcs read failed" 就 skipped)。与本文件 _pickDcForDomain
+      //   (第 369-375 行) 同模式。
+      const pickSql = db.dialect === 'mssql'
+        ? `SELECT TOP 1 fd.domain_name, d.dc_name
            FROM ad_dcs d
            LEFT JOIN ad_forest_dc_assignment a ON a.dc_hostname = d.dc_name
            LEFT JOIN ad_forest_domain fd ON fd.id = a.domain_id
@@ -276,7 +280,17 @@ export function createDirectorySyncLoop({ getSystemConfig, logger }) {
           --   选它会让整个目录同步卡死。
           WHERE d.decommissioned_at IS NULL AND d.monitoring_paused_at IS NULL
           ORDER BY d.is_pdc DESC, d.dc_name`
-      );
+        : `SELECT fd.domain_name, d.dc_name
+           FROM ad_dcs d
+           LEFT JOIN ad_forest_dc_assignment a ON a.dc_hostname = d.dc_name
+           LEFT JOIN ad_forest_domain fd ON fd.id = a.domain_id
+          -- R158.X.115 (2026-10-20) — 排除退役/暂停管控的 DC。凭据主机必须是
+          --   真正还在域里的机器: 退役 DC 已经 dcpromo 降级, 用它 bind 必然失败,
+          --   选它会让整个目录同步卡死。
+          WHERE d.decommissioned_at IS NULL AND d.monitoring_paused_at IS NULL
+          ORDER BY d.is_pdc DESC, d.dc_name
+          LIMIT 1`;
+      const { rows } = await db.query(pickSql);
       dcName = rows[0]?.dc_name;
       domainName = rows[0]?.domain_name || dcName;
     } catch (e) {
