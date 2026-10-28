@@ -394,7 +394,7 @@ const REQUIRED_PATHS = [
   { rel: join('center', 'data', 'packages'), why: 'the built-in package payloads' },
   { rel: join('db', 'migrations', 'mysql', '1.0.0-baseline.sql'), why: 'the MySQL baseline (the init wizard applies it)' },
   { rel: join('db', 'migrations', 'mssql', '1.0.0-baseline.sql'), why: 'the MSSQL baseline (the init wizard applies it)' },
-  { rel: join('db', 'migrations', '1.0.0-baseline.js'), why: 'the R66 data-migration sidecar (schema-applier backfillMigrations)' },
+  { rel: join('db', 'migrations', '1.0.0-baseline.js'), why: 'the R66 data-migration sidecar (installed_packages -> package_scripts) — ★ 它在 db/migrations/ **顶层**, 而 backfillMigrations / resolveJsFile 只扫 db/migrations/<dialect>/ ⇒ 当前没有任何加载路径会执行它 (留档)。别把 "随包发布" 读成 "会被执行"' },
   { rel: join('scripts', 'common.sh'), why: 'the shared shell library' },
   { rel: join('scripts', 'install.sh'), why: 'the install entry point' },
   { rel: join('scripts', 'start.sh'), why: 'the start entry point' },

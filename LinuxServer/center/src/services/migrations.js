@@ -5,6 +5,12 @@ import { pathToFileURL } from 'node:url';
 import { splitSqlStatements } from '../init/schema-applier.js';
 import { verifyMarkers, parseVerifyMarker } from '../init/verify-marker.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
+// R161.19 (2026-10-28) — 版本号解析/比较/排序抽到共享模块。
+//   为什么抽: schema-applier.js 的 backfillMigrations() 也要按版本序遍历,
+//   而 schema-applier.js 已被本文件 import ⇒ 反向 import 会成环。
+//   为什么要 semver 序: '1.0.10' 在字典序里排在 '1.0.2' **前面**,
+//   版本号一到两位数, upgrade() 的执行顺序和 applyUpTo() 的 break 点就都错了。
+import { compareVersions, parseFileMeta, sortMigrationFiles } from '../utils/migration-version.js';
 
 // MySQL DATETIME columns reject ISO 8601 strings (`2026-08-20T09:40:18.985Z`);
 // the schema_migrations.applied_at column is DATETIME on MySQL, so callers
@@ -41,24 +47,13 @@ export class NotAppliedError extends Error {
 // same parseFileMeta + sort + compare path. Forward evolution uses semver
 // going forward (1.0.0 baseline); legacy 053-era files were retired
 // during rebase (R158.42) and only '009' + '1.0.0' remain.
+//
+// R161.19 — compareVersions / parseFileMeta 已移到 utils/migration-version.js
+//   (schema-applier.js 也要用, 反向 import 会成环)。
 const VERSION_RE = /^(\d{1,3})(\.\d+){0,2}$/;
 
 function validateVersion(version) {
   if (!VERSION_RE.test(String(version || ''))) throw new InvalidVersionError(version);
-}
-
-// R158.42 — semver-aware compare. '1.0.10' > '1.0.2' (lexicographic
-// would put it the other way). Also handles legacy '053' vs '1.0.0'
-// (treats single-segment as [n, 0, 0]).
-function compareVersions(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const ai = pa[i] || 0;
-    const bi = pb[i] || 0;
-    if (ai !== bi) return ai - bi;
-  }
-  return 0;
 }
 
 function resolveFile(repoRoot, dialect, version) {
@@ -85,14 +80,6 @@ function resolveJsFile(repoRoot, dialect, version) {
   if (!existsSync(dir)) return null;
   const match = readdirSync(dir).find(f => f.startsWith(version + '-') && f.endsWith('.js'));
   return match ? join(dir, match) : null;
-}
-
-function parseFileMeta(filePath) {
-  const fileName = filePath.split(/[/\\]/).pop();
-  // R158.42 — semver-aware filename match. Accepts both legacy 3-digit
-  // prefix ('053-foo.sql') and semver ('1.0.0-foo.sql' / '1.0.0.sql').
-  const m = fileName.match(/^(\d{1,3}(?:\.\d+){0,2})(?:-([a-z0-9-]+))?\.sql$/i);
-  return m ? { version: m[1], description: m[2] || null } : null;
 }
 
 function sha256(s) { return createHash('sha256').update(s).digest('hex'); }
@@ -123,7 +110,8 @@ export function createMigrationsService({ db, logger, getRepoRoot, writeAudit, g
       ? join(repoRoot, 'db/migrations/mssql')
       : join(repoRoot, 'db/migrations/mysql');
     if (!existsSync(dir)) return [];
-    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    // R161.19 — semver 序, 不是文件名字典序 ('1.0.10' 字典序排在 '1.0.2' 前)。
+    const files = sortMigrationFiles(readdirSync(dir).filter(f => f.endsWith('.sql')));
 
     const { rows: dbRows } = await db.query(db.sql.schemaMigrations.list, []);
     const byVersion = new Map(dbRows.map(r => [r.version, r]));
@@ -323,7 +311,8 @@ export function createMigrationsService({ db, logger, getRepoRoot, writeAudit, g
       ? join(repoRoot, 'db/migrations/mssql')
       : join(repoRoot, 'db/migrations/mysql');
     if (!existsSync(dir)) throw new MigrationFileMissingError(version);
-    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    // R161.19 — semver 序 (下面的 compareVersions 过滤依赖"已按版本升序"的前提)。
+    const files = sortMigrationFiles(readdirSync(dir).filter(f => f.endsWith('.sql')));
     const versions = [];
     const skipped = [];
     const appliedAtIso = appliedAtForDialect(db.dialect);
@@ -358,7 +347,10 @@ export function createMigrationsService({ db, logger, getRepoRoot, writeAudit, g
       ? join(repoRoot, 'db/migrations/mssql')
       : join(repoRoot, 'db/migrations/mysql');
     if (!existsSync(dir)) throw new MigrationFileMissingError(version);
-    const files = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+    // R161.19 — semver 序。★ 这一处的 break 依赖"已按版本升序":
+    //   字典序下 '1.0.10' 排在 '1.0.2' 前面 ⇒ applyUpTo('1.0.9') 走到 1.0.10
+    //   就 compareVersions>0 ⇒ break ⇒ 1.0.2~1.0.9 一个都不执行。
+    const files = sortMigrationFiles(readdirSync(dir).filter(f => f.endsWith('.sql')));
     const applied = [];
     const failed = [];
     for (const f of files) {
@@ -392,8 +384,11 @@ export function createMigrationsService({ db, logger, getRepoRoot, writeAudit, g
     const migrationsDir = db.dialect === 'mssql'
       ? join(repoRoot, 'db/migrations/mssql')
       : join(repoRoot, 'db/migrations/mysql');
+    // R161.19 — semver 序。★ 这是**执行顺序**: 字典序下 '1.0.10' 会排在
+    //   '1.0.2'~'1.0.9' **前面**先执行 ⇒ 依赖前序迁移产物的迁移会建不出来
+    //   (例: 1.0.5 的唯一索引依赖 1.0.4 建出来的 hash 计算列)。
     const allFiles = existsSync(migrationsDir)
-      ? readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort()
+      ? sortMigrationFiles(readdirSync(migrationsDir).filter(f => f.endsWith('.sql')))
       : [];
     const applied = [];
     const failed = [];

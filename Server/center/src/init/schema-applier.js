@@ -10,6 +10,8 @@ import { pathToFileURL } from 'node:url';
 import { parseVerifyMarker, verifyMarkers } from './verify-marker.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 import { assertValidDatabaseName } from '../utils/dbName.js';
+// R161.19 — 迁移文件按**语义版本**排序 (双方言共用)。
+import { sortMigrationFiles } from '../utils/migration-version.js';
 
 export function splitSqlStatements(sql) {
   const out = [];
@@ -545,8 +547,10 @@ export async function backfillMigrations(dialect, db, opts = {}) {
   // partition by extension first.
   const allFiles = readdirSync(dir)
     .filter(f => f.endsWith('.sql') || f.endsWith('.js'));
-  const sqlFiles = allFiles.filter(f => f.endsWith('.sql')).sort();
-  const jsFiles = allFiles.filter(f => f.endsWith('.js')).sort();
+  // R161.19 — 语义版本序 (不是文件名字典序)。'1.0.10' 在字典序里排在 '1.0.2'
+  //   **前面**, 版本号一到两位数, 这里的遍历顺序就与版本语义相反。
+  const sqlFiles = sortMigrationFiles(allFiles.filter(f => f.endsWith('.sql')));
+  const jsFiles = sortMigrationFiles(allFiles.filter(f => f.endsWith('.js')));
   const files = [...sqlFiles, ...jsFiles];
   // MySQL DATETIME rejects ISO 8601 strings; the schema_migrations.applied_at
   // column is DATETIME on MySQL. Pre-format per the convention in db/drivers/mysql.js.

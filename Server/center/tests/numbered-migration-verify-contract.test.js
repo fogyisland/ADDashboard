@@ -28,14 +28,16 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, existsSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 
 import { applyAll, backfillMigrations, splitSqlStatements } from '../src/init/schema-applier.js';
 import { parseVerifyMarker } from '../src/init/verify-marker.js';
 import { createMigrationsService } from '../src/services/migrations.js';
+import { sortMigrationFiles } from '../src/utils/migration-version.js';
 import { initRouter } from '../src/init/router.js';
 import { stripSqlComments } from '../../scripts/audit/check-dialect-compat.mjs';
 
@@ -59,6 +61,18 @@ function numberedFiles(dialect) {
   return readdirSync(dir)
     .filter((f) => f.endsWith('.sql') && !BASELINE_RE.test(f))
     .sort();
+}
+
+// R161.19 — **引擎真正使用的顺序** (语义版本序)。
+//   迁移引擎 (services/migrations.js 的 upgrade/applyUpTo/baseline/listMigrations,
+//   以及 init/schema-applier.js 的 backfillMigrations) 一律走这个排序。
+//   ★ 为什么不能只看磁盘上的字典序: '1.0.10-x.sql' 在字典序里排在
+//   '1.0.2-x.sql' **前面** ⇒ 版本号一到两位数, 磁盘顺序与执行顺序就分家了。
+function engineOrderedFiles(dialect) {
+  const dir = dialectDir(dialect);
+  return sortMigrationFiles(
+    readdirSync(dir).filter((f) => f.endsWith('.sql') && !BASELINE_RE.test(f))
+  );
 }
 
 /** 剥掉注释, 只留可执行内容 (判定"这个迁移到底建了什么"时用)。 */
@@ -717,20 +731,30 @@ describe('I. MSSQL 收敛迁移 (R161.18): 顺序 / 守卫 / 端到端', () => {
     '1.0.9-mssql-dc-overview-site-fk.sql'
   ];
 
-  test('I-1 编号迁移的文件顺序必须与语义版本顺序一致 (引擎用的是字典序)', () => {
+  test('I-1 编号迁移的版本号必须唯一 (引擎按语义版本序执行, 账本按 version 主键记)', () => {
     for (const dialect of DIALECTS) {
-      const files = numberedFiles(dialect);   // 字典序 (readdirSync().sort())
+      const files = engineOrderedFiles(dialect);   // 引擎序 (语义版本序)
       const versions = files.map((f) => f.match(NUMBERED_RE)[1]);
+      const seen = new Map();
+      for (const f of files) {
+        const v = f.match(NUMBERED_RE)[1];
+        assert.ok(
+          !seen.has(v),
+          `${dialect}: 版本号 ${v} 出现了两次 (${seen.get(v)} 与 ${f}) —— `
+          + '账本 schema_migrations 按 version 主键记 ⇒ 后一条会覆盖前一条 ⇒ 有一条永远执行不到'
+        );
+        seen.set(v, f);
+      }
+      // 引擎序必须严格递增 (排序工具本身的性质, 这里顺带钉住"引擎序 = 语义序")。
       for (let i = 1; i < versions.length; i++) {
         assert.ok(
           cmpVersion(versions[i - 1], versions[i]) < 0,
-          `${dialect}: 迁移引擎用 readdirSync().sort() ⇒ **字典序**执行, `
-          + `但 "${files[i - 1]}" 的版本 (${versions[i - 1]}) 不小于 "${files[i]}" (${versions[i]}) `
-          + '⇒ 执行顺序与版本顺序不一致。'
-          + '★ 字典序陷阱: \'1.0.10\' < \'1.0.2\' ⇒ 版本号到两位数就会乱序。'
-          + '本仓库约定: 编号迁移最多到 1.0.9 (要加新的请重新评估排序方案)。'
+          `${dialect}: 引擎序里 "${files[i - 1]}" (${versions[i - 1]}) 之后不是更小的 `
+          + `"${files[i]}" (${versions[i]}) ⇒ 排序工具坏了`
         );
       }
+      // ★ R161.19: 引擎已改成语义版本序 ⇒ "编号迁移最多到 1.0.9" 这个约定**作废**。
+      //   下一个迁移可以安全地叫 1.0.10 (J 组钉住这一点)。
     }
   });
 
@@ -813,7 +837,7 @@ describe('I. MSSQL 收敛迁移 (R161.18): 顺序 / 守卫 / 端到端', () => {
   });
 
   test('I-5 hash 列迁移必须排在使用它的唯一索引迁移之前', () => {
-    const files = numberedFiles('mssql');
+    const files = engineOrderedFiles('mssql');   // 引擎序 (语义版本序)
     const hashIdx = files.findIndex((f) => f.startsWith('1.0.4-'));
     const uniqIdx = files.findIndex((f) => f.startsWith('1.0.5-'));
     assert.ok(hashIdx >= 0 && uniqIdx >= 0, '1.0.4 / 1.0.5 必须存在 —— 断言成了哑巴');
@@ -915,5 +939,121 @@ describe('I. MSSQL 收敛迁移 (R161.18): 顺序 / 守卫 / 端到端', () => {
     for (const v of ['1.0.4', '1.0.5', '1.0.9']) {
       assert.equal(ledger.get(v)?.status, 'applied', `${v} 的账本状态不是 applied`);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R161.19 (2026-10-28) — 迁移引擎必须按**语义版本**执行 (字典序陷阱)。
+//
+// 背景: 引擎原来用 readdirSync().sort() (字典序) 遍历迁移文件。
+//   字典序下 '1.0.10-x.sql' 排在 '1.0.2-x.sql' **前面**
+//   ('1.0.1' 是 '1.0.10' 的前缀, 而 '-' (0x2D) < '0' (0x30))。
+//   ⇒ 版本号一旦进到两位数, 后果不是"列表排得难看", 是**执行顺序错**:
+//     · upgrade() —— 先执行 1.0.10, 再执行 1.0.2~1.0.9。
+//       而 1.0.5 的唯一索引**依赖** 1.0.4 建出来的 hash 计算列 ⇒ 顺序反了就建不出来。
+//     · applyUpTo('1.0.9') —— 遍历到 1.0.10 时 compareVersions('1.0.10','1.0.9') > 0
+//       ⇒ break ⇒ 1.0.2 ~ 1.0.9 **一个都不会被执行**。
+//   R161.18 把 MSSQL 编号迁移排到 1.0.9 ⇒ 下一个迁移就是 1.0.10 ⇒ 这个坑就摆在
+//   下一个文件上等着 ⇒ 在它发生之前把排序换掉 (src/utils/migration-version.js)。
+//
+// 本组钉的是**行为** (端到端跑一遍引擎, 看它到底按什么顺序执行), 而不是
+// "源码里有没有调用某个排序函数" —— 后者会在有人换实现时误报。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('J. 迁移引擎必须按语义版本执行 (R161.19: 字典序陷阱)', () => {
+  // ★ 临时 repo root: 造出"版本号到两位数"的目录, 验证引擎的**真实执行顺序**。
+  //   磁盘上 readdirSync 的返回顺序不做保证, 所以断言只看**引擎跑出来的顺序**。
+  const TMP_ROOT = mkdtempSync(join(tmpdir(), 'ad-mig-order-'));
+  const TMP_MIG = join(TMP_ROOT, 'db', 'migrations', 'mysql');
+  // 语义序: 1.0.0 < 1.0.2 < 1.0.9 < 1.0.10
+  // 字典序: 1.0.0 < 1.0.10 < 1.0.2 < 1.0.9   ← 1.0.10 插在中间
+  const TMP_FILES = [
+    ['1.0.0-baseline.sql', 'SELECT 1;'],
+    ['1.0.2-second.sql', 'SELECT 1;'],
+    ['1.0.9-ninth.sql', 'SELECT 1;'],
+    ['1.0.10-tenth.sql', 'SELECT 1;']
+  ];
+
+  before(() => {
+    mkdirSync(TMP_MIG, { recursive: true });
+    for (const [name, body] of TMP_FILES) {
+      writeFileSync(join(TMP_MIG, name), body, 'utf8');
+    }
+  });
+
+  after(() => {
+    rmSync(TMP_ROOT, { recursive: true, force: true });
+  });
+
+  test('J-1 upgrade() 的执行顺序 = 语义版本顺序 (1.0.10 必须排在 1.0.9 之后)', async () => {
+    const fake = createFakeDb('mysql');
+    const svc = createMigrationsService({
+      db: fake.db,
+      logger: silentLogger,
+      getRepoRoot: () => TMP_ROOT,
+      writeAudit: null,
+      getDataDir: null
+    });
+    const up = await svc.upgrade({ appliedBy: 'test' });
+    assert.ok(up.ok, `upgrade 失败: ${JSON.stringify(up.migrations.failed)}`);
+    assert.deepEqual(
+      up.migrations.applied.map((a) => a.version),
+      ['1.0.0', '1.0.2', '1.0.9', '1.0.10'],
+      '★ 引擎按字典序执行了 —— 1.0.10 跑到了 1.0.2 前面。'
+      + '字典序陷阱: \'1.0.10\' < \'1.0.2\' ⇒ 版本号到两位数, 执行顺序就反了'
+    );
+  });
+
+  test('J-2 applyUpTo("1.0.9") 会真的执行到 1.0.9, 且不会把 1.0.10 带上', async () => {
+    const fake = createFakeDb('mysql');
+    const svc = createMigrationsService({
+      db: fake.db,
+      logger: silentLogger,
+      getRepoRoot: () => TMP_ROOT,
+      writeAudit: null,
+      getDataDir: null
+    });
+    const r = await svc.applyUpTo('1.0.9', { appliedBy: 'test' });
+    assert.ok(r.ok, `applyUpTo 失败: ${JSON.stringify(r.failed)}`);
+    assert.deepEqual(
+      r.applied.map((a) => a.version),
+      ['1.0.0', '1.0.2', '1.0.9'],
+      '★ applyUpTo 的 break 点依赖"已按版本升序" —— 字典序下走到 1.0.10 就 break, '
+      + '1.0.2 ~ 1.0.9 一个都不会执行'
+    );
+    assert.ok(
+      !fake.ledger.has('1.0.10'),
+      'applyUpTo("1.0.9") 把 1.0.10 也执行了 —— 版本上界没生效'
+    );
+  });
+
+  test('J-3 共享排序工具把 1.0.10 排在 1.0.9 之后 (单元级)', () => {
+    const sorted = sortMigrationFiles([
+      '1.0.10-tenth.sql',
+      '1.0.9-ninth.sql',
+      '1.0.2-second.sql',
+      '1.0.0-baseline.sql'
+    ]);
+    assert.deepEqual(
+      sorted,
+      ['1.0.0-baseline.sql', '1.0.2-second.sql', '1.0.9-ninth.sql', '1.0.10-tenth.sql'],
+      'sortMigrationFiles 没有按语义版本排序'
+    );
+  });
+
+  test('J-4 backfillMigrations 的登记顺序也是语义版本序', async () => {
+    const fake = createFakeDb('mysql');
+    await backfillMigrations('mysql', fake.db, {
+      repoRoot: TMP_ROOT,
+      getDataDir: null,
+      writeAudit: null,
+      logger: silentLogger
+    });
+    // 账本是 Map ⇒ 插入顺序可观测。
+    assert.deepEqual(
+      [...fake.ledger.keys()],
+      ['1.0.0', '1.0.2', '1.0.9', '1.0.10'],
+      'backfillMigrations 按字典序登记了 —— 登记顺序即"以后会被认为已应用"的顺序'
+    );
   });
 });
