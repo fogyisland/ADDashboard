@@ -60,10 +60,16 @@ export const systemAlertOutbox = {
                     WHERE id = ?`,
 
     // 找某 alert 的最近 outbox (UI 显示)
-    findLatestByAlert: `SELECT TOP 1 id, sent_at, attempt_count, last_error
+    // R161.19 (2026-10-28) — MySQL 侧**不能**用 `SELECT TOP 1`:
+    //   TOP 是 T-SQL 语法, MySQL 报 1064 ER_PARSE_ERROR ⇒ 该接口 100% 500。
+    //   MySQL 的等价写法是 ORDER BY ... LIMIT 1 (LIMIT 在 ORDER BY 之后)。
+    //   MSSQL 侧保持 `SELECT TOP 1` (见下方 mssql 段), 两边语义等价:
+    //   都取"按 id 倒序第一条"。
+    findLatestByAlert: `SELECT id, sent_at, attempt_count, last_error
                         FROM system_alert_outbox
                         WHERE alert_id = ?
-                        ORDER BY id DESC`
+                        ORDER BY id DESC
+                        LIMIT 1`
   },
   mssql: {
     enqueue: `INSERT INTO system_alert_outbox

@@ -296,7 +296,13 @@ const VARIANTS = {
       // payload column (see rpc trigger). Agent poll reads this and
       // runs collect.ps1 on the next sync. After the agent reports
       // back, status flips to 'completed' / 'failed' normally.
-      pendingPartnerDiscovers: `SELECT name, started_at FROM package_runs WHERE status = 'pending_trigger' AND started_at >= UTC_TIMESTAMP() - INTERVAL 7 DAY ORDER BY started_at`,
+      // R161.19 — 列名修正: package_runs 表里没有 `name` 列, 只有
+      //   `package_name` (见 db/migrations/*/1.0.0-baseline.sql)。原写法
+      //   `SELECT name, ...` 在真库上必然 ER_BAD_FIELD_ERROR(1054) ——
+      //   而 MySQL 侧这条是**死代码** (全仓无调用点, 只有注释引用),
+      //   所以单测和审计维度都看不见它。输出字段名保持 `name` 不变
+      //   (别名), 调用方的契约不破。
+      pendingPartnerDiscovers: `SELECT package_name AS name, started_at FROM package_runs WHERE status = 'pending_trigger' AND started_at >= UTC_TIMESTAMP() - INTERVAL 7 DAY ORDER BY started_at`,
       // R158.64 (2026-10-10) — site-to-site 复制矩阵 for daily/weekly report
       // (reports.js fetchReplicationSection 4.1 bySite 矩阵). GROUP BY
       // (source_site, dest_site) + COUNT/SUM 健康失败. 排除命名上下文以避免
@@ -321,6 +327,15 @@ const VARIANTS = {
       // dc_not_found=0), 改 JOIN 0 丢行。
       // WHERE 侧用 IS NOT NULL 收窄 (而不是 INNER JOIN) 保持"查不到站点
       // 的行不进矩阵"的原语义 —— 原版也是 source_site IS NOT NULL 过滤。
+      // R161.19 — ESCAPE 字面量按方言分家 (两个方言的 SQL 文本**不再**逐字相同):
+      //   MySQL: 字符串字面量里反斜杠是转义符 ⇒ ESCAPE 的字面量写成 1 个反斜杠
+      //     会把闭引号转义掉 ⇒ 字符串未闭合 ⇒ **语法错误 1064** (实测:
+      //     near 'META' GROUP BY ...)。必须让 SQL 文本层面是 2 个反斜杠
+      //     (MySQL 解析成 1 个 = ESCAPE 字符)。
+      //   MSSQL: 字符串字面量里反斜杠**不是**转义符 ⇒ 1 个反斜杠本来就对
+      //     ⇒ MSSQL 版保持原样 (见下方 mssql 段)。
+      //   消费点: services/reports.js:225 fetchReplicationSection (日报/周报
+      //     「站点矩阵」段) —— 这是**活代码**, 语法错误会让日报整段失败。
       bySiteMatrix: ({ periodStart }) => {
         if (!(periodStart instanceof Date) && typeof periodStart !== 'string') {
           throw new Error('replication.bySiteMatrix: periodStart must be Date or ISO string');
@@ -339,7 +354,7 @@ const VARIANTS = {
             WHERE t.collected_at >= ?
               AND ss.site_name IS NOT NULL
               AND ds.site_name IS NOT NULL
-              AND t.naming_context NOT LIKE '\\_\\_%' ESCAPE '\\'
+              AND t.naming_context NOT LIKE '\\_\\_%' ESCAPE '\\\\'
               AND t.naming_context <> 'META'
             GROUP BY ss.site_name, ds.site_name
             ORDER BY ss.site_name ASC, ds.site_name ASC`;
@@ -1035,7 +1050,7 @@ const VARIANTS = {
       purge: 'DELETE FROM audit_logs WHERE created_at < ?'
     },
     sites: {
-      listAll: 'SELECT site, region_code, is_hub FROM ad_sites',
+      listAll: 'SELECT site_name AS site, region_code, is_hub FROM ad_sites',
       listCatalog: `SELECT s.site_id AS id, s.site_name AS siteName, s.region_code AS regionCode, s.is_hub AS isHub, s.description, s.created_at AS createdAt, s.updated_at AS updatedAt, (SELECT COUNT(*) FROM ad_dcs d WHERE d.site_id = s.site_id) AS dcCount FROM ad_sites s ORDER BY s.site_name`,
       findByName: 'SELECT site_id FROM ad_sites WHERE site_name = ?',
       create: 'INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?)',
@@ -1071,15 +1086,15 @@ const VARIANTS = {
                        WHERE d.forest_domain_id IS NOT NULL AND fd.id IS NULL
                        ORDER BY d.dc_name`,
       // R158.44.1 — 一键清掉全部孤儿 FK. MySQL 多表 UPDATE 语法.
+      // R161.19 — 两个方言的 SQL 文本**不再**逐字相同 (MySQL 多表 UPDATE vs
+      //   T-SQL UPDATE … FROM), 各存各的; routes/admin.js 直接取本条,
+      //   不再自己拼方言分支。
       unbindAllOrphanDcs: `UPDATE ad_dcs d
                            LEFT JOIN ad_forest_domain fd ON fd.id = d.forest_domain_id
                            SET d.forest_domain_id = NULL
                            WHERE d.forest_domain_id IS NOT NULL AND fd.id IS NULL`,
-      // MSSQL UPDATE … FROM 语法不同 — 在 routes/admin.js 走 _pick isMssql 分支,
-      // 这里复用同一占位符字符串, caller 按 dialect 选. (实际 MSSQL: UPDATE d SET
-      // d.forest_domain_id = NULL FROM ad_dcs d LEFT JOIN ad_forest_domain fd
-      // ON fd.id = d.forest_domain_id WHERE d.forest_domain_id IS NOT NULL
-      // AND fd.id IS NULL)
+      // MSSQL 版 (UPDATE … FROM 语法) 见下方 mssql 段同名 helper —— 两个方言
+      // 的 SQL 文本**不再**逐字相同, 各存各的。
       // R158.41 (2026-10-03) — TopContextPicker dropdown DC 数据源 (主路径).
       // 直接 ad_dcs WHERE = ? 查询, 不再依赖三段选择 (assignment+domainField+pdc).
       // R158.41 (2026-10-03) — TopContextPicker 4 级 dropdown (🌲 森林 → 🏢 域 → 📍 站点 → 🖥 DC)
@@ -3908,10 +3923,20 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       //   (operator decision: outbound partner 不再需要)。
       // R156 — MSSQL mirror of pendingPartnerDiscovers. Same cadence
       // window (7 days) so an unconsumed trigger eventually rolls off.
-      pendingPartnerDiscovers: `SELECT name, started_at FROM package_runs WHERE status = 'pending_trigger' AND started_at >= DATEADD(DAY, -7, SYSUTCDATETIME()) ORDER BY started_at`,
+      // R161.19 — 列名修正: package_runs 表里没有 `name` 列, 只有
+      //   `package_name` (见 db/migrations/mssql/1.0.0-baseline.sql:1888)。
+      //   原写法 `SELECT name, ...` 在真库上必然报 Msg 207
+      //   (Invalid column name 'name')。输出字段名保持 `name` 不变 (别名),
+      //   调用方的契约不破。
+      pendingPartnerDiscovers: `SELECT package_name AS name, started_at FROM package_runs WHERE status = 'pending_trigger' AND started_at >= DATEADD(DAY, -7, SYSUTCDATETIME()) ORDER BY started_at`,
       // R158.64 (2026-10-10) — MSSQL mirror of MySQL replication.bySiteMatrix
       // (line 176). 同 shape, 同 GROUP BY (source_site, dest_site) + SUM
-      // CASE. 排除 '\_\_%' 用 ESCAPE '\\' (MSSQL LIKE 转义反斜杠同 MySQL).
+      // CASE. 排除 '\_\_%' 用 ESCAPE — 本行 SQL 文本里 ESCAPE 的字面量是
+      //   **1 个反斜杠** (T-SQL 字符串字面量里反斜杠**不是**转义符)。
+      //   R161.19 — 与 MySQL 版**刻意不同**: MySQL 字符串字面量里反斜杠**是**
+      //   转义符 ⇒ 单反斜杠会把闭引号转义掉 ⇒ 字符串未闭合 ⇒ 1064 语法
+      //   错误 (实测报 near 'META' GROUP BY ...) ⇒ MySQL 版在 SQL 文本层面
+      //   必须是 **2 个反斜杠** (见上方 mysql 段的同名 helper)。
       // function-form: periodStart 由 caller 传 (reports.js periodStart =
       // now - 24h), 不是 SYSUTCDATETIME 派生.
       // R158.X.116.p (2026-10-23) — 站点名改从 ad_dcs→ad_sites catalog JOIN,
@@ -4702,7 +4727,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       purge: 'DELETE FROM audit_logs WHERE created_at < ?'
     },
     sites: {
-      listAll: 'SELECT site, region_code, is_hub FROM ad_sites',
+      listAll: 'SELECT site_name AS site, region_code, is_hub FROM ad_sites',
       listCatalog: `SELECT s.site_id AS id, s.site_name AS siteName, s.region_code AS regionCode, s.is_hub AS isHub, s.description, s.created_at AS createdAt, s.updated_at AS updatedAt, (SELECT COUNT(*) FROM ad_dcs d WHERE d.site_id = s.site_id) AS dcCount FROM ad_sites s ORDER BY s.site_name`,
       findByName: 'SELECT site_id FROM ad_sites WHERE site_name = ?',
       create: 'INSERT INTO ad_sites (site_name, region_code, is_hub, description) VALUES (?, ?, ?, ?)',
@@ -4737,16 +4762,17 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                        LEFT JOIN ad_forest_domain fd ON fd.id = d.forest_domain_id
                        WHERE d.forest_domain_id IS NOT NULL AND fd.id IS NULL
                        ORDER BY d.dc_name`,
-      // R158.44.1 — 一键清掉全部孤儿 FK. MySQL 多表 UPDATE 语法.
-      unbindAllOrphanDcs: `UPDATE ad_dcs d
+      // R161.19 — 之前这里**误放了 MySQL 的多表 UPDATE 语法**, 在 MSSQL 上必然
+      //   报 Msg 156 (Incorrect syntax near the keyword 'LEFT')。现在改成
+      //   T-SQL 的 UPDATE <alias> SET … FROM <table> <alias> LEFT JOIN … 形式
+      //   (已用 sqlcmd 实测: 0 语法错误)。routes/admin.js 改为直接用本条
+      // R158.44.1 — 一键清掉全部孤儿 FK. MSSQL 的 UPDATE … FROM 语法.
+      unbindAllOrphanDcs: `UPDATE d SET d.forest_domain_id = NULL
+                           FROM ad_dcs d
                            LEFT JOIN ad_forest_domain fd ON fd.id = d.forest_domain_id
-                           SET d.forest_domain_id = NULL
                            WHERE d.forest_domain_id IS NOT NULL AND fd.id IS NULL`,
-      // MSSQL UPDATE … FROM 语法不同 — 在 routes/admin.js 走 _pick isMssql 分支,
-      // 这里复用同一占位符字符串, caller 按 dialect 选. (实际 MSSQL: UPDATE d SET
-      // d.forest_domain_id = NULL FROM ad_dcs d LEFT JOIN ad_forest_domain fd
-      // ON fd.id = d.forest_domain_id WHERE d.forest_domain_id IS NOT NULL
-      // AND fd.id IS NULL)
+      // MySQL 版 (多表 UPDATE 语法) 见上方 mysql 段同名 helper —— 两个方言的
+      // SQL 文本**不再**逐字相同, 各存各的。
       // R158.41 (2026-10-03) — TopContextPicker dropdown DC 数据源 (主路径).
       // 直接 ad_dcs WHERE = ? 查询, 不再依赖三段选择 (assignment+domainField+pdc).
       // R158.41 (2026-10-03) — TopContextPicker 4 级 dropdown (🌲 森林 → 🏢 域 → 📍 站点 → 🖥 DC)

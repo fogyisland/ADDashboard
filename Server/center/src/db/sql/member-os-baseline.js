@@ -106,6 +106,92 @@ function upsertMetricsBatch({ rows }) {
   };
 }
 
+// ── MSSQL batch upsert ──────────────────────────────────────────────────
+// ★ R161.20 (2026-10-28) — 旧版 mssql 分支直接复用上面的 MySQL builder
+//   (`INSERT … ON DUPLICATE KEY UPDATE`)。MSSQL 没有 ON DUPLICATE KEY ⇒
+//   一旦有人调用 `db.sql.memberOsBaseline.mssql.upsertMetricsBatch()` 就是
+//   100% 语法错 (Msg 156 / 10713)。R161.20 全量扫描把它抓出来了。
+//   ⇒ MSSQL 必须走 MERGE (跟单行 UPSERT_METRICS_MSSQL 同一个键形状)。
+//
+// ★ 源表**不能用 row constructor** `USING (VALUES (?, ?, …))`:
+//   tedious 在 row constructor 里遇到 NULL 的 NVARCHAR 参数会抛
+//   "Validation failed for parameter 'pN'. Invalid string." ⇒ 整行静默丢失
+//   (见 db/sql.js:4566 upsertDc 注释里的实测结论)。
+//   本仓库已验证可行的形状是 `USING (SELECT CAST(? AS T) AS c, …
+//   UNION ALL SELECT …)` —— 每个参数各自带显式 CAST, tedious 不再自己推断。
+//
+// ★ MERGE 的固有约束: 同一个源里出现**重复的 ON 键**会让 SQL Server 报
+//   Msg 8672 (MERGE attempted to UPDATE or DELETE the same row more than
+//   once)。批量 upsert 的调用方必须保证 (hostname, collected_at) 在批内唯一
+//   —— MySQL 侧的 ON DUPLICATE KEY 对重复键是幂等覆盖, 行为不完全等价。
+const METRICS_BATCH_COLUMNS = [
+  'collected_at', 'agent_id', 'hostname',
+  'cpu_pct', 'memory_pct', 'c_used_pct', 'disk_free_bytes', 'services_count',
+  'disk_free', 'disk_total', 'disks', 'services', 'events',
+  'bios_info', 'cpu_brand', 'mem_total_bytes',
+  'system_info', 'network_info', 'memory_modules',
+  'motherboard', 'cpu', 'ips'
+];
+
+// CAST 目标类型跟 UPSERT_METRICS_MSSQL (L109-168) 逐列对齐 —— 改这里必须
+// 同步改单行版, 否则单行/批量两条路径的类型会漂移。
+const METRICS_BATCH_CASTS = [
+  'DATETIME2', 'VARCHAR(64)', 'VARCHAR(128)',
+  'FLOAT', 'FLOAT', 'FLOAT', 'BIGINT', 'INT',
+  'NVARCHAR(MAX)', 'NVARCHAR(MAX)', 'NVARCHAR(MAX)', 'NVARCHAR(MAX)', 'NVARCHAR(MAX)',
+  'NVARCHAR(MAX)', 'VARCHAR(128)', 'BIGINT',
+  'NVARCHAR(MAX)', 'NVARCHAR(MAX)', 'NVARCHAR(MAX)',
+  'NVARCHAR(MAX)', 'NVARCHAR(MAX)', 'NVARCHAR(MAX)'
+];
+
+// row 对象字段顺序跟 METRICS_BATCH_COLUMNS 一一对应 (跟单行 upsertMetrics
+// 的解构顺序、MySQL batch builder 的 params.push 顺序三处必须同步)。
+function metricsBatchRowValues(r) {
+  return [
+    r.collectedAt, r.agentId, r.hostname,
+    r.cpuPct, r.memoryPct, r.cUsedPct, r.diskFreeBytes, r.servicesCount,
+    r.diskFree, r.diskTotal, r.disks, r.services, r.events,
+    r.biosInfo, r.cpuBrand, r.memTotalBytes,
+    r.systemInfo, r.networkInfo, r.memoryModules,
+    r.motherboard, r.cpu, r.ips
+  ];
+}
+
+function upsertMetricsBatchMssql({ rows }) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { sql: '', params: [] };
+  }
+  const selectList = METRICS_BATCH_COLUMNS
+    .map((col, i) => `CAST(? AS ${METRICS_BATCH_CASTS[i]}) AS ${col}`)
+    .join(', ');
+  const params = [];
+  for (const r of rows) params.push(...metricsBatchRowValues(r));
+  const source = rows
+    .map(() => `      SELECT ${selectList}`)
+    .join('\n      UNION ALL\n');
+  const updateCols = [
+    'cpu_pct', 'memory_pct', 'c_used_pct', 'disk_free_bytes', 'services_count',
+    'disk_free', 'disk_total', 'disks', 'services', 'events',
+    'bios_info', 'cpu_brand', 'mem_total_bytes',
+    'system_info', 'network_info', 'memory_modules',
+    'motherboard', 'cpu', 'ips'
+  ];
+  return {
+    sql: `MERGE INTO ad_member_os_baseline AS t
+  USING (
+${source}
+  ) AS s
+  ON t.hostname = s.hostname AND t.collected_at = s.collected_at
+  WHEN MATCHED THEN UPDATE SET
+    ${updateCols.map((c) => `${c} = s.${c}`).join(',\n    ')}
+  WHEN NOT MATCHED THEN INSERT
+    (${METRICS_BATCH_COLUMNS.join(', ')})
+  VALUES
+    (${METRICS_BATCH_COLUMNS.map((c) => `s.${c}`).join(', ')});`,
+    params
+  };
+}
+
 const UPSERT_METRICS_MSSQL = `MERGE INTO ad_member_os_baseline AS t
   USING (SELECT
     CAST(? AS DATETIME2)     AS collected_at,
@@ -527,7 +613,7 @@ export const memberOsBaseline = {
         systemInfo, networkInfo, memoryModules,
         motherboard, cpu, ips]
     }),
-    upsertMetricsBatch: upsertMetricsBatch, // batch 同样适用 mssql via MERGE VALUES — v1 留 single-row 路径
+    upsertMetricsBatch: upsertMetricsBatchMssql, // ★ R161.20 — 必须 MSSQL MERGE, 不能复用 MySQL 的 ON DUPLICATE KEY
     upsertLatest: ({ collectedAt, agentId, hostname,
       cpuPct, memoryPct, cUsedPct, diskFreeBytes, servicesCount,
       diskFree, diskTotal, disks, services, events,

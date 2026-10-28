@@ -1272,18 +1272,14 @@ export function adminRouter({ config, logger, db }) {
 
   // R158.44.1 — 一键把全部孤儿 FK 清成 NULL (forest_domain_id = NULL).
   // 安全: 仍 WHERE d.forest_domain_id IS NOT NULL AND fd.id IS NULL, 不会误清正常绑定.
-  // MSSQL 与 MySQL UPDATE 语法不同, 走 isMssql 分支.
+  // R161.19 — MySQL 多表 UPDATE 与 T-SQL UPDATE … FROM 语法**不同**,
+  //   两个方言各自的 SQL 已经分别存进 sql 树 (src/db/sql.js 的
+  //   dcs.unbindAllOrphanDcs), 这里直接取当前 dialect 那一条 ——
+  //   不再在路由里手写方言分支 (手写分支容易与 sql 树漂移)。
   r.post('/api/admin/dcs-catalog/orphan/unbind-all', authAdObjects, async (req, res) => {
     try {
       const db = getDb();
-      const isMssql = db.dialect === 'mssql';
-      const sqlText = isMssql
-        ? `UPDATE d SET d.forest_domain_id = NULL
-             FROM ad_dcs d
-             LEFT JOIN ad_forest_domain fd ON fd.id = d.forest_domain_id
-             WHERE d.forest_domain_id IS NOT NULL AND fd.id IS NULL`
-        : db.sql.dcs.unbindAllOrphanDcs;
-      const { affectedRows } = await db.execute(sqlText, []);
+      const { affectedRows } = await db.execute(db.sql.dcs.unbindAllOrphanDcs, []);
       await writeAudit({
         userId: req.user?.sub,
         action: 'dcs_catalog_unbind_all_orphan',
@@ -1931,7 +1927,7 @@ export function adminRouter({ config, logger, db }) {
       // audit row).
       const { rows } = await db.query(db.sql.serverGroups.listHostsForPackage, [packageName]);
       const affected = rows.map(r => r.hostname);
-      if (packageName === BUILTIN_AD_OS_BASELINE) {
+      if (isBuiltinAdOsBaseline(packageName)) {
         for (const hostname of affected) {
           await writeAudit({
             userId: req.user?.sub ?? null,
@@ -4328,7 +4324,27 @@ function redactPasswordsForAudit(value) {
 // Built-in package name constant. Mirrors member-servers.js — disabling it
 // on a per-host or per-group basis is allowed but audited so operators can
 // see who pulled the safety net.
-const BUILTIN_AD_OS_BASELINE = 'ad-os-baseline';
+//
+// R161.19 (2026-10-28) — 名字口径修正。内置 OS 基线包在 DB 里的真名是
+//   **下划线** `ad_os_baseline` (package_scripts.name = 包目录名, 见
+//   builtin-packages.js 的 BUILTIN_PACKAGES 与 script-service.installScript;
+//   真库实测: package_scripts.name = 'ad_os_baseline')。
+//   常量原来写成**连字符** 'ad-os-baseline' ⇒ 前端把 DB 里的
+//   p.package_name (ad_os_baseline) 原样回传 (MemberServerDetailView.vue:202)
+//   ⇒ 比较恒 false ⇒ **disable_builtin_ad_os_baseline 审计行永远不写**
+//   (操作员卸载内置 OS 基线包时没有任何审计痕迹)。
+//   现在改成下划线真名, 并**兼容**历史连字符写法 (旧前端/旧脚本可能还在用)。
+const BUILTIN_AD_OS_BASELINE = 'ad_os_baseline';
+const BUILTIN_AD_OS_BASELINE_ALIASES = new Set([BUILTIN_AD_OS_BASELINE, 'ad-os-baseline']);
+
+/**
+ * 判断某个包名是不是"内置 OS 基线包" (兼容下划线真名 + 历史连字符写法)。
+ * @param {unknown} packageName 包名 (来自 URL 参数或 DB 行)
+ * @returns {boolean}
+ */
+function isBuiltinAdOsBaseline(packageName) {
+  return BUILTIN_AD_OS_BASELINE_ALIASES.has(String(packageName ?? '').trim().toLowerCase());
+}
 
 function formatTsForFilename(d) {
   const pad = n => String(n).padStart(2, '0');

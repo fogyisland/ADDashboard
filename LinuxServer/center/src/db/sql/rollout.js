@@ -10,10 +10,19 @@
 export const rollout = {
   mysql: {
     // INSERT — params: [target_version, from_version|null, strategy, canary_ratio|null, status, created_by, notes|null]
+    //
+    // R161.19 — 原来这里尾部还挂着 `; SELECT LAST_INSERT_ID() AS id;`。
+    //   ★ 这是**活代码的 500**: mysql 驱动连的是 multipleStatements:false
+    //   (drivers/mysql.js:165) ⇒ 一条 SQL 字符串里出现两条语句 ⇒
+    //   ER_PARSE_ERROR (1064) ⇒ POST /api/admin/rollout 与
+    //   POST /api/admin/rollout/:id/rollback **必然 500**。
+    //   ⇒ 删掉尾部那条 SELECT, 改用驱动**原生** insertId:
+    //   mysql.js 的 execute() 在有绑定参数时走 pool.execute() (预处理协议),
+    //   OkPacket 自带 insertId = 新行 id ⇒ routes/rollout.js:116 与 :280
+    //   都是 `insertedRes?.insertId ?? …` 优先取 insertId ⇒ 契约不变。
     insert: `INSERT INTO ad_agent_upgrade_rollout
               (target_version, from_version, strategy, canary_ratio, status, created_by, notes)
-              VALUES (?, ?, ?, ?, ?, ?, ?);
-              SELECT LAST_INSERT_ID() AS id;`,
+              VALUES (?, ?, ?, ?, ?, ?, ?)`,
     // getById — params: [id]
     getById: `SELECT id, target_version, from_version, strategy, canary_ratio, status,
                      created_by, created_at, activated_at, completed_at, aborted_at, notes

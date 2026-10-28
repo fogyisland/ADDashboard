@@ -89,10 +89,15 @@ const deleteOlderThanMysql = `DELETE FROM daily_reports
 const deleteOlderThanMssql = `DELETE TOP (5000) FROM daily_reports
                               WHERE period_end < ?`;
 
-const getByKindMysql = `SELECT TOP 1 id, kind, to_addrs, cc_addrs, enabled, created_at, created_by
+// R161.19 (2026-10-28) — MySQL 侧**不能**用 `SELECT TOP 1`: TOP 是 T-SQL 语法,
+//   MySQL 报 1064 ER_PARSE_ERROR ⇒ 查订阅的接口 100% 500。
+//   MySQL 的等价写法 = ORDER BY ... LIMIT 1 (LIMIT 必须在 ORDER BY 之后)。
+//   MSSQL 侧保持 `SELECT TOP 1` (见下方 getByKindMssql), 两边语义等价。
+const getByKindMysql = `SELECT id, kind, to_addrs, cc_addrs, enabled, created_at, created_by
                         FROM report_subscriptions
                         WHERE kind = ? AND enabled = 1
-                        ORDER BY id ASC`;
+                        ORDER BY id ASC
+                        LIMIT 1`;
 const getByKindMssql = `SELECT TOP 1 id, kind, to_addrs, cc_addrs, enabled, created_at, created_by
                         FROM report_subscriptions
                         WHERE kind = CAST(? AS VARCHAR(16)) AND enabled = 1

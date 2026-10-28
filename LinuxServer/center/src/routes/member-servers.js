@@ -64,7 +64,24 @@ import * as memberServerPortsService from '../services/member-server-ports.js';
 // Built-in package name. Disabling it on a per-host basis is allowed but
 // audited so operators can see who pulled the safety net. Lives here (and
 // only here) — Task 7+ refer to it via this constant.
-const BUILTIN_AD_OS_BASELINE = 'ad-os-baseline';
+//
+// R161.19 (2026-10-28) — 名字口径修正。内置 OS 基线包在 DB 里的真名是
+//   **下划线** `ad_os_baseline` (package_scripts.name = 包目录名; 真库实测
+//   package_scripts.name = 'ad_os_baseline')。常量原来写成**连字符**
+//   'ad-os-baseline' ⇒ 前端把 DB 里的 p.package_name (ad_os_baseline)
+//   原样回传 ⇒ 比较恒 false ⇒ **disable_builtin_ad_os_baseline 审计行
+//   永远不写**。现在改成下划线真名, 并兼容历史连字符写法。
+const BUILTIN_AD_OS_BASELINE = 'ad_os_baseline';
+const BUILTIN_AD_OS_BASELINE_ALIASES = new Set([BUILTIN_AD_OS_BASELINE, 'ad-os-baseline']);
+
+/**
+ * 判断某个包名是不是"内置 OS 基线包" (兼容下划线真名 + 历史连字符写法)。
+ * @param {unknown} packageName 包名 (来自 URL 参数或 DB 行)
+ * @returns {boolean}
+ */
+function isBuiltinAdOsBaseline(packageName) {
+  return BUILTIN_AD_OS_BASELINE_ALIASES.has(String(packageName ?? '').trim().toLowerCase());
+}
 
 // R158.112 (2026-10-16) — self-register 写 audit 守卫开关. 操作员 directive
 //   "和 ad Server 一样即可。同一名字写一次就可以了". AD agent 走 heartbeat
@@ -472,7 +489,7 @@ export function memberRouter({ config, logger, db }) {
   r.delete('/api/admin/member-servers/:hostname/packages/:package_name', ...auth, async (req, res) => {
     try {
       const db = getDb();
-      if (req.params.package_name === BUILTIN_AD_OS_BASELINE) {
+      if (isBuiltinAdOsBaseline(req.params.package_name)) {
         await writeAudit({
           userId: req.user?.sub ?? null,
           action: 'disable_builtin_ad_os_baseline',

@@ -106,8 +106,14 @@ export function rolloutRouter({ config, logger, db }) {
         'active', createdBy, notes
       ]);
       // 两个 driver 都把 id 放在 `insertId` 上 (mssql 走 SCOPE_IDENTITY 追加的
-      // `SELECT ... AS id`, mysql 走 LAST_INSERT_ID) —— 见 mssql.js:263-274 /
-      // mysql.js:126. 旧代码用 Array.isArray 判 inserted 是不是数组, 对
+      // `SELECT ... AS id`, mysql 走驱动的**原生** insertId —— 有绑定参数时
+      // mysql.js 的 execute() 走 pool.execute() 预处理协议, OkPacket 自带
+      // insertId) —— 见 mssql.js:263-274 / mysql.js:326-338。
+      // R161.19 — mysql 侧 SQL 里原来还挂着 `; SELECT LAST_INSERT_ID() AS id;`,
+      //   而连接是 multipleStatements:false ⇒ 两条语句 = ER_PARSE_ERROR(1064)
+      //   ⇒ 这个 POST **必然 500**。已把尾部那条 SELECT 从 sql/rollout.js
+      //   删掉, 改走原生 insertId。
+      // 旧代码用 Array.isArray 判 inserted 是不是数组, 对
       // `{rows,affectedRows,insertId}` 恒 false → insertedId 恒 null →
       // **返回 500 但 INSERT 已提交**,
       // 操作员重试就堆重复行. 兼容 OUTPUT inserted 的双层 recordset 形态。
