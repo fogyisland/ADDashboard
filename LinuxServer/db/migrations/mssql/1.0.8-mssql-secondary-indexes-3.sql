@@ -394,7 +394,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [idx_dr_period] ON [daily_reports] ([kind], [status], [period_end] DESC);
 END;
 
--- metric_counter.ix_counter_metric_ts  [[metric_id], [ts] DESC]  键 392 字节
+-- metric_counter.ix_counter_metric_ts  [[metric_id], [ts] DESC]  键 394 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -419,7 +419,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [ix_counter_metric_ts] ON [metric_counter] ([metric_id], [ts] DESC);
 END;
 
--- metric_gauge.ix_gauge_metric_ts  [[metric_id], [ts] DESC]  键 392 字节
+-- metric_gauge.ix_gauge_metric_ts  [[metric_id], [ts] DESC]  键 394 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -444,7 +444,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [ix_gauge_metric_ts] ON [metric_gauge] ([metric_id], [ts] DESC);
 END;
 
--- metric_status.ix_status_metric_ts  [[metric_id], [ts] DESC]  键 392 字节
+-- metric_status.ix_status_metric_ts  [[metric_id], [ts] DESC]  键 394 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -469,7 +469,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [ix_status_metric_ts] ON [metric_status] ([metric_id], [ts] DESC);
 END;
 
--- metric_timeseries.ix_ts_agent_metric_ts  [[agent_id], [metric_id], [ts] DESC]  键 520 字节
+-- metric_timeseries.ix_ts_agent_metric_ts  [[agent_id], [metric_id], [ts] DESC]  键 522 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -519,7 +519,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [ix_package_policies_enabled] ON [package_policies] ([enabled]);
 END;
 
--- package_runs.ix_run_agent_pkg  [[agent_id], [package_name], [started_at] DESC]  键 392 字节
+-- package_runs.ix_run_agent_pkg  [[agent_id], [package_name], [started_at] DESC]  键 394 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -545,7 +545,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [ix_run_agent_pkg] ON [package_runs] ([agent_id], [package_name], [started_at] DESC);
 END;
 
--- package_runs.IX_package_runs_status_started_at  [[status], [started_at] DESC]  键 72 字节
+-- package_runs.IX_package_runs_status_started_at  [[status], [started_at] DESC]  键 74 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -570,7 +570,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [IX_package_runs_status_started_at] ON [package_runs] ([status], [started_at] DESC) WHERE ([status]='pending_trigger');
 END;
 
--- package_runs.IX_pr_started_covering  [[package_name], [exit_code], [status], [agent_id], [started_at]]  键 460 字节
+-- package_runs.IX_pr_started_covering  [[package_name], [exit_code], [status], [agent_id], [started_at]]  键 462 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i
@@ -769,7 +769,7 @@ BEGIN
   CREATE NONCLUSTERED INDEX [ix_schema_migrations_status] ON [schema_migrations] ([status]);
 END;
 
--- sys_config_audit.idx_changed_at  [[changed_at] DESC]  键 8 字节
+-- sys_config_audit.idx_changed_at  [[changed_at] DESC]  键 10 字节
 IF NOT EXISTS (
   SELECT 1
   FROM sys.indexes i

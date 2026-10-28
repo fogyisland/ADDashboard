@@ -102,6 +102,18 @@ const DIMENSIONS = [
   //   与 dimension 15 (dialect-compat) 的分工: 15 管"对方方言的语法",
   //   17 管"同一方言的不同版本" —— MySQL 5.7 装不下 MySQL 8.0 的语法。
   { id: 'mysql57-compat',           file: 'center/tests/mysql57-compat.test.js',                task: 17 },
+  // R161.19 — 新维度: 索引键长度守卫 (check-index-key-length.mjs) 的负向测试。
+  //   2026-10-28 审计 MSSQL 收敛迁移 (1.0.4~1.0.9, 127 个二级索引) 时发现守卫有三个盲区:
+  //     ① 编号迁移从未被扫过 (只看两份 1.0.0-baseline.sql);
+  //     ② MySQL 基线的索引 DDL 藏在 `SET @s = (SELECT IF(..., 'CREATE INDEX ...'))`
+  //        的字符串载荷里 ⇒ 从未被扫过 (基线索引数 181 → 228);
+  //     ③ MSSQL 的键长模型整张表都是错的 (拿 MySQL 的 DATETIME=5 去算 SQL Server 的
+  //        DATETIME, 实际是 8) ⇒ 正好卡在 900/1700 上限的索引会被**漏报**。
+  //   守卫的字节模型现在是在 SQL Server 2025 RTM 上**实测**出来的 (聚集 900 / 非聚集 1700;
+  //   聚集键不追加进非聚集索引的键; 无长度前缀字节; 无 NULL 位图字节),
+  //   并用迁移文件里作者自声明的 127 条「键 N 字节」做交叉验证 ⇒ 127/127 一致。
+  //   同样放 center/tests/ 顶层 (package.json 的 test glob 不含 tests/audit/, 且不能改它)。
+  { id: 'index-key-length',         file: 'center/tests/index-key-length.test.js',              task: 18 },
 ];
 
 function runChild(absPath) {
