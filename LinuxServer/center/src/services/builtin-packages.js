@@ -109,38 +109,22 @@ function hashContent(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-// R158.86.5 (2026-10-12) — package_policies.scope 拆细白名单. 18 包
-//   (DC 16 + member 2). 不用 18 个 manifest.json agent.type 推断 (ad_os_baseline
+// R158.86.5 (2026-10-12) — package_policies.scope 拆细白名单. 18 条
+//   (DC 15 + member 3). 不用 18 个 manifest.json agent.type 推断 (ad_os_baseline
 //   1.0.7 manifest.agent.type='non-ad' 错例, R158.56c 时代遗留), 中心端
 //   invariant 强. 18 包全列出来 operator 一眼看, 比改 manifest 稳.
-const SCOPE_OVERRIDE = {
-  // DC-only 16 包 (跟 ad_member_* member 公共表 mode 平行但独立)
-  'ad_os_baseline':              'agent_type:ad',
-  'ad_replication_status_probe': 'agent_type:ad',
-  'ad_account_change':           'agent_type:ad',
-  'ad_dc_overview':              'agent_type:ad',
-  'ad_dc_probe_inbound':         'agent_type:ad',
-  // R158.X.116.d (2026-10-22) — 删 'ad_dc_probe_outbound' 白名单残留。
-  //   该包已从 BUILTIN_PACKAGES 移除 (见下方 :356 的 R156.5 说明), 本条目
-  //   对它永不生效 (SCOPE_OVERRIDE 只被已注册包查找)。
-  'ad_eventlog_collector':       'agent_type:ad',
-  'ad_failed_logon_collector':   'agent_type:ad',
-  'ad_lockout_list':             'agent_type:ad',
-  'ad_lockout_summary':          'agent_type:ad',
-  'ad_admin_members':            'agent_type:ad',
-  'ad_partner_inbound_discover': 'agent_type:ad',
-  'ad_partner_ports_probe':      'agent_type:ad',
-  'ad_ad_account_quickfix':      'agent_type:ad',
-  'ad_ad_users_write':           'agent_type:ad',
-  'ad_ad_groups_write':          'agent_type:ad',
-  // member-only 3 包 (公共表 mode, FK ad_member_servers 防 AD host 误写)
-  'member_os_baseline_collector': 'agent_type:non-ad',
-  'member_eventlog_collector':    'agent_type:non-ad',
-  // R158.100 (2026-10-13) - member-server 本地管理员组成员 (BUILTIN\Administrators +
-  //   Remote Desktop Users + Power Users). Get-LocalGroupMember (0 AD RSAT).
-  //   24h cadence, MERGE dedup on (hostname, group_name, member_sid).
-  'member_admin_groups':          'agent_type:non-ad'
-};
+//
+// R161.21 (2026-10-29) — 白名单本体搬到 **services/package-scope.js**。
+//   原因: 这张表是「哪些包该给成员代理跑」的**唯一事实源**, 而回归网
+//   tests/agent-packages-scope.test.js 必须能独立 import 它 —— 本文件会
+//   连带 import script-service → db facade → mysql2/mssql (本机
+//   center/node_modules 是空的), 而 package-scope.js 是零依赖的。
+//   口径同步修正: 原注释写 "DC 16 + member 2" 是 R158.100 加
+//   member_admin_groups **之前**的口径 (15 + 3 ≠ 16 + 2 ⇒ 自相矛盾)。
+import { SCOPE_OVERRIDE } from './package-scope.js';
+
+// 兼容旧引用路径 (本文件原先直接 export SCOPE_OVERRIDE)。
+export { SCOPE_OVERRIDE };
 
 export const BUILTIN_PACKAGES = [
   // R136 — all 7 collect.ps1 files now set

@@ -56,10 +56,13 @@ import { dispatchAdCommand } from './src/dispatchers/ad-admin.js';
 //   ?agentType=non-ad path + base64 script materialization. The legacy
 //   non-ad-scheduler.js "v1 has no materialization path" stub
 //   (runNonAdRuntime.runPackage at line 1127-1135 commented-out future
-//   task) is no longer reached from agent.js. The non-ad-scheduler.js
-//   file itself is left in the source tree for D:\dashboard\noadagent\
-//   fork compatibility (R158.75 + R158.86.6 — orphan source never
-//   deployed, but kept for diff parity).
+//   task) is no longer reached from agent.js.
+// R161.23 (2026-10-29) — 那份"为了和 noadagent fork 保持 diff 一致而留着"的
+//   孤儿文件**终于删掉了**: src/non-ad-scheduler.js + src/agent-filters.js
+//   (它俩互相引用, 没有任何人引用它们; AD 血统用 PackageManager,
+//   noad 血统有自己的 src/non-ad-scheduler.js)。留着它们的后果是:
+//   AD/DC 服务器上会部署一份从不执行的成员血统调度器 —— 现场排查
+//   "包为什么没跑" 时它就是最好的误导项。源树与绿色包两侧同时删除。
 // R158.50.7f (2026-10-07) — in-process dashboard. dashboard/server.js
 // exports startDashboard({ config, installRoot, agentDir, logger,
 // bindAddress }) and only binds an HTTP listener when that function is

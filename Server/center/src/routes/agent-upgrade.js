@@ -21,13 +21,36 @@
 // upgradeAvailable flag from the heartbeat response first).
 
 import { Router } from 'express';
+// R161.22 (2026-10-29) — 纯逻辑外移到 services/agent-upgrade-envelope.js,
+//   因为本模块 import 了 express ⇒ 本机 center/node_modules 是空的 ⇒
+//   离线回归网没法 import 它。纯函数搬出去 ⇒ 可断言。
+import {
+  LINEAGE_AD, LINEAGE_NON_AD, normalizeLineage,
+  selectUpgradeSource, computeUpgradeEnvelopeFrom
+} from '../services/agent-upgrade-envelope.js';
 
 // Module-level cache. Closed over by the route handler. Set once at boot
 // from server.js (await getAgentUpgradeSource(join(repoRoot, 'agent'), logger))
 // and read-only after that — the operator must `nssm restart center` to pick
 // up new agent code. Intentionally NOT exported; the boot code holds the
 // only setter and the route handler holds the only reader.
+//
+// R161.22 — 这是 **AD 血统** 的升级源 (34 台 DC 跑的那棵树)。
 let _agentUpgradeSource = null;
+
+// R161.22 (2026-10-29) — **non-AD 血统** 的升级源 (<repoRoot>/noadagent)。
+//
+//   为什么要有第二棵树: R158.48 建自动升级时只加载了
+//   join(repoRoot, 'agent') (AD 血统), 于是 non-AD 代理也被告知
+//   「有 0.1.9 可升」, 而 /api/agent/upgrade 吐的正是 AD 包 ⇒
+//   成员代理会把 **AD 代码** 原子覆盖到自己的安装目录 ⇒ 成员服务器
+//   变成 DC 代理。本轮把两棵树分开: AD 代理照旧拿 AD 包, non-AD
+//   代理只拿 noad 包。
+//
+//   两棵树的源都不可用时 (LinuxServer 镜像里两棵都没有), 对应血统
+//   的代理拿到的信封是 {upgradeAvailable:false, upgradeVersion:null}
+//   ⇒ 代理端早退。**绝不**回退到另一棵树的源。
+let _noadAgentUpgradeSource = null;
 
 // Setter — called once from server.js:boot-fingerprint. Idempotent: re-set
 // overwrites previous (only used for tests). Never throws; logs to provided
@@ -48,6 +71,31 @@ export function setAgentUpgradeSource(source, logger = null) {
       event: 'agent.upgrade.source.unavailable'
     }, 'agent upgrade source unavailable; upgradeAvailable will be false for all heartbeats');
   }
+}
+
+// R161.22 — non-AD 血统的升级源 setter / getter。跟 AD 那对 1:1 平行。
+export function setNoadAgentUpgradeSource(source, logger = null) {
+  _noadAgentUpgradeSource = source;
+  if (source) {
+    logger?.info?.({
+      event: 'agent.upgrade.source.loaded',
+      lineage: LINEAGE_NON_AD,
+      version: source.version,
+      fileCount: source.fileCount,
+      totalBytes: source.totalBytes,
+      buildTime: source.buildTime,
+      gitCommit: source.gitCommit
+    }, 'non-ad agent upgrade source cached at boot');
+  } else {
+    logger?.warn?.({
+      event: 'agent.upgrade.source.unavailable',
+      lineage: LINEAGE_NON_AD
+    }, 'non-ad agent upgrade source unavailable; upgradeAvailable will be false for non-ad heartbeats');
+  }
+}
+
+export function getNoadAgentUpgradeSourceSnapshot() {
+  return _noadAgentUpgradeSource;
 }
 
 // Reader — used by the heartbeat envelope builder inside agent.js route
@@ -75,61 +123,23 @@ export function getAgentUpgradeSourceSnapshot() {
 //   agent's applyUpgradeDelivery line 143 short-circuits on
 //   upgradeVersion.length === 0 — same shape as the existing 'unavailable'
 //   path. 0 改 agent 端.
-export function computeUpgradeEnvelope(agentVersion, rolloutGate = null) {
-  if (!_agentUpgradeSource || !_agentUpgradeSource.available) {
-    return { upgradeAvailable: false, upgradeVersion: null, rolloutStrategy: 'unavailable' };
-  }
-  const target = String(_agentUpgradeSource.version || '');
-  const reported = String(agentVersion || '');
-  const baseAvailable = target !== reported && target.length > 0;
-
-  const gate = rolloutGate && typeof rolloutGate === 'object' ? rolloutGate : { strategy: 'full', canaryRatio: 100 };
-  const gateStrategy = String(gate.strategy || 'full');
-  const canaryRatio = Number.isFinite(Number(gate.canaryRatio)) ? Math.max(0, Math.min(100, Number(gate.canaryRatio))) : 100;
-
-  let strategy;
-  let upgradeAvailable = baseAvailable;
-  let upgradeVersion = baseAvailable ? target : null;
-  if (!baseAvailable) {
-    strategy = 'full';  // same-version → no rollout to gate, fall through
-  } else if (gateStrategy === 'paused') {
-    strategy = 'paused';
-    upgradeAvailable = false;
-    upgradeVersion = null;  // R158.48 line 143 short-circuit shape
-  } else if (gateStrategy === 'canary') {
-    strategy = 'canary';
-    const bucket = canaryBucket(reported, target, canaryRatio);
-    if (!bucket) {
-      upgradeAvailable = false;
-      upgradeVersion = null;  // R158.48 line 143 short-circuit shape
-    }
-  } else {
-    // 'full' or anything unknown → conservative default is 'full' (let the
-    // upgrade through). Operator can flip the feature flag to 'paused' to
-    // 熔断 instantly.
-    strategy = 'full';
-  }
-
-  return { upgradeAvailable, upgradeVersion, rolloutStrategy: strategy };
-}
-
-// canaryBucket — pure helper. Stable hash of (reported+target) mod 100 < ratio
-//   gives a deterministic per-host canary gate. R158.88.A 0 改 agent 端;
-//   the agent only reads upgradeAvailable + upgradeVersion (the legacy 2-field
-//   shape), the centre decides whether to gate. 0 状态 = always fall through.
-function canaryBucket(reported, target, ratio) {
-  if (ratio >= 100) return true;
-  if (ratio <= 0) return false;
-  // FNV-1a 32-bit on `${reported}|${target}` — same input always lands in
-  // the same bucket across calls (no Date.now / no Math.random). Operators
-  // raising the ratio deterministically expands the canary set.
-  const s = `${reported}|${target}`;
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
-  }
-  return (h % 100) < ratio;
+// R161.22 (2026-10-29) — 加 agentType 维度。**本函数是这次 P0 的修复点**:
+//   之前不管来的是 AD 代理还是 non-AD 代理, 比的都是 AD 源的版本号,
+//   所以成员代理永远被告知「有 AD 包可升」⇒ 它拉到的也是 AD 包 ⇒
+//   成员服务器会被 AD 代码原子覆盖 ⇒ 成员服务器变成 DC 代理。
+//   现在按血统选源, 且 non-AD 血统**绝不**回退到 AD 源
+//   (selectUpgradeSource 的不变量)。
+//   AD 路径的返回值逐字不变 (34 台 DC 零影响)。
+//
+//   @param {unknown} agentVersion  代理自报版本
+//   @param {object|null} rolloutGate 灰度闸门 {strategy, canaryRatio}
+//   @param {unknown} agentType     'ad' (默认) | 'non-ad'
+export function computeUpgradeEnvelope(agentVersion, rolloutGate = null, agentType = LINEAGE_AD) {
+  const source = selectUpgradeSource({
+    ad: _agentUpgradeSource,
+    nonAd: _noadAgentUpgradeSource
+  }, agentType);
+  return computeUpgradeEnvelopeFrom(source, agentVersion, rolloutGate);
 }
 
 // registerAgentUpgradeRoutes — mounted on the web mount (8080) by
@@ -172,6 +182,54 @@ export function registerAgentUpgradeRoutes(router, { agentMw, logger }) {
     } catch (err) {
       logger.error?.({ err: err.message, event: 'agent.upgrade.500' },
         'agent upgrade bundle serve failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  // R161.22 (2026-10-29) — GET /api/agent/upgrade-non-ad. **成员代理专用
+  //   的升级包端点**, 吐的是 <repoRoot>/noadagent 那棵树 (non-AD 血统)。
+  //
+  //   为什么必须**新建端点**而不是给 /api/agent/upgrade 加个查询参数:
+  //     · R158.69.10 lesson —— 「用到端点就新建, 端点不要改」。/api/agent/upgrade
+  //       是已经随 34 台 DC 出厂的端点, 它的行为**逐字不变** (AD 代理照旧
+  //       拿 AD 包), 本端点是**并行**的新端点。
+  //     · 签名不含 URL (centre 的 agent-token.js:104 只对
+  //       `hostname:agentId:body` 做 HMAC), 所以端点选择不能靠 URL 参数
+  //       —— 那样任何代理都能声称自己是别的血统。端点本身就是血统声明。
+  //
+  //   成员代理的取包路径: noadagent/src/reporter.js 的 fetchUpgrade() 现在
+  //   打这个端点。
+  //
+  //   源不可用时 (部署树里没有 noadagent/, 例如 LinuxServer 镜像) ⇒ 404,
+  //   代理端 applyUpgradeDelivery 收到 'invalid-bundle' ⇒ 早退, 不升级。
+  //   **绝不**回退到 AD 包。
+  router.get('/api/agent/upgrade-non-ad', agentMw, async (_req, res) => {
+    logger.info?.({
+      event: 'agent.upgrade.nonad.bundle.fetched',
+      sourceAvailable: !!(_noadAgentUpgradeSource && _noadAgentUpgradeSource.available),
+      targetVersion: _noadAgentUpgradeSource?.version ?? null
+    }, 'non-ad agent upgrade bundle fetched by fleet');
+    if (!_noadAgentUpgradeSource || !_noadAgentUpgradeSource.available) {
+      logger.warn?.({ event: 'agent.upgrade.nonad.404', path: '/api/agent/upgrade-non-ad' },
+        'non-ad agent upgrade bundle unavailable; returning 404');
+      return res.status(404).json({ error: 'agent-source-unavailable' });
+    }
+    try {
+      const wireFiles = _noadAgentUpgradeSource.files.map((f) => ({
+        path: f.path,
+        sha256: f.sha256,
+        base64: f.base64
+      }));
+      res.json({
+        version: _noadAgentUpgradeSource.version,
+        buildTime: _noadAgentUpgradeSource.buildTime,
+        gitCommit: _noadAgentUpgradeSource.gitCommit,
+        fileCount: _noadAgentUpgradeSource.fileCount,
+        files: wireFiles
+      });
+    } catch (err) {
+      logger.error?.({ err: err.message, event: 'agent.upgrade.nonad.500' },
+        'non-ad agent upgrade bundle serve failed');
       res.status(500).json({ error: 'internal' });
     }
   });

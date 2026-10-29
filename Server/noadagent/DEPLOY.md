@@ -59,22 +59,22 @@ Open `D:\NoADagentInstall\agent\appsettings.json` (create from `appsettings.exam
 
 ## Step 4 — register or restart the service
 
-If `NSSM service ADDashboardAgent` does not yet exist (fresh install):
+If `NSSM service memberServiceAgent` does not yet exist (fresh install):
 
 ```powershell
-nssm install ADDashboardAgent "C:\node.exe" "D:\NoADagentInstall\agent\agent.js"
-nssm set ADDashboardAgent AppDirectory D:\NoADagentInstall\agent
-nssm set ADDashboardAgent AppStdout D:\NoADagentInstall\agent\data\agent-stdout.log
-nssm set ADDashboardAgent AppStderr D:\NoADagentInstall\agent\data\agent-stderr.log
-nssm set ADDashboardAgent AppRotateFiles 1
-nssm set ADDashboardAgent AppRotateBytes 10485760   # 10 MB
-nssm set ADDashboardAgent Start SERVICE_AUTO_START
+nssm install memberServiceAgent "C:\node.exe" "D:\NoADagentInstall\agent\agent.js"
+nssm set memberServiceAgent AppDirectory D:\NoADagentInstall\agent
+nssm set memberServiceAgent AppStdout D:\NoADagentInstall\agent\data\agent-stdout.log
+nssm set memberServiceAgent AppStderr D:\NoADagentInstall\agent\data\agent-stderr.log
+nssm set memberServiceAgent AppRotateFiles 1
+nssm set memberServiceAgent AppRotateBytes 10485760   # 10 MB
+nssm set memberServiceAgent Start SERVICE_AUTO_START
 ```
 
 For an existing service:
 
 ```powershell
-nssm restart ADDashboardAgent
+nssm restart memberServiceAgent
 ```
 
 ## Step 5 — observe boot
@@ -146,5 +146,5 @@ If anything is broken, see `REFACTOR_NOTES.md` "Rollback procedure". The backup 
 ## What this bundle does NOT do
 
 - It does NOT register itself as an AD/DC. It cannot collect replication data. Centre-side AD endpoints (`/api/agent/commands`, `/api/agent/discover`, `/api/agent/report`, `/api/agent/ports`) remain in place but are unreachable from this bundle.
-- It does NOT auto-upgrade. Centre's `agent-upgrade-source.js` reads only `<repoRoot>/agent/` (the AD lineage); this fork is operator-managed.
+- It DOES auto-upgrade, but only within its own lineage: the centre serves the non-AD bundle from `<repoRoot>/noadagent/` via `/api/agent/upgrade-non-ad`, and the agent refuses any bundle whose `build-manifest.json` does not declare `lineage: "noad"` (R161.22).
 - It does NOT bundle node_modules. Run `npm install` once after copy.

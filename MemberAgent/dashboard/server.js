@@ -4,7 +4,7 @@
 // 启动时从 agent/appsettings.json 读取 username/password(base64)/port。
 // 第一次访问任意页面 → 登录页;凭证正确 → 主页(全部数据 inline 在 HTML 里)。
 // 数据来源: agent/data/packages/ (包定义) + agent/data/last-collect/ (最近报表) +
-//           Logs/ + agent/Logs/ (运行日志) + Get-Service ADReplicationAgent (服务状态)
+//           Logs/ + agent/Logs/ (运行日志) + Get-Service memberServiceAgent (服务状态)
 //
 // 这是一个"打开就能看"的工具,不是 REST API。没有 /api/* 一组端点,只有:
 //   GET  /              主页(数据 inline)
@@ -256,7 +256,7 @@ async function loadService() {
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-Command',
       '$ErrorActionPreference="SilentlyContinue";' +
-      '$s = Get-Service ADReplicationAgent -ErrorAction SilentlyContinue;' +
+      '$s = Get-Service memberServiceAgent -ErrorAction SilentlyContinue;' +
       'if ($null -eq $s) { @{ installed=$false } | ConvertTo-Json -Compress }' +
       'else { [PSCustomObject]@{ installed=$true; name=$s.Name; status=$s.Status.ToString(); startType=$s.StartType.ToString() } | ConvertTo-Json -Compress }'
     ], { windowsHide: true });
@@ -470,7 +470,7 @@ function renderOverview() {
       <div class="card"><h3>服务</h3><div class="body">
         <div class="stat ${svcCls}">${escapeHtml(svcLabel)}</div>
         <dl>
-          <dt>名称</dt><dd>${escapeHtml(svc.name || 'ADReplicationAgent')}</dd>
+          <dt>名称</dt><dd>${escapeHtml(svc.name || 'memberServiceAgent')}</dd>
           <dt>启动类型</dt><dd>${escapeHtml(svc.startType || '—')}</dd>
         </dl>
       </div></div>

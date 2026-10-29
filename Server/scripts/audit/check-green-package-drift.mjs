@@ -90,7 +90,12 @@ const GREEN_PACKAGES = [
 // files that MUST NOT appear in a built package. Their presence proves the
 // package was hand-copied instead of built.
 const BUILDER_EXCLUDED = [
-  'scripts/trigger-all-packages-once.js',
+  // R161.23 — 'scripts/trigger-all-packages-once.js' 与 'scripts/manual-trigger.js'
+  //   从这份"禁止随包发布"清单里移除: 这两个是成员服务器上的**运维工具**,
+  //   源树 Server\noadagent\scripts\ 里就有, 自动升级通道 (只发 .js) 也照发;
+  //   唯独绿色包发布脚本把它们剔掉 ⇒ 绿色包装出来的成员机上没有这两个工具,
+  //   自动升级过的机器上却有 ⇒ 同一个操作在不同装法下结果不一样。
+  //   两个 make-release.ps1 的剔除清单已同步移除对应条目。
   'scripts/run-partner-probe.js',
   'scripts/submit-partner-probe.js',
   'scripts/submit-partner-probe-v2.js',
@@ -103,7 +108,6 @@ const BUILDER_EXCLUDED = [
   'scripts/git-init-commit.ps1',
   'scripts/make-release.ps1',
   'scripts/read-agent-token.js',
-  'scripts/manual-trigger.js',
 ];
 
 const findings = [];

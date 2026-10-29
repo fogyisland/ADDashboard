@@ -94,7 +94,7 @@ Write-Step "uninstalling agent on $env:COMPUTERNAME"
     -InstallPath $InstallPath `
     -CenterUrl   '' `
     -AgentToken  '' `
-    -AgentType   'ad' `
+    -AgentType   'non-ad' `
     -Action      Unregister `
     -SkipStart
 # CenterUrl / AgentToken are unused by -Action Unregister; the placeholder
@@ -113,9 +113,9 @@ if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) {
 # 终态验证: 服务必须真的没了才继续删文件。注销失败还继续删目录 ⇒
 # "服务还注册着 + 文件已被删" 的半成品 (NSSM 会因为 AppExit Default Restart
 # 无限重启一个不存在的文件, 表现为崩溃重启循环)。
-$stillRegistered = [bool](Get-Service -Name 'ADReplicationAgent' -ErrorAction SilentlyContinue)
+$stillRegistered = [bool](Get-Service -Name 'memberServiceAgent' -ErrorAction SilentlyContinue)
 if ($stillRegistered) {
-  throw "service 'ADReplicationAgent' is still registered after Unregister — refusing to delete $InstallPath (re-run as Administrator; the service may be in use)"
+  throw "service 'memberServiceAgent' is still registered after Unregister — refusing to delete $InstallPath (re-run as Administrator; the service may be in use)"
 }
 
 # Detect Windows case-collision between InstallPath and the green-package's

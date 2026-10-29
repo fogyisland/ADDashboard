@@ -24,7 +24,14 @@
 // 0 字段就拒, 不可逆. 防止中心端 server 端 (R158.87.6.5 L1 修后) 即使
 // 返 13 包, noad agent 端 filter 兜底只装 non-ad scope 包. 跟 R158.86.5
 // dormant bug 跟 R158.87.6.5 L1 强化 1:1 平行.
-function shouldRunPackageForNonAd(pkg) {
+//
+// R161.21 (2026-10-29) — 本函数改为 **export**: 中心端的回归网
+// Server/center/tests/agent-packages-scope.test.js 必须拿**同一个**
+// 谓词去验收「服务端下发的每个包都满足客户端的硬条件」。
+// 之前这个契约只有一份**注释**守着 (本文件头部), 没有可执行的断言 ⇒
+// R158.86.5 → R158.87.6.5 → R161.21 这串缺陷能连续复发。
+// 导出不改变运行时行为 (本模块 import 时无副作用, 只建一个 Map)。
+export function shouldRunPackageForNonAd(pkg) {
   if (!pkg?.agent?.type || pkg.agent.type !== 'non-ad') return false;
   // R158.86.5 scope 字段是 package 顶层 (跟 installScript derive 1:1)
   // 不是 pkg.agent.scope. 防御 missing scope 字段 = 拒.

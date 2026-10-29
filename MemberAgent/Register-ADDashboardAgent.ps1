@@ -35,8 +35,12 @@ param(
   # Register branch below validates they are non-empty before use.
   [string]$CenterUrl,
   [string]$AgentToken,
+  # R161.23 (2026-10-29): the default used to be 'ad' — a verbatim copy of
+  # the AD/DC bundle's registration script. This bundle registers the
+  # member-server service (memberServiceAgent) and the non-AD collector,
+  # so omitting -AgentType must NOT ask for the DC lineage.
   [ValidateSet('ad','non-ad')]
-  [string]$AgentType = 'ad',
+  [string]$AgentType = 'non-ad',
   [ValidateSet('Register','Unregister')]
   [string]$Action = 'Register',
   [string]$NssmPath,
@@ -130,7 +134,7 @@ if (-not $NodePath) {
   throw 'node.exe not found. Install Node.js 20 LTS and pass -NodePath, or ensure <InstallPath>/node/node.exe exists (green-package layout).'
 }
 
-$ServiceName = 'ADReplicationAgent'
+$ServiceName = 'memberServiceAgent'
 
 # ============================================================================
 # Step 1: 写配置文件 (appsettings.json)
@@ -141,6 +145,11 @@ $ServiceName = 'ADReplicationAgent'
 # the schema this contract satisfies).
 # ============================================================================
 function Write-AppsettingsJson {
+  # R161.23 (2026-10-29) — lineage-aware collector path (see the comment at
+  # the psScriptPath entry below). The non-AD lineage ships one collector:
+  # scripts\collect.ps1.
+  $collectorScriptName = if ($AgentType -eq 'non-ad') { 'collect.ps1' } else { 'collect-replication.ps1' }
+  $collectorPath = Join-Path $InstallPath ('scripts\' + $collectorScriptName)
   $cfg = [ordered]@{
     centerUrl                = $CenterUrl
     agentId                  = $env:COMPUTERNAME
@@ -150,8 +159,14 @@ function Write-AppsettingsJson {
     heartbeatIntervalSeconds = 5
     discoveryIntervalHours   = 1
     queueDbPath              = (Join-Path $InstallPath 'queue.db')
-    psScriptPath             = (Join-Path $InstallPath 'scripts\collect-replication.ps1')
-    psDiscoveryScriptPath    = (Join-Path $InstallPath 'scripts\collect-discovery.ps1')
+    # R161.23 (2026-10-29): lineage-aware collector path.
+    # The MemberAgent bundle is the NON-AD lineage and ships exactly one
+    # collector: scripts\collect.ps1 (eventlog + ADWeb + DFSR).
+    # collect-replication.ps1 / collect-discovery.ps1 are AD/DC collectors and
+    # are NOT shipped in this bundle — the old config pointed at files that do
+    # not exist on the target machine.
+    psScriptPath             = $collectorPath
+    psDiscoveryScriptPath    = $collectorPath
     healthCheckIntervalMs    = 600000
     agentType                = $AgentType
     # 2026-10-02 R0.1.1+ — dashboard integration. New installs get the safe

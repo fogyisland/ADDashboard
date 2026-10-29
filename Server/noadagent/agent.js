@@ -1,19 +1,19 @@
-﻿// R158.75 (2026-10-11) 鈥?NoAD-only agent bundle. All AD imports removed
+﻿// R158.75 (2026-10-11) — NoAD-only agent bundle. All AD imports removed
 // (runAdRuntime() was deleted; this agent is the member-server / non-AD
 // runtime only). Re-import only what's still wired up below.
 import { loadConfig } from './src/config.js';
 import { createLogger } from './src/logger.js';
-import { postReport, postHeartbeat, fetchConfig, signedRequestJson, _refreshLogLevel } from './src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, signedRequestJson, postPackagesReport, _refreshLogLevel } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { getOsInfo } from './src/os-info.js';
 import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
-// 2026-10-01 R158.13 鈥?parallel to applyAgentTokenDelivery above. Used
+// 2026-10-01 R158.13 — parallel to applyAgentTokenDelivery above. Used
 // at all three heartbeat call sites to consume the centre's
 // settingsPatch / clientSettingsVersion envelope.
 import { applySettingsDelivery } from './src/settings-delivery.js';
-// R158.48 (2026-10-06) 鈥?agent auto-update consumer. Mirror of
+// R158.48 (2026-10-06) — agent auto-update consumer. Mirror of
 // applySettingsDelivery above: reads the centre's heartbeat envelope
 // {upgradeAvailable, upgradeVersion}, fetches GET /api/agent/upgrade,
 // stages / sha256-verifies / atomic-renames every file, persists
@@ -24,10 +24,10 @@ import { applyUpgradeDelivery } from './src/upgrade-delivery.js';
 import { fetchUpgrade as _fetchUpgrade } from './src/reporter.js';
 import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
 // 2026-09-04 R78: file-push drainer wired into the heartbeat loop.
-// (R158.75 鈥?drainAdCommands / dispatchAdCommand removed; member-commands
+// (R158.75 — drainAdCommands / dispatchAdCommand removed; member-commands
 // drainer below is the only PowerShell-style work puller.)
 import { drainFilePush } from './src/file-push-drainer.js';
-// 2026-09-05 R81 鈥?member-server PowerShell drainer joins the heartbeat pool.
+// 2026-09-05 R81 — member-server PowerShell drainer joins the heartbeat pool.
 import { drainMemberCommands } from './src/member-commands-drainer.js';
 import { dispatchMemberCommand } from './src/dispatchers/member-commands.js';
 import {
@@ -42,19 +42,19 @@ import {
   //   (NoAD 端 0 持 full pkg manifest, 跟 AD 1:1 平行 fetch 走 wire).
   peekLocalTaskNames
 } from './src/non-ad-scheduler.js';
-// R158.50.7f (2026-10-07) 鈥?in-process dashboard. dashboard/server.js
+// R158.50.7f (2026-10-07) — in-process dashboard. dashboard/server.js
 // exports startDashboard({ config, installRoot, agentDir, logger,
 // bindAddress }) and only binds an HTTP listener when that function is
-// called 鈥?importing the module is side-effect free, so this import does
+// called — importing the module is side-effect free, so this import does
 // not change agent boot behaviour. The actual startDashboard() call lives
 // further down, in the boot block.
 //
 // IMPORTANT path: agent.js lives at <installRoot>/agent/agent.js and
 // dashboard/server.js lives at <installRoot>/dashboard/server.js (the
-// two are siblings under the install root 鈥?see D:\agentInstall\README-
+// two are siblings under the install root — see D:\agentInstall\README-
 // green-install.md "File structure" diagram and dashboard/README.md
-// design 搂5). The import is therefore `../dashboard/server.js`, NOT
-// `./dashboard/server.js` 鈥?the first attempt at this round went with
+// design §5). The import is therefore `../dashboard/server.js`, NOT
+// `./dashboard/server.js` — the first attempt at this round went with
 // `./` and ERR_MODULE_NOT_FOUND at boot (no agent/dashboard/ subdir
 // exists in the green-install layout).
 import { startDashboard } from '../dashboard/server.js';
@@ -87,7 +87,7 @@ function resolveIfInside(root, candidate) {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultConfigPath = joinPath(__dirname, 'appsettings.json');
 
-// R158.50.7e (2026-10-07) 鈥?read VERSION from version.inf (operator
+// R158.50.7e (2026-10-07) — read VERSION from version.inf (operator
 // directive: agent.js must NOT hardcode the version; it must read the
 // single source of truth at <agentInstallDir>/version.inf). The
 // prior literal `'0.1.1'` at agent.js:58 meant every heartbeat payload
@@ -105,12 +105,12 @@ const defaultConfigPath = joinPath(__dirname, 'appsettings.json');
 // We read the [components].version key. Falls back to build-manifest.json
 // (R119 convention) when version.inf is missing (legacy dev-tree layout
 // where agent.js sits at <repo>/agent/agent.js with no install root).
-// Final fallback: 'unknown' 鈥?operator must investigate.
+// Final fallback: 'unknown' — operator must investigate.
 //
 // IMPORTANT: this block MUST come AFTER `const __dirname = ...` above.
 // The original draft placed it before __dirname (line 58), causing
 // `ReferenceError: Cannot access '__dirname' before initialization`
-// (ESM TDZ) at boot 鈥?agent crashed before loadConfig ever ran.
+// (ESM TDZ) at boot — agent crashed before loadConfig ever ran.
 //
 // Agent install root is the parent of the agent/ subdir that contains
 // this script. E.g. for C:\agentInstall\agent\agent.js, install root
@@ -121,7 +121,7 @@ function readVersionFromInf(infPath) {
   try {
     const raw = readFileSync(infPath, 'utf8');
     // .inf files are ASCII-only (per version.inf header comment); a
-    // simple line scan is enough 鈥?no need for a full ini parser.
+    // simple line scan is enough — no need for a full ini parser.
     // Pattern: `version       = 0.1.2` (variable whitespace around `=`).
     // We match `[components]` first then the `version =` line; that
     // distinguishes the package version from `[components] agent = ...`
@@ -156,12 +156,12 @@ const VERSION =
 const configPath = process.argv[2] || process.env.APPSETTINGS_PATH || defaultConfigPath;
 const config = loadConfig(configPath);
 const logger = createLogger({ component: 'agent', level: config.logLevel });
-// R93 鈥?reporter.js boots with a default `info` level (it imports pino
+// R93 — reporter.js boots with a default `info` level (it imports pino
 // before loadConfig runs). Hand it the operator's appsettings.json
 // logLevel so flipping to `debug` actually surfaces HTTP breadcrumbs.
 _refreshLogLevel(config.logLevel);
 
-// 2026-09-24 R91.2 鈥?hoist osInfo to module top level so the early
+// 2026-09-24 R91.2 — hoist osInfo to module top level so the early
 // boot paths (port scanner + recovery at agent.js:102 / 236 / 285) can
 // read osInfo.hostname without hitting a temporal-dead-zone ReferenceError.
 // Previously osInfo was declared `const` inside runNonAdRuntime; the
@@ -171,7 +171,7 @@ _refreshLogLevel(config.logLevel);
 const osInfo = getOsInfo();
 
 // ============================================================================
-// 2026-08-15 port-scanning bootstrap (spec 搂1.2, 搂1.3):
+// 2026-08-15 port-scanning bootstrap (spec §1.2, §1.3):
 // When fetchConfig(/config.json) fails (operator changed web port but
 // appsettings.json still points at the old one), scan for the new port and
 // rewrite appsettings.json. Used by the non-AD runtime (was previously
@@ -193,7 +193,7 @@ function replacePortInUrl(url, newPort) {
   return trimmed.replace(/:\d+$/, '') + ':' + Number(newPort);
 }
 
-// Spec 搂4 row 204: single-flight guard so two concurrent triggers
+// Spec §4 row 204: single-flight guard so two concurrent triggers
 // (e.g. boot + first configRefresh tick) don't race on the same
 // appsettings.json + .tmp file. Second caller awaits the first.
 let inFlightRecovery = null;
@@ -222,7 +222,7 @@ async function _tryRecoverCenterPortImpl({ config, configPath, logger, trigger }
   }
 
   const host = deriveScanHost(config);
-  // 2026-09-22 S82 鈥?stamp (hostname, agentId) into the probe signature
+  // 2026-09-22 S82 — stamp (hostname, agentId) into the probe signature
   // so the centre accepts the GET after the 60s restart-grace window.
   const scan = await discoverCenterPort({
     host, agentToken: config.agentToken,
@@ -241,7 +241,7 @@ async function _tryRecoverCenterPortImpl({ config, configPath, logger, trigger }
   if (w.ok) {
     logger.info({ trigger, oldUrl, newUrl, port: scan.port, source: scan.source }, 'appsettings.json rewritten to discovered port');
   } else {
-    // In-memory swap regardless 鈥?this run uses the discovered port. Next
+    // In-memory swap regardless — this run uses the discovered port. Next
     // restart will re-scan if appsettings.json is still stale.
     logger.error({ trigger, oldUrl, newUrl, error: w.error }, 'appsettings.json rewrite failed; using new port in-memory only');
   }
@@ -268,17 +268,17 @@ async function _tryRecoverCenterPortImpl({ config, configPath, logger, trigger }
 // forward-compat metadata field (config.js still defaults to 'non-ad'),
 // but is no longer consulted here.
 
-// R158.50.7f (2026-10-07) 鈥?fire-and-forget in-process dashboard.
+// R158.50.7f (2026-10-07) — fire-and-forget in-process dashboard.
 //
 // startDashboard() must NOT block agent boot:
 //   - The agent's primary duty is heartbeat + self-register; a failing
 //     dashboard (port conflict, EADDRINUSE, file-read permission, etc.)
-//     must not stall the boot 鈥?the operator's monitoring chain depends
+//     must not stall the boot — the operator's monitoring chain depends
 //     on heartbeat arriving within seconds.
 //   - runNonAdRuntime() is long-lived (it never resolves; its work lives
 //     on setInterval / setImmediate handles). dashboard startup has to
 //     happen BEFORE the runtime call, not after.
-//   - dashboardEnabled=false skips the call entirely 鈥?operators who only
+//   - dashboardEnabled=false skips the call entirely — operators who only
 //     want the agent can leave the page off without losing heartbeat.
 //
 // Password flow: appsettings.json stores the base64 form (Register-ADDashboardAgent.ps1:163
@@ -297,7 +297,7 @@ if (config.dashboardEnabled) {
     installRoot: agentInstallRoot,   // = __dirname/.., line 92 above
     agentDir: __dirname,              // = line 61 above
     logger,
-    bindAddress: '127.0.0.1'          // loopback only 鈥?dashboard/README.md design 搂5
+    bindAddress: '127.0.0.1'          // loopback only — dashboard/README.md design §5
   }).then((handle) => {
     logger.info(
       { component: 'agent', port: handle.port, url: `http://127.0.0.1:${handle.port}/` },
@@ -311,7 +311,7 @@ if (config.dashboardEnabled) {
   });
 }
 
-// Shared boot infrastructure 鈥?only one runtime remains in this bundle.
+// Shared boot infrastructure — only one runtime remains in this bundle.
 // runNonAdRuntime is long-lived (its work lives on setInterval /
 // setImmediate handles and never resolves), so this await is the boot's
 // terminal statement; SIGINT/SIGTERM handlers inside the runtime are the
@@ -326,7 +326,7 @@ await runNonAdRuntime({ config, logger });
 // boot path. See REFACTOR_NOTES.md for the deletion list.
 // ============================================================================
 async function runNonAdRuntime({ config, logger }) {
-  // 2026-09-24 R91.2 鈥?osInfo is now module-level (hoisted from here to
+  // 2026-09-24 R91.2 — osInfo is now module-level (hoisted from here to
   // agent.js top). The previous shadowing const inside this function put
   // the variable in TDZ for any code path that ran before this line.
 
@@ -335,13 +335,13 @@ async function runNonAdRuntime({ config, logger }) {
   //    failures. Fire-and-forget with a logger breadcrumb so a center
   //    outage at boot doesn't block the heartbeat from coming up.
   async function selfRegister() {
-    // 2026-09-24 R91.4 鈥?used to call `requestJson` with only the
+    // 2026-09-24 R91.4 — used to call `requestJson` with only the
     // X-Agent-Token header. self-register hits the agentMw-protected
     // /api/admin/member-servers/self-register endpoint, which goes
     // through agent-token.js S82 identity binding; without the signature
     // header the request 401s after the 60s grace window. Switched to
     // signedRequestJson with the same triple used by the other agent
-    // 鈫?center POSTs (heartbeat/report) 鈥?keeps the HMAC contract
+    // → center POSTs (heartbeat/report) — keeps the HMAC contract
     // uniform across every endpoint that talks to the centre.
     const r = await signedRequestJson({
       method: 'POST',
@@ -398,9 +398,9 @@ async function runNonAdRuntime({ config, logger }) {
       logger.warn({ trigger, centerUrl: config.centerUrl }, 'fetchConfig failed; scan disabled by config');
       return;
     }
-    // At boot: scan on first failure (spec 搂1.2 鈥?agent must self-heal on
+    // At boot: scan on first failure (spec §1.2 — agent must self-heal on
     // startup when appsettings.json is stale). At runtime: only after
-    // scanFailureThreshold consecutive failures (spec 搂1.3).
+    // scanFailureThreshold consecutive failures (spec §1.3).
     if (trigger === 'runtime' && consecutivePortFailures < config.scanFailureThreshold) {
       logger.warn({ trigger, consecutivePortFailures, threshold: config.scanFailureThreshold }, 'config fetch failed; will retry on next tick');
       return;
@@ -415,8 +415,8 @@ async function runNonAdRuntime({ config, logger }) {
   // the source of truth; on every poll we diff against the previously-
   // scheduled set and (re)start / stop timers accordingly. The map + the
   // timer-scheduling functions live in src/non-ad-scheduler.js so unit
-  // tests can import the SAME functions the runtime uses 鈥?no re-statement,
-  // no drift 鈥?and assert handle stability across polls (regression test
+  // tests can import the SAME functions the runtime uses — no re-statement,
+  // no drift — and assert handle stability across polls (regression test
   // for the timer-starvation bug where unconditional clearInterval on every
   // 5-minute poll reset the countdown for any package whose intervalSec was
   // >= 300, so it never fired).
@@ -477,7 +477,7 @@ async function runNonAdRuntime({ config, logger }) {
 
   function runPackage(pkg) {
     // v1 contract: /api/admin/agent/packages-for-host returns parsed
-    // manifests WITHOUT a top-level scriptPath 鈥?the agent is expected to
+    // manifests WITHOUT a top-level scriptPath — the agent is expected to
     // derive it from a local cache directory once package materialization
     // is wired. v1 has no materialization path, so we skip-and-log when
     // scriptPath is missing rather than crashing spawn() with undefined.
@@ -535,26 +535,39 @@ async function runNonAdRuntime({ config, logger }) {
         powerShellPath: config.powerShellPath
       }).then((result) => {
         // Best-effort report POST; failures are dropped (no on-disk
-        // queue for non-AD in v1 鈥?packages are heartbeat-lightweight
+        // queue for non-AD in v1 — packages are heartbeat-lightweight
         // metrics, not critical replication data).
         //
-        // 2026-09-24 R91.4 鈥?packages/report is behind agentMw + S82,
+        // 2026-09-24 R91.4 — packages/report is behind agentMw + S82,
         // so stamp the (hostname, agentId, body) signature like the rest
         // of the centre-facing POSTs.
-        return signedRequestJson({
-          method: 'POST',
-          url: `${config.centerUrl}/api/admin/agent/packages/report`,
+        //
+        // R161.21 (2026-10-29) — P0 修复: 原实现打的是
+        //   `${config.centerUrl}/api/admin/agent/packages/report`
+        // 而中心**没有**这个路由 —— 中心的注册点是
+        //   POST /api/agent/packages/report
+        // (packages/runner.js registerPackageRoutes, web app 与 report app
+        // 两个 mount 都注册, 且都带 agentMw). ⇒ 原实现每次回传都 404,
+        // 成员侧数据永远落不了库. 症状: 包跑了、中心 package_runs 无行、
+        // ad_member_* 专表无数据.
+        //
+        // 修法 = 委派给 reporter.postPackagesReport (R93.5 范式, 与 AD 端
+        // package-manager.js flushReportQueue 完全一致): URL 由 baseUrl()
+        // 统一处理端口, 签名头在 reporter 一处生成, 不会再出现两处各写
+        // 一份 URL 的漂移. 端口取 cachedPorts.reportPort (来自
+        // /api/agent/ports); 为 null 时 baseUrl 原样用 centerUrl ——
+        // web app 上同样注册了这条路由, 兜底不会 404.
+        return postPackagesReport({
+          centerUrl: config.centerUrl,
           agentToken: config.agentToken,
+          port: cachedPorts.reportPort,
+          runs: [{
+            packageName: pkg.name,
+            hostname: config.hostname || osInfo.hostname,
+            ...result
+          }],
           hostname: config.hostname || osInfo.hostname,
-          agentId: config.agentId,
-          body: {
-            runs: [{
-              packageName: pkg.name,
-              hostname: config.hostname || osInfo.hostname,
-              ...result
-            }]
-          },
-          timeoutMs: 30_000
+          agentId: config.agentId
         });
       }).catch((e) => {
         logger.warn({ err: e.message, name: pkg.name }, 'non-ad package run failed');
@@ -566,7 +579,7 @@ async function runNonAdRuntime({ config, logger }) {
 
   async function pollPackages() {
     const hostname = config.hostname || osInfo.hostname;
-    // 2026-09-24 R91.4 鈥?packages-for-host is behind agentMw + S82.
+    // 2026-09-24 R91.4 — packages-for-host is behind agentMw + S82.
     // Without X-Agent-Signature it 401s after the 60s grace window,
     // so non-AD agents stop receiving their package manifest and
     // never run anything. Switched to signedRequestJson so the GET
@@ -589,7 +602,7 @@ async function runNonAdRuntime({ config, logger }) {
 
   // Initial poll + periodic refresh (every 5 minutes, same cadence as the
   // AD runtime's configRefresh). The first poll may race with the
-  // self-register fire-and-forget above; that's fine 鈥?center tolerates
+  // self-register fire-and-forget above; that's fine — center tolerates
   // a package poll from an unknown hostname (returns empty list).
   pollPackages();
   const packagesRefresh = setInterval(() => {
@@ -601,7 +614,7 @@ async function runNonAdRuntime({ config, logger }) {
   //    center can route into the member-servers touchLastSeen path
   //    (Task 6 of the non-AD plan).
   //
-  // 2026-10-01 R158.13 鈥?assign into the module-scope `let heartbeat`
+  // 2026-10-01 R158.13 — assign into the module-scope `let heartbeat`
   // slot (line 429) so non-AD heartbeat can be restart()'d when a
   // settingsPatch envelope arrives. Mirror of the AD-runtime patch above.
   // R158.86.6 (2026-10-12) — file-push drainer wiring. 3 HTTP helpers
@@ -658,6 +671,32 @@ async function runNonAdRuntime({ config, logger }) {
   const drainerHostname = config.hostname || osInfo.hostname;
   const drainerAgentId  = config.agentId || osInfo.hostname;
 
+  // R161.22 (2026-10-29) — boundFetchUpgrade 绑定。
+  //
+  //   ★ R158.75 fork 时的**漏项**: AD 端 agent.js:560 有这个绑定, noad
+  //   fork 只抄走了调用点 (line 713), 绑定本身没抄 ⇒
+  //   `ReferenceError: boundFetchUpgrade is not defined`。
+  //
+  //   为什么它炸得这么安静 (症状 vs 根因):
+  //     · 炸点在 `applyUpgradeDelivery({ ..., fetchUpgrade: boundFetchUpgrade })`
+  //       的**实参求值**上 ⇒ 每次心跳必炸, 不是偶发。
+  //     · 炸点在 makeSendCallback 的 postHeartbeat 包装器**里面** ⇒
+  //       makeSendCallback.send() 里 postHeartbeat 之后的代码全部不可达
+  //       ⇒ **file-push drainer + member-commands drainer 永远不跑**
+  //       (成员服务器收不到中心推的文件, 也永远不执行操作员排的成员命令)。
+  //     · 心跳 POST 本身已经成功 (postHeartbeat 里先发的), 所以中心端
+  //       看到的是「心跳正常」⇒ 从中心侧完全看不出代理在报错。
+  //   ⇒ 症状是 0 行数据 + 0 条中心端日志, 跟 R161.21 那条链一模一样的
+  //     「静默」型故障。
+  //
+  //   跟 AD 端 agent.js:560-565 逐字平行 (同样的闭包捕获方式)。
+  const boundFetchUpgrade = () => _fetchUpgrade({
+    centerUrl: config.centerUrl,
+    agentToken: config.agentToken,
+    hostname: drainerHostname,
+    agentId: drainerAgentId
+  });
+
   heartbeat = startHeartbeat({
     intervalMs: Math.max(1, config.heartbeatIntervalSeconds) * 1000,
     payload: () => ({
@@ -697,7 +736,19 @@ async function runNonAdRuntime({ config, logger }) {
         // 2026-10-01 R158.13 — non-AD path also consumes settingsPatch.
         await applySettingsDelivery({ result: r, config, configPath, logger, heartbeat: heartbeatRef.current });
         // R158.48 (2026-10-06) — agent auto-update (non-AD path).
-        await applyUpgradeDelivery({ result: r, agentInstallDir: __dirname, config, configPath, logger, fetchUpgrade: boundFetchUpgrade });
+        const upgradeR = await applyUpgradeDelivery({ result: r, agentInstallDir: __dirname, config, configPath, logger, fetchUpgrade: boundFetchUpgrade });
+        // R161.22 (2026-10-29) — 升级装盘后必须自杀, NSSM 才会重拉。
+        //
+        //   ★ R158.88.BF1 (2026-10-13) 的教训在 noad fork 里没落地: AD 端
+        //   agent.js:918-921 有 `if (upgradeR.applied && upgradeR.exiting)
+        //   setImmediate(() => process.kill(process.pid, 'SIGTERM'))`,
+        //   noad fork 抄调用点时把这个也漏了 ⇒ 「bundle 装盘但 0 进程死」
+        //   ⇒ 新代码不生效, 一直跑到操作员手动重启服务为止。
+        //   setImmediate 让 await 链先干净 return 再死 (跟 AD 端 1:1 平行)。
+        if (upgradeR && upgradeR.applied === true && upgradeR.exiting === true) {
+          logger?.info?.({ event: 'agent.upgrade.applied.sigterm', toVersion: upgradeR.newVersion, fromVersion: upgradeR.previousVersion, runtime: 'non-ad' }, 'agent upgrade applied (non-AD); SIGTERM self for NSSM relaunch');
+          setImmediate(() => process.kill(process.pid, 'SIGTERM'));
+        }
         return r;
       },
       applyAgentTokenDelivery,

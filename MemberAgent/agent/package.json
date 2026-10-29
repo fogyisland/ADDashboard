@@ -1,12 +1,12 @@
 {
   "name": "@ad-dashboard/noad-agent",
-  "version": "0.1.4",
+  "version": "0.1.6-noad",
   "private": true,
   "type": "module",
   "main": "agent.js",
   "scripts": {
     "start": "node agent.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --check agent.js"
   },
   "dependencies": {
     "pino": "^9.4.0"

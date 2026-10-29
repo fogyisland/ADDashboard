@@ -381,15 +381,25 @@ if ($srcEqDst) {
 # in sync after the upgrade. Skipped on Windows case-collision (src==dst)
 # because the file is already in place; copy would fail with "Cannot use the
 # item itself to overwrite the item".
+#
+# R161.23 (2026-10-29) — the collector is chosen per lineage: the AD/DC
+# lineage collects via scripts\collect-replication.ps1, the non-AD lineage
+# via scripts\collect.ps1. Hard-coding the AD collector meant a member-server
+# upgrade through this bundle overwrote the member collector with the AD one.
+$collectorScriptName = if ($AgentType -eq 'non-ad') { 'collect.ps1' } else { 'collect-replication.ps1' }
+$collectorSrcPath = Join-Path $agentSrc ('scripts\' + $collectorScriptName)
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 if (-not (Test-Path $psScriptDstDir)) {
   New-Item -ItemType Directory -Path $psScriptDstDir -Force | Out-Null
 }
 if ($srcEqDst) {
-  Write-Step "src==dst; skipping collect-replication.ps1 single-file copy (already in place)"
+  Write-Step "src==dst; skipping $collectorScriptName single-file copy (already in place)"
 } else {
-  Copy-Item -Path (Join-Path $agentSrc 'scripts\collect-replication.ps1') `
-            -Destination $psScriptDstDir -Force
+  if (-not (Test-Path -LiteralPath $collectorSrcPath)) {
+    throw ("collector script not found: '$collectorSrcPath'. agentType='$AgentType' expects " +
+           "'scripts\$collectorScriptName' in this lineage — verify the green package layout.")
+  }
+  Copy-Item -Path $collectorSrcPath -Destination $psScriptDstDir -Force
 }
 
 # Prepend the install-path node dir to PATH so npm install uses the same Node

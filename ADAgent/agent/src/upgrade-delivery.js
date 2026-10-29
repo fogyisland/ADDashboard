@@ -41,6 +41,55 @@ import { writeAppsettingsPatchAtomic } from './appsettings-writer.js';
 const EBUSY_RETRY_COUNT = 3;
 const EBUSY_RETRY_DELAY_MS = 250;
 
+// R161.22 (2026-10-29) — 血统守卫 (AD 端对称版)。
+//
+//   noad fork 的 applyUpgradeDelivery 加了「必须是 noad 血统」的校验
+//   (Server/noadagent/src/upgrade-delivery.js)。这里加对称的一条:
+//   AD 代理**拒收**声明自己是 noad 血统的包。
+//
+//   为什么用「显式排除」而不是「显式要求」:
+//     · AD 血统的 build-manifest.json (Server/agent/build-manifest.json)
+//       **没有** lineage 字段 ⇒ 要求 lineage==='ad' 会让「中心端回退到
+//       旧包」这种场景直接断掉 AD 34 台 DC 的自动升级通道。
+//     · 排除法的破坏面是 0: 只有明确写着 'noad' 的包会被拒。
+//   真正的风险是「AD 代理被换成成员代理的代码」(反方向), 那更荒唐,
+//   但守卫是双向的, 所以两边都写上了。
+const REJECTED_LINEAGE = 'noad';
+
+/**
+ * checkBundleLineage — 纯函数: 从 bundle 的文件清单里读出血统并判定。
+ *
+ * 判定规则 (AD 端 = **显式排除**, 与 noad 端相反):
+ *   · bundle 里没有 build-manifest.json  → ok:true (血统未知, 放行)
+ *   · build-manifest.json 解析不了        → ok:true (放行, 见上方说明)
+ *   · lineage === 'noad'                  → ok:false 'lineage-mismatch'
+ *   · 其余 (含缺失 / 'ad')                → ok:true
+ *
+ * 无 IO、无时钟、无第三方依赖 ⇒ 可离线断言。
+ *
+ * @param {Array<{path?: string, base64?: string}>} files bundle 文件清单
+ * @returns {{ok: boolean, reason: string|null, lineage: string|null}}
+ */
+export function checkBundleLineage(files) {
+  const list = Array.isArray(files) ? files : [];
+  const manifestEntry = list.find((f) => f && f.path === 'build-manifest.json');
+  if (!manifestEntry) {
+    return { ok: true, reason: null, lineage: null };
+  }
+  let parsed = null;
+  try {
+    const decoded = Buffer.from(String(manifestEntry.base64 || ''), 'base64').toString('utf8');
+    parsed = JSON.parse(decoded.replace(/^﻿/, ''));
+  } catch {
+    return { ok: true, reason: null, lineage: null };
+  }
+  const lineage = typeof parsed?.lineage === 'string' ? parsed.lineage : null;
+  if (lineage === REJECTED_LINEAGE) {
+    return { ok: false, reason: 'lineage-mismatch', lineage };
+  }
+  return { ok: true, reason: null, lineage };
+}
+
 function sleepSync(ms) {
   const until = Date.now() + ms;
   while (Date.now() < until) { /* tight spin — Windows lacks usleep */ }
@@ -213,6 +262,19 @@ export async function applyUpgradeDelivery({
     await reportUpgradeResult({ event: 'agent.upgrade.error', error: 'version-skew', stage: '2',
         installedAgentVersion: config.installedAgentVersion, upgradeVersion, config, logger, fetchUpgradeResult });
     return { applied: false, error: 'version-skew' };
+  }
+
+  // R161.22 (2026-10-29) — 血统校验 (AD 端)。见 checkBundleLineage 的文档:
+  //   拒收声明自己是 noad 血统的包, 其余一律放行 (向后兼容)。
+  //   判定在「收到 bundle、还没写盘」这一步 ⇒ 拒收时磁盘还是干净的。
+  const lineageVerdict = checkBundleLineage(r.data.files);
+  if (!lineageVerdict.ok) {
+    try { rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    logger?.error?.({ event: 'agent.upgrade.error', bundleLineage: lineageVerdict.lineage, rejectedLineage: REJECTED_LINEAGE },
+      'agent upgrade bundle lineage mismatch; aborting (refuse to cross lineage)');
+    await reportUpgradeResult({ event: 'agent.upgrade.error', error: 'lineage-mismatch', stage: '2',
+        installedAgentVersion: config.installedAgentVersion, upgradeVersion, config, logger, fetchUpgradeResult });
+    return { applied: false, error: 'lineage-mismatch' };
   }
 
   // Stage 3 — write each file to staging, sha256-verifying as we go.

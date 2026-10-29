@@ -1,8 +1,47 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿# R161.23 (2026-10-29) — 成员血统的发布脚本。
+#
+# 旧版是 AD/DC 发布脚本的**逐字拷贝**, 有三处缺陷在成员服务器上会直接把包打坏:
+#
+#   1) $root 写死 'C:\agentInstall' ⇒ 在成员机上打出来的是 **AD 那棵树**
+#      (AD collector + ADReplicationAgent 服务名) —— 血统直接错。
+#   2) **没有拷 dashboard/** ⇒ 打包出来的 agent/agent.js 的静态 import
+#      `import { startDashboard } from '../dashboard/server.js'` 解析不到
+#      ⇒ 启动第一秒 ERR_MODULE_NOT_FOUND ⇒ NSSM 崩溃重启循环
+#      (R121 / R123 / R124 那一族现场故障的形态)。
+#   3) **没有拷 version.inf** ⇒ Register-ADDashboardAgent.ps1 直接抛
+#      "version.inf missing or [components] version key unset"。
+#      (LogRetention.ps1 / start-dashboard.ps1 同理。)
+#
+# 根目录改成参数: 默认走成员血统的安装根 (与 agent/DEPLOY.md 一致),
+# 操作员可以按现场实际路径覆盖。
+#
+# ★★ param() 必须是脚本的**第一条语句** (前面只允许注释) ——
+#   PowerShell 只把出现在首位的 param 块当参数块; 如果它前面有可执行
+#   语句 (例如 $ErrorActionPreference = 'Stop'), 整块 param 会被当成
+#   普通命令去解析 ⇒ "赋值表达式无效" 的语法错误 ⇒ 脚本连跑都跑不起来。
+param(
+  [string]$root = 'C:\NoADagentInstall',
+  [string]$dst  = 'C:\release\NoADagentInstall'
+)
 
-$root  = 'C:\agentInstall'
+$ErrorActionPreference = 'Stop'
 $srcAgent = Join-Path $root 'agent'
-$dst   = 'C:\release\agentInstall'
+
+# ── 血统守卫 (R161.23) ─────────────────────────────────────────────────────
+# 与 R161.22 的代理端守卫同源: 中心只认 lineage:'noad' 的包, 代理也只认,
+# 发布脚本是第三个必须认血统的环节 —— 否则一个手滑就会把 AD/DC 的树
+# 打包成"成员绿色包"发出去, 而现场要等到 agent 启动崩溃才发现。
+$manifestPath = Join-Path $srcAgent 'build-manifest.json'
+if (-not (Test-Path -LiteralPath $manifestPath)) {
+  throw "build-manifest.json not found under '$srcAgent' — cannot verify the lineage of the tree being packaged."
+}
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+if ($manifest.lineage -ne 'noad') {
+  throw ("refusing to build a MEMBER release from a non-noad bundle " +
+         "(build-manifest.json lineage='$($manifest.lineage)'). " +
+         "The member package must ship the non-AD lineage only.")
+}
+Write-Host "  lineage check: OK (lineage='$($manifest.lineage)', version='$($manifest.version)')"
 
 # 清理旧的 release — 用 .NET Directory.Delete 直接避开 PS 5.1 对路径名 `agent`
 # 这种 device-like 名字的奇怪解析 (PS 5.1 把单段名 `agent` 视为保留).
@@ -24,7 +63,12 @@ if (-not $token) {
 }
 
 # 1) 顶层 — install / uninstall / start / register 脚本
-$topFiles = 'install-agent.ps1', 'uninstall-agent.ps1', 'start.ps1', 'Register-ADDashboardAgent.ps1'
+#
+# R161.23: version.inf / LogRetention.ps1 / start-dashboard.ps1 之前**不在**
+# 这个列表里 ⇒ 打包出来的包缺单一版本源 (Register-ADDashboardAgent.ps1 会
+# 直接抛 "version.inf missing")、缺日志保留脚本、缺 dashboard 启动脚本。
+$topFiles = 'install-agent.ps1', 'uninstall-agent.ps1', 'start.ps1', 'Register-ADDashboardAgent.ps1',
+             'LogRetention.ps1', 'start-dashboard.ps1', 'version.inf'
 foreach ($f in $topFiles) {
   $from = Join-Path $root $f
   if (Test-Path $from) {
@@ -34,6 +78,22 @@ foreach ($f in $topFiles) {
     Write-Host "  [warn] $f not found"
   }
 }
+
+# 1b) dashboard/ — ★ 必需, 不是可选。
+# agent/agent.js 有一句**静态** import:
+#     import { startDashboard } from '../dashboard/server.js';
+# 它在包根的 dashboard/ 下。发布布局是 <dst>/agent/agent.js ⇒ 解析到
+# <dst>/dashboard/server.js。少拷这个目录 ⇒ 目标机装完之后 agent 在启动
+# 第一秒 ERR_MODULE_NOT_FOUND ⇒ NSSM 拉起 → 再崩 ⇒ 崩溃重启循环,
+# 而安装脚本会报"安装成功"。所以这里**缺了就中止发布**, 不只是 warn。
+$dashboardSrc = Join-Path $root 'dashboard'
+if (-not (Test-Path -LiteralPath $dashboardSrc)) {
+  throw ("dashboard/ not found under '$root' — the packaged agent/agent.js statically imports " +
+         "'../dashboard/server.js' and would die with ERR_MODULE_NOT_FOUND at boot. " +
+         "Refusing to publish a package that cannot start.")
+}
+Copy-Item -Recurse -Force $dashboardSrc (Join-Path $dst 'dashboard')
+Write-Host "  dashboard/"
 
 # 2) common/ — 公共 PS 模块
 Copy-Item -Recurse -Force (Join-Path $root 'common') (Join-Path $dst 'common')
@@ -95,8 +155,13 @@ $xf = @(
   'scripts\git-init-commit.ps1',
   'scripts\make-release.ps1',
   'scripts\read-agent-token.js',
-  'scripts\manual-trigger.js','scripts\manual-trigger-results.json','scripts\manual-trigger*.log',
-  'scripts\trigger-all-packages-once.js',
+  # R161.23 — manual-trigger.js / trigger-all-packages-once.js **不再剔除**。
+  #   这两个是成员服务器上的**运维工具**(手动回补一次包 / 把所有包跑一遍),
+  #   源树 Server\noadagent\scripts\ 里就有, 自动升级通道 (只发 .js) 也照发;
+  #   唯独绿色包把它们剔掉 ⇒ 绿色包装出来的成员机上没有这两个工具,
+  #   自动升级过的机器上却有 ⇒ 同一个操作在不同装法下结果不一样。
+  #   剔掉的只是它们的**运行时产物** (results.json / *.log)。
+  'scripts\manual-trigger-results.json','scripts\manual-trigger*.log',
   'scripts\run-partner-probe.js','scripts\run-partner-probe.log',
   'scripts\submit-partner-probe.js','scripts\submit-partner-probe.log',
   'scripts\submit-partner-probe-v2.js',
@@ -167,9 +232,8 @@ $debugFiles = @(
   'scripts\list-today.ps1','scripts\list-centre-routes.js',
   'scripts\git-init-commit.ps1','scripts\make-release.ps1',
   'scripts\read-agent-token.js',
-  'scripts\manual-trigger.js','scripts\manual-trigger-results.json',
+  'scripts\manual-trigger-results.json',
   'scripts\manual-trigger-run.log','scripts\manual-trigger-v2.log',
-  'scripts\trigger-all-packages-once.js',
   'scripts\run-partner-probe.js','scripts\run-partner-probe.log',
   'scripts\submit-partner-probe.js','scripts\submit-partner-probe.log',
   'scripts\submit-partner-probe-v2.js','scripts\probe-repadmin.ps1',
@@ -212,66 +276,20 @@ if (Test-Path $exPath) {
 }
 Write-Host "  agent/ mirrored (robocopy rc=$rc)"
 
-# 7) README
-$readme = @'
-# AD Replication Agent — Release Package
-
-完整的 agent 客户端安装包. 直接拿走放到目标机器 `C:\agentInstall\`, 运行:
-
-```powershell
-cd C:\release\agentInstall
-.\install-agent.ps1 -ComputerName . -CenterUrl "http://your-centre:8080" -AgentToken "<token>" -AgentType ad
-```
-
-## 目录布局
-
-```
-agentInstall\
-  install-agent.ps1         WinRM/本地安装入口
-  uninstall-agent.ps1       卸载入口
-  start.ps1                 调试用启动 (前台运行)
-  Register-ADDashboardAgent.ps1   NSSM install / sc recovery 统一入口
-  appsettings.example.json   配置模板 (不含 token)
-  common\                   Logger/Service/NSSM 公共模块
-  nssm\                     NSSM 二进制 (win32)
-  node\                     Node.js 20 LTS portable
-  agent\                    实际安装目标 — install-agent 把它 staging 到 <InstallPath>\
-    src\                    ESM JS 源码 (R93.5 / R93.7 / package-runner env)
-    scripts\                PowerShell 脚本
-    data\packages\          7 个 collect.ps1 包
-    package.json
-```
-
-## 安装流程
-
-1. 拷贝整个目录到目标机 `C:\agentInstall\`
-2. `cd C:\agentInstall`
-3. `.\install-agent.ps1 -ComputerName . -CenterUrl <url> -AgentToken <token> -AgentType ad`
-4. install-agent 会:
-   - 拷贝 agent\ 内容到 InstallPath
-   - 拷贝 node\ 到 InstallPath\node\
-   - `npm install --omit=dev` 重建 node_modules
-   - 写 appsettings.json
-   - NSSM install ADReplicationAgent + 12 参数设置
-   - sc.exe failure recovery
-   - Start-Service
-
-## R93.x changelog
-
-R93.5 — packages-report 端口错位 (8080 → 8082)
-R93.7 — reschedule() 改为 set-difference (KEEP/UPDATE/ADD/REMOVE)
-        不再无差别 clearInterval 重建, 老 timer 时间累计保留
-        900s / 3600s 包 (ad_lockout_list / ad_domain_consistency 等) 现在按 cadence 正常 fire
-
-package-runner.js — env 字段透传给 spawn 的 PowerShell
-        collect.ps1 读 $env:CENTER_URL 后能正常 POST 8081 拿 peers
-
-## 已知问题
-
-- ad_partner_ports_probe 在 LocalSystem 下 collect.ps1 拿不到 peers
-  - 中期 fix: package-manager.js.runOne() 调 _runPackageScript 时透传 env
-'@
-$readme | Out-File -FilePath (Join-Path $dst 'README.md') -Encoding utf8
+# 7) README - 从绿色包根目录复制, 不再内嵌一份拷贝。
+#
+# R161.23: 旧版在这里内嵌了一份 README 文本。成员包那份是 **AD/DC** 的逐字拷贝
+# (标题 「AD Replication Agent - Release Package」, 安装命令带 「-AgentType ad」),
+# 而脚本打的是成员血统的包 => 发出去的包里写着另一条血统的安装步骤, 照着做的人
+# 会去装 AD/DC 采集器。内嵌拷贝还必然与绿色包根目录的真 README 漂移。
+# 正确做法: 复制 $root\README.md, 缺失时明确告警而不是静默发一份错的。
+$readmeSrc = Join-Path $root 'README.md'
+if (Test-Path -LiteralPath $readmeSrc) {
+  Copy-Item -LiteralPath $readmeSrc (Join-Path $dst 'README.md') -Force
+  Write-Host "  README.md (copied from bundle root)"
+} else {
+  Write-Host "  [warn] README.md not found under $root - release package will have no README."
+}
 
 # 8) .gitignore (复制一份方便后续 git init)
 Copy-Item (Join-Path $srcAgent '.gitignore') (Join-Path $dst '.gitignore') -Force

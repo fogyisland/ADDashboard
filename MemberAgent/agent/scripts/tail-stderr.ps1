@@ -1,1 +1,1 @@
-﻿Get-Content C:\agentInstall\agent\Logs\ADReplicationAgent-stderr.log -Tail 50 | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
+﻿Get-Content C:\agentInstall\agent\Logs\memberServiceAgent-stderr.log -Tail 50 | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }

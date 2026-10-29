@@ -417,7 +417,13 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           } catch (e) {
             logger.warn({ err: e.message, hostname }, 'non-ad member-heartbeat upsert failed (best-effort)');
           }
-          const upgradeEnv = computeUpgradeEnvelope(agentVersion);
+          // R161.22 (2026-10-29) — 第三个参数 'non-ad' 是这次 P0 的修复点。
+          //   之前这里不传血统, 中心端一律拿 AD 源的版本号去比 ⇒ 成员代理
+          //   每次心跳都被告知「有 0.1.9 (AD 包) 可升」⇒ 它拉 GET
+          //   /api/agent/upgrade 拿到的也是 AD 包 ⇒ applyUpgradeDelivery
+          //   把它原子覆盖到成员服务器自己的目录 ⇒ 成员服务器变成 DC 代理。
+          //   现在成员代理只跟 noad 源比, 拿的是 noad 包。
+          const upgradeEnv = computeUpgradeEnvelope(agentVersion, null, 'non-ad');
           // R158.100 (2026-10-14) — TDZ fix: agentTokenDelivery / agentSettingsDelivery
           // are `let` declared at lines 562 / 580+ (post this early return).
           // Spreading them here in the non-ad / member-server early-return

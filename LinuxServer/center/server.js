@@ -97,7 +97,7 @@ import { createAdMgmtAuditRetentionLoop } from './src/services/ad-mgmt-audit-ret
 // R158.48 (2026-10-06) — agent auto-update. Reads <repoRoot>/agent/build-manifest.json
 // + walks agent.js + src/**/*.js at boot, caches as JSON bundle for GET /api/agent/upgrade.
 import { getAgentUpgradeSource } from './src/services/agent-upgrade-source.js';
-import { setAgentUpgradeSource } from './src/routes/agent-upgrade.js';
+import { setAgentUpgradeSource, setNoadAgentUpgradeSource } from './src/routes/agent-upgrade.js';
 import { createDirectorySyncLoop } from './src/services/directory-sync-loop.js';
 // R155.6 — operator directive "另外我们新建一个脚本,定期更新 inbound_partner
 // 和outbound_partner". Periodic refresh of ad_dc_inbound_partners +
@@ -516,6 +516,26 @@ function latestRoundId(rounds) {
     setAgentUpgradeSource(null, logger);
   }
 
+  // R161.22 (2026-10-29) — **non-AD 血统**的升级源 (<repoRoot>/noadagent)。
+  //
+  //   为什么以前没有: R158.48 建自动升级时只加载了 join(repoRoot, 'agent')
+  //   (AD 血统), 于是**所有**代理 (含成员服务器) 比的都是 AD 版本号,
+  //   拿到的也都是 AD 包 ⇒ 成员服务器会被 AD 代码覆盖成 DC 代理。
+  //   这次把两棵树分开加载: AD 代理照旧, 成员代理只跟 noad 源比。
+  //
+  //   部署树里没有 noadagent/ 时 (例如 LinuxServer 镜像), 这里拿到 null ⇒
+  //   成员代理的升级信封是 {upgradeAvailable:false, upgradeVersion:null}
+  //   ⇒ 代理端早退。**绝不**回退到 AD 源。
+  let noadAgentUpgradeSource = null;
+  try {
+    const noadAgentRoot = join(repoRoot, 'noadagent');
+    noadAgentUpgradeSource = await getAgentUpgradeSource(noadAgentRoot, logger);
+    setNoadAgentUpgradeSource(noadAgentUpgradeSource, logger);
+  } catch (err) {
+    logger.warn({ err: err.message }, 'non-ad agent upgrade source load threw; non-fatal');
+    setNoadAgentUpgradeSource(null, logger);
+  }
+
   logger.info({
     bootFingerprint: true,
     centerVersion: buildManifest?.version ?? packageJson?.version ?? 'unknown',
@@ -541,7 +561,13 @@ function latestRoundId(rounds) {
     // avoid a circular import dance; setAgentUpgradeSource already emitted its own line.
     agentVersion: agentUpgradeSource?.version ?? 'unavailable',
     agentUpgradeFileCount: agentUpgradeSource?.fileCount ?? 0,
-    agentUpgradeReady: !!(agentUpgradeSource?.available)
+    agentUpgradeReady: !!(agentUpgradeSource?.available),
+    // R161.22 — non-AD 血统的升级源指纹。操作员一眼能看出「成员代理的
+    //   自动升级通道有没有通」: noadAgentUpgradeReady=false ⇒ 成员代理
+    //   永远拿不到升级信封 (部署树里缺 noadagent/ 或 build-manifest 坏了)。
+    noadAgentVersion: noadAgentUpgradeSource?.version ?? 'unavailable',
+    noadAgentUpgradeFileCount: noadAgentUpgradeSource?.fileCount ?? 0,
+    noadAgentUpgradeReady: !!(noadAgentUpgradeSource?.available)
   }, 'center boot fingerprint');
 
   // Init-complete marker (file + registry) hard-locks the wizard off once

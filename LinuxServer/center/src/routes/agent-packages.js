@@ -18,8 +18,16 @@
 import { Router } from 'express';
 import { agentToken } from '../auth/agent-token.js';
 import { getDb } from '../db/index.js';
-import { mergePackagesForHost } from '../services/agent-packages-for-host.js';
+import { buildManifestItems } from '../services/agent-packages-manifest.js';
 
+// R161.21 (2026-10-29) — 「DB 行 → 上线 manifest 列表」这段逻辑已经
+// 抽成零依赖的纯函数, 放在 services/agent-packages-manifest.js:
+//   · 放 services/ 而不是本文件, 是为了让回归网
+//     tests/agent-packages-scope.test.js 能同时 import 「服务端纯函数」
+//     和「agent 端真谓词」(noadagent/src/non-ad-scheduler.js) 来断言
+//     1:1 契约, 而不必把 express / mysql2 / mssql 拖进测试依赖里。
+//   · 三个判定 (水合送 scope / 合并后挡住 AD 作用域 / agent 端字段 1:1)
+//     的说明与断言全部落在那个模块 + 那条测试里, 本文件只负责取数与回包。
 export function agentPackagesRouter({ config, logger }) {
   const r = Router();
   // I3: agentToken now resolves the bundle at request time via the db
@@ -50,42 +58,15 @@ export function agentPackagesRouter({ config, logger }) {
         db.execute(db.sql.packageScripts.listEnabledGlobal, []),
         db.query(db.sql.serverGroups.listPackagesForHost, [hostname])
       ]);
-      // parseManifest — handle both shapes:
-      //   mysql2 (json column): already a JS object
-      //   mssql (NVARCHAR): JSON string
-      // Defensive: a corrupt JSON string should drop the row, not crash
-      // the agent's package fetch.
-      const parseManifest = (v) => {
-        if (v == null) return null;
-        if (typeof v === 'string') {
-          try { return JSON.parse(v); } catch { return null; }
-        }
-        return v;
-      };
-      const installedGlobal = enabledRows
-        .map((r) => {
-          const manifest = parseManifest(r.manifest_json);
-          if (!manifest || !manifest.name) return null;
-          // JSON.parse(JSON.stringify(...)) is a cheap deep clone so the
-          // upstream DB row's manifest object is never shared/mutated
-          // (matches runner.js:73).
-          const baked = JSON.parse(JSON.stringify(manifest));
-          baked.agent = baked.agent || {};
-          baked.agent.intervalSec = Number(r.interval_sec);
-          baked.agent.timeoutMs = Number(r.timeout_ms);
-          return baked;
-        })
-        .filter(Boolean);
-      const merged = mergePackagesForHost({
-        installedGlobal,
-        memberServerPackages: memberRows
-      });
+      // R161.21 — 水合 / 合并 / 作用域收口三步全部收敛到纯函数
+      // buildManifestItems (见文件头), 便于离线断言整条链路.
+      const items = buildManifestItems({ enabledRows, memberRows });
       // T14: R66 bakes policy interval_sec/timeout_ms into the manifest
       // at hydration time. No more per-row override — the agent wire-format
       // reads pkg.manifest.agent.intervalSec directly. The V0
       // `installed_packages.interval_override_sec` column is gone
       // (migration 023 collapsed V0→V1 precedence at migration time).
-      res.json({ items: merged });
+      res.json({ items });
     } catch (e) {
       // Route is unaudited by design — agents retry on 5xx, no operator
       // action needed. Surface a stable shape so agent tests can match.

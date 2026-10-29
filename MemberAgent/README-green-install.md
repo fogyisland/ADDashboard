@@ -1,6 +1,6 @@
-# AD Dashboard Agent — 绿色包安装指南
+# AD Dashboard Member Agent — 绿色包安装指南
 
-本目录是 `agentInstall/` 绿色安装包,无需 MSI、无需 SCCM,直接拷贝 + 跑脚本即可部署 Agent 服务。适合:
+本目录是 `agentInstall/` 绿色安装包,无需 MSI、无需 SCCM,直接拷贝 + 跑脚本即可部署 Agent 服务(成员服务器 / 非 AD 血统)。适合:
 
 - **空气隔离环境**:不能拉 MSI 二进制,只能手工传文件
 - **MSI 调试**:MSI 安装失败 (2343 / 1925 等) 时用作旁路,验证 Agent 本身能起来
@@ -13,7 +13,7 @@
 绿色包里所有 PS1 都围绕这一个统一入口转。脚本会自动判断当前机器的 agent 状态:
 
 - **服务未注册(全新机)**:在 PowerShell 终端里交互式问 `CenterUrl` 和 `AgentToken`(token 不回显),然后走 `install-agent.ps1` → `Register-ADDashboardAgent.ps1` 装机流程
-- **服务已注册(升级)**:停服务 → 覆盖 `agent/*` + `collect-replication.ps1` → `npm install --omit=dev` → 启服务
+- **服务已注册(升级)**:停服务 → 覆盖 `agent/*` + `collect.ps1` → `npm install --omit=dev` → 启服务
 
 操作员只需要记住一个命令:
 
@@ -75,8 +75,11 @@ C:\green\agentInstall\start.ps1 -CenterUrl "http://center.example.com:8080" -Age
 **底层直接调 PS1**(已经在 PowerShell 进程里的场景,比如已在 PS 进程里):
 
 ```powershell
-& C:\green\agentInstall\start.ps1 -CenterUrl 'http://center.example.com:8080' -AgentToken '<token>' -InstallPath 'C:\addashboard\Agent' -AgentType ad
+& C:\green\agentInstall\start.ps1 -CenterUrl 'http://center.example.com:8080' -AgentToken '<token>' -InstallPath 'C:\addashboard\Agent'
 ```
+
+> 成员血统的 `-AgentType` 默认值就是 `non-ad`,不用传。传 `-AgentType ad` 会去找
+> AD/DC 的采集脚本,而这个绿色包里没有那个文件 —— 安装会报错中止。
 
 **远程安装**(在管理机上批量推):
 
@@ -84,14 +87,14 @@ C:\green\agentInstall\start.ps1 -CenterUrl "http://center.example.com:8080" -Age
 $cred = Get-Credential  # 目标机管理员
 $block = [scriptblock]::Create((Get-Content -Raw 'C:\green\agentInstall\install-agent.ps1'))
 Invoke-Command -ComputerName target01,target02 -Credential $cred -ScriptBlock $block `
-  -ArgumentList @(@('target01','target02'), 'http://center:8080', '<token>', 'ad', 'C:\addashboard\Agent')
+  -ArgumentList @(@('target01','target02'), 'http://center:8080', '<token>', 'non-ad', 'C:\addashboard\Agent')
 ```
 
 ### 3. 验证
 
 ```powershell
-Get-Service ADReplicationAgent      # 状态应为 Running
-Get-Content C:\addashboard\Logs\ADReplicationAgent-stdout.log -Tail 20
+Get-Service memberServiceAgent      # 状态应为 Running
+Get-Content C:\addashboard\Logs\memberServiceAgent-stdout.log -Tail 20
 # 应看到 "center heartbeat ok" 或类似的启动日志
 ```
 
@@ -124,4 +127,4 @@ C:\green\agentInstall\start.ps1
 | 出问题定位 | 翻 verbose log(`/l*v`) | 直接看 PowerShell 输出 |
 | 适用场景 | 生产 / SCCM | 调试 / 空气隔离 / 测试 |
 
-服务名 `ADReplicationAgent` 一致 — 绿色包装出的服务 MSI 能识别,反之亦然。
+服务名 `memberServiceAgent` 一致 — 绿色包装出的服务 MSI 能识别,反之亦然。

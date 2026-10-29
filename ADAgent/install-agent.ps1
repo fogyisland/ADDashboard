@@ -109,7 +109,15 @@ if (-not $AgentSrc) {
     throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout). Verify the bundle layout — agentInstall/ expects agent/, common/, nssm/ as siblings."
   }
 }
-if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
+# R161.23 (2026-10-29) — lineage-aware collector selection. The AD/DC lineage
+# collects replication state via scripts\collect-replication.ps1; the non-AD
+# lineage has no DC replication to collect and uses scripts\collect.ps1.
+# Hard-coding the AD collector here meant a member-server install through this
+# bundle copied the wrong collector and pointed appsettings.json at it.
+if (-not $PsScriptSrc) {
+  $collectorScriptName = if ($AgentType -eq 'non-ad') { 'collect.ps1' } else { 'collect-replication.ps1' }
+  $PsScriptSrc = Join-Path $AgentSrc ('scripts\' + $collectorScriptName)
+}
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 # Pre-flight: Node.js 20 LTS. Green package bundles it at <green>/node/
 # (see installer/build-green-package.ps1 step 4). Search order:

@@ -284,7 +284,7 @@ export function postHeartbeat({ centerUrl, agentToken, port, payload, hostname, 
 }
 
 // R158.48 (2026-10-06) — agent auto-update. Fetch the JS bundle from
-// GET /api/agent/upgrade on the web mount (8080). Reuses signedRequestJson so
+// GET /api/agent/upgrade-non-ad on the web mount (8080). Reuses signedRequestJson so
 // the 4-header HMAC quartet is stamped (X-Agent-Token + X-Agent-Signature +
 // X-Agent-Id + X-Agent-Hostname); method='GET' with body=null makes
 // signRequest hash over the canonical null-string (centre expects this for GET
@@ -305,7 +305,17 @@ export function fetchUpgrade({ centerUrl, agentToken, hostname, agentId }) {
     // web port 8080 — matches the registerAgentUpgradeRoutes mount in
     // src/routes/agent.js (line 1129+ block). fetchConfig at agent.js:323
     // uses the same web port for /config.json.
-    url: `${baseUrl({ centerUrl, port: undefined })}/api/agent/upgrade`,
+    //
+    // R161.22 (2026-10-29) — 端点从 /api/agent/upgrade 改成
+    //   /api/agent/upgrade-non-ad。
+    //   ★ 这个端点是**血统声明**, 不是随便挑的: 中心的签名只覆盖
+    //     `hostname:agentId:body` (centre auth/agent-token.js:104), **不含
+    //     URL** ⇒ 用查询参数声明血统等于「谁都能自称是别的血统」。
+    //     端点本身才是不可伪造的声明 (只有 noad agent.js 会打这个 URL)。
+    //   改之前, 成员代理打的是 /api/agent/upgrade ⇒ 中心端吐的是 **AD 包**
+    //   ⇒ applyUpgradeDelivery 把它原子覆盖到成员服务器自己的目录 ⇒
+    //   成员服务器变成 DC 代理。改之后只拿 noad 包。
+    url: `${baseUrl({ centerUrl, port: undefined })}/api/agent/upgrade-non-ad`,
     headers: {},
     body: null,
     timeoutMs: 60000,
@@ -313,8 +323,8 @@ export function fetchUpgrade({ centerUrl, agentToken, hostname, agentId }) {
     hostname: hbHostname,
     agentId: hbAgentId
   }).then((r) => {
-    log.info({ ok: r.ok, status: r.status, agentId: hbAgentId, endpoint: 'agent.upgrade' },
-      'GET /api/agent/upgrade complete');
+    log.info({ ok: r.ok, status: r.status, agentId: hbAgentId, endpoint: 'agent.upgrade-non-ad' },
+      'GET /api/agent/upgrade-non-ad complete');
     return r;
   });
 }

@@ -41,6 +41,61 @@ import { writeAppsettingsPatchAtomic } from './appsettings-writer.js';
 const EBUSY_RETRY_COUNT = 3;
 const EBUSY_RETRY_DELAY_MS = 250;
 
+// R161.22 (2026-10-29) — 本代理只允许装**同血统**的包。
+//
+//   为什么需要这一层 (纵深防御, 不能只靠中心端):
+//     中心端已经按血统分流了 (routes/agent-upgrade.js 的
+//     selectUpgradeSource + /api/agent/upgrade-non-ad 端点), 但中心端的
+//     分流是**配置/部署**层面的 —— 一旦有人把中心端的包源指错、或者代理
+//     被手工喂了别的血统的 bundle, 后果是「成员服务器的 agent.js +
+//     src/** 被换成 AD 代码」⇒ 成员服务器变成 DC 代理。
+//
+//   判定方式: bundle 里必须带一个 `build-manifest.json`, 且它的
+//   `lineage` 字段**显式**等于 'noad'。
+//     · noadagent/build-manifest.json 里本来就有 "lineage": "noad"
+//       (R158.75 fork 时加的) ⇒ 正常路径 100% 通过。
+//     · AD 血统的 build-manifest.json 没有 lineage 字段 (或将来是 'ad')
+//       ⇒ 这里拒收 ⇒ 成员代理**宁可不动**也不变成 DC 代理。
+//   ★ 这里是「显式要求」而不是「显式排除」: 中心端若回退到旧版本
+//     (manifest 里没有 lineage 字段), 成员代理会拒收 —— 这是**故意的**,
+//     因为「不升级」是可恢复的 (操作员手工推), 「血统被换掉」是不可恢复的。
+const EXPECTED_LINEAGE = 'noad';
+
+/**
+ * checkBundleLineage — 纯函数: 从 bundle 的文件清单里读出血统并判定。
+ *
+ * 判定规则 (noad 端 = **显式要求**):
+ *   · bundle 里没有 build-manifest.json      → ok:false 'missing-build-manifest'
+ *   · build-manifest.json 解析不了            → ok:false 'manifest-unparsable'
+ *   · lineage 字段不是 'noad' (含缺失 / 'ad') → ok:false 'lineage-mismatch'
+ *   · lineage === 'noad'                      → ok:true
+ *
+ * 无 IO、无时钟、无第三方依赖 ⇒ 可离线断言 (回归网
+ * Server/center/tests/agent-upgrade-lineage.test.js 直接 import 本函数)。
+ *
+ * @param {Array<{path?: string, base64?: string}>} files bundle 文件清单
+ * @returns {{ok: boolean, reason: string|null, lineage: string|null}}
+ */
+export function checkBundleLineage(files) {
+  const list = Array.isArray(files) ? files : [];
+  const manifestEntry = list.find((f) => f && f.path === 'build-manifest.json');
+  if (!manifestEntry) {
+    return { ok: false, reason: 'missing-build-manifest', lineage: null };
+  }
+  let parsed = null;
+  try {
+    const decoded = Buffer.from(String(manifestEntry.base64 || ''), 'base64').toString('utf8');
+    parsed = JSON.parse(decoded.replace(/^﻿/, ''));
+  } catch {
+    return { ok: false, reason: 'manifest-unparsable', lineage: null };
+  }
+  const lineage = typeof parsed?.lineage === 'string' ? parsed.lineage : null;
+  if (lineage !== EXPECTED_LINEAGE) {
+    return { ok: false, reason: 'lineage-mismatch', lineage };
+  }
+  return { ok: true, reason: null, lineage };
+}
+
 function sleepSync(ms) {
   const until = Date.now() + ms;
   while (Date.now() < until) { /* tight spin — Windows lacks usleep */ }
@@ -156,6 +211,25 @@ export async function applyUpgradeDelivery({
         envelopeVersion: upgradeVersion, bundleVersion: r.data.version },
       'agent upgrade bundle version skew; aborting');
     return { applied: false, error: 'version-skew' };
+  }
+
+  // R161.22 (2026-10-29) — 血统校验。同源才装, 不同源一律拒收。
+  //
+  //   规则见 checkBundleLineage 的文档: bundle 必须带 build-manifest.json
+  //   且 lineage 显式等于 'noad'。AD 包 / 老包 (无 lineage 字段) 都在这里
+  //   被拒 ⇒ 成员服务器不会被别的血统的代码覆盖。
+  //
+  //   判定放在「已收到 bundle、还没写盘」这一步 —— 此时磁盘上还是干净的,
+  //   拒收的代价是 0。
+  const lineageVerdict = checkBundleLineage(r.data.files);
+  if (!lineageVerdict.ok) {
+    try { rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    logger?.error?.({ event: 'agent.upgrade.error',
+        reason: lineageVerdict.reason,
+        expectedLineage: EXPECTED_LINEAGE,
+        bundleLineage: lineageVerdict.lineage },
+      'agent upgrade bundle lineage mismatch; aborting (refuse to cross lineage)');
+    return { applied: false, error: lineageVerdict.reason };
   }
 
   // Stage 3 — write each file to staging, sha256-verifying as we go.

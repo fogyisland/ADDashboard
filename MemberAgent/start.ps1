@@ -19,8 +19,8 @@
 #   preserves console attachment and surfaces any prompt immediately.
 #
 # Behavior:
-#   - Get-Service ADReplicationAgent registered → HOT UPDATE:
-#       stop service → copy new agent/* + scripts/collect-replication.ps1 →
+#   - Get-Service memberServiceAgent registered → HOT UPDATE:
+#       stop service → copy new agent/* + scripts/collect.ps1 →
 #       npm install --omit=dev → start service. Always restart (per design).
 #   - Not registered → FIRST-TIME INSTALL: if -CenterUrl / -AgentToken were
 #     passed on the command line use them (automation / WinRM); otherwise
@@ -29,7 +29,7 @@
 #     install-agent.ps1, which then converges on the single registration
 #     entry point shared with uninstall-agent.ps1. No duplication.
 #
-# Detect "installed" via Get-Service ADReplicationAgent:
+# Detect "installed" via Get-Service memberServiceAgent:
 #   The service name is the single source of truth (both MSI and green package
 #   register it under the same name). We don't trust file presence at
 #   <InstallPath>\ alone because that could be a partial install from a crash
@@ -44,8 +44,12 @@ param(
   [string]$ComputerName,
   [string]$CenterUrl,
   [string]$AgentToken,
+  # R161.23 (2026-10-29): the default used to be 'ad' — a verbatim copy of
+  # the AD/DC bundle's install chain. The MemberAgent bundle IS the non-AD
+  # lineage (service memberServiceAgent, collector scripts\collect.ps1), so
+  # omitting -AgentType must NOT produce an AD/DC-flavoured install.
   [ValidateSet('ad','non-ad')]
-  [string]$AgentType = 'ad'
+  [string]$AgentType = 'non-ad'
 )
 
 # Set up error logging BEFORE any code that can throw. The trap fires on every
@@ -157,7 +161,7 @@ if ($nodeMajor -ne '20') {
   Write-Step "WARNING: node.exe reports major version $nodeMajor — green package expects 20 LTS. Continuing anyway; if npm install fails, install Node 20 LTS."
 }
 
-$ServiceName = 'ADReplicationAgent'
+$ServiceName = 'memberServiceAgent'
 $installed = [bool](Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)
 
 if (-not $installed) {
@@ -337,7 +341,7 @@ Write-Step "copying $agentSrc → $InstallPath"
 # package layout places source under <root>/agent and default install under
 # <root>/Agent; on Windows those collapse to the same physical directory
 # and Copy-Item refuses to overwrite files with themselves. Skip when src==dst.
-# Save the boolean to $srcEqDst so the single-file collect-replication.ps1
+# Save the boolean to $srcEqDst so the single-file collector-script
 # copy below can gate on the same condition.
 $resolvedSrc = (Resolve-Path -LiteralPath $agentSrc -ErrorAction SilentlyContinue).ProviderPath
 $resolvedDst = (Resolve-Path -LiteralPath $InstallPath -ErrorAction SilentlyContinue).ProviderPath
@@ -376,20 +380,30 @@ if ($srcEqDst) {
   $LASTEXITCODE = 0
 }
 
-# Copy latest collect-replication.ps1 to the runtime scripts\ dir. install-agent.ps1
+# Copy the lineage's collector script to the runtime scripts\ dir. install-agent.ps1
 # does this on first install too; doing it again here keeps the running service
 # in sync after the upgrade. Skipped on Windows case-collision (src==dst)
 # because the file is already in place; copy would fail with "Cannot use the
 # item itself to overwrite the item".
+#
+# R161.23 (2026-10-29): the script was hardcoded to the AD/DC collector
+# collect-replication.ps1. The MemberAgent bundle is the NON-AD lineage and
+# ships exactly one collector: scripts\collect.ps1 (eventlog + ADWeb + DFSR).
+# Hardcoding the DC collector here made every hot-update on a member server
+# fail with "Cannot find path ... collect-replication.ps1".
+$collectorScriptName = if ($AgentType -eq 'non-ad') { 'collect.ps1' } else { 'collect-replication.ps1' }
+$collectorSrcPath = Join-Path $agentSrc ('scripts\' + $collectorScriptName)
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 if (-not (Test-Path $psScriptDstDir)) {
   New-Item -ItemType Directory -Path $psScriptDstDir -Force | Out-Null
 }
 if ($srcEqDst) {
-  Write-Step "src==dst; skipping collect-replication.ps1 single-file copy (already in place)"
+  Write-Step "src==dst; skipping $collectorScriptName single-file copy (already in place)"
 } else {
-  Copy-Item -Path (Join-Path $agentSrc 'scripts\collect-replication.ps1') `
-            -Destination $psScriptDstDir -Force
+  if (-not (Test-Path -LiteralPath $collectorSrcPath)) {
+    throw ("collector script not found: '$collectorSrcPath'. agentType='$AgentType' expects 'scripts\collect.ps1' in the non-AD lineage — verify the green package layout.")
+  }
+  Copy-Item -Path $collectorSrcPath -Destination $psScriptDstDir -Force
 }
 
 # Prepend the install-path node dir to PATH so npm install uses the same Node
@@ -428,8 +442,10 @@ try {
 #   ADAgent/agent     -> better-sqlite3, pino
 #   MemberAgent/agent -> pino
 # 为什么不写一个跨 lineage 的公共集合: member 的 agent 根本不用
-# better-sqlite3 (member 的 src/local-queue.js 是 AD 采集线的死文件, 全树没人
-# import 它), 硬塞进去等于给非 AD 服务器凭空加一个原生模块依赖。
+# better-sqlite3。R161.23 起, AD 采集线的 src/local-queue.js (member 树里
+# 唯一 import better-sqlite3 的模块, 而且本来就没人 import 它) 已经从
+# member bundle 里**彻底删除** —— 硬塞进去等于给非 AD 服务器凭空加一个
+# 原生模块依赖。
 # R160 实测: 两条 lineage 的 package.json 都曾经留着 axios / better-sqlite3
 # 这两条**陈旧声明** (member 那份是从 AD 复制过来的), 现已按实测集合清理:
 #   ADAgent/agent/package.json     -> better-sqlite3, pino
@@ -445,8 +461,8 @@ $RequiredRuntimeModules = @('pino')
 # 依赖可用:
 #   - <InstallPath> 里没有 package.json 时, npm install 什么都不装, 照样退出 0
 #   - 依赖装到了上级目录 (npm workspaces 提升) 时, 本地目录看着是空的
-# 依赖缺失 ⇒ agent.js 的**静态** import (agent.js → src/local-queue.js →
-# import Database from 'better-sqlite3') 在启动第一秒就炸 ⇒ NSSM 拉起 → 再崩
+# 依赖缺失 ⇒ agent.js 的**静态** import (agent.js → src/logger.js →
+# import pino from 'pino') 在启动第一秒就炸 ⇒ NSSM 拉起 → 再崩
 # ⇒ 崩溃重启循环。而且下面那个 "等 20s 变 Running" 的循环在崩溃重启的窗口里
 # **会看到 Running** ⇒ 脚本误报"启动成功", 操作员以为装好了, 现场却在刷日志。
 #

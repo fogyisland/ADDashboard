@@ -14,7 +14,7 @@
 [CmdletBinding()]
 param(
   [string]$LogDir = 'C:\agentInstall\agent\Logs',
-  [string]$ServiceName = 'ADReplicationAgent',
+  [string]$ServiceName = 'memberServiceAgent',
   [int]$RetentionDays = 7,
   [switch]$DryRun  # list candidates without deleting
 )

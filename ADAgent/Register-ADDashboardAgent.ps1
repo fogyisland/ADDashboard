@@ -141,6 +141,20 @@ $ServiceName = 'ADReplicationAgent'
 # the schema this contract satisfies).
 # ============================================================================
 function Write-AppsettingsJson {
+  # R161.23 (2026-10-29) — lineage-aware collector path (see the comment at
+  # the psScriptPath entry below). The AD/DC lineage runs the replication
+  # collector plus the discovery collector; the non-AD lineage runs one
+  # collector only (scripts\collect.ps1).
+  $collectorScriptPath = if ($AgentType -eq 'non-ad') {
+    (Join-Path $InstallPath 'scripts\collect.ps1')
+  } else {
+    (Join-Path $InstallPath 'scripts\collect-replication.ps1')
+  }
+  $discoveryScriptPath = if ($AgentType -eq 'non-ad') {
+    $collectorScriptPath
+  } else {
+    (Join-Path $InstallPath 'scripts\collect-discovery.ps1')
+  }
   $cfg = [ordered]@{
     centerUrl                = $CenterUrl
     agentId                  = $env:COMPUTERNAME
@@ -150,8 +164,13 @@ function Write-AppsettingsJson {
     heartbeatIntervalSeconds = 5
     discoveryIntervalHours   = 1
     queueDbPath              = (Join-Path $InstallPath 'queue.db')
-    psScriptPath             = (Join-Path $InstallPath 'scripts\collect-replication.ps1')
-    psDiscoveryScriptPath    = (Join-Path $InstallPath 'scripts\collect-discovery.ps1')
+    # R161.23 (2026-10-29): lineage-aware collector path. Previously these two
+    # paths were hard-coded to the AD/DC collectors ⇒ installing a member
+    # agent through this bundle wrote the **AD/DC** collector into
+    # appsettings.json ⇒ a member server would run a DC replication collector
+    # it has no data for.
+    psScriptPath             = $collectorScriptPath
+    psDiscoveryScriptPath    = $discoveryScriptPath
     healthCheckIntervalMs    = 600000
     agentType                = $AgentType
     # 2026-10-02 R0.1.1+ — dashboard integration. New installs get the safe

@@ -5,7 +5,7 @@
 - 采集脚本(collect.ps1 源码)
 - 最近报表(每个包最近一次 collect 的输出)
 - 运行日志(`Logs/` + `agent/Logs/`)
-- 服务状态(`Get-Service ADReplicationAgent`)
+- 服务状态(`Get-Service memberServiceAgent`)
 
 零第三方依赖(Node 20+ 内置 `http` / `fs` / `crypto` / `child_process`)。
 单文件 `server.js`,前端 HTML/CSS/JS 内嵌。
@@ -127,9 +127,9 @@ LAN 访问,请:
    让 `agent/agent.js` 在同进程里启动 dashboard(共用 Node 进程、事件循环、
    文件句柄),不需要 IPC 也不需要文件通知。
 
-## 与 ADReplicationAgent 服务的关系
+## 与 memberServiceAgent 服务的关系
 
-- 不启停 `ADReplicationAgent`
+- 不启停 `memberServiceAgent`
 - 不改任何文件(只读)
 - agent 把收集结果落盘到 `agent/data/last-collect/` 是**独立的功能**,
   即使 dashboard 没启动,agent 也会照常运行和落盘

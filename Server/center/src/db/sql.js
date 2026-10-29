@@ -1837,9 +1837,20 @@ const VARIANTS = {
       // routes/agent-packages.js to replace db.sql.installedPackages.listEnabled.
       // Filter on package_policies.enabled=1 so the agent never sees a
       // disabled package — matches runner.js JOIN_SELECT_MYSQL.
+      //
+      // R161.21 (2026-10-29) — 加选 pp.scope. 根因: 非 AD (member-server)
+      // 代理的客户端过滤器 shouldRunPackageForNonAd 要求 pkg.scope ===
+      // 'agent_type:non-ad', 但 scope 之前只存在于 package_policies.scope
+      // 这一列, 从未出现在 wire 上 ⇒ 成员代理实测「14 包输入 → 0 包通过」
+      // ⇒ 成员侧三条数据线 (member_os_baseline_collector /
+      // member_eventlog_collector / member_admin_groups) 永远跑不起来.
+      // scope 是权威信号 (manifest.agent.type 不可信: ad_os_baseline
+      // 1.0.3~1.0.9 的 manifest.agent.type 至今仍写着 'non-ad', 而它的
+      // scope 是 'agent_type:ad' — builtin-packages.js SCOPE_OVERRIDE
+      // 注释已明确记为 "legacy 错例"). 修法 = 把 DB 的 scope 列原样送出.
       listEnabledGlobal: `SELECT ps.name, ps.version, ps.script_sha256, ps.manifest_json,
                                  pp.interval_sec, pp.timeout_ms, pp.enabled, pp.params_json,
-                                 ps.source, ps.created_at, ps.updated_at
+                                 pp.scope, ps.source, ps.created_at, ps.updated_at
                           FROM package_scripts ps
                           INNER JOIN package_policies pp ON ps.name = pp.name
                           WHERE pp.enabled = 1
@@ -5400,9 +5411,11 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       // T14: JOIN helper for the cross-package agent view. Same SQL as
       // the MySQL helper — `?` placeholders are dialect-portable via the
       // mssql driver wrapper. Mirrors runner.js JOIN_SELECT_MSSQL.
+      // R161.21 (2026-10-29) — 同 MySQL 侧: 加选 pp.scope, 让成员代理的
+      // 客户端 scope 过滤器能拿到权威信号 (详见 MySQL 侧注释).
       listEnabledGlobal: `SELECT ps.name, ps.version, ps.script_sha256, ps.manifest_json,
                                  pp.interval_sec, pp.timeout_ms, pp.enabled, pp.params_json,
-                                 ps.source, ps.created_at, ps.updated_at
+                                 pp.scope, ps.source, ps.created_at, ps.updated_at
                           FROM package_scripts ps
                           INNER JOIN package_policies pp ON ps.name = pp.name
                           WHERE pp.enabled = 1

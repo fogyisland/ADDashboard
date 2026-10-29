@@ -5,14 +5,19 @@ param(
   [Parameter(Mandatory)][string[]]$ComputerName,
   [Parameter(Mandatory)][string]$CenterUrl,
   [Parameter(Mandatory)][string]$AgentToken,
-  # T16: agent type discriminator. 'ad' (default) installs the legacy DC
-  # collector with DisplayName "AD Replication Agent (on <host>)"; 'non-ad'
-  # installs the member-server runtime with DisplayName "AD Dashboard
-  # Agent (Member)" and persists agentType to appsettings.json so the
-  # running process picks it up on next start. Backward compatible: callers
-  # who omit the param keep the pre-T16 behavior.
+  # T16: agent type discriminator. 'non-ad' (DEFAULT in this bundle) installs
+  # the member-server runtime with DisplayName "AD Dashboard Agent (Member)"
+  # and persists agentType to appsettings.json so the running process picks it
+  # up on next start; 'ad' installs the legacy DC collector with DisplayName
+  # "AD Replication Agent (on <host>)".
+  #
+  # R161.23 (2026-10-29): the default used to be 'ad' — a verbatim copy of
+  # the AD/DC bundle's install chain. On a member server that produced an
+  # AD/DC-flavoured appsettings.json (agentType='ad') AND selected the AD
+  # collector script, i.e. the member agent asked the centre for DC lineage.
+  # The MemberAgent bundle IS the non-AD lineage => default is 'non-ad'.
   [ValidateSet('ad','non-ad')]
-  [string]$AgentType = 'ad',
+  [string]$AgentType = 'non-ad',
   [string]$InstallPath,
   # Internal-use parameters for remote-install forwarding. When the script runs
   # in a remote session, $PSScriptRoot is null; we pre-resolve and pass these
@@ -62,7 +67,7 @@ if (-not $InstallPath) {
 # Install. This script remains for:
 #   - WinRM-based remote install to multiple machines from a management box
 #   - Air-gapped environments where pulling the MSI binary is undesirable
-# Both paths produce the same service name (ADReplicationAgent) and the same
+# Both paths produce the same service name (memberServiceAgent) and the same
 # NSSM configuration, so you can switch between them freely.
 #
 # 2026-08-23 split: this script now ONLY does file copy + `npm install`; the
@@ -109,7 +114,23 @@ if (-not $AgentSrc) {
     throw "agent/ source not found. Tried '$greenPkgAgent' (green-package layout) and '$devTreeAgent' (dev-tree layout). Verify the bundle layout — agentInstall/ expects agent/, common/, nssm/ as siblings."
   }
 }
-if (-not $PsScriptSrc) { $PsScriptSrc = Join-Path $AgentSrc 'scripts\collect-replication.ps1' }
+# Collector script for this lineage.
+#
+# The MemberAgent bundle is the NON-AD lineage and ships exactly ONE collector:
+#   scripts\collect.ps1  (eventlog + ADWeb + DFSR)
+# The AD/DC collectors (collect-replication.ps1 / collect-discovery.ps1) are
+# NOT part of this lineage — R158.75 removed them from the NoAD source tree,
+# and R161.23 removed the stale copies that the hand-copied green bundle was
+# still carrying. Pointing this at collect-replication.ps1 made the install
+# chain copy an AD/DC collector into a member server.
+#
+# The 'ad' branch is kept only so a caller that explicitly asks for the DC
+# collector gets a precise "file not shipped" error instead of a mystery
+# Copy-Item failure further down.
+if (-not $PsScriptSrc) {
+  $collectorScriptName = if ($AgentType -eq 'non-ad') { 'collect.ps1' } else { 'collect-replication.ps1' }
+  $PsScriptSrc = Join-Path $AgentSrc ('scripts\' + $collectorScriptName)
+}
 $psScriptDstDir = Join-Path $InstallPath 'scripts'
 # Pre-flight: Node.js 20 LTS. Green package bundles it at <green>/node/
 # (see installer/build-green-package.ps1 step 4). Search order:
@@ -145,7 +166,7 @@ function Install-LocalAgent {
   # (e.g. C:\agentInstall\agent and C:\agentInstall\Agent both map to one
   # dir). Copy-Item then refuses with "Cannot use the item itself to
   # overwrite the item" on every file. Skip BOTH the recursive code copy AND
-  # the single-file collect-replication.ps1 copy when source==dest — the
+  # the single-file collector-script copy when source==dest — the
   # agent code is already in place; npm install + service registration
   # below still run. (Real install run on KDLWXOFADSRV1 hit this.)
   $resolvedSrc = (Resolve-Path -LiteralPath $AgentSrc -ErrorAction SilentlyContinue).ProviderPath
@@ -155,6 +176,15 @@ function Install-LocalAgent {
     Write-Step "source and install path resolve to the same directory ($resolvedSrc); skipping code copy (agent code already in place)"
   } else {
     Copy-Item -Path (Join-Path $AgentSrc '*') -Destination $InstallPath -Recurse -Force -Exclude 'node_modules','tests','appsettings.json','Logs','data'
+    # R161.23 — fail loud when the lineage's collector script is missing.
+    # A raw Copy-Item "cannot find path" error deep in the install is a
+    # support ticket; this names the file and the lineage that expects it.
+    if (-not (Test-Path -LiteralPath $PsScriptSrc)) {
+      throw ("collector script not found: '$PsScriptSrc'. " +
+             "agentType='$AgentType' expects 'scripts\collect.ps1' in the non-AD lineage " +
+             "(the MemberAgent bundle ships no AD/DC collector). " +
+             "Verify the green package layout — agent/scripts/ must contain collect.ps1.")
+    }
     Copy-Item -Path $PsScriptSrc -Destination $psScriptDstDir -Force
   }
 
@@ -240,8 +270,10 @@ function Install-LocalAgent {
   #   ADAgent/agent     -> better-sqlite3, pino
   #   MemberAgent/agent -> pino
   # 为什么不写一个跨 lineage 的公共集合: member 的 agent 根本不用
-  # better-sqlite3 (member 的 src/local-queue.js 是 AD 采集线的死文件, 全树没人
-  # import 它), 硬塞进去等于给非 AD 服务器凭空加一个原生模块依赖。
+  # better-sqlite3。R161.23 起, AD 采集线的 src/local-queue.js (member 树里
+  # 唯一 import better-sqlite3 的模块, 而且本来就没人 import 它) 已经从
+  # member bundle 里**彻底删除** —— 硬塞进去等于给非 AD 服务器凭空加一个
+  # 原生模块依赖。
   # R160 实测: 两条 lineage 的 package.json 都曾经留着 axios / better-sqlite3
   # 这两条**陈旧声明** (member 那份是从 AD 复制过来的), 现已按实测集合清理:
   #   ADAgent/agent/package.json     -> better-sqlite3, pino
@@ -256,7 +288,7 @@ function Install-LocalAgent {
   # ---- 装完必须复验: agent 的运行时依赖到底能不能被解析出来 ----------------
   # 旧实现"装完就算成功" ⇒ 依赖其实没装上时, 服务照样注册并启动, 然后在
   # 第一次 import 时炸掉。agent.js 是**静态** import:
-  #   agent.js → src/local-queue.js → import Database from 'better-sqlite3'
+  #   agent.js → src/logger.js → import pino from 'pino'
   # 依赖缺失 ⇒ 进程在启动的第一秒就崩 ⇒ NSSM 拉起 → 再崩 (崩溃重启循环,
   # 正是 R121 / R123 / R124 那一族现场故障的形态)。
   # 判据: **能不能被 require 解析**, 而不是"有没有 node_modules 目录"
