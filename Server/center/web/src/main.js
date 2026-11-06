@@ -36,6 +36,13 @@ import { useInappNotificationsStore } from './stores/inappNotifications.js';
 //     不阻塞渲染 (fail-soft: 时区拿不到不该让整个应用起不来)。
 import { adminApi } from './api/admin.js';
 import { applyServerTimezone } from './lib/timezone.js';
+// R159 重放 (2026-11-06) — 初始化状态闸门。init 模式下后端**只挂 /api/init/*
+//   + 静态页**, 任何 /api/admin/* 必 404 (server.js `if (needsInit)` 分支)。
+//   三个后台轮询 (license-state / feature-flags / system-alerts) 在向导期间
+//   打过去 = 100% 白噪音。正确的 gate 信号是服务端权威状态 /api/init/status,
+//   不是 localStorage 里有没有残留 token (init 阶段根本没有管理员用户)。
+//   fail-closed: 状态未知 → 一个轮询都不起。详见 lib/initState.js 头注释。
+import { getInitState, isBackgroundPollingAllowed, resetInitState } from './lib/initState.js';
 
 const app = createApp(App);
 app.use(createPinia());
@@ -46,12 +53,6 @@ const auth = useAuthStore();
 const ff = useFeatureFlagsStore();
 const ls = useLicenseStateStore();
 const inapp = useInappNotificationsStore();
-
-// R158.License-expiry (2026-10-15) — license state 30s polling. 公开端点
-//   (NO middleware, R158.103 precedent), 登录前 LoginView 也要查, 0 走
-//   isLoggedIn gate. main.js 启 1 次, 跟 featureFlags polling 1:1 平行
-//   shape 但无条件启 (featureFlags 受 token 状态 gate 控).
-ls.startPolling();
 
 function startFlagsPolling() {
   // duplicate-call safe — store 内部 _timer guard (featureFlags.js:41-43)
@@ -66,10 +67,6 @@ function startInappPolling() {
   inapp.fetch({ force: true }).then(() => inapp.startPolling(30000));
 }
 
-if (auth.isLoggedIn) startFlagsPolling();
-if (auth.isLoggedIn) startInappPolling();
-if (auth.isLoggedIn) loadServerTimezone();
-
 // R161.11 (2026-10-26) — 拉服务端权威显示时区. 失败不阻塞应用 (fail-soft):
 //   拉不到就继续用 localStorage / 浏览器本地时区渲染, 后台日志会留痕。
 function loadServerTimezone() {
@@ -81,6 +78,37 @@ function loadServerTimezone() {
       console.warn('[main] 拉取服务端显示时区失败, 回落本地时区:', e?.message);
     });
 }
+
+// R159 重放 — 三个后台轮询统一走 ensureBackgroundPolls():
+//   先问 getInitState(), isBackgroundPollingAllowed 为 false (还在初始化
+//   **或状态未知**) → 一个都不起。幂等 (backgroundPollsStarted +
+//   backgroundPollsStarting 挡并发重入)。这是**唯一**的轮询启动入口 ——
+//   模块顶层不许裸 startPolling (回归测试 tests/web-init-state.test.js
+//   的源码级不变量会盯住这一点)。
+let backgroundPollsStarted = false;
+let backgroundPollsStarting = false;
+
+function ensureBackgroundPolls() {
+  if (backgroundPollsStarted || backgroundPollsStarting) return;
+  backgroundPollsStarting = true;
+  getInitState()
+    .then((state) => {
+      backgroundPollsStarting = false;
+      if (!isBackgroundPollingAllowed(state)) return; // fail-closed: init 中或状态未知
+      backgroundPollsStarted = true;
+      // license-state 是公开端点 (NO middleware), 登录前后都要查 → 无条件启;
+      // feature-flags / inapp 走各自 isLoggedIn gate (与历史行为一致)。
+      ls.startPolling();
+      if (auth.isLoggedIn) startFlagsPolling();
+      if (auth.isLoggedIn) startInappPolling();
+      if (auth.isLoggedIn) loadServerTimezone();
+    })
+    .catch(() => {
+      backgroundPollsStarting = false;
+    });
+}
+
+ensureBackgroundPolls();
 
 // 登录态变化:登入起 (token 由 null → string, _timer 还没建) ;
 // 登出停 (token 由 string → null, _timer 已建). 同一 callback 双方向
