@@ -1,0 +1,35 @@
+PUBLISH REPORT
+================
+Source: D:/dashboard (D:\dashboard\ 完整 root 1:1 还原)
+Target: D:/Implementation/Server
+Backup: D:/Implementation/Server.bak.20261019-1792579566718
+Date: 2026-10-21T10:46:22.779Z
+
+Version: @ad-dashboard/center@0.1.0
+center/dist/index.html mtime: 2026-10-21T10:43:16.516Z
+
+1:1 还原策略 (操作员 directive 2026-10-19 "我要的是 dashboard"):
+  - 严格 1:1 还原 D:\dashboard\ 完整 root → D:\Implementation\Server\
+  - 含 agent/ + noadagent/ (DC fleet 1-click 部署用, 8.30 MB agent 源)
+  - 含 db/ + diag/ + node/ + scripts/ (老 dev 工具 + ship scripts)
+  - 含 center/ (中心端 1:1 还原)
+  - 含 start.bat + start.ps1 + build-manifest.json (启动脚本 + manifest)
+  - 含 adsiteLink.jpg + sitelink.png (静态资源)
+
+EXCLUDE (仅 2 类):
+  - node_modules/ (外部 dep, 后续服务器必 npm ci)
+  - .scratch/ (dev artifact, 0 必 ship)
+  - .env 真值 (R158.95-ext DB password 锁, 改生成 .env.example 模板)
+
+后续服务器部署步骤 (deploy/ 5 脚本 1-click, 含 NSSM 工具):
+  1. copy D:/Implementation/Server -> target server
+  2. install nodejs v22+ (choco install nodejs), NSSM 已在镜像 nssm/ 目录
+  3. cd target/server
+  4. cp .env.example .env + 填真值 (DB_PWD / LICENSE_KEY / JWT_SECRET)
+  5. powershell -ExecutionPolicy Bypass -File .\deploy\install-service.ps1
+  6. powershell -ExecutionPolicy Bypass -File .\deploy\start.ps1 -Wait
+  7. powershell -ExecutionPolicy Bypass -File .\deploy\verify.ps1 (后续 health check)
+
+本 ship 0 注册 NSSM 服务, 0 启动服务 (操作员 directive "仅 copy, 0 注册服务" → 走 deploy/ 5 脚本).
+deploy/ 目录含 5 PowerShell 脚本 + README: install-service.ps1 / start.ps1 / stop.ps1 / verify.ps1 / uninstall-service.ps1.
+0 落 DB_PWD/LICENSE_KEY/JWT_SECRET 到 NSSM 注册表 (R158.95-ext 锁), server.js 启动时 dotenv 读 .env.

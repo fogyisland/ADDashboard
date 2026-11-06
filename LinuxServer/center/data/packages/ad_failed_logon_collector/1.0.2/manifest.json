@@ -1,0 +1,15 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.2",
+  "type": "gauge",
+  "description": "R158.50.7c (2026-10-07) supersedes 1.0.1. Two fixes: (A) line 158 `[xml]$e.ToXml()` PS5.1 type cast XmlElement to XmlDocument throws on first iteration -> catch -> events=[] + error_code=1. Fix: use XmlDocument via `$doc.LoadXml($e.ToXml())` (XmlDocument constructor accepts string, not XmlElement). Also: Get-WinEvent -ErrorAction Stop is replaced with -ErrorAction SilentlyContinue 2>$null + if-else branch (0 events in 30min is normal at quiet DC, no catch needed). (B) Add 'ok' placeholder to stdout JSON `error` field (nullable was being swallowed by agent 0.1.1 pre-R158.50.6 runner.js; even after agent 0.1.2 upgrade, the 'ok' string lets agent runner ignore normal-case without polluting DB `error` column). error_code bit semantics unchanged. 1.0.0 -> 1.0.1 was R158.50.7 strip-zh; this 1.0.2 adds the [xml] cast fix + 'ok' placeholder + 0-hits no-catch. minVersion bump 0.1.0 -> 0.1.2 because new runner.js finish() stderr field + 'ok' filter are required for accurate DB stderr_preview+error columns.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 1800
+  }
+}

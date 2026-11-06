@@ -1,0 +1,314 @@
+<!--
+  2026-08-31 R75 — GroupMembersModal.vue.
+  Per spec §4.4 — split-pane: existing members (paginated, multi-select) +
+  search-to-add picker. Buttons: 添加选中, 移除选中, 全部替换 (with extra
+  confirm).
+  Submits `group_list_members`, `group_add_member`, `group_remove_member`,
+  `group_set_members`.
+  data-test: group-members-modal / list-table / add / remove / replace.
+-->
+<template>
+  <div class="modal-bg" @click.self="cancel">
+    <div class="modal large" data-test="group-members-modal">
+      <header><h3>成员管理 — {{ name }}</h3></header>
+      <section class="form-body">
+        <div v-if="loading" class="hint">加载成员列表中…</div>
+        <div v-if="error" class="error">{{ error }}</div>
+
+        <div class="pane">
+          <div class="pane-header">
+            <h4>当前成员 ({{ members.length }})</h4>
+          </div>
+          <table v-if="members.length" class="t">
+            <thead>
+              <tr>
+                <th class="checkbox-col"><input type="checkbox" v-model="allSelected" @change="toggleSelectAll" /></th>
+                <th>登录名</th>
+                <th>DN</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in members" :key="m.sam" class="member-row">
+                <td class="checkbox-col"><input type="checkbox" :value="m.sam" v-model="selectedToRemove" /></td>
+                <td><code>{{ m.sam }}</code></td>
+                <td><code class="dn">{{ m.dn || '—' }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else-if="!loading" class="empty">该组暂无成员</div>
+        </div>
+
+        <div class="pane">
+          <div class="pane-header">
+            <h4>添加成员 (登录名列表，用逗号或空格分隔)</h4>
+          </div>
+          <textarea
+            data-test="group-members-add-input"
+            v-model="addInput"
+            rows="3"
+            placeholder="例如: alice, bob, charlie"
+            :disabled="submitting"
+          ></textarea>
+          <small class="hint">可粘贴 DN 列表，服务器端会尝试按登录名解析</small>
+        </div>
+
+        <p v-if="submitting && !resultMessage" class="hint">命令已发送到 DC · 命令 ID #{{ activeCommand?.id }}</p>
+        <p v-if="submitting && timedOut" class="error">命令执行超时，正在查询状态…</p>
+        <p v-if="resultMessage" :class="['result', resultOk ? 'ok' : 'err']" data-test="group-members-result">{{ resultMessage }}</p>
+
+        <div v-if="confirmReplace" class="warn-banner">
+          ⚠ 全部替换将先清空成员列表再加入新成员。继续？
+          <div class="confirm-actions">
+            <button type="button" class="secondary" @click="confirmReplace = false">取消</button>
+            <button type="button" class="danger" @click="doReplace" data-test="group-members-replace-confirm">确认替换</button>
+          </div>
+        </div>
+      </section>
+      <footer>
+        <button type="button" data-test="group-members-close" @click="cancel" :disabled="submitting">关闭</button>
+        <button
+          type="button"
+          data-test="group-members-add"
+          @click="addMembers"
+          :disabled="submitting || !props.targetDc || !addInput.trim()"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
+        >添加选中</button>
+        <button
+          type="button"
+          data-test="group-members-remove"
+          @click="removeMembers"
+          :disabled="submitting || !props.targetDc || !selectedToRemove.length"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
+        >移除选中 ({{ selectedToRemove.length }})</button>
+        <button
+          type="button"
+          data-test="group-members-replace"
+          class="danger"
+          @click="askReplace"
+          :disabled="submitting || !props.targetDc"
+          :title="!props.targetDc ? '请先选择目标 DC' : ''"
+        >全部替换</button>
+      </footer>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, watch, onMounted } from 'vue';
+import { adAdminApi } from '../../api/ad-admin.js';
+import { useCommandPolling } from '../../composables/useCommandPolling.js';
+
+const props = defineProps({
+  targetDc: { type: String, required: true },
+  name: { type: String, required: true }
+});
+const emit = defineEmits(['close', 'changed']);
+
+const members = ref([]);
+const loading = ref(true);
+const error = ref('');
+const selectedToRemove = ref([]);
+const allSelected = ref(false);
+const addInput = ref('');
+const confirmReplace = ref(false);
+const submitting = ref(false);
+const resultMessage = ref('');
+const resultOk = ref(false);
+const activeCommand = ref(null);
+const timedOut = ref(false);
+
+// NIT #9: remove dead state vars (`replaceTarget`, `toggles`) — they were
+// declared but never read or written by anyone. Keeping the load poll
+// + the mutate poll sharing one composable via the action-mode flag below.
+const mode = ref('list'); // 'list' | 'mutate'
+
+const polling = useCommandPolling(null, { intervalMs: 1500, timeoutMs: 30_000 });
+watch(polling.timedOut, (v) => { if (v) timedOut.value = true; });
+watch(polling.isTerminal, async (terminal) => {
+  if (!terminal) return;
+  const r = polling.command.value;
+  if (!r) return;
+  const currentMode = mode.value;
+  if (r.status === 'success') {
+    if (currentMode === 'list') {
+      members.value = r.result?.members || [];
+      loading.value = false;
+    } else {
+      resultMessage.value = formatResult(r.result, lastCommandType.value);
+      resultOk.value = true;
+      submitting.value = false;
+      emit('changed', r);
+      // Refresh the member list to reflect the mutation.
+      mode.value = 'list';
+      try {
+        const resp = await adAdminApi.queueCommand({
+          targetDc: props.targetDc,
+          commandType: 'group_list_members',
+          params: { name: props.name, page: 1, size: 100 }
+        });
+        if (resp.data?.id) polling.start(resp.data);
+      } catch (e) {
+        // Refresh failed — leave the table as-is; the operator can
+        // close + reopen to reload.
+        loading.value = false;
+      }
+    }
+  } else {
+    if (currentMode === 'list') {
+      error.value = r.errorMessage || `命令${r.status}`;
+      loading.value = false;
+    } else {
+      resultMessage.value = r.errorMessage || `命令${r.status}`;
+      resultOk.value = false;
+      submitting.value = false;
+    }
+  }
+});
+
+const lastCommandType = ref('');
+
+function toggleSelectAll() {
+  if (allSelected.value) selectedToRemove.value = members.value.map(m => m.sam);
+  else selectedToRemove.value = [];
+}
+
+async function loadMembers() {
+  loading.value = true;
+  error.value = '';
+  try {
+    const resp = await adAdminApi.queueCommand({
+      targetDc: props.targetDc,
+      commandType: 'group_list_members',
+      params: { name: props.name, page: 1, size: 100 }
+    });
+    if (!resp.data?.id) { loading.value = false; error.value = '排队失败'; return; }
+    mode.value = 'list';
+    polling.start(resp.data);
+  } catch (e) {
+    error.value = e?.response?.data?.error || e?.message || '加载失败';
+    loading.value = false;
+  }
+}
+
+function parseMembers(input) {
+  return input.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+}
+
+async function runCommand(commandType, params) {
+  submitting.value = true;
+  resultMessage.value = '';
+  timedOut.value = false;
+  lastCommandType.value = commandType;
+  try {
+    const resp = await adAdminApi.queueCommand({
+      targetDc: props.targetDc,
+      commandType,
+      params
+    });
+    activeCommand.value = resp.data;
+    mode.value = 'mutate';
+    polling.start(resp.data);
+  } catch (e) {
+    error.value = e?.response?.data?.error || e?.message || '提交失败';
+    submitting.value = false;
+  }
+}
+
+function formatResult(res, commandType) {
+  if (!res) return '完成';
+  if (commandType === 'group_add_member') {
+    return `已添加 ${res.added?.length || 0} · 已是成员 ${res.alreadyMembers?.length || 0}`;
+  }
+  if (commandType === 'group_remove_member') {
+    return `已移除 ${res.removed?.length || 0} · 非成员 ${res.notMembers?.length || 0}`;
+  }
+  if (commandType === 'group_set_members') {
+    return `替换完成 — 新增 ${res.added?.length || 0} · 移除 ${res.removed?.length || 0}`;
+  }
+  return '完成';
+}
+
+async function addMembers() {
+  const list = parseMembers(addInput.value);
+  if (!list.length) return;
+  await runCommand('group_add_member', { name: props.name, members: list });
+  addInput.value = '';
+  selectedToRemove.value = [];
+  allSelected.value = false;
+}
+
+async function removeMembers() {
+  const list = [...selectedToRemove.value];
+  if (!list.length) return;
+  await runCommand('group_remove_member', { name: props.name, members: list });
+  selectedToRemove.value = [];
+  allSelected.value = false;
+}
+
+function askReplace() {
+  confirmReplace.value = true;
+}
+
+async function doReplace() {
+  confirmReplace.value = false;
+  const list = parseMembers(addInput.value);
+  if (!list.length) {
+    error.value = '请输入新成员列表';
+    return;
+  }
+  await runCommand('group_set_members', { name: props.name, members: list });
+  addInput.value = '';
+  selectedToRemove.value = [];
+  allSelected.value = false;
+}
+
+function cancel() {
+  polling.stop();
+  emit('close');
+}
+
+onMounted(loadMembers);
+</script>
+
+<style scoped>
+.modal-bg { position: fixed; inset: 0; background: var(--modal-backdrop); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; min-width: 580px; max-width: 760px; max-height: 90vh; display: flex; flex-direction: column; }
+.modal.large { min-width: 760px; max-width: 920px; }
+.modal header { padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.modal header h3 { margin: 0; font-size: 15px; }
+.form-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.pane { background: var(--input-bg); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.pane-header h4 { margin: 0; font-size: 13px; }
+.pane-header { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+.t th, .t td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.t th { background: var(--panel-alt); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.t code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.t .dn { color: var(--muted); }
+.checkbox-col { width: 28px; }
+textarea {
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 6px 8px; font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  resize: vertical;
+}
+textarea:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+.hint { color: var(--muted); font-size: 11px; margin: 0; }
+.empty { color: var(--muted); padding: 8px 0; font-size: 12px; }
+.error { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--status-pill-fg-err); padding: 6px 10px; border-radius: 3px; font-size: 12px; margin: 0; }
+.warn-banner {
+  background: color-mix(in srgb, var(--yellow) 15%, transparent); color: var(--status-pill-fg-warn);
+  padding: 8px 12px; border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--yellow) 30%, transparent);
+  font-size: 12px; margin: 0;
+}
+.confirm-actions { display: flex; gap: 8px; margin-top: 6px; }
+.result.ok { background: color-mix(in srgb, var(--green) 15%, transparent); color: var(--status-pill-fg-ok); padding: 6px 10px; border-radius: 3px; font-size: 12px; margin: 0; }
+.result.err { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--status-pill-fg-err); padding: 6px 10px; border-radius: 3px; font-size: 12px; margin: 0; }
+.modal footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.modal footer button { padding: 6px 14px; border: 1px solid var(--border); background: var(--input-bg); color: var(--text); border-radius: 3px; cursor: pointer; font-size: 13px; }
+.modal footer button.danger { background: var(--red); color: var(--sidebar-bg); border-color: var(--red); }
+.modal footer button.secondary { background: var(--input-bg); }
+.modal footer button:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>

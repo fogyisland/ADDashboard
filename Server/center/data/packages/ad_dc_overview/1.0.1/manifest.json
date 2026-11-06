@@ -1,0 +1,15 @@
+{
+  "name": "ad-dc-overview",
+  "version": "1.0.1",
+  "type": "gauge",
+  "description": "AD 服务器概览 counters (users / groups / gpos) + partner_port_status. One row per DC, upserted on (dc_name). Cadence independent of replication cycle so overview stays fresh even when replication is broken. Data lands in public ad_dc_overview table via a centre-side post-hook (see center/src/packages/runner.js); this manifest has NO `database` block by design (R110.A architectural pivot: 公共表, not pkg_* schema).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  }
+}

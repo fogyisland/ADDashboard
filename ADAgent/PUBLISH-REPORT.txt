@@ -1,0 +1,44 @@
+AD Agent Publish Report
+========================
+Date        : 2026-10-21
+Source      : D:/dashboard/agent
+Target      : D:\Implementation\ADAgent\agent
+Backup      : D:\Implementation\ADAgent.bak.20261021090958  (2068 files)
+agent.js    : 63911 bytes, mtime 2026-10-21T03:51:03.317Z
+version.inf : agent 0.1.8 -> 0.1.9 (dashboard 0.1.7 不动)
+
+改动摘要
+--------
+1. agent/ 子树 (agent.js + src/ + docs/) 从源整树覆盖
+2. 覆盖前回补源缺失的 2 个 helper (源真 import 但源树没有):
+   - src/agent-filters.js        <- non-ad-scheduler.js:12
+   - src/lib/path-safety.js      <- file-push-drainer.js:41
+3. scripts/ 做并集 (非覆盖):
+   - 保留目标 9 个运行时脚本 (collect*.ps1 / run-member-script.ps1 /
+     trigger-all-packages-once.js / ad-ad-*.ps1 / ad-admin-*.ps1)
+   - 清走 dev 工具 (probe-* / extract-* / debug-* / manual-* / list-*)
+4. version.inf bump 0.1.8 -> 0.1.9
+
+未动 (安装资产, 0 覆盖)
+------------------------
+version.inf 内容结构 / install-agent.ps1 / Register-ADDashboardAgent.ps1 /
+start.ps1 / start-dashboard.ps1 / uninstall-agent.ps1 / LogRetention.ps1 /
+README*.md / node/ / nssm/ / common/ / dashboard/ /
+agent/package.json / agent/package-lock.json /
+agent/appsettings.example.json / agent/DEPLOY.md / agent/data/
+
+本 ship 边界
+------------
+- 0 push agent binary / 0 restart DC fleet (操作员 directive: 仅同步代码)
+- 0 注册 NSSM 服务 / 0 启动服务
+- 0 改 agent 采集逻辑 (仅代码树同步)
+- 24h+72h probe 不适用 (0 改 DC 侧部署, 仅同步分发镜像)
+
+后续部署到目标服务器
+--------------------
+1. copy D:\Implementation\ADAgent -> 目标服务器 agentInstall 目录
+2. version.inf 已是 0.1.9, agent.js 从该文件读版本, 0 需手改
+3. 重启 agent 服务 (start.ps1 或 nssm restart <AgentService>)
+4. 验证心跳上报 agentVersion = 0.1.9
+
+生成: node D:\dashboard\.scratch\publish-agent-to-implementation.js

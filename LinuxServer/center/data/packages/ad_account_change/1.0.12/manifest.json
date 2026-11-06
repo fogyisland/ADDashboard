@@ -1,0 +1,16 @@
+{
+  "name": "ad_account_change",
+  "version": "1.0.12",
+  "type": "gauge",
+  "description": "AD 账户变更日志 (R158.72.x 系列 + R158.X.99, 2026-10-21) — 5 种动作类型 (创建/修改/删除/启用/禁用), 24h cadence (intervalSec=86400, cronExpr='0 2 * * *'). R158.X.99 (2026-10-21) 修「每天必写 0 条」逻辑错误: 操作员 directive '应该是查询前一天 0:0:0 到 23:59:59 的数据, 因为从 0 点到两点数据肯定是 0'. 真因: cron 每天 02:00 跑, 但 collect.ps1 的 StartTime 写的是 CST today 00:00 → 采集窗口只有 0~2 点, 该时段几乎 0 条账户管理事件 → 每日必写 0 条, 前端「显示没有任何账户创建」(每日必现, 非偶发). 修: (1) 采集窗口改昨天 00:00:00 ~ 今天 00:00:00 UTC (左闭右开), 显式补 EndTime 闭上界 — 不设的话 Get-WinEvent 读到「现在」会把今天 0~2 点混入昨天; (2) 时区基准 CST → UTC, 跟中心端 SQL 的 GETUTCDATE()/DATEADD 对齐 (旧版写 CST 日期、按 UTC 日期查, 差 8 小时); (3) change_date 写 UTC 昨天. 中心端同步: sql.js adAccountChange.dailyTopByAction 两个 dialect 的「当日」语义改「UTC 昨天」 (MSSQL DATEADD(DAY,-1,CAST(GETUTCDATE() AS DATE)) / MySQL DATE_SUB(CURDATE(), INTERVAL 1 DAY)) — summary / detail / 报表 3 处 call site 自动同步生效. 0 改 cadence / 0 改 schema / 0 改 wire shape / 0 改前端. 前置条件 (操作员必先配, 0 改中心端, 同 1.0.6 起不变): (1) 域控 auditpol /set /subcategory:'User Account Management' /success:enable /failure:enable; (2) agent run-as account 加进 DC 本地 'Event Log Readers' 组. 注意: auditpol 未配时 Get-WinEvent 静默返 0 条 (error_code=0), 前端显示空但不报错 — 排查 0 条时先确认这两项.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 180000,
+    "intervalSec": 86400,
+    "cronExpr": "0 2 * * *"
+  }
+}

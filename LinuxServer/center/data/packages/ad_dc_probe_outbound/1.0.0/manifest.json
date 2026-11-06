@@ -1,0 +1,13 @@
+{
+  "name": "ad_dc_probe_outbound",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "R155.4 — AD replication partner TCP port health probe, OUTBOUND mirror of ad_dc_probe_inbound. Operator 2026-09-30 reversed the R155.3 'NOT a separate package' stance and directed: '算了,既然有 outbound 那么我们就增加一个 probe-outbound 的 脚本,写入 prob_outbound 的数据,这样避免数据错误'. Peer list is centre-computed via GET /api/agent/outbound-partners (R155.4 mirror of R151.2 inbound endpoint, source_dc=agentId anchor) — DCs that this host replicated TO in the last 30 minutes. The agent only does the TcpClient.BeginConnect probe and emits the result to ad_dc_probe_outbound (NEW independent physical table, migration 034) keyed on UNIQUE(source_dc, dest_dc). Row shape: source_dc=agent, dest_dc=peer, NO naming_context column. The dashboard's /partner-port-health/probe-outbound endpoint reads this table directly (no view, no naming_context indirection) so the operator can see the data plane the agent actually wrote. 15-min cadence. NO `database` block by design — public table contract; the centre post-hook at packages/runner.js routes writes to the dedicated helper service/partner-port-probe.js::upsertOutboundProbes.",
+  "schemaVersion": 1,
+  "agent": {
+    "type": "ad",
+    "script": "collect.ps1",
+    "intervalSec": 900,
+    "timeoutMs": 60000
+  }
+}

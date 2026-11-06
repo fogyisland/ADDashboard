@@ -1,0 +1,15 @@
+{
+  "name": "ad_account_change",
+  "version": "1.0.3",
+  "type": "gauge",
+  "description": "AD 账户变更日志 (R158.72.x + R158.72.x.1 + R158.72.x.2 + R158.72.x.3 + R158.72.x.4 + R158.72.x.5 + R158.72.x.6, 2026-10-16) — 5 种动作类型 (创建/修改/删除/启用/禁用), 24h cadence (intervalSec=86400). R158.72.x fix: 5 actions 互斥状态机, 5 events 1:1 映射. R158.72.x.1 fix: Get-ADReplicationAttributeMetadata -Server $server + _.AttributeName 列名修. R158.72.x.2 fix: Import-Module ActiveDirectory 加 inner try/catch. R158.72.x.3: 操作员 directive '不停执行导致 AD 出问题' 硬删整包 (DELETE package_scripts + package_policies 2 表 + 5 段 pending_trigger cancelled). R158.72.x.4 fix: 走 Get-WinEvent Security 日志 5 events 1:1 映射 (4720/4722/4725/4738/4767 → created/enabled/disabled/modified/unlocked), 0 依赖 Import-Module ActiveDirectory, 0 触 AD: PSDrive mount, NSSM context 友好. +1 字段 operator_user (事件 Properties[4] SubjectUserName 操作人). 中心端公共表 schema 改 (ALTER TABLE ad_account_change ADD operator_user NVARCHAR(128) NULL), etl 1:1 平行, 前端 AccountChangeDetailView 7 → 8 列. R158.72.x.5 fix: R158.72.x.4 ship 后 33 fleet AD agent PS parser 报 3 错 (77 行 6 列 Missing '=' operator after key in hash literal + 83 行 5 列 Unexpected 'catch'), 真因 hashtable 4767 KV 行尾紧跟中文长注释 + 后续嵌套 try + Get-WinEvent -FilterHashtable 组合触发 PS5.1 lexer bug. 修法: 那行中文注释挪到 hashtable 闭合 `}` 之后独立一行, PS parser 0 错. R158.72.x.6 fix: ship 1h probe (KDLSYOFADSRV1) 报 'Get-WinEvent Security failed: 在 Id 哈希表项中遇到 Null 值. 不允许使用 Null 值.' 真因 PS5.1 `$eventIdToAction.Keys` 出来是 KeyCollection (元素 boxed Object), Get-WinEvent -FilterHashtable Id 字段要纯 Int32[]; 强转 `[int[]]` 1 行修. 前置条件 (操作员必先配, 0 改中心端): (1) 域控 auditpol /set /subcategory:'User Account Management' /success:enable /failure:enable; (2) agent run-as account 加进 DC 本地 'Event Log Readers' 组. ship 后 1h+24h+72h 必 3 次 partial ratio verify ≥80% (R158.100.A.1 #1 lesson 跟 R158.99 1:1).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 180000,
+    "intervalSec": 86400
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "ad_account_change",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "AD 账户变更日志 (R158.72, 2026-10-11) — 5 种动作类型 (创建/修改/删除/启用/禁用). 24h cadence (intervalSec=86400), 跟 ad_admin_members 同模式. 公共表 ad_account_change (R110.A pattern): manifest 不带 database block, centre post-hook 直接 MERGE ON (sam, action, change_date) 自动 dedup. Single-DC 语义由中心端 dedup 实现 — 所有 34 DC 都跑 collect.ps1, 中心 collapse 重复 row.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 180000,
+    "intervalSec": 86400
+  }
+}

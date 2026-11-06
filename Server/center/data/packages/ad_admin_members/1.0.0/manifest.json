@@ -1,0 +1,15 @@
+{
+  "name": "ad_admin_members",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "AD 管理员组成员 (Domain Admins + Enterprise Admins). One row per (domain_dn, group_name, member_sam), upserted centre-side via MERGE. Cadence 24h (admin group membership changes are infrequent). Data lands in public ad_admin_members table via a centre-side post-hook (see center/src/packages/runner.js); this manifest has NO `database` block by design (R110.A architectural pivot: 公共表, not pkg_* schema).  Single-DC semantic implemented via centre-side MERGE dedup on (domain_dn, group_name, member_sam) — every DC runs collect.ps1, the centre collapses duplicate rows.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 86400
+  }
+}

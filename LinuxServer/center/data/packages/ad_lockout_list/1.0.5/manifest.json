@@ -1,0 +1,27 @@
+{
+  "name": "ad-lockout-list",
+  "version": "1.0.5",
+  "type": "gauge",
+  "description": "R158.50.7f (2026-10-08) supersedes 1.0.4 catch-as-error anti-pattern. PS5.1 Get-WinEvent -FilterXml -ErrorAction Stop throws EventLogQueryException on 0 hits ('找不到任何与指定的选择条件匹配的事件。' on zh-CN Windows). 1.0.4 fed that into $lastErrorMessage + error_code=1, agent runner surfaced it via run.error, centre UI showed red/yellow rows for what is the normal idle state on most DCs. 1.0.5 uses -ErrorAction SilentlyContinue + @($raw).Count to recognize 0 hits as 'no 4740 events in 15min window — normal idle state' (events=@(), error_code=0, lastErrorMessage=null → status='success' per R158.50.7g). Real failures (ProviderMetadata / log unreadable) cause $raw=$null and are routed to the catch block (preserves R158.50.6 error_code=1 path). R158.49.1 callerComputerName regex + R158.50.7e cross-domain displayName + R158.52 per-event try/catch all preserved. R158.50.5 FilterXml still in effect. R158.50.6 stdout error field still wired. minVersion stays at 0.1.2 (R158.50.7e agent package-runner reads parsed.error).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_lockout_list",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "events":     { "type": "json" },
+      "event_count":{ "type": "int" },
+      "error_code": { "type": "int" }
+    }
+  }
+}

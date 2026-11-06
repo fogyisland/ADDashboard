@@ -1,0 +1,28 @@
+<template>
+  <AdminLayout>
+    <h2>角色与权限</h2>
+    <table class="t">
+      <thead><tr><th>ID</th><th>名称</th><th>权限</th></tr></thead>
+      <tbody>
+        <tr v-for="r in roles" :key="r.id">
+          <td>{{ r.id }}</td><td>{{ r.roleName }}</td>
+          <td><code>{{ (r.permissions || []).join(', ') }}</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </AdminLayout>
+</template>
+
+<script setup>
+import { ref, onMounted } from 'vue';
+import AdminLayout from '../../components/AdminLayout.vue';
+import { adminApi } from '../../api/admin.js';
+const roles = ref([]);
+onMounted(async () => { roles.value = (await adminApi.listRoles()).data; });
+</script>
+
+<style scoped>
+.t { width: 100%; border-collapse: collapse; background: var(--panel); }
+.t th, .t td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+.t th { background: var(--sidebar-bg); color: var(--muted); font-size: 12px; }
+</style>

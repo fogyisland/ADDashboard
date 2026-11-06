@@ -1,0 +1,22 @@
+{
+  "version": "0.1.6-noad",
+  "buildTime": "2026-10-17T11:00:00.000Z",
+  "gitCommit": "r158-72-x-12-trigger-once-noad",
+  "lineage": "noad",
+  "parentLineage": "ad-agent-0.1.9",
+  "excludesAdRuntime": true,
+  "rounds": [
+    {
+      "version": "0.1.6-noad",
+      "buildTime": "2026-10-17T11:00:00.000Z",
+      "gitCommit": "r158-72-x-12-trigger-once-noad",
+      "notes": "R158.72.x.12 B' (2026-10-17) — NoAD 端 triggerOnce 真实现 (1:1 平行 AD agent/src/package-manager.js runOne(pkg, {onceOnly})). 3 边 ship 闭合 NoAD 端: (1) non-ad-scheduler.js 新建 fireOnceFor(name) — 跟 AD runOne onceOnly 清理范式 1:1 平行, 走 localTasks.get(name)?.timer + clearInterval + delete, 没 timer 时返 noop (R158.60.10 intervalSec<=0 skip 范式); (2) agent.js 新建 runTriggersNow(packagesTriggers) — 跟 AD PackageManager.runTriggersNow 1:1 平行, 走 peekLocalTaskNames() 拿 known 列表 + fireOnceFor 清 timer (triggerOnce=true) + runPackage fire-and-forget 跑 (跟 AD 1:1 平行 1 click 1 跑 0 启 setInterval). summary log 加 triggered/skipped 字段; (3) agent.js:599 makeSendCallback 加 runTriggeredPackages: (packagesTriggers) => runTriggersNow(...) 注入 wire — **闭合 R158 ship 时 NoAD 端的设计 gap** (R158 ship 时 makeSendCallback:84 已留 slot + line 116-118 已 wire 调 slot, 但 agent.js:559-600 调用 makeSendCallback 时从来没传 runTriggeredPackages 实现, 所以 NoAD 端 packagesTriggers 一直走 Promise.resolve() noop = 0 pending-trigger 跑). 0 改 makeSendCallback 内部 / 0 改 applyPackageList / 0 改 startTimerFor / 0 改 clearAllTimers / 0 改 R158.75 NoAD-only fork 主路径. 0 改心跳 wire / 0 改 routes/agent.js 中心端 / 0 改 4 老 mcp endpoint / 0 改 schema. lesson 7/8 锁: package.json version ≠ build-manifest round ≠ agent fleet 真值 = 3 个独立维度, 必 3 处一致. 本 ship 0.1.5-noad → 0.1.6-noad (跟 AD 0.1.8 → 0.1.9 1:1 平行). NoAD fleet 真值 = 1 台 MemberServer (本机) = 1 (操作员 directive 2026-10-17 锁 '34 AD + 1 MemberServer'), AD fleet 真值 = 34 DC. ship 必含 1) Copy-Item D:\\dashboard\\noadagent\\src\\* D:\\NOADAgentInstall\\agent\\src\\ + Copy-Item agent.js + Copy-Item build-manifest.json + Restart-Service memberServiceAgent; 2) AD 边 Copy-Item D:\\dashboard\\agent\\src\\* D:\\agentInstall\\agent\\src\\ + agent.js + build-manifest.json + Restart-Service DashboardAgent (本机 Member Server 跑 AD agent 的服务名, 1:1 平行); 3) nssm restart ADDashboardCenter. 0 必 push 远端 34 AD DC (R158.69.3 锁守, 本地 Member Server 是 ship staging 真值). 关联: R158.72.x.12 (B' 4 步 atomic 主文档) + R158.75 (NoAD-only fork precedent) + R158.60.10 (intervalSec<=0 skip idiom)."
+    },
+    {
+      "version": "0.1.5-noad",
+      "buildTime": "2026-10-11T22:00:00.000Z",
+      "gitCommit": "r158-75-noad-agent",
+      "notes": "Initial NoAD-only fork. All AD-specific scripts (collect-replication, ad-admin, ad-ad-*), JS modules (runAdRuntime, dispatchers/ad-admin, package-manager, scheduler, discovery, ad-commands-drainer, healthcheck, agent-filters, collector, port-config-fetcher, local-queue, last-collect-writer) and 12 AD-only PS1 scripts deleted. agent.js 1241 lines → 540 lines. Discriminator branch removed."
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+﻿Get-WmiObject Win32_Service -Filter "Name='memberServiceAgent'" | Select-Object Name, StartName, State | Format-List
+Get-Process -Id (Get-WmiObject Win32_Service -Filter "Name='memberServiceAgent'").ProcessId | Select-Object Id, ProcessName, StartTime | Format-List

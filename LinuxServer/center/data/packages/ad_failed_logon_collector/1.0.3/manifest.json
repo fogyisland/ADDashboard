@@ -1,0 +1,15 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.3",
+  "type": "gauge",
+  "description": "R158.50.7d (2026-10-07) supersedes 1.0.2. Fixes the [xml] parameter type-coercion bug in helper functions Get-EventDataField / Get-EventDataInt (lines 122-135). R158.50.7c (1.0.2) fixed the cast path `[xml]$e.ToXml()` -> XmlDocument.LoadXml(), but the helper params still declared `param([xml]$Ed, ...)`. PS5.1 parameter binding goes through LanguagePrimitives.ConvertTo which does NOT auto-wrap System.Xml.XmlElement -> System.Xml.XmlDocument the way a return-value cast does. The caller passes $ed = $doc.DocumentElement.EventData (XmlElement) -> throws 'Cannot convert value XmlElement to type XmlDocument' on the very first 4625 in the window -> outer try/catch fires -> $errorCode |= 1 + events=[] + ETL upserted=0 -> ad_failed_logon_events stays empty. 1.0.3 changes the param to [Parameter()] (no type), accepting both XmlDocument and XmlElement; .Data works on either. Confirmed locally via probe-r15850-7d-xml2.ps1 ([xml] cast throws, [Parameter()] OK). minVersion stays 0.1.2 (no agent change).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 1800
+  }
+}

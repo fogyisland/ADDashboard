@@ -1,0 +1,215 @@
+:root {
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --panel-alt: #283548;
+  --sidebar-bg: #0b1220;
+  --border: #334155;
+  --fg: #e2e8f0;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --green: #22c55e;
+  --green-bg: rgba(34, 197, 94, 0.12);
+  --yellow: #eab308;
+  --red: #ef4444;
+  --red-bg: rgba(239, 68, 68, 0.12);
+  --accent: #38bdf8;
+  --input-bg: #0b1220;
+  /* Foreground for buttons rendered on the accent fill — needs to contrast
+     against the accent, not against the page. Cyan on dark, white on light. */
+  --button-fg: #0b1220;
+
+  /* R137 — extended palette for theme-aware components. */
+  --terminal-bg: #060d18;
+  --terminal-fg: #e2e8f0;
+  --danger-bg: #7f1d1d;
+  --success-bg: #14532d;
+  --warning-bg: #78350f;
+  --info-bg: #1e3a8a;
+  --bridgehead-bg: #0e7490;
+  --fsmo-bg: #14532d;
+  --fsmo-text: #bbf7d0;
+  --fsmo-border: #166534;
+  --shimmer-mid: #1e293b;
+  --none-role-bg: #1e293b;
+  --hub-gold: #fbbf24;
+  --gold-border: #fde68a;
+  --gold-label: #fef3c7;
+  --severity-ok-text: #86efac;
+  --severity-warn-text: #fde68a;
+  --severity-info-text: #bfdbfe;
+  --severity-critical-text: #fca5a5;
+  --status-pill-fg-ok: #16a34a;
+  --status-pill-fg-warn: #ca8a04;
+  --status-pill-fg-err: #dc2626;
+  --modal-backdrop: rgba(0, 0, 0, 0.55);
+
+  /* Per-role palette (FSMO + bridgehead + GC + RID + infra + naming + member). */
+  --role-bridge-fg: #fbbf24;
+  --role-bridge-bg: rgba(251, 191, 36, 0.10);
+  --role-bridge-border: rgba(251, 191, 36, 0.5);
+  --role-pdc-fg: #f472b6;
+  --role-pdc-bg: rgba(244, 114, 182, 0.10);
+  --role-pdc-border: rgba(244, 114, 182, 0.5);
+  --role-gc-fg: #60a5fa;
+  --role-gc-bg: rgba(96, 165, 250, 0.10);
+  --role-gc-border: rgba(96, 165, 250, 0.5);
+  --role-rid-fg: #a78bfa;
+  --role-rid-bg: rgba(167, 139, 250, 0.10);
+  --role-rid-border: rgba(167, 139, 250, 0.5);
+  --role-infra-fg: #cbd5e1;
+  --role-infra-bg: rgba(203, 213, 225, 0.08);
+  --role-infra-border: rgba(203, 213, 225, 0.5);
+  --role-naming-fg: #fb923c;
+  --role-naming-bg: rgba(251, 146, 60, 0.10);
+  --role-naming-border: rgba(251, 146, 60, 0.5);
+  --role-member-fg: #94a3b8;
+  --role-member-bg: rgba(148, 163, 184, 0.06);
+  --role-member-border: rgba(148, 163, 184, 0.4);
+
+  /* R138.2 — purple chip palette for category badges / json-boolean.
+     Matches the previous literal #a855f7 / #c084fc / rgba(168,85,247,..). */
+  --chip-purple-fg: #c084fc;
+  --chip-purple-bg: rgba(168, 85, 247, 0.15);
+  --chip-purple-border: rgba(168, 85, 247, 0.4);
+}
+/* Light theme. Same variable names, light values. Every component reads
+   CSS vars; toggling data-theme on <html> swaps the whole palette. */
+:root[data-theme="light"] {
+  --bg: #f5f7fb;
+  --panel: #ffffff;
+  --panel-alt: #f1f5f9;
+  --sidebar-bg: #ffffff;
+  --border: #cbd5e1;
+  --fg: #1e293b;
+  --text: #1e293b;
+  --muted: #475569;
+  --green: #16a34a;
+  --green-bg: rgba(22, 163, 74, 0.10);
+  --yellow: #ca8a04;
+  --red: #dc2626;
+  --red-bg: rgba(220, 38, 38, 0.10);
+  --accent: #0369a1;
+  --input-bg: #ffffff;
+  --button-fg: #ffffff;
+
+  /* R137 — light-theme equivalents. Terminal stays dark by convention
+     (operator 2026-09-28: "全部跟随切换" — use vars but keep dark value). */
+  --terminal-bg: #1e293b;
+  --terminal-fg: #e2e8f0;
+  --danger-bg: #fee2e2;
+  --success-bg: #dcfce7;
+  --warning-bg: #fef3c7;
+  --info-bg: #dbeafe;
+  --bridgehead-bg: #cffafe;
+  --fsmo-bg: #dcfce7;
+  --fsmo-text: #15803d;
+  --fsmo-border: #86efac;
+  --shimmer-mid: #e2e8f0;
+  --none-role-bg: var(--panel-alt);
+  --hub-gold: #b45309;
+  --gold-border: #fbbf24;
+  --gold-label: #78350f;
+  --severity-ok-text: #15803d;
+  --severity-warn-text: #b45309;
+  --severity-info-text: #1d4ed8;
+  --severity-critical-text: #b91c1c;
+  --status-pill-fg-ok: #15803d;
+  --status-pill-fg-warn: #a16207;
+  --status-pill-fg-err: #b91c1c;
+  --modal-backdrop: rgba(0, 0, 0, 0.55);
+
+  --role-bridge-fg: #b45309;
+  --role-bridge-bg: #fef3c7;
+  --role-bridge-border: #fcd34d;
+  --role-pdc-fg: #be185d;
+  --role-pdc-bg: #fce7f3;
+  --role-pdc-border: #f9a8d4;
+  --role-gc-fg: #1d4ed8;
+  --role-gc-bg: #dbeafe;
+  --role-gc-border: #93c5fd;
+  --role-rid-fg: #6d28d9;
+  --role-rid-bg: #ede9fe;
+  --role-rid-border: #c4b5fd;
+  --role-infra-fg: #475569;
+  --role-infra-bg: #f1f5f9;
+  --role-infra-border: #cbd5e1;
+  --role-naming-fg: #c2410c;
+  --role-naming-bg: #ffedd5;
+  --role-naming-border: #fdba74;
+  --role-member-fg: #64748b;
+  --role-member-bg: #f1f5f9;
+  --role-member-border: #cbd5e1;
+
+  /* R138.2 — light-theme purple chip (deeper fg for contrast on white). */
+  --chip-purple-fg: #7e22ce;
+  --chip-purple-bg: #f3e8ff;
+  --chip-purple-border: #d8b4fe;
+}
+* { box-sizing: border-box; }
+body, html, #app { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+/* Button baseline (R138.3) — admin pattern: secondary default (panel
+   surface + bordered), only .primary / .danger opt into the accent fill.
+   Previously every unscoped <button> rendered as the cyan/blue filled
+   style which read as "alert" instead of a neutral action — operators
+   kept reading primary-coloured secondary actions as alerts. */
+button {
+  background: var(--sidebar-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  transition: background 80ms linear, border-color 80ms linear;
+}
+button:hover:not(:disabled) { background: var(--panel-alt); border-color: var(--muted); }
+button:active:not(:disabled) { background: var(--border); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary,
+button.danger {
+  background: var(--accent);
+  color: var(--button-fg);
+  border-color: var(--accent);
+}
+button.primary:hover:not(:disabled),
+button.danger:hover:not(:disabled) { opacity: 0.9; }
+button.danger { background: var(--red); border-color: var(--red); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input, select { background: var(--input-bg); color: var(--text); border: 1px solid var(--border); padding: 6px 8px; border-radius: 4px; }
+
+/* R138.3 — table header sits on a tinted surface so it reads as a band,
+   not a continuation of the body rows. Was var(--sidebar-bg) which was
+   identical to var(--panel) in light mode → no visual separation. */
+.t th,
+.audit th,
+.meta-table th,
+.probe-t th,
+.matrix th { background: var(--panel-alt); color: var(--muted); font-weight: 600; }
+.t tbody tr { transition: background 80ms linear; }
+.t tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* Light theme overrides for hardcoded dark surfaces. Most components read
+   CSS vars and adapt automatically; the rules below patch up the most
+   visible patterns where scoped styles hardcode #0b1220 / #1e293b —
+   scoping `body` here bumps specificity above component-scoped selectors
+   so these win without touching every file.
+   pre/code/sql blocks stay dark intentionally (terminal convention). */
+:root[data-theme="light"] body .sidebar { background: var(--sidebar-bg); border-right: 1px solid var(--border); }
+:root[data-theme="light"] body .topbar { background: var(--panel); border-bottom: 1px solid var(--border); }
+:root[data-theme="light"] body .modal { background: var(--panel); border: 1px solid var(--border); }
+:root[data-theme="light"] body .modal-bg { background: rgba(0, 0, 0, 0.35); }
+/* R137 — terminal-class surfaces (pre / .sql-block / .cmd-result) read
+   --terminal-bg / --terminal-fg; the legacy patch keeps light mode
+   visibly terminal-like instead of falling back to light text on light bg.
+   Inline <code> spans are NOT included (R137.1 — operator reported
+   "输出的黑底看起来有问题" when PackageRunsMonitorView's .col-err code
+   was force-overridden). Inline code reads --panel-alt via the
+   component-scoped style. */
+:root[data-theme="light"] body pre,
+:root[data-theme="light"] body .sql-block,
+:root[data-theme="light"] body .cmd-result,
+:root[data-theme="light"] body .delivery-pending code,
+:root[data-theme="light"] body .drawer pre { background: var(--terminal-bg); color: var(--terminal-fg); border-color: var(--border); }

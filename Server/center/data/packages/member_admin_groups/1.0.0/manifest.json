@@ -1,0 +1,15 @@
+{
+  "name": "member_admin_groups",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "R158.100 (2026-10-13) - Member Server local admin group membership. Get-LocalGroupMember for 3 local groups (BUILTIN\\Administrators + Remote Desktop Users + Power Users), 跟 ad_admin_members 1.0.1 1:1 平行, 但 0 AD RSAT 走 Microsoft.PowerShell.LocalAccounts (PSR 5.1+ in-box, member-server 全装). Public-table mode (跟 R158.78 / R158.86 precedent 1:1): manifest omits `database` block → runner.js post-hook 直接 MERGE dedup on (hostname, group_name, member_sid) 跨 re-run. 24h cadence 跟 ad_admin_members 1:1 (admin 变更不频繁). Wire shape: { metrics: { agent_id, hostname, collected_at, groups: [{ name, members: [{ sid, name, class, principal_source, is_enabled, display_name }] }], error_code } }. agent.type='non-ad' → SCOPE_OVERRIDE 白名单必挂 (R158.86.5 强 invariant).",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 86400
+  }
+}

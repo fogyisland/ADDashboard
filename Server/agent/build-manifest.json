@@ -1,0 +1,160 @@
+{
+  "name": "AD Replication Dashboard Agent",
+  "component": "agent",
+  "version": "0.1.9",
+  "buildTime": "2026-10-20T00:00:00.000Z",
+  "gitCommit": "r158-0-1-9-port-scan-removed-3-level-logging",
+  "rounds": [
+    {
+      "id": "0.1.9",
+      "tag": "port-scan-removed-3-level-logging",
+      "shippedAt": "2026-10-20",
+      "summary": "R158.0.1.9 (2026-10-20) — 删除 agent 端口扫描 (操作员 directive '不需要扫描端口') + 引入 3 级应用层日志 (info / error / debug 业务语义, 替代 pino 原生 6 级). (1) src/port-scanner.js 136 行整体删除 (备份到 D:\\.scratch\\port-scanner.js.bak-2026-10-20 双树各 1 份, 留 7 天 per feedback-debug-file-cleanup 范式). agent.js 5 个扫描辅助函数 (deriveScanHost / replacePortInUrl / inFlightRecovery / tryRecoverCenterPort / _tryRecoverCenterPortImpl) 整体删除; 3 处 refreshAgentPortsWithRecovery 调用 (AD runtime line 460 / non-AD runtime line 1057 / boot + runtime tick 双 1:1) 改成 log warn 一条路, 0 自愈. config.js 4 个 DEFAULTS (centerHost / scanOnBoot / scanOnRuntimeFail / scanFailureThreshold) 删. 真实行为变化: fetchConfig 失败时 agent 仅 log warn 等下个 tick, 操作员必须手动 edit appsettings.json (centerUrl / agentToken) 恢复. trade-off = 操作员明确接受. (2) src/logger.js 新增 APP_TO_PINO 映射 + normalizeAppLevel 兼容层 (老 6 级字符串 trace/debug/info/warn/error/fatal 自动归一化到应用级 3 档, 避免中心端 settings-delivery push 老值时静默拒收让 centre 不停重推同一 payload). createLogger({level}) 入口应用级 3 档 → pino 内部 info/error/debug, 任何调用方自动接住映射. reporter.js _refreshLogLevel 同样走 normalizeAppLevel + APP_TO_PINO_LEVEL; line 53 'http request' 日志 (含 method/url/timeoutMs/hasBody) 降为 log.debug, info 模式下不再每行刷 — 之前 60s heartbeat + 30s collector + 5min config refresh + 持续 file-push + 触发器 N 个就是 stderr 每日几十 MB 的真因. settings-delivery.js ALLOWED_LOG_LEVELS 收紧到 APP_LEVELS (logger.js 导出, 跟 createLogger 同源, 0 双 Set drift). validatePatch 走 normalizeAppLevel 兼容老值, 真正拒收的是非字符串 / 大小写错 / 拼写错的奇怪值. (3) appsettings.example.json 注释更新为业务级说明. ship 范围: 双树 (源 tree D:\\dashboard\\agent + deploy tree D:\\agentinstall\\agent) 1:1 平行. 操作员 2026-10-20 显式授权双树 ship (破 R158.56c directive 1 次, 仅本次; 下次同样改动仍走 push + restart 流程, 不入 memory). 0 改 schema / 0 改中心端 / 0 改前端 / 0 改 version.inf (版本号由操作员 edit). 0 必建新端点 (R158.69.10 lesson 锁 '用到端点就新建, 端点不要改' 1:1 适用, 复用 _refreshLogLevel / createLogger / ALLOWED_LOG_LEVELS). ship 必含 1) nssm restart ADDashboardAgent (deploy tree 已经 in-place 改了, 双树 ship 不必等 push). 真因链: reporter.js info 模式每个 HTTP 请求刷 1 行 (60s heartbeat × 3 round-trips + 30s collector + 5min config fetch + 持续 file-push + 触发器 N 个) → stderr 文件每日几十 MB → 操作员观察 = '信息太大了' (R158.0.1.9 lesson: 默认级别跟操作员期望错位). 关联: R93 (pino logging 引入) + R158.13 (settings-delivery) + R158.69.3 (operator push 锁守)."
+    },
+    {
+      "id": "0.1.8",
+      "tag": "reschedule-skip-true-closure",
+      "shippedAt": "2026-10-18",
+      "summary": "R158.X.99.13 (2026-10-18) — agent reschedule() R158.60.10 skip 范式真闭合. agent/src/package-manager.js:343-364 改, skip 时主动 `removeCache(pkg.name)` 把老 setInterval(60_000) timer 残留清掉 (跟 line 308-313 removeCache 范式 1:1 平行, 走 pkg name 不走 task name). 真因链: 中心端 aac/aam package_policies.interval_sec=0 + cron_expr='0 2 * * *' (R158.72.x.13 范式) → 老 0.1.7 binary setInterval(0) 当 60s 处理 = 10-17 18:00~18:30 30 分钟 aac 跑 1033 次 / aam 跑 1032 次 (R158.X.99.10 真因链 5 步验). 0 改 R93.7 set-difference 主路径 / 0 改 R158.60.10 + R158.72.x.11 锁守. fleet 真值 = 34 AD 全 0.1.7 (heartbeat 实测, 跟 version.inf + build-manifest round 1:1 平行). R158.69.3 锁守, 不主动 push binary."
+    },
+    {
+      "id": "0.1.9",
+      "tag": "trigger-once-agent-fan-out",
+      "shippedAt": "2026-10-17",
+      "summary": "R158.72.x.12 B' (2026-10-17) — agent 端 triggerOnce 真实现 (破 R158.69.3 锁 1 次, 操作员 directive 'agent 端 triggerOnce 真实现'). 3 边 ship 闭合: (1) DB ALTER package_runs ADD trigger_once BIT NULL (跟 R158.72.x.5 ALTER jitter_at + R158.72.x.13 ALTER cron_expr 1:1 平行, 列已在盘 bit NULL, 0 必真 ALTER); (2) center 端 services/trigger-queue.js:74-82 rows.map + line 95/116 SELECT 加 trigger_once 字段 (rows.map 加 triggerOnce: r.trigger_once === 1 || r.trigger_once === true 字段, 跟 R158.72.x.13 wire widen cron_expr 1:1 平行); (3) agent 端 src/package-manager.js 2 处: (a) runOne(pkg) → runOne(pkg, opts={onceOnly}) 签名 + 跑完 if (onceOnly) clearInterval(this.tasks.get(pkg.name).timer) + tasks.delete(name) 范式 (跟 line 308-312 removeCache 1:1 平行, 0 改 reschedule 主路径), (b) runTriggersNow 解析 trigger list 时读 wire t.triggerOnce === true 标 onceOnly, Promise.allSettled targets.map((t) => this.runOne(t.pkg, {onceOnly: t.onceOnly})) 传 (跟 AD package-manager 1:1 平行), summary package: targets[i].pkg.name 修 (跟 list.map 平级). wire 透传: routes/agent.js:707 packagesTriggers spread 进 JSON 0 改 + heartbeat-callbacks.js:121-123 packagesTriggers 数组透传 0 改. 0 改中心端 fireTriggers / triggerNow / setPolicy / builtin-packages / packages/router 主路径 (跟 R158.72.x.13 锁 1:1 平行). 0 引新 endpoint / wrapper / perm (跟 R158.86.6 #5 锁 1:1 平行). 0 改前端 (PackageScheduleView.vue:549 已传 triggerOnce: true). 0 改 8 老 read tool / 0 改 6 老 write tool / 0 改 schema 其他列. ship 必含 1) nssm restart ADDashboardCenter (center source + DB ship); 2) 操作员 1 步 verify `D:\\agentInstall\\node\\node.exe D:\\dashboard\\center\\Logs\\r158_72_x_12_sql_3_step.sql.js` → 期望 1a noop (column already exists). lesson 7/8 锁: package.json version ≠ build-manifest round ≠ agent fleet 真值 = 3 个独立维度, 必 3 处一致. 本 ship 0.1.8 → 0.1.9 仅 build-manifest round, 0 必 35 DC push binary (R158.69.3 锁守, 本地 Member Server 是 ship staging 真值, fleet 真值 = 34 AD + 1 MemberServer = 35 台, 操作员 directive 2026-10-17 锁). 关联: R158.72.x.12 (B' 4 步 atomic 主文档) + R158.72.x.13 (cron_expr precedent) + R158.60.10 (intervalSec<=0 skip idiom) + R158.69.3 (operator push 锁)."
+    },
+    {
+      "id": "0.1.8",
+      "tag": "agent-install-root-runtime-derive",
+      "shippedAt": "2026-10-13",
+      "summary": "R158.94 (2026-10-13 13:30) — agent 端 2 处改: (1) agent.js:555+1164 PackageManager ctor dataDir 从写死 config.agentDataDir 改 dataDir: config.agentDataDir || joinPath(__dirname, 'data') (1:1 平行 AD + non-AD, appsettings.json 显式 override 仍 win 向后兼容 R158.91 KDLFLPBISrv ship); (2) agent.js:1062-1067 self-register body 加 installRoot: __dirname (跟 line 975/1223 applyUpgradeDelivery agentInstallDir=__dirname 1:1 平行, 同 provenance 不同 destination). 中心端 1.0.17 migration ALTER TABLE ad_member_servers ADD install_root NVARCHAR(512) NULL (R158.94) + COALESCE 保护 (跟 R158.86.5.2 site_id precedent 1:1). 前端 MemberServersView + MemberServerDetailView 加 安装路径 字段显示. ROOT 闭合 R158.86.6 enumerate lesson #8: 任何 install 路径 (C:\\MemberServer\\agent / /opt/agent/ / D:\\agent\\) 自动正确, 不写死. ship 必含: 1) Copy-Item D:\\dashboard\\agent\\agent.js C:\\MemberServer\\agent\\agent.js + Restart-Service memberServiceAgent; 2) Restart-Service ADDashboardCenter; 3) D 盘 staging 同步 (build-manifest.json 0.1.7→0.1.8 + 加 0.1.8 round + publish/ + src/ 0 改). 关联: R158.91 (appsettings.json explicit single-host fix) + R158.86.5.2 (COALESCE 保护 precedent) + R158.87.6.5 (file reserved word lesson 重现)."
+    },
+    {
+      "id": "0.1.7",
+      "tag": "agent-upgrade-push-endpoint",
+      "shippedAt": "2026-10-12",
+      "summary": "R158.87.6.5 (2026-10-12 23:50) — 中心端 ship 2 NEW push 端点 (跟 0.1.6 POST /api/agent/upgrade-result 1:1 平行): (1) GET /api/agent/upgrade-push 跟 GET /api/agent/upgrade 1:1 平行 (返 version/buildTime/gitCommit/fileCount/files 完整 bundle), 唯一区别是 event log 改 'agent.upgrade.push.fetched'; (2) POST /api/agent/upgrade-status 处理 event='agent.upgrade.push.applied'/'skip'/'error' 三种, dispatch 到 logger.info/warn/error 跟 0.1.6 1:1 平行. 真因: 0.1.6 ship 后 35 fleet 0.1.4 进程拉 0.1.6 bundle 34 次 (R158.69.3 9:0 铁证 100% 重现) 0 applied = silent fail 100%, 35 fleet 0 restart = 0.1.6 silent fail log 中心端装着但不生效. R158.69.3 方案 C 真值: 中心端 push 端点 = future-facing 0 当前 0 fleet binary 调 (0.1.4 / 0.1.5 / 0.1.6 都不知道这 2 端点), 真生效途径 = operator 端 35 DC push 0.1.6 + Restart-Service (A 方案, 跟 R158.87.6.5 ship 0.1.5 + R158.60.10 batch 1:1 平行, R158.69.3 lesson 3 永远适用). 0 改 agent (0.1.6 binary 已 ship, 0.1.7 只 ship 中心端 2 端点). 0 改 schema (1.0.12 cleanup DELETE 不动 schema). 0 改前端. R158.69.10 lesson '用到端点就新建, 端点不要改' 1:1 闭合: 0 改 0.1.6 POST /api/agent/upgrade-result 端点, 0 改 GET /api/agent/upgrade 端点."
+    },
+    {
+      "id": "0.1.6",
+      "tag": "agent-upgrade-silent-fail-log",
+      "shippedAt": "2026-10-12",
+      "summary": "R158.87.6.5 (2026-10-12 23:30) — agent-upgrade-delivery.js 加 silent fail log 3 处: (1) line 102 'no-result' 早 return 时写 agent.upgrade.skip log; (2) line 111 'already-at-target' 早 return 时写 agent.upgrade.skip log + installedAgentVersion/upgradeVersion 字段; (3) line 152 'invalid-bundle' 早 return 时 log 加 hasData/hasFiles/hasVersion 字段. 真因: R158.69.3 铁证 envelope sent 9 : bundle fetched 0, R158.87.6.5 ship 24h 后 16min 直查 envelope sent 54129 : bundle fetched 34 : upgrade applied 0 = R158.69.3 9:0 铁证 100% 修齐 (fleet 端拉 bundle 链路 work), 但 0 applied = applyUpgradeDelivery Stage 1-7 某 stage silent fail. 0 upgrade.error / 0 upgrade.skip = 100% silent fail. ship 0.1.6 加 3 处 silent fail log 给未来诊断 + R158.69.2 lesson '不要凭静态分析, 必查实测 log' 100% 适用. 中心端不需改 (envelope sent 跟 bundle fetched log 已在 R158.69.3 ship 完整). 24h 184 行 member_* 错跑 fix 真值 = 35 fleet restart 0.1.5 进程 (跟 R158.60.10 batch 1:1, R158.69.3 lesson 3 永远适用), ship 0.1.6 升级没真因驱动 (0.1.5 装的 L2 真修已经 100% 修齐, restart 即生效)."
+    },
+    {
+      "id": "0.1.5",
+      "tag": "syncFromCenter-agentType-query",
+      "shippedAt": "2026-10-12",
+      "summary": "R158.87.6.5 (2026-10-12) — agent 端 syncFromCenter URL 加 ?agentType= query (operator 授权解除 R158.56c directive). 真因: R158.87.6.4 L1 server 强化只防 member-server 错拿 AD 包一面, AD agent 仍走 query null = 全返 13 包. AD agent 实际跑 24h 1488 行 member_* (member_eventlog_collector 102 + member_os_baseline_collector 1366). 改: agent.js:532 ctor 注入 config + package-manager.js:125 syncFromCenter URL 加 ?agentType=ad (跟 R158.87.6.2 scope 1:1 对称). L1 server 强化 (runner.js listEnabledPackages AD 兜底) + 1.0.9 cleanup migration 同步 ship, 1488 行 DELETE 0 残余. R158.56c 解除条件: plan 显式获 operator 授权. 0 AD agent 行为影响 (member_* 是 member-server 专用, R158.78 namespace 平行 ship 设计)."
+    },
+    {
+      "id": "0.1.4",
+      "tag": "file-push-boot-drain-and-warn-context",
+      "shippedAt": "2026-10-10",
+      "summary": "R158.61+5.2 (2026-10-10) — file-push drainer 12h+ silent failure 真因是 boot-time race (drainer httpGetJson 在 agentToken 解析前触发 → 401/connection 错 → 5s heartbeat pool 重复同一 broken call). 三处改动: (1) agent.js:783 setImmediate() 在 startHeartbeat 后立即 fire 一次 drainFilePush, 给一个 fresh stack, 失败的话 operator 立即看到 NSSM stderr 真因 (vs 12h+ 之后手动 restart 才相关); (2) file-push-drainer.js:80-103 non-2xx warn log 加 centerUrl/agentId/tokenPrefix 8 字符 (masking 跟 agent-identity.js signRequest 同), 让 operator grep NSSM stderr 立即判断 token rotation / DNS / port 错; (3) heartbeat-callbacks.js:107-116 summary 注释明确 0.1.4 boot-time fire 是这个 5s pool 的补充, summary 已有 drainer result 字段 (processed/delivered/failed/acked). 配合 R158.61+5 中心 case-insensitive claim (claim 5s/11s 命中), 走完 claim → download → write → ack 全链路. 0 主动 ship (operator directive 2026-10-09), 34 DC 仍 0.1.3, 等 operator 手 push."
+    },
+    {
+      "id": "0.1.3",
+      "tag": "r158-56c-user-group-scriptpath",
+      "shippedAt": "2026-10-08",
+      "summary": "R158.56c (2026-10-08) — ad-admin.js:300 锁 user_/group_ 命令的 scriptPath 强制走 dispatcher 内部 DEFAULT_SCRIPTS_DIR (= `agent/scripts/`), 不再信任 caller 注入的 scriptsDir (= cacheDir `<dataDir>/packages`). R158.40 (2026-10-03) 改 agent.js:692 scriptsDir 一刀切改成 cacheDir, dispatcher 内部用 caller 注入的 scriptsDir 拼所有 commandType 路径, user_/group_ 命令拼成 `<cacheDir>/ad-admin-*.ps1` ENOENT. KDLFLOFADSRV1 23:31 user_create + 23:42 group_create 失败 (exit_code=4294770688, errorMessage=`...data\\packages\\ad-admin-users.ps1...`) 即此因. fix 1 行 + 9 行注释解. 配套 agent.js:683 注释修正 (R158.40 注释错说'老命令不受影响' → 改措辞). 33 DC 0.1.2 远端需 R158.48 auto-upgrade 链路抓 0.1.3 bundle. 关联: R158.40 (caller 注入 cacheDir) / R158.50.7e (0.1.2 ship) / R158.48 (auto-upgrade 9-stage)."
+    },
+    {
+      "id": "0.1.2",
+      "tag": "finish-stderr-and-ok-placeholder",
+      "shippedAt": "2026-10-07",
+      "summary": "R158.50.7c (2026-10-07) — finish() 返回 shape 加 `stderr` 字段 (centre runner.js:545 期望, 之前永远 undefined → DB stderr_preview 只 banner). 配套 PS1 顶层 `error` 字段改 'ok' 占位符时, agent runner 200-209 优先级逻辑忽略 'ok' 字符串 (避免 DB error 列被 'ok' 污染). 真异常 / 捕获仍走 `ps1: <msg>` 路径 → centre runner.js:586 status='failed'. 配套 R158.50.7 (PS1 parse error stderr 提取) + R158.50.6 (parsed.error 覆盖) 一起下发. 0.1.1 bundle buildTime=2026-10-02 早于 R158.50.6/R158.50.7/R158.50.7c, 34 DC 全部 0.1.1 缺这 3 修复."
+    },
+    {
+      "id": "0.1.1",
+      "tag": "agent-centre-repo-align-real-machine",
+      "shippedAt": "2026-10-02",
+      "summary": "把 D 盘 C:\\agentInstall 真机 (R158.13+ 带 settings-delivery + writeAppsettingsPatchAtomic) 的功能反向同步到中心仓 D:\\dashboard\\agent. R158.13 已经在 centre 端 (services/client-settings.js) 实现了 settingsPatch envelope 推送, 但 agent 端 settings-delivery.js 模块中心仓之前漏了; KDLDLOFADSRV1 真机跑的是合并版 (R158.11.2 + R158.13), 而中心仓落后. 0.1.1 拉齐: 新增 src/settings-delivery.js + appsettings-writer.js writeAppsettingsPatchAtomic + agent.js applySettingsDelivery import + heartbeatRef slot + 3 处 call sites (AD scheduler inline / AD makeSendCallback / non-AD send). 不动现有 R158.11.2 SHA stamping / R155.7 bundle code."
+    },
+    {
+      "id": "R119",
+      "tag": "per-module-logs",
+      "shippedAt": "2026-09-27",
+      "summary": "Set-LogModule dual-write (logs/<module>.log + logs/APP/<module>.log) + Get-AgentManifest boot fingerprint"
+    },
+    {
+      "id": "R118.4",
+      "tag": "binary-stale-hypothesis",
+      "shippedAt": "2026-09-26",
+      "summary": "agent 真机 binary-stale 推论；probe-r118-3-middleware-trace"
+    },
+    {
+      "id": "R118.3",
+      "tag": "agent-cache-missing",
+      "shippedAt": "2026-09-26",
+      "summary": "agent 真机缺 data/packages/ad_dc_overview/ 目录；package_policies.enabled=0 假说"
+    },
+    {
+      "id": "R118",
+      "tag": "dc-overview-etl",
+      "shippedAt": "2026-09-26",
+      "summary": "agent 端 ad_dc_overview ETL 0 行根因定位"
+    },
+    {
+      "id": "R118.1",
+      "tag": "extract-bare-dc-from-dn",
+      "shippedAt": "2026-09-26",
+      "summary": "agent-side ExtractBareDcFromDn helper；server-side extractBareDcName defence"
+    },
+    {
+      "id": "R112",
+      "tag": "eventlog-collector",
+      "shippedAt": "2026-09-26",
+      "summary": "agent/scripts/collect.ps1 285 lines eventlog collector"
+    },
+    {
+      "id": "R112.1",
+      "tag": "eventlog-collector-bug-fixes",
+      "shippedAt": "2026-09-26",
+      "summary": "collect-eventlog filename + severity + RecordId parity 修复"
+    },
+    {
+      "id": "R93",
+      "tag": "agent-pino-logging",
+      "shippedAt": "2026-09-25",
+      "summary": "agent pino diagnostic logging"
+    },
+    {
+      "id": "R93.1",
+      "tag": "signed-hostname",
+      "shippedAt": "2026-09-25",
+      "summary": "X-Agent-Hostname stamping"
+    },
+    {
+      "id": "R91",
+      "tag": "bundled-node-policy",
+      "shippedAt": "2026-09-24",
+      "summary": "publish/ tree scan + bundled node policy；start.ps1 构建 node_modules"
+    },
+    {
+      "id": "R91.4",
+      "tag": "drainer-signature-stamping",
+      "shippedAt": "2026-09-24",
+      "summary": "drainer X-Agent-Signature stamping"
+    },
+    {
+      "id": "R89",
+      "tag": "init-mode-listen-handler",
+      "shippedAt": "2026-09-24",
+      "summary": "init-mode listen handler"
+    },
+    {
+      "id": "R87",
+      "tag": "s82-get-signing",
+      "shippedAt": "2026-09-22",
+      "summary": "S82 GET signature gap"
+    },
+    {
+      "id": "R66",
+      "tag": "package-mgmt-agent-side",
+      "shippedAt": "2026-09-05",
+      "summary": "R66 — package mgmt replace agent side"
+    }
+  ],
+  "features": "per-module-logs,set-log-module,get-agent-manifest,get-agent-version,boot-fingerprint"
+}

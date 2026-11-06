@@ -1,0 +1,18 @@
+{
+  "name": "ad_eventlog_collector",
+  "version": "1.0.7",
+  "type": "gauge",
+  "description": "Windows Event Log warning/error counter rollups + drill-down event rows for 5 channels: System / Application / AD Web Services / DFSR / Security. v1.0.6 (R158.50.7i, 2026-10-08): operator 反馈 5 channel `ps1: channel X: 找不到任何与指定的选择条件匹配的事件` 全部上报误判 partial. 真因 PS5.1 Get-WinEvent -ErrorAction Stop 在 3 种情况抛异常: case 1 idle (0 命中, channel 正常), case 2 channel 不存在 (DC 没启用该 role, 配置性缺失), case 3 real fault (provider metadata 损坏/log unreadable/access denied). 1.0.5 catch 把 3 case 一律累积进 $lastErrorMessages → runner.js 误判 partial. fix 1.0.6: Get-WinEvent -ErrorAction Stop → SilentlyContinue + 后置分支识别. case 1 (idle) + case 2 (channel 不存在) 不算包失败, 不进 $lastErrorMessages, status=success 绿. case 3 (real fault) 走原 R158.50.6 链路, 进 $lastErrorMessages → partial. summary row 在 3 case 都正常写入 count=0 (前端 render '0' 而非 missing). zh-CN/en-US locale 兼容 (channel 不存在 message regex 覆盖 '没有与...匹配的事件日志' / 'is not found on this computer' / 'does not exist'). Wire shape 不变. v1.0.5 (R158.52, 2026-10-08): $droppedCount 字段 (1000-row limit 跟踪). v1.0.2 (R158.23, 2026-10-02): Security 4625/4776 severity 'info' → 'error'. v1.0.1 (R154): scan window 25h → 2h + Security channel (4625/4776). R158.31 (2026-10-02): intervalSec 900 → 7200 to match SCAN_HOURS=2. Backs the public EventlogView (no-auth, R112). One summary row per (dc_name, channel, collected_at). Data lands in public ad_eventlog_events + ad_eventlog_summary via centre-side post-hook (see center/src/packages/runner.js); manifest has NO `database` block by design (公共表 architectural pivot, R110.A/R107.1/R112 precedent). 4h retention enforced by centre-side hourly sweep (createEventlogRetentionLoop, wired in server.js).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 7200,
+    "cronExpr": "0 */2 * * *",
+    "sha256": "19118432edd5b1e43a3795a7f6e968f8683484d1403529ddf94ad0b3f0d417c1",
+    "size": 8275
+  }
+}

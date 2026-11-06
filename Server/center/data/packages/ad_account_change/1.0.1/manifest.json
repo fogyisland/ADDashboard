@@ -1,0 +1,15 @@
+{
+  "name": "ad_account_change",
+  "version": "1.0.1",
+  "type": "gauge",
+  "description": "AD 账户变更日志 (R158.72.x + R158.72.x.1 + R158.72.x.2, 2026-10-16) — 5 种动作类型 (创建/修改/删除/启用/禁用), 24h cadence (intervalSec=86400). R158.72.x fix: 5 actions 对每个 (sam, day) 互斥 — 用 Get-ADReplicationAttributeMetadata 读 userAccountControl.LastOriginatingChangeTime, 命中 today_00:00 才算 enabled/disabled, 否则仅算 modified. 公共表 ad_account_change (R110.A pattern): manifest 不带 database block, centre post-hook 直接 MERGE ON (sam, action, change_date) 自动 dedup. R158.72.x.1 fix: collect.ps1 line 125 加 '-Server $server' (cmdlet 官方 docs 标 -Server mandatory, auto-discovery 在 NSSM service context / 防火墙拦 DNS SRV 时 100% 失败, 显式绑本 DC 绕开); line 126 列名 _.Name → _.AttributeName (LDAP display name, 不是 Name). R158.72.x.2 fix: line 67-72 `Import-Module ActiveDirectory` 加 inner try/catch (PS 5.1 NSSM context 触 implicit AD: PSDrive mount → DC locator 防火墙拦 → 抛 '目录服务连接不可用' → 整段 try 块 abort, 24h 607/607 partial); line 181 Get-ADObject -IncludeDeletedObjects 加 -Server $server 跟 line 139 1:1 平行. ship 后 1h+24h+72h 必 3 次 partial ratio verify ≥80% 否则 revert (R158.72.x.1 漏 '24h 后 AD 状态变' 维度, R158.72.x.2 补).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 180000,
+    "intervalSec": 86400
+  }
+}

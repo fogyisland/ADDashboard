@@ -1,0 +1,15 @@
+{
+  "name": "@ad-dashboard/agent",
+  "version": "0.1.9",
+  "private": true,
+  "type": "module",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "pino": "^9.4.0"
+  }
+}

@@ -1,0 +1,2 @@
+﻿# R158.88.BF4 (2026-10-13) — fix service name. C 盘 install 的是 memberServiceAgent (R158.86.6 member rename ship 1:1 平行), 旧 ADReplicationAgent 是 AD DC 的服务名, 在 member-server 上 0 命中 = $false. R158.75 NoAD fork ship 时 D 盘 noadagent/scripts/restart-agent.ps1 漏改 1 行.
+Restart-Service memberServiceAgent -Force; Start-Sleep 2; Get-Service memberServiceAgent | Select-Object Name,Status

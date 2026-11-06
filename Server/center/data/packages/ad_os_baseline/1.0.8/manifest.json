@@ -1,0 +1,46 @@
+{
+  "name": "ad_os_baseline",
+  "version": "1.0.8",
+  "type": "gauge",
+  "description": "Windows member server baseline metrics (CPU, memory, disks, services, event log, hardware identity). R158.56c (2026-10-08) — centre manifest backfill. R158.50.7j ship 把 PS1 wire 字段从 R158.30 时代的 cpu_brand/network_info 重命名为 cpu/ips 并加 motherboard, 但 1.0.6 centre manifest 漏改, 全 fleet metricstore.ingest.failed 5h+ 'unknown keys: motherboard,ips,cpu'. 1.0.7 把 3 个新 key 加进 metricSchema + 004 migration 加 3 个 JSON 列. R157.4 seeder 检测 version mismatch 自动 upgrade. PS1 内容跟 1.0.6 一字不差 (只是 bump 1.0.7), agent sync 拿到的 collect.ps1 sha 跟 1.0.6 完全相同 → 5min 自动 upgrade 不下发新 PS1, 只下新 manifest.json. 继承 R158.50.7j (3 case 分支) + R158.52 (hardening) + R158.30 (hardware-identity) + R147 (bios/cpu_brand/disks).",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 20000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_os_baseline",
+    "migrations": [
+      "migrations/001_initial.sql",
+      "migrations/002_os_baseline_extra_fields.sql",
+      "migrations/003_os_baseline_r158_30_fields.sql",
+      "migrations/004_os_baseline_r158_56c_fields.sql"
+    ],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":       { "type": "varchar(64)",  "nullable": false },
+      "ts":             { "type": "datetime",     "nullable": false },
+      "cpu_pct":        { "type": "double" },
+      "memory_pct":     { "type": "double" },
+      "disk_free":      { "type": "json" },
+      "disk_total":     { "type": "json" },
+      "services":       { "type": "json" },
+      "events":         { "type": "json" },
+      "bios_info":       { "type": "json" },
+      "cpu_brand":       { "type": "varchar(128)" },
+      "mem_total_bytes": { "type": "bigint" },
+      "disks":           { "type": "json" },
+      "c_used_pct":      { "type": "double" },
+      "system_info":     { "type": "json" },
+      "network_info":    { "type": "json" },
+      "memory_modules":  { "type": "json" },
+      "motherboard":     { "type": "json" },
+      "cpu":             { "type": "json" },
+      "ips":             { "type": "json" }
+    }
+  }
+}

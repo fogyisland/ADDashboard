@@ -1,0 +1,670 @@
+// Single source of truth for audit-log action classification.
+// Policy lives in source, not in admin-editable config — adding a new action
+// requires a code change here AND a unit test asserting it is mapped.
+
+const ACTION_CATEGORY = Object.freeze(new Map([
+  ['login',                          'ops'],
+  ['login_failed',                   'security'],
+  ['create_user',                    'changes'],
+  ['update_user',                    'changes'],
+  ['delete_user',                    'security'],
+  ['update_config',                  'changes'],
+  ['restart_service',                'changes'],
+  ['test_smtp_email',                'ops'],
+  ['bulk_import_sites',              'changes'],
+  ['bulk_import_site_row',           'changes'],
+  ['bulk_assign_dc_sites',           'changes'],
+  ['bulk_assign_dc_site_row',        'changes'],
+  ['bulk_assign_dc_unbound',         'changes'],
+  ['create_site',                    'changes'],
+  ['update_site',                    'changes'],
+  ['delete_site',                    'changes'],
+  ['assign_dc_site',                 'changes'],
+  ['create_server_group',            'changes'],
+  ['update_server_group',            'changes'],
+  ['delete_server_group',            'changes'],
+  ['replace_server_group_members',   'changes'],
+  ['bulk_install_package_to_group',  'changes'],
+  ['bulk_enable_package_to_group',   'changes'],
+  ['bulk_disable_package_to_group',  'changes'],
+  ['disable_builtin_ad_os_baseline', 'security'],
+  ['create_member_server',           'changes'],
+  ['agent_self_register',            'security'],
+  ['create_alert_rule',              'changes'],
+  ['delete_alert_rule',              'changes'],
+  ['probe_state_changed',            'changes'],
+  ['apply_migration',                'changes'],
+  ['reset_failed_migration',         'changes'],
+  // 2026-08-20 schema-migrations-upgrade SDD: T1 mark-applied / baseline /
+  // apply-up-to + T2 upgrade_db. All are operator-driven schema writes —
+  // catalog as 'changes' so they surface in the changes filter (not ops).
+  ['mark_applied',                   'changes'],
+  ['baseline',                       'changes'],
+  ['apply_up_to',                    'changes'],
+  ['upgrade_db',                     'changes'],
+  // 2026-08-28 round-55: refresh SHA-256 checksum without re-running SQL.
+  // Metadata-only change on an already-applied row (silences the ⚠️
+  // "File edited after apply" warning). 'changes' for the same reason
+  // mark_applied is — it mutates schema_migrations state.
+  ['refresh_checksum',               'changes'],
+  // I9: dual-key JWT secret rotation events — security-bearing because
+  // they change the server's signing key (rotate/commit touch active auth;
+  // seed bootstraps the key on first install; auto_expire silently closes
+  // an overlap window).
+  ['rotate_jwt_secret',              'security'],
+  ['auto_expire_jwt_secret',         'security'],
+  ['commit_jwt_secret',              'security'],
+  ['seed_jwt_secret',                'system'],
+  // #167 C1: dual-key agent-token rotation events — security-bearing because
+  // they change the server's agent-auth token (rotate/commit touch active
+  // auth; seed bootstraps the token on first install; auto_expire silently
+  // closes an overlap window). revoke_user_tokens (I1) is the admin action
+  // that invalidates a user's JWT token_version — also security-bearing.
+  //
+  // 2026-08-21 UX redesign: `rotate_agent_token` was renamed to
+  // `generate_agent_token` to reflect the new auto-delivery flow (the
+  // action now means "generate a new token AND push it to verified agents"
+  // rather than "rotate the dual-key manually"). Old audit rows keep the
+  // original action string in audit_logs (append-only); the classifier
+  // still maps it so a reader gets the right label/category/severity.
+  ['rotate_agent_token',              'security'],
+  ['generate_agent_token',            'security'],
+  ['auto_expire_agent_token',         'security'],
+  ['commit_agent_token',              'security'],
+  ['seed_agent_token',                'system'],
+  ['reveal_agent_token',              'security'],
+  ['revoke_user_tokens',              'security'],
+  // round-12: heartbeat "report now" — operator-initiated request to ask
+  // an agent to send an immediate heartbeat report. Classified as 'changes'
+  // because it mutates ad_agent_heartbeat.report_requested_at.
+  ['request_agent_report',            'changes'],
+  // 2026-08-26 round-19+: heartbeat-table + report-table delete buttons.
+  // When a host is decommissioned the operator needs a way to clean its
+  // stale rows out of the dashboard view. Both are 'changes' (mutate
+  // ad_agent_heartbeat / ad_replication_status / ad_dcs / package_runs);
+  // severity is 'medium' because a wrong click wipes real history.
+  ['delete_agent_heartbeat',          'changes'],
+  ['delete_dc',                       'changes'],
+  // 2026-08-26 round-17: update_replication_port_config was retired with the
+  // probe-port rewrite — operators now edit ports via the standard
+  // create_port / update_port / delete_port audit actions on system_ports.
+  // 2026-08-29 R66 — package management replace. The 4 main actions
+  // (upload/edit/set_policy/delete_script) are operator-initiated
+  // changes to either the script body or execution policy; bulk_migrate
+  // is a one-time migration row emitted by the data-migration step.
+  // All are 'changes' because they mutate package_scripts /
+  // package_policies rows.
+  ['upload_script',   'changes'],
+  ['edit_script',     'changes'],
+  ['set_policy',      'changes'],
+  ['delete_script',   'changes'],
+  ['bulk_migrate',    'changes'],
+  // 2026-08-30 R67-T1 — view_script. Read-only path that returns the
+  // raw script body for the EditScriptModal's view-mode. Reads the
+  // deployed PowerShell (admin-only surface), so it earns the same
+  // audit footprint as the write actions. 'changes' because it
+  // reflects an admin interacting with the package catalog, not an
+  // ops action on the heartbeat/report side.
+  ['view_script',     'changes'],
+  // 2026-08-30 R65 followup — 文件推送 (file push). Operator-initiated
+  // upload + agent-side claim/deliver/fail. All 'changes' because they
+  // touch the file-push filesystem area + write audit rows on the
+  // agent boundary. Pairs of (center-side, agent-side) actions so the
+  // audit trail reads cleanly when an agent later reports failure.
+  ['push_file_uploaded',  'changes'],
+  ['push_file_claimed',   'changes'],
+  ['push_file_delivered', 'changes'],
+  ['push_file_failed',    'changes'],
+  // 2026-08-31 R75 — AD user & group management command queue. The 17
+  // user-facing actions (`ad_user_*` and `ad_group_*`) are operator-initiated
+  // AD writes. Category is 'changes' or 'security' per the spec §3.2 table —
+  // security/high for destructive operations (password_reset, disable,
+  // delete, set_members, group_delete) since they're the operator's
+  // destructive surface; changes/medium for the rest. The 4 system-side
+  // actions (`ad_command_*`) are agent-observed status transitions;
+  // changes/low for claimed/succeeded (operator-visible positive signals),
+  // changes/medium for failed/timeout (operator-actionable).
+  // R158.46 (2026-10-06) — operator 加 AD 管理日志 tab. 把 R75 + R158.34
+  //   + R158.36 + R158.40 共 21 个 AD 写动作 + 3 个 ad_command 生命周期
+  //   重分类到新 category 'ad_management' (保留 severity/label 不变).
+  //   原 'changes'/'security' tab 仍然有 token rotation / forest/port 等,
+  //   AD 写动作分离到独立 tab 让操作员能精确筛「日常管理」类型.
+  ['ad_user_search',           'ad_management'],
+  ['ad_user_create',           'ad_management'],
+  ['ad_user_password_reset',   'ad_management'],
+  ['ad_user_enable',           'ad_management'],
+  ['ad_user_disable',          'ad_management'],
+  ['ad_user_unlock',           'ad_management'],
+  ['ad_user_set_attributes',   'ad_management'],
+  ['ad_user_delete',           'ad_management'],
+  ['ad_user_list_groups',      'ad_management'],
+  ['ad_user_set_manager',      'ad_management'],
+  ['ad_group_search',          'ad_management'],
+  ['ad_group_create',          'ad_management'],
+  ['ad_group_set_attributes',  'ad_management'],
+  ['ad_group_add_member',      'ad_management'],
+  ['ad_group_remove_member',   'ad_management'],
+  ['ad_group_set_members',     'ad_management'],
+  ['ad_group_delete',          'ad_management'],
+  ['ad_group_list_members',    'ad_management'],
+  ['ad_command_claimed',       'ad_management'],
+  ['ad_command_succeeded',     'ad_management'],
+  ['ad_command_failed',        'ad_management'],
+  ['ad_command_timeout',       'ad_management'],
+  // 2026-09-05 R81 — member-server PowerShell command queue. The single
+  // operator-visible action is `ad_member_command_queued` (an arbitrary
+  // PowerShell script queued against a member server hostname — high-risk
+  // because there's no whitelist). The 3 system-side actions track
+  // agent-observed status transitions on that row. All four are
+  // 'changes' since the row mutates ad_member_commands.
+  ['ad_member_command_queued',    'changes'],
+  ['ad_member_command_succeeded', 'changes'],
+  ['ad_member_command_failed',    'changes'],
+  ['ad_member_command_timed_out', 'changes'],
+  // R158.35 已知 gap: directory_sync_manual_trigger 之前漏注册。
+  ['directory_sync_manual_trigger', 'system'],
+  // R158.37 — AD Forest Registry
+  ['forest_create',           'changes'],
+  ['forest_update',           'changes'],
+  ['forest_delete',           'security'],
+  ['forest_default_set',      'changes'],
+  ['forest_domain_create',    'changes'],
+  ['forest_domain_delete',    'security'],
+  ['forest_dc_assign',        'changes'],
+  ['forest_dc_unassign',      'changes'],
+  ['forest_setting_update',   'changes'],
+  // R158.38.3 — 域级设置修改 (独立表 ad_forest_domain_setting)
+  ['domain_setting_update',   'changes'],
+  // R158.39 — 域自动同步开关切换 (ForestRegistry Tab 2 自动同步 checkbox)
+  ['domain_sync_enabled_toggle', 'changes'],
+  // R158.38.2 — 按 forest/domain 多域同步 (中心端读 is_default=1 森林)
+  ['directory_sync_per_domain', 'system'],
+  // R158.40 — ADUC 写动作 (创建 OU / 移动 / 删除 都是结构性变更)
+  // R158.46 (2026-10-06) — 移到 'ad_management' category (跟 17 个 user/group
+  //   + 2 个 ad_command 一组, AD 管理日志 tab 集中显示)
+  ['ad_ou_create',           'ad_management'],
+  ['ad_object_move',         'ad_management'],
+  // R158.56c-d (2026-10-09) — ad_object_delete 整体下线 (operator directive
+  //   "ad_ad_object_delete 这个包不在需要"). audit_classifier 同步清.
+  // R158.46 (2026-10-06) — R158.34 ad_account_quickfix 之前漏注册
+  //   audit_classifier (跟 R158.35 directory_sync_manual_trigger 同类 gap).
+  //   顺手补: 'ad_management' category + medium severity.
+  ['ad_account_quickfix',    'ad_management'],
+  // R158.41 (2026-10-03) — DC 域绑定 / 解绑 (DcsCatalogView 行级「域」下拉)
+  ['dcs_catalog_bind_domain',    'changes'],
+  ['dcs_catalog_unbind_domain',  'changes'],
+  // R158.LA (2026-10-15) — 5 段 base32 license 闭环. activate = 'changes'
+  // (改 ad_system_registration active row); request_created = 'ops' (生成
+  // 申请单, 0 改 license 状态); verify_failed = 'security' (HMAC 失败
+  // 暗示 license code 被篡改/伪造, 操作员必看).
+  ['activate_license_base32',  'changes'],
+  ['license_request_created',  'ops'],
+  ['license_verify_failed',    'security'],
+  // R158.113 (2026-10-17) — MCP write tools token lifecycle + write call audit.
+  //   4 mcp_write_token_* 跟 mcp_token_seed/rotate/commit/reveal 1:1 平行 (R158.102 锁).
+  //   2 mcp.write.* 跟 mcp.request / mcp.request.failed 1:1 平行 (R158.102 锁).
+  //   Category 'mcp' 跟 'ad_management' 同 precedent 独立 tab, 让运维日志能筛
+  //   "MCP 操作" 子集 (R158.114 MCP 运维日志 sub-tab 1:1 平行).
+  ['mcp_write_token_seed',         'mcp'],
+  ['mcp_write_token_rotate',       'mcp'],
+  ['mcp_write_token_commit',       'mcp'],
+  ['mcp_write_token_reveal',       'mcp'],
+  ['mcp.write.request',            'mcp'],
+  ['mcp.write.request.failed',     'mcp'],
+  // R158.114 (2026-10-17) — operator directive "我的意思是 MCP 执行和操作日志
+  //   放在运维日志的下面, 作为第四个子菜单存在". Append 6 老 mcp.* (R158.102
+  //   ship 闭合) 进 'mcp' category, 让 listAudit service 走 /api/admin/audit
+  //   ?category=mcp 能 1:1 平行 listMcpOperations IN 23 entry (sql.js:912/4002
+  //   既闭合, 0 必加 entry). 0 改 R158.113 新 6 mcp.* 既有 顺序 (append 末尾,
+  //   不 insert 中间, 0 影响 ACTION_CATEGORY.get / ACTION_LABEL.get lookup).
+  //   Severity + 中文 label 跟 R158.113 新 6 1:1 平行 (mirror reverse:
+  //   mcp.write.request ←→ mcp.request / mcp.write.request.failed ←→ mcp.request.failed
+  //   / mcp_write_token_* ←→ mcp_token_*).
+  ['mcp_token_seed',                'mcp'],
+  ['mcp_token_rotate',              'mcp'],
+  ['mcp_token_commit',              'mcp'],
+  ['mcp_token_reveal',              'mcp'],
+  ['mcp.request',                   'mcp'],
+  ['mcp.request.failed',            'mcp'],
+  // R158.X.99.28 (2026-10-19) — MCP IP whitelist auth fail (read + write 端).
+  //   1:1 平行 R158.114 mcp.request.failed (同 category 'mcp', 同 severity 'medium').
+  //   action 名 'mcp-write.auth.fail' 用 hyphen (跟 mcp-write.auth.fail log
+  //   line 119/125 1:1 平行, 跟老 mcp.write.request 区分), 1:1 平行 mcp.auth.fail
+  //   (点号) 跟 mcp-write.auth.fail (hyphen) 走 IP first 决策 D4.
+  ['mcp.auth.fail',                 'mcp'],
+  ['mcp-write.auth.fail',           'mcp']
+]));
+
+const ACTION_SEVERITY = Object.freeze(new Map([
+  ['login',                          'low'],
+  ['login_failed',                   'high'],
+  ['create_user',                    'low'],
+  ['update_user',                    'medium'],
+  ['delete_user',                    'high'],
+  ['update_config',                  'medium'],
+  ['restart_service',                'high'],
+  ['test_smtp_email',                'low'],
+  ['bulk_import_sites',              'medium'],
+  ['bulk_import_site_row',           'low'],
+  ['bulk_assign_dc_sites',           'medium'],
+  ['bulk_assign_dc_site_row',        'low'],
+  ['bulk_assign_dc_unbound',         'low'],
+  ['create_site',                    'low'],
+  ['update_site',                    'low'],
+  ['delete_site',                    'medium'],
+  ['assign_dc_site',                 'low'],
+  ['create_server_group',            'low'],
+  ['update_server_group',            'low'],
+  ['delete_server_group',            'medium'],
+  ['replace_server_group_members',   'medium'],
+  ['bulk_install_package_to_group',  'medium'],
+  ['bulk_enable_package_to_group',   'low'],
+  ['bulk_disable_package_to_group',  'medium'],
+  ['disable_builtin_ad_os_baseline', 'high'],
+  ['create_member_server',           'low'],
+  ['agent_self_register',            'medium'],
+  ['create_alert_rule',              'low'],
+  ['delete_alert_rule',              'medium'],
+  ['probe_state_changed',            'low'],
+  ['apply_migration',                'medium'],
+  ['reset_failed_migration',         'medium'],
+  // 2026-08-20 schema-migrations-upgrade SDD: medium severity — these
+  // change the schema state (mark_applied writes an applied row; baseline
+  // bulk-marks; apply_up_to runs multiple migrations; upgrade_db runs
+  // migrations + seeds). Higher than login (low) but lower than
+  // restart_service (high) because they're database-only, not service-
+  // affecting.
+  ['mark_applied',                   'medium'],
+  ['baseline',                       'medium'],
+  ['apply_up_to',                    'medium'],
+  ['upgrade_db',                     'medium'],
+  // 2026-08-28 round-55: refresh_checksum is 'low' — it's metadata-only,
+  // does not re-run SQL, and only succeeds on rows already in applied
+  // state with a verified DB schema. Lower than mark_applied (medium)
+  // because no schema claim is being made; the operator is just
+  // acknowledging a post-apply cosmetic file edit.
+  ['refresh_checksum',               'low'],
+  // I9: JWT secret rotation — operator-driven rotation/commit are high
+  // because they immediately change the signing key (every newly-issued
+  // token uses the new key); auto-expire is high because it silently
+  // closes the overlap window (stragglers start getting 401); seed is
+  // info — first-boot bootstrap, no auth-bearing behavior.
+  ['rotate_jwt_secret',              'high'],
+  ['auto_expire_jwt_secret',         'high'],
+  ['commit_jwt_secret',              'medium'],
+  ['seed_jwt_secret',                'info'],
+  // #167 C1: agent-token rotation severity mirrors JWT secret lifecycle.
+  // rotate / generate = high (changes server's auth credential immediately);
+  // commit = medium (ends a benign overlap window); seed = info
+  // (first-boot bootstrap); auto_expire = high (silently closes overlap);
+  // revoke_user_tokens = high (immediately invalidates every JWT issued
+  // to that user).
+  ['rotate_agent_token',              'high'],
+  ['generate_agent_token',            'high'],
+  ['auto_expire_agent_token',         'high'],
+  ['commit_agent_token',              'medium'],
+  ['seed_agent_token',                'info'],
+  ['reveal_agent_token',              'high'],
+  ['revoke_user_tokens',              'high'],
+  // round-12: heartbeat "report now" — low severity (operator action,
+  // not destructive; only sets a flag the next heartbeat will clear).
+  ['request_agent_report',            'low'],
+  // 2026-08-26 round-19+: heartbeat/report-table delete buttons. medium
+  // because a mis-click drops real replication history; same shape as
+  // delete_server_group.
+  ['delete_agent_heartbeat',          'medium'],
+  ['delete_dc',                       'medium'],
+  // 2026-08-26 round-17: update_replication_port_config retired (see above).
+  // 2026-08-29 R66 — severity mirrors delete-server-group pattern.
+  // delete_script is 'medium' (mis-click wipes script + history);
+  // the others are 'low' (data-bearing but recoverable — old sha is
+  // in audit details); bulk_migrate is 'info' (one-time migration step).
+  ['upload_script',   'low'],
+  ['edit_script',     'low'],
+  ['set_policy',      'low'],
+  ['delete_script',   'medium'],
+  ['bulk_migrate',    'info'],
+  // 2026-08-30 R67-T1 — view_script is read-only. Low severity
+  // (no mutation, no schema impact) but it IS an admin reading the
+  // deployed PowerShell — kept audit-trailed (not info) so the
+  // operations log surfaces "who looked at the script body".
+  ['view_script',     'low'],
+  // 2026-08-30 R65 followup — 文件推送 severity. Upload is 'low' (operator
+  // initiates, data-bearing, fully recoverable). Agent-side claimed/
+  // delivered are 'low' (status flips, no destructive effect). Failed
+  // is 'medium' — same shape as delete_script's medium-on-failure
+  // pattern because operators scan the audit trail for failed pushes
+  // when diagnosing a partial rollout.
+  ['push_file_uploaded',  'low'],
+  ['push_file_claimed',   'low'],
+  ['push_file_delivered', 'low'],
+  ['push_file_failed',    'medium'],
+  // 2026-08-31 R75 — severity per spec §3.2 table. Password reset,
+  // user disable, user delete, group set_members, group delete = high
+  // (operator's destructive AD surface). Create / set_attributes /
+  // add/remove member = medium. Search / list = low. Command_claimed /
+  // succeeded = low (positive signals). Command_failed / timeout =
+  // medium (operator-actionable, same shape as delete_script medium).
+  ['ad_user_search',           'low'],
+  ['ad_user_create',           'medium'],
+  ['ad_user_password_reset',   'high'],
+  ['ad_user_enable',           'medium'],
+  ['ad_user_disable',          'high'],
+  ['ad_user_unlock',           'medium'],
+  ['ad_user_set_attributes',   'medium'],
+  // R158.36 — user_set_manager severity. Set manager on a user is structural
+  // metadata (no password / no enable / no group change), medium matches the
+  // shape of set_attributes.
+  ['ad_user_set_manager',      'medium'],
+  ['ad_user_delete',           'high'],
+  ['ad_user_list_groups',      'low'],
+  ['ad_group_search',          'low'],
+  ['ad_group_create',          'medium'],
+  ['ad_group_set_attributes',  'medium'],
+  ['ad_group_add_member',      'medium'],
+  ['ad_group_remove_member',   'medium'],
+  ['ad_group_set_members',     'high'],
+  ['ad_group_delete',          'high'],
+  ['ad_group_list_members',    'low'],
+  ['ad_command_claimed',       'low'],
+  ['ad_command_succeeded',     'low'],
+  ['ad_command_failed',        'medium'],
+  ['ad_command_timeout',       'medium'],
+  // R158.46 — R158.34 ad_account_quickfix severity 同 unlock+reset+enable 集合, medium.
+  ['ad_account_quickfix',    'medium'],
+  // R81 member-server PowerShell: queued is high because the script is
+  // free-form (no whitelist). succeeded is low (operator-positive signal);
+  // failed and timed_out are medium (operator-actionable).
+  ['ad_member_command_queued',    'high'],
+  ['ad_member_command_succeeded', 'low'],
+  ['ad_member_command_failed',    'medium'],
+  ['ad_member_command_timed_out', 'medium'],
+  // R158.35 已知 gap: directory_sync_manual_trigger 之前漏注册,顺手补。
+  ['directory_sync_manual_trigger', 'medium'],
+  // R158.37 — AD Forest Registry
+  ['forest_create',           'medium'],
+  ['forest_update',           'medium'],
+  ['forest_delete',           'high'],
+  ['forest_default_set',      'medium'],
+  ['forest_domain_create',    'medium'],
+  ['forest_domain_delete',    'high'],
+  ['forest_dc_assign',        'medium'],
+  ['forest_dc_unassign',      'medium'],
+  ['forest_setting_update',   'medium'],
+  // R158.38.3 — 域级设置修改
+  ['domain_setting_update',   'medium'],
+  ['domain_sync_enabled_toggle', 'medium'],
+  // R158.38.2 — 按 forest/domain 多域同步
+  ['directory_sync_per_domain', 'low'],
+  // R158.40 — ADUC 写动作. 创建/移动 = medium.
+  // R158.56c-d (2026-10-09) — ad_object_delete 整体下线.
+  ['ad_ou_create',           'medium'],
+  ['ad_object_move',         'medium'],
+  // R158.41 (2026-10-03) — DC 域绑定 / 解绑 (影响 TopContextPicker dropdown 数据)
+  ['dcs_catalog_bind_domain',    'low'],
+  ['dcs_catalog_unbind_domain',  'low'],
+  // R158.LA (2026-10-15) — severity: activate=high (激活 5 段 license, 改 active
+  // 状态, 跟 activate_license 1:1 平行); request_created=low (生成申请单,
+  // 0 改 license 状态); verify_failed=high (HMAC 失败, 跟 login_failed 1:1 平行).
+  ['activate_license_base32',  'high'],
+  ['license_request_created',  'low'],
+  ['license_verify_failed',    'high'],
+  // R158.113 (2026-10-17) — MCP write tools token + write call severity.
+  //   reveal = high (跟 mcp_token_reveal 1:1 平行, R158.102 锁).
+  //   rotate / commit = medium (跟 mcp_token_rotate/commit 1:1 平行).
+  //   seed = low (boot init, 跟 mcp_token_seed 1:1 平行).
+  //   write.request = low (跟 mcp.request 1:1 平行).
+  //   write.request.failed = medium (跟 mcp.request.failed 1:1 平行, 操作员要看见).
+  ['mcp_write_token_seed',         'low'],
+  ['mcp_write_token_rotate',       'medium'],
+  ['mcp_write_token_commit',       'medium'],
+  ['mcp_write_token_reveal',       'high'],
+  ['mcp.write.request',            'low'],
+  ['mcp.write.request.failed',     'medium'],
+  // R158.114 (2026-10-17) — 6 老 mcp.* severity. 1:1 平行 R158.113 新 6
+  //   (seed=low / rotate=medium / commit=medium / reveal=high /
+  //    request=low / request.failed=medium). 老 mcp.* 走 R158.102 既闭合
+  //   audit emit, 现在 0 改 emit, 仅补 classification 让 listAudit
+  //   category='mcp' filter 命中.
+  ['mcp_token_seed',                'low'],
+  ['mcp_token_rotate',              'medium'],
+  ['mcp_token_commit',              'medium'],
+  ['mcp_token_reveal',              'high'],
+  ['mcp.request',                   'low'],
+  ['mcp.request.failed',            'medium'],
+  // R158.X.99.28 (2026-10-19) — IP fail 1:1 平行 request.failed (medium,
+  //   操作员要看见, 但 0 必 high 因 token 尚未泄漏, 仅 IP 偏离白名单).
+  ['mcp.auth.fail',                 'medium'],
+  ['mcp-write.auth.fail',           'medium']
+]));
+
+const ACTION_LABEL = Object.freeze(new Map([
+  ['login',                          '登录'],
+  ['login_failed',                   '登录失败'],
+  ['create_user',                    '创建用户'],
+  ['update_user',                    '修改用户'],
+  ['delete_user',                    '删除用户'],
+  ['update_config',                  '修改系统配置'],
+  ['restart_service',                '重启服务'],
+  ['test_smtp_email',                '测试 SMTP 邮件'],
+  ['bulk_import_sites',              '批量导入站点'],
+  ['bulk_import_site_row',           '批量导入站点(行)'],
+  ['bulk_assign_dc_sites',           '批量分配 DC 站点'],
+  ['bulk_assign_dc_site_row',        '批量分配 DC 站点(行)'],
+  ['bulk_assign_dc_unbound',         '批量解绑 DC 站点'],
+  ['create_site',                    '创建站点'],
+  ['update_site',                    '修改站点'],
+  ['delete_site',                    '删除站点'],
+  ['assign_dc_site',                 '分配 DC 站点'],
+  ['create_server_group',            '创建服务器组'],
+  ['update_server_group',            '修改服务器组'],
+  ['delete_server_group',            '删除服务器组'],
+  ['replace_server_group_members',   '替换服务器组成员'],
+  ['bulk_install_package_to_group',  '批量安装包到组'],
+  ['bulk_enable_package_to_group',   '批量启用包'],
+  ['bulk_disable_package_to_group',  '批量禁用包'],
+  ['disable_builtin_ad_os_baseline', '禁用内置 ad-os-baseline'],
+  ['create_member_server',           '创建成员服务器'],
+  ['agent_self_register',            'Agent 自注册'],
+  ['create_alert_rule',              '创建告警规则'],
+  ['delete_alert_rule',              '删除告警规则'],
+  ['probe_state_changed',            '探针状态变化'],
+  ['apply_migration',                '应用迁移'],
+  ['reset_failed_migration',         '重置失败迁移'],
+  // 2026-08-20 schema-migrations-upgrade SDD: Chinese labels for the new
+  // schema-migration actions. Phrasing matches the existing taxonomy
+  // (verb + object, "标记 / 基线 / 批量应用 / 升级").
+  ['mark_applied',                   '标记已应用'],
+  ['baseline',                       '基线标记'],
+  ['apply_up_to',                    '批量应用到版本'],
+  ['upgrade_db',                     '升级到最新'],
+  // 2026-08-28 round-55: refresh_checksum — Chinese label matches the UI
+  // button text on SchemaMigrationsView so audit entries read naturally
+  // alongside the operator's clicks.
+  ['refresh_checksum',               '刷新迁移校验和'],
+  // I9: JWT secret rotation labels (Chinese to match surrounding taxonomy).
+  ['rotate_jwt_secret',              '轮换 JWT 签名密钥'],
+  ['auto_expire_jwt_secret',         'JWT 密钥自动过期'],
+  ['commit_jwt_secret',              '提交 JWT 签名密钥'],
+  ['seed_jwt_secret',                '从 appsettings 初始化 JWT 密钥'],
+  // #167 C1: agent-token rotation labels (parallel to I9).
+  //
+  // 2026-08-21 UX redesign: the operator-facing concept is now "generate
+  // a new token and push it to verified agents" rather than "rotate the
+  // dual-key manually". The Chinese label reflects that — "生成 Agent 令牌"
+  // instead of "轮换 Agent 令牌". Old `rotate_agent_token` rows from prior
+  // deployments still map to the new label so the audit reader sees a
+  // consistent history.
+  ['rotate_agent_token',              '生成 Agent 令牌'],
+  ['generate_agent_token',            '生成 Agent 令牌'],
+  ['auto_expire_agent_token',         'Agent 令牌自动过期'],
+  ['commit_agent_token',              '提交 Agent 令牌'],
+  ['seed_agent_token',                '从 appsettings 初始化 Agent 令牌'],
+  ['reveal_agent_token',              '复制 Agent 令牌'],
+  ['revoke_user_tokens',              '撤销用户全部令牌'],
+  // round-12: heartbeat "report now" — Chinese label for the new
+  // request_agent_report action (operator clicks "立即回报" on the agent
+  // list to ask that agent to send a heartbeat immediately).
+  ['request_agent_report',            '请求 Agent 立即回报'],
+  // 2026-08-26 round-19+: heartbeat/report-table delete buttons. The
+  // 中文 label names the operator's mental model — "删除 Agent 记录"
+  // captures both tables because they share row identity.
+  ['delete_agent_heartbeat',          '删除 Agent 心跳记录'],
+  ['delete_dc',                       '删除 DC 记录'],
+  // 2026-08-26 round-17: update_replication_port_config was removed when the
+  // probe-port list moved into the system_ports table (same source as the
+  // port-health-check page). Operators now edit ports via the existing
+  // create_port / update_port / delete_port audit actions; no separate
+  // action needed.
+  // 2026-08-29 R66 — Chinese labels matching the surrounding taxonomy
+  // (verb + object). upload/edit/set_policy/delete follow the
+  // create/update/configure/delete shape already used by sites/server
+  // groups; bulk_migrate labels the one-time data migration step.
+  ['upload_script',   '上传脚本'],
+  ['edit_script',     '编辑脚本'],
+  ['set_policy',      '设置执行策略'],
+  ['delete_script',   '删除脚本'],
+  ['bulk_migrate',    '批量迁移脚本'],
+  // 2026-08-30 R67-T1 — view_script label for the read-only path that
+  // returns the raw script body to EditScriptModal's view-mode.
+  ['view_script',     '查看脚本'],
+  // 2026-08-30 R65 followup — 文件推送 (file push) Chinese labels.
+  // Phrasing: 推送 + verb-object. uploaded is operator-side (上传);
+  // claimed/delivered/failed are agent-side (认领/送达/失败).
+  ['push_file_uploaded',  '推送文件上传'],
+  ['push_file_claimed',   '推送文件已认领'],
+  ['push_file_delivered', '推送文件已送达'],
+  ['push_file_failed',    '推送文件失败'],
+  // 2026-08-31 R75 — Chinese labels for the AD user/group management
+  // command lifecycle. Verb + object phrasing matches the existing
+  // audit-classifier taxonomy (search/create/list/reset/etc).
+  ['ad_user_search',           'AD 用户搜索'],
+  ['ad_user_create',           'AD 创建用户'],
+  ['ad_user_password_reset',   'AD 重置用户密码'],
+  ['ad_user_enable',           'AD 启用用户'],
+  ['ad_user_disable',          'AD 禁用用户'],
+  ['ad_user_unlock',           'AD 解锁用户'],
+  ['ad_user_set_attributes',   'AD 修改用户属性'],
+  ['ad_user_set_manager',      'AD 设置用户经理'],
+  ['ad_user_delete',           'AD 删除用户'],
+  ['ad_user_list_groups',      'AD 查看用户组成员'],
+  ['ad_group_search',          'AD 组搜索'],
+  ['ad_group_create',          'AD 创建组'],
+  ['ad_group_set_attributes',  'AD 修改组属性'],
+  ['ad_group_add_member',      'AD 向组添加成员'],
+  ['ad_group_remove_member',   'AD 从组移除成员'],
+  ['ad_group_set_members',     'AD 替换组成员'],
+  ['ad_group_delete',          'AD 删除组'],
+  ['ad_group_list_members',    'AD 查看组成员'],
+  ['ad_command_claimed',       'AD 命令认领'],
+  ['ad_command_succeeded',     'AD 命令成功'],
+  ['ad_command_failed',        'AD 命令失败'],
+  ['ad_command_timeout',       'AD 命令超时'],
+  // R158.46 — R158.34 ad_account_quickfix 漏注册 label.
+  ['ad_account_quickfix',    'AD 账户快速重置'],
+  // R81 member-server PowerShell command audit labels (Chinese locale —
+  // the audit log UI shows these on the 审计 page).
+  ['ad_member_command_queued',    '成员服务器 PowerShell 命令排队'],
+  ['ad_member_command_succeeded', '成员服务器 PowerShell 命令成功'],
+  ['ad_member_command_failed',    '成员服务器 PowerShell 命令失败'],
+  ['ad_member_command_timed_out', '成员服务器 PowerShell 命令超时'],
+  // R158.35 已知 gap: directory_sync_manual_trigger 之前漏注册。
+  ['directory_sync_manual_trigger', 'AD 信息同步触发'],
+  // R158.37 - 域和森林注册
+  ['forest_create',           '新建森林'],
+  ['forest_update',           '更新森林'],
+  ['forest_delete',           '删除森林'],
+  ['forest_default_set',      '设为默认森林'],
+  ['forest_domain_create',    '新建域'],
+  ['forest_domain_delete',    '删除域'],
+  ['forest_dc_assign',        '分配 DC 到域'],
+  ['forest_dc_unassign',      '解绑 DC'],
+  ['forest_setting_update',   '修改域设置'],
+  // R158.38.3 — 域级设置修改
+  ['domain_setting_update',   '修改域设置项'],
+  ['domain_sync_enabled_toggle', '切换域自动同步'],
+  // R158.38.2 — 按 forest/domain 多域同步
+  ['directory_sync_per_domain', '按域 LDAP 同步'],
+  // R158.40 — ADUC 写动作 (中文化, R158.37.2 lesson)
+  ['ad_ou_create',           'AD 创建 OU'],
+  ['ad_object_move',         'AD 移动对象'],
+  // R158.56c-d (2026-10-09) — ad_object_delete 整体下线.
+  // R158.41 (2026-10-03) — DC 域绑定 / 解绑
+  ['dcs_catalog_bind_domain',    '绑定 DC 到域'],
+  ['dcs_catalog_unbind_domain',  '解绑 DC 所属域'],
+  // R158.LA (2026-10-15) — 5 段 base32 license 闭环中文 label.
+  ['activate_license_base32',  '激活 5 段 base32 License'],
+  ['license_request_created',  'License 申请单已生成'],
+  ['license_verify_failed',    '5 段 License 验证失败'],
+  // R158.113 (2026-10-17) — MCP write tools token + write call 中文 label.
+  //   跟 mcp_token_* 中文 label 1:1 平行 (R158.102 锁).
+  ['mcp_write_token_seed',         'MCP 写入令牌初始化'],
+  ['mcp_write_token_rotate',       'MCP 写入令牌轮换'],
+  ['mcp_write_token_commit',       'MCP 写入令牌提交'],
+  ['mcp_write_token_reveal',       'MCP 写入令牌查看'],
+  ['mcp.write.request',            'MCP 写入调用'],
+  ['mcp.write.request.failed',     'MCP 写入调用失败'],
+  // R158.114 (2026-10-17) — 6 老 mcp.* 中文 label. 1:1 平行 R158.113 新 6
+  //   (写入 ↔ 读取 严格对仗, 操作员一看 label 就分得清是 read 端还是 write
+  //   端 token). 0 改 mcp_token_seed/rotate/commit/reveal 任何 audit
+  //   emit 路径 (R158.102 service 闭合, 0 引新), 仅补 classification lookup.
+  ['mcp_token_seed',                'MCP 读取令牌初始化'],
+  ['mcp_token_rotate',              'MCP 读取令牌轮换'],
+  ['mcp_token_commit',              'MCP 读取令牌提交'],
+  ['mcp_token_reveal',              'MCP 读取令牌查看'],
+  ['mcp.request',                   'MCP 读取调用'],
+  ['mcp.request.failed',            'MCP 读取调用失败'],
+  // R158.X.99.28 (2026-10-19) — MCP IP 拒绝中文 label. 1:1 平行
+  //   mcp.request.failed / mcp.write.request.failed 范式 (读取 / 写入 严格对仗).
+  ['mcp.auth.fail',                 'MCP 读取 IP 拒绝'],
+  ['mcp-write.auth.fail',           'MCP 写入 IP 拒绝']
+]));
+
+const TARGET_LABEL = Object.freeze(new Map([
+  ['system_config',     '系统配置'],
+  ['ad_sites',          '站点目录'],
+  ['ad_dcs',            '域控目录'],
+  ['schema_migrations', '迁移管理'],
+  // 2026-08-29 R66 — package management replace. script-service
+  // emits target='packages' on the 4 R66 actions
+  // (upload/edit/set_policy/delete_script) — the legacy adapter used to
+  // spread targetId + details into payload, so the audit row's target
+  // column now reads 'packages' directly.
+  ['packages',          '脚本包'],
+  // R158.37 — 域和森林注册
+  ['ad_forest',          '森林注册'],
+  ['ad_forest_domain',   '域'],
+  ['ad_forest_dc_assignment', '域 DC 绑定'],
+  ['ad_forest_setting',  '域设置'],
+  ['dc_hostname',        'DC 主机名'],
+  // R158.LA (2026-10-15) — 5 段 base32 license 闭环 target 映射
+  // (activate_license_base32 走 'license' 跟 ADSPK 端点 1:1 平行, 共享筛选).
+  ['license_request',    'License 申请单'],
+  ['license_base32',     '5 段 base32 License']
+]));
+
+function groupByValue(map) {
+  const out = new Map();
+  for (const [k, v] of map) {
+    if (!out.has(v)) out.set(v, []);
+    out.get(v).push(k);
+  }
+  for (const arr of out.values()) arr.sort();
+  return Object.freeze(out);
+}
+
+const CATEGORY_ACTIONS = groupByValue(ACTION_CATEGORY);
+const SEVERITY_ACTIONS = groupByValue(ACTION_SEVERITY);
+
+export function classifyAction(action) {
+  return {
+    label:    ACTION_LABEL.get(action)    ?? action,
+    category: ACTION_CATEGORY.get(action) ?? 'ops',
+    severity: ACTION_SEVERITY.get(action) ?? 'low'
+  };
+}
+
+export {
+  ACTION_CATEGORY, ACTION_SEVERITY, ACTION_LABEL, TARGET_LABEL,
+  CATEGORY_ACTIONS, SEVERITY_ACTIONS
+};

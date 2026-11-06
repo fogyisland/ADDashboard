@@ -1,0 +1,15 @@
+{
+  "name": "ad-partner-ports-probe",
+  "version": "1.0.2",
+  "type": "gauge",
+  "description": "AD replication partner TCP port health probe. For each (peer_dc, system_port), runs a TcpClient.BeginConnect with 2s timeout and writes the latency to ad_replication_status.partner_port_status (naming_context=__partner_ports__:<hash>). Independent 15-minute cadence so port health stays fresh even when replication is broken. Data lands in the existing ad_replication_status table via a centre-side post-hook (see center/src/packages/runner.js). NO `database` block by design — this writes to an existing public table, not a new pkg_* schema. R141 — port from 1.0.1 to 1.0.2: -Depth 4 -> -Depth 8 in collect.ps1 (the previous version serialised inner hashtables as the literal string 'System.Collections.Hashtable' and the centre ETL dropped the row). Script body is byte-equal to agent repo 1.0.1 (R93.12 fixed); only manifest.version bumped.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  }
+}

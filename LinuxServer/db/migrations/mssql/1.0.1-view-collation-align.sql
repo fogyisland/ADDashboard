@@ -1,0 +1,56 @@
+-- ============================================================================
+-- R161.14 (2026-10-27) — MSSQL 侧**不需要**动 v_partner_inbound（有意为之的空迁移）
+--
+-- MySQL 侧为什么要修
+-- ------------------
+-- v_partner_inbound.probe_state 是**字面量派生**的列
+-- (CASE ... THEN 'error' END)。MySQL 会把**建视图那条连接**的 collation
+-- 冻结进视图定义 ⇒ 视图列的 collation 可能跟库里其它表 (unicode_ci) 不一致,
+-- 于是任何 `probe_state = 'x'` / `UNION ALL SELECT 'x'` 都会撞
+-- 1267/1271 "Illegal mix of collations"。
+-- 真库实测: 全库唯一一处不一致就是 v_partner_inbound.probe_state
+-- (utf8mb4_general_ci), 其余 75 张表全是 utf8mb4_unicode_ci。
+-- ⇒ MySQL 侧的修法见 db/migrations/mysql/1.0.1-view-collation-align.sql
+--    (给这一列套显式 COLLATE utf8mb4_unicode_ci)。
+--
+-- 为什么 MSSQL 侧是空迁移
+-- ----------------------
+-- SQL Server 没有 MySQL 那个坑, 三个理由:
+--
+--   ① 强制转换规则不同。MySQL 里"视图里的表达式"与"字面量"比较时, 两边
+--      coercion 级别相同 (都是 COERCIBLE) 且 collation 不同 ⇒ 报错。
+--      SQL Server 里**列永远赢字面量** (collation precedence: 显式 COLLATE >
+--      列 > 字面量) ⇒ `probe_state = 'success'` 永远拿列的 collation 去比,
+--      不可能撞 "COLLATION is incompatible with"。
+--
+--   ② 列的 collation 是**库级**的。SQL Server 的字符列继承**数据库**的默认
+--      collation, 而这个库默认对所有表/视图/字面量**是同一个** ⇒ 天然一致。
+--      MySQL 是**每表/每列**独立, 才会出现"表是 unicode_ci、视图列是
+--      general_ci"这种分裂。
+--
+--   ③ 硬编码 COLLATE 名会**打断客户库**。基线里 MSSQL 的所有列都没有写
+--      COLLATE (故意跟着库默认走), 因为每个客户库的排序规则可能不同
+--      (SQL_Latin1_General_CP1_CI_AS / Chinese_PRC_CI_AS / 自定义 ...)。
+--      在这里写死一个 COLLATE 名 = 对某些客户直接报
+--      "COLLATION 'X' is incompatible with collation 'Y'"。
+--
+-- 结论: MSSQL 侧的正确做法是**不改**。本文件是**有意为之的空迁移** ——
+-- 存在的意义是:
+--   - 两个方言目录保持 1:1 平行 (操作员/审计一眼能看出"这件事 MSSQL 侧
+--     想过、结论是不用改"), 而不是"忘了";
+--   - 留下判据与理由, 以后谁看到 MSSQL 侧的 probe_state 再问一遍
+--     "collation 要不要对齐", 答案在这份文件里, 不用重新推一遍。
+--
+-- 顺带说明"库默认 collation"这件事 (MySQL 侧查清了, 见
+-- db/migrations/mysql/1.0.1-view-collation-align.sql 的同名小节):
+-- MySQL 那边真库的库默认是 general_ci (不是应用建的库), 想改却**改不动**
+-- —— .sql 迁移拿不到库名, 动态库名只能靠服务端 PREPARE, 而 MySQL 5.7
+-- 不允许把 ALTER DATABASE 放进 PREPARE (ER_UNSUPPORTED_PS 1295);
+-- 而且**也不该**擅自改一个已存在的客户库的默认排序规则。
+-- MSSQL 这边不存在这个问题: 库默认 collation 就是所有对象 (表/列/视图/
+-- 字面量) 的**共同来源**, 天然一致, 没有任何东西需要对齐。
+--
+-- 本文件**不含任何可执行语句** (整份都是注释) ⇒ splitSqlStatements 返回
+-- 0 条语句 ⇒ 迁移照样被记录成 'applied' (execution_ms ≈ 0), 是一个干净的
+-- "已确认无需变更"的留痕。
+-- ============================================================================

@@ -1,0 +1,27 @@
+{
+  "name": "ad-lockout-list",
+  "version": "1.0.4",
+  "type": "gauge",
+  "description": "R158.49.1 (2026-10-07) supersedes R158.49 callerComputerName regex. R158.49 used `[^\r\n\\-]+` excluding '-' thinking EN message may have trailing '-' terminator. But workstation hostnames routinely contain '-' (DL-08001-D, KDLFL-OFADSRV1, SRV-DC01-PROD). The '-' exclusion caused greedy match to stop at first '-', shipping 'DL' for 'DL-08001-D' -> operator reported wrong CallerComputerName in /locked-accounts view. Fix: collect up to EOL (`\\s*$`) using non-greedy `.+?\\s*$` with multiline mode (?ms). R158.50.6 stdout error field preserved + R158.50.5 FilterXml preserved.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900
+  },
+  "database": {
+    "schemaName": "pkg_ad_lockout_list",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "events":     { "type": "json" },
+      "event_count":{ "type": "int" },
+      "error_code": { "type": "int" }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "ad-eventlog-collector",
+  "version": "1.0.2",
+  "type": "gauge",
+  "description": "Windows Event Log warning/error counter rollups + drill-down event rows for 5 channels: System / Application / AD Web Services / DFSR / Security. v1.0.2 (R158.23, 2026-10-02): Security Event ID 4625/4776 rows now classified as severity='error' (Windows reports them at Level=0 / Level=1 but they're security failures — pre-fix they were severity='info' and invisible to drill-down severity filters); mock-fallback path no longer drops audit_failure to 0 when Get-WinEvent fails (pre-fix the Security mock row reported audit_failure=0 even on Security, making the countCell total read 0 even when ad_eventlog_events had real rows). R158.31 (2026-10-02): intervalSec lifted 900 → 7200 to match SCAN_HOURS=2. Pre-fix the agent re-ran the 2h scan every 15 min, so the dashboard.js overview SUM(error_count) / SUM(warning_count) over a 24h window summed 96 rows per (dc, channel) instead of 1 — operator observed OverviewPanel numbers inflated ~96× vs the real per-DC counts. Cadence now matches the scan window: one summary row per 2h window, and one event ingest per 2h window. Cadence remains independent of replication cycle so the panel stays fresh even on broken-replication DCs. v1.0.1 (R154): scan window narrowed from 25h to 2h; new Security channel reports Event ID 4625 (Failed Logon) + 4776 (NTLM credential validation failure) with audit_failure / audit_failure_count columns flagged in both the event rows and the summary rows. Backs the public EventlogView (no-auth login-page panel, R112). One summary row per (dc_name, channel, collected_at); event rows for the same keyspace. Data lands in public ad_eventlog_events + ad_eventlog_summary tables via a centre-side post-hook (see center/src/packages/runner.js); this manifest has NO `database` block by design (公共表 architectural pivot, R110.A/R107.1/R112 precedent). 4h retention is enforced by a centre-side hourly sweep (createEventlogRetentionLoop, wired in server.js).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 7200
+  }
+}

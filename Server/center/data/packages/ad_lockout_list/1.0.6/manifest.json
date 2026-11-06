@@ -1,0 +1,29 @@
+{
+  "name": "ad-lockout-list",
+  "version": "1.0.6",
+  "type": "gauge",
+  "description": "R158.50.7l (2026-10-08) supersedes 1.0.5 R158.50.7e cross-domain displayName fix. 1.0.5 used Get-ADUser -Server $TargetDomainName but the actual EventData TargetDomainName is the caller workstation hostname in cross-domain trust, not an AD domain FQDN (verified on KDLFLOFADSRV2 2026-10-08: TargetDomainName='BJ-L-PF27GZN7' == CallerComputerName, not 'SPHKDL' the AD domain). Get-ADUser -Server <workstation> fails 'unable to contact server', displayName returned null. 1.0.6 reverts to the R139.1 default-Get-ADUser idiom (no -Server, queries the current user logon domain = local AD domain on a DC), which works for 99% of 4740 lockouts. Cache key simplified to SAM only; null lookups are NOT cached (R158.50.7e lesson — caching null locked the bad state for 24h). R158.50.7f 0-hit idle recognition preserved. R158.49.1 callerComputerName regex preserved. R158.52 per-event try/catch preserved. R158.50.5 FilterXml preserved. R158.50.6 stdout error field preserved. minVersion stays at 0.1.2.",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 900,
+    "sha256": "f22d63ba052e115a24098988c123fd17cf2f0bca97965dca358626a149a9a70b",
+    "size": 17418
+  },
+  "database": {
+    "schemaName": "pkg_ad_lockout_list",
+    "migrations": ["migrations/001_initial.sql"],
+    "metricTable": "metrics",
+    "metricSchema": {
+      "agent_id":   { "type": "varchar(64)", "nullable": false },
+      "ts":         { "type": "datetime",    "nullable": false },
+      "events":     { "type": "json" },
+      "event_count":{ "type": "int" },
+      "error_code": { "type": "int" }
+    }
+  }
+}

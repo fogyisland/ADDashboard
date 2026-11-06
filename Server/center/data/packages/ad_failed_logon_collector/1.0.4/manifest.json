@@ -1,0 +1,15 @@
+{
+  "name": "ad_failed_logon_collector",
+  "version": "1.0.4",
+  "type": "gauge",
+  "description": "R158.50.7e (2026-10-07) supersedes 1.0.3. Two operator-requested fixes: (1) skip machine-account 4625 events (TargetUserName ending in '$') so /failed-logon-2h per-user pivot only sees real user attacks; (2) displayName lookup uses TargetDomainName instead of localhost, so cross-domain users get real displayName (bdm@KDL.LOCAL on KDLWGQWHADSRV1 used to show NULL). Skipped machine-account count is logged to stderr (R158.50.7c 'ok' placeholder pattern preserved). R158.50.7d [xml] param fix preserved (Get-EventDataField / Get-EventDataInt still use [Parameter()]).",
+  "agent": {
+    "type": "ad",
+    "minVersion": "0.1.2",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 120000,
+    "intervalSec": 1800
+  }
+}

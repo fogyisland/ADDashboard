@@ -1,0 +1,15 @@
+{
+  "name": "member_eventlog_collector",
+  "version": "1.0.0",
+  "type": "gauge",
+  "description": "R158.78 (2026-10-12) — Member Server 事件日志采集. 3 通道 (Application / System / Security). 2h cadence (operator 2026-10-12 directive '每个2小时执行一次', 3600 → 7200). 所有 member-server (ad_member_servers) agent 都装. 走公共表 pattern (R112 平行): manifest omits `database` block → runner.js post-hook 直接 MERGE/UPSERT 到 ad_member_eventlog_* (专表, 不复用 DC ad_eventlog_*). v1.0.0 ships: 跟 DC 端 ad_eventlog_collector 1.0.6 平行但独立, 3 channel (去 ADWeb/DFSR, 保留 System/Application/Security). Security 走 R154 4625/4776 audit-failure 语义. 错误隔离: Get-WinEvent -ErrorAction SilentlyContinue + 3 case (idle / channel-missing / real-fault) 同 R158.50.7i. Wire shape: { metrics: { agent_id, hostname, collected_at, events[], summaries[] }, error: null | string }. 中心端 retention 10d 1h cadence 由 createMemberEventlogRetentionLoop 跑.",
+  "agent": {
+    "type": "non-ad",
+    "minVersion": "0.1.0",
+    "platforms": ["windows"],
+    "runtime": "powershell",
+    "script": "collect.ps1",
+    "timeoutMs": 60000,
+    "intervalSec": 7200
+  }
+}
