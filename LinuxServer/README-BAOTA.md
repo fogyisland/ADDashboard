@@ -20,6 +20,7 @@
 | ② 装依赖 | **根目录** `ADDashboard/` | `npm ci --omit=dev`（或 `bash scripts/install.sh`） |
 | ③ 配宝塔 | 宝塔面板 | 项目目录 = `ADDashboard/center`，启动文件 = `server.js`，端口 = `8080` |
 | ④ 初始化 | 浏览器 | `http://<服务器IP>:8080/init` → 走向导 |
+| ⑤ 日志转发（可选） | 管理后台 | 系统配置 → 运维日志转发 (syslog)，默认关闭，见 **8.1 节** |
 
 > 不想用宝塔面板的话，包里带了等价的 PM2 脚本（装 / 起 / 停 / 自检 / 卸），
 > 见**第 9 节**。装完依赖后建议先跑一次 `bash scripts/verify.sh` 自检。
@@ -326,6 +327,76 @@ rm -f  center/.env center/appsettings.json
 > ```
 >
 > 备份 / 交接 / 二次分发时**先删掉** `center/appsettings.json` 和 `center/.env`。
+
+---
+
+## 8.1 运维日志转发到 syslog（R161.28，默认关闭）
+
+中心可以把日志实时推送到**中央 syslog 服务器**（rsyslog / syslog-ng / Graylog 等），
+**默认关闭** —— 不开启时不会建立任何连接，行为与以前完全一致。
+
+### 开启方式（两种，任选）
+
+**① 管理后台（推荐）**
+
+管理后台 → **系统配置** → 「运维日志转发 (syslog)」分组：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| 转发开关 | 关 | 打开即启用 |
+| 服务器地址 | 空 | syslog 服务器 IP / 主机名，如 `10.0.0.5` |
+| 端口 | 514 | syslog 标准端口；服务器用 5140 / 1514 请相应修改 |
+| 传输协议 | UDP | UDP（RFC 5424，开销小）或 TCP（RFC 6587，可靠） |
+| 最低转发级别 | info | debug / info / warn / error / fatal |
+| 应用标识 | addashboard-center | RFC 5424 的 APP-NAME |
+| 缓冲区上限 | 10000 | 服务器不可达时内存最多排队多少条，满了丢最旧 |
+
+保存后**立即生效**（无需重启）。
+
+**② 直接改数据库**
+
+```sql
+-- MySQL
+INSERT INTO system_config (config_key, config_value) VALUES
+  ('syslog_enabled','1'), ('syslog_host','10.0.0.5'), ('syslog_port','514'),
+  ('syslog_protocol','udp'), ('syslog_min_level','info')
+ON DUPLICATE KEY UPDATE config_value = VALUES(config_value);
+```
+
+改完调用一次热重载（或重启服务）：
+
+```bash
+curl -X POST -H "Authorization: Bearer <admin token>"   http://127.0.0.1:8080/api/admin/system-settings-v2/syslog/reload
+```
+
+### 验证
+
+```bash
+# 状态（启用/目标/已发条数/丢弃条数/最近错误）
+curl -H "Authorization: Bearer <admin token>"   http://127.0.0.1:8080/api/admin/system-settings-v2/syslog
+
+# 发一条自检日志（服务器端应能看到）
+curl -X POST -H "Authorization: Bearer <admin token>"   http://127.0.0.1:8080/api/admin/system-settings-v2/syslog/test
+
+# 服务器侧抓包（UDP 514）
+sudo tcpdump -i any -n udp port 514 -A | head -20
+```
+
+### 报文格式（RFC 5424）
+
+```
+<14>1 2026-11-06T12:55:59.009Z webhost addashboard-center 12345 boot   [addashboard@32473 component="center" module="boot"] {"level":30,"msg":"...",...}
+```
+
+PRI = facility(user, 1) × 8 + severity；`level` 映射：info→6 / warn→4 / error→3 / fatal→2。
+
+### 注意事项
+
+- **文件日志照常写本地**（`center/logs/`），syslog 是**旁路复制**，不是替代。
+- **转发失败不影响中心**：服务器不可达时只累积 `dropped`，业务不受影响。
+- **防火墙**：确认服务器到 syslog 目标的 514/UDP（或所选 TCP 端口）已放通。
+- **TCP 模式**：Linux 上 `start.sh` / PM2 无需额外配置；syslog 服务器侧需启用 TCP 接收。
+- **级别选择**：`debug` 会显著增加日志服务器负载，生产建议 `info` 或更高。
 
 ---
 
