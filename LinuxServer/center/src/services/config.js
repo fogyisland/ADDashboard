@@ -298,8 +298,7 @@ async function putConfigInTx(tx, patch, userId) {
 // Seed the SMTP-related defaults into system_config on first boot. Idempotent
 // — when a row already exists (operator has touched it), the existing value
 // is preserved. Each default only writes if the row is absent.
-export async function seedSmtpDefaultsIfMissing(logger) {
-  const db = getDb();
+export async function seedSmtpDefaultsIfMissing(logger) {  const db = getDb();
   const defaults = {
     smtp_host: '',
     smtp_port: '25',
@@ -408,8 +407,7 @@ export async function seedSmtpDefaultsIfMissing(logger) {
 //   report_weekly_cc            csv     default ''
 //   report_loop_interval_seconds  int   default 300 (5min)
 //   report_retention_days       int     default 30 (0 disables)
-export async function seedReportsDefaultsIfMissing(logger) {
-  const db = getDb();
+export async function seedReportsDefaultsIfMissing(logger) {  const db = getDb();
   const defaults = {
     report_daily_enabled: '0',
     report_daily_cron: '0 9 * * *',
@@ -432,6 +430,50 @@ export async function seedReportsDefaultsIfMissing(logger) {
   }
   if (seeded > 0) {
     logger?.info?.({ seeded, keys: Object.keys(defaults) }, 'seeded report defaults into system_config');
+  }
+  return { seeded, keys: Object.keys(defaults) };
+}
+
+// R161.28 (2026-11-06) — syslog 转发（运维日志推送到中央日志服务器）。
+//
+// 操作员需求：「需要在运维日志中提供一个 syslog 服务器的转发功能，默认为关闭，
+// 但是开启设定了日志转发之后就可以将日志发送到 log 服务器中」。
+//
+// 全部默认**关闭 / 空**：不开转发时本应用行为与之前**一个字节都不变**
+// （不存在 socket、不存在 hook、不会因为日志量影响业务）。所有键都在
+// system_config（KV 表）⇒ **新增这些键不需要任何迁移**。
+//
+// 键说明：
+//   syslog_enabled    '0' | '1'          总开关，默认 '0'（关）
+//   syslog_host       主机名 / IP        目标 syslog 服务器，默认 ''
+//   syslog_port       '514'              默认 514（syslog 标准端口）
+//   syslog_protocol   'udp' | 'tcp'      默认 udp（RFC 5424 §6.4）；tcp 走
+//                                        RFC 6587 octet-counting 帧
+//   syslog_min_level  trace|debug|info|warn|error|fatal   默认 'info'
+//                                        （别把 debug 灌进 SIEM）
+//   syslog_app_name   ''                 留空则用 'addashboard-center'
+//   syslog_queue_max  '10000'            内存队列上限，满了丢最旧（防吃内存）
+export async function seedSyslogDefaultsIfMissing(logger) {
+  const db = getDb();
+  const defaults = {
+    syslog_enabled: '0',
+    syslog_host: '',
+    syslog_port: '514',
+    syslog_protocol: 'udp',
+    syslog_min_level: 'info',
+    syslog_app_name: '',
+    syslog_queue_max: '10000'
+  };
+  const { rows } = await db.query(db.sql.config.getAll);
+  const existing = new Set(rows.map(r => r.config_key));
+  let seeded = 0;
+  for (const [k, v] of Object.entries(defaults)) {
+    if (existing.has(k)) continue;
+    await db.execute(db.sql.config.upsert, [k, v]);
+    seeded++;
+  }
+  if (seeded > 0) {
+    logger?.info?.({ seeded, keys: Object.keys(defaults) }, 'seeded syslog defaults into system_config');
   }
   return { seeded, keys: Object.keys(defaults) };
 }

@@ -151,7 +151,12 @@ import { seedMcpWriteTokenIfMissing } from './src/services/mcp-write-token.js';
 import { createMeRouter } from './src/routes/me.js';
 import { createMeMcpRouter } from './src/routes/me-mcp.js';
 import { requirePerm } from './src/auth/rbac.js';
-import { getConfig as getSystemConfig, getConfigMap, seedSmtpDefaultsIfMissing, seedLdapDefaultsIfMissing, seedReportsDefaultsIfMissing } from './src/services/config.js';
+import { getConfig as getSystemConfig, getConfigMap, seedSmtpDefaultsIfMissing, seedLdapDefaultsIfMissing, seedReportsDefaultsIfMissing, seedSyslogDefaultsIfMissing } from './src/services/config.js';
+// R161.28 (2026-11-06) — 运维日志 syslog 转发（默认关闭）。
+//   旁路 tap：不改变 pino-roll 的文件写入路径，只在每条日志写出时复制一份
+//   到 syslog 服务器。关闭时零 socket、零 hook 开销。详见 services/syslog-forwarder.js。
+import { createSyslogForwarder, setSyslogForwarder, parseSyslogConfig } from './src/services/syslog-forwarder.js';
+import { attachSyslogTap } from './src/logger.js';
 import { writeAudit } from './src/services/audit.js';
 import { seedBuiltinPackages } from './src/services/builtin-packages.js';
 import { backfillRootDomains } from './src/services/ad-forest-registry.js';
@@ -397,8 +402,7 @@ await ((async () => {
   const moduleLoggers = await createMultiRotatedLogger({
     modules: [
       { name: 'agent', component: 'agent' },
-      { name: 'heartbeat', component: 'heartbeat' },
-      { name: 'init', component: 'init' },
+      { name: 'heartbeat', component: 'heartbeat' },      { name: 'init', component: 'init' },
       { name: 'web', component: 'web' }
     ],
     baseDir: installPath
@@ -431,6 +435,36 @@ await ((async () => {
     ],
     baseDir: installPath
   });
+
+  // R161.28 (2026-11-06) — syslog 转发（默认关闭）。**必须**在 system_config
+  // 可读之后（needsInit=false 分支）才能拿到配置；init 模式下 DB 还没建，
+  // 一律视为关闭。失败绝不让中心起不来 —— 转发是旁路能力，不是启动依赖。
+  let syslogForwarder = null;
+  if (!needsInit && db) {
+    try {
+      const syslogBundle = await getConfigMap().catch(() => ({}));
+      syslogForwarder = createSyslogForwarder({ logger });
+      syslogForwarder.start(parseSyslogConfig(syslogBundle));
+      setSyslogForwarder(syslogForwarder);
+      attachSyslogTap(logger, syslogForwarder);
+      for (const modLogger of Object.values(moduleLoggers)) {
+        attachSyslogTap(modLogger, syslogForwarder);
+      }
+      for (const featLogger of Object.values(featureLoggers)) {
+        attachSyslogTap(featLogger, syslogForwarder);
+      }
+      const syslogStatus = syslogForwarder.getStatus();
+      if (syslogStatus.enabled) {
+        logger.info({ component: 'syslog', target: syslogStatus.target, minLevel: syslogStatus.minLevel }, 'syslog forwarding active');
+      } else {
+        logger.info({ component: 'syslog', reason: syslogStatus.reason }, 'syslog forwarding off');
+      }
+    } catch (err) {
+      // 绝不因为日志转发把中心带崩。
+      logger.warn({ err: err?.message ?? String(err) }, 'syslog forwarder init failed; continuing without forwarding');
+      syslogForwarder = null;
+    }
+  }
 
   // R119.B / R119.B.UPGRADE — boot version anchor. Read build-manifest.json
   // (committed source of truth — see R119 spec §3) and emit one structured
@@ -773,6 +807,13 @@ function latestRoundId(rounds) {
       await seedReportsDefaultsIfMissing(logger);
     } catch (err) {
       logger.warn({ err: err.message }, 'report defaults seed failed; scheduler may be misconfigured');
+    }
+    // R161.28 (2026-11-06) — seed syslog 转发 defaults (7 keys, 全部默认关闭/空).
+    // 必须在 system_config 可读之后跑; 缺哪个补哪个, 已有值一律保留。
+    try {
+      await seedSyslogDefaultsIfMissing(logger);
+    } catch (err) {
+      logger.warn({ err: err.message }, 'syslog defaults seed failed; forwarding stays off');
     }
     // R158.100.C (2026-10-14) — seed AD 操作通知 defaults. 5 key
     // (ad_notify_enabled/to/cc/subject_template/body_template). 0 ALTER

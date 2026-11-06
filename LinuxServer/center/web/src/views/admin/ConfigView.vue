@@ -241,6 +241,23 @@ const SECTIONS = [
     ]
   },
   {
+    // R161.28 (2026-11-06) — 运维日志转发到 syslog 服务器。
+    // 操作员需求：「需要在运维日志中提供一个 syslog 服务器的转发功能，默认为
+    // 关闭，但是开启设定了日志转发之后就可以将日志发送到 log 服务器中」。
+    // 所有键走 system_config（KV 表，零迁移）；保存后点「热重载」即生效
+    // （或重启中心），不需要停机。
+    title: '运维日志转发 (syslog)',
+    rows: [
+      { key: 'syslog_enabled', label: '转发开关', description: '默认关闭。开启并填好目标服务器后，中心的日志会按 RFC 5424 推送到 syslog 服务器；文件日志照常写本地，不受影响。', type: 'toggle', onLabel: '开', offLabel: '关' },
+      { key: 'syslog_host', label: '服务器地址', description: 'syslog 服务器的主机名或 IP（如 10.0.0.5 或 log.corp.local）。', type: 'text' },
+      { key: 'syslog_port', label: '端口', description: 'syslog 端口，默认 514。若服务器用 5140/1514 等自定义端口请相应修改。', type: 'number' },
+      { key: 'syslog_protocol', label: '传输协议', description: 'UDP 无连接、开销小（默认，RFC 5424 §6.4）；TCP 有连接、可靠（RFC 6587），服务器侧需启用 TCP 接收。', type: 'select', options: [ { value: 'udp', label: 'UDP' }, { value: 'tcp', label: 'TCP' } ] },
+      { key: 'syslog_min_level', label: '最低转发级别', description: '只转发不低于此级别的日志。默认 info（运维常用）；调试时可选 debug，但会显著增加日志服务器负载。', type: 'select', options: [ { value: 'debug', label: 'debug (全部)' }, { value: 'info', label: 'info' }, { value: 'warn', label: 'warn' }, { value: 'error', label: 'error' }, { value: 'fatal', label: 'fatal (仅致命)' } ] },
+      { key: 'syslog_app_name', label: '应用标识', description: 'RFC 5424 的 APP-NAME 字段，日志服务器按此区分来源。留空默认 addashboard-center。', type: 'text' },
+      { key: 'syslog_queue_max', label: '缓冲区上限', description: '服务器不可达时内存里最多排队多少条，满了丢最旧（防止日志把中心内存吃满）。默认 10000。', type: 'number' }
+    ]
+  },
+  {
     title: 'Agent 连接',
     rows: [
       {

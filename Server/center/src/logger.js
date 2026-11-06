@@ -112,8 +112,88 @@ export async function createRotatedLogger({
 //   - Force a specific level. The module logger inherits whatever level
 //     was set at createMultiRotatedLogger time so operator config knobs
 //     (env var / future runtime toggle) stay authoritative.
-export function withModuleLogger(modLog, { component } = {}) {
-  if (!modLog || typeof modLog.info !== 'function') {
+// R161.28 (2026-11-06) — syslog 旁路 tap。
+//
+// 把 syslog 转发器挂到一个 pino 实例上，**不改变**它的写入目标（pino-roll
+// 仍写文件）。实现方式：pino 的 `hooks.logMethod` 是 pino 官方提供的
+// "每条日志写出时调用一次" 的钩子，入参是**原始实参**。
+//
+// ★★ 关键细节（2026-11-06 实测踩过）：pino 9 把 hooks 存在
+//    `Symbol.for('pino.hooks')` 上（lib/symbols.js:39），**不是** `.hooks`
+//    属性；而且 `logMethod` hook 只在 `setLevel()` 时被绑定到各级别方法上。
+//    ⇒ 所以这里必须：
+//      1) 写 `instance[Symbol.for('pino.hooks')]`；
+//      2) 写完调一次 `instance.level = instance.level` 触发 setLevel 重新绑定。
+//    只改 `.hooks` 会导致 tap 静默不触发（实测 attach 返回 false、captured 为空）。
+//
+// 为什么不用 pino.transport({ targets: [...] })：
+//   · transport 会把写盘挪到 worker 线程，与 pino-roll 的 SonicBoom 同步写
+//     语义冲突（R119 的教训：同步写是 process.exit 前日志不丢的前提）；
+//   · transport 配置错误会让 pino 构造抛异常 ⇒ 中心起不来。
+//   · 而 syslog 只是**旁路**：转发失败不该影响任何主路径。
+//
+// 幂等：同一个 pino 实例被挂第二次直接跳过（Symbol 标记），避免热更新 /
+// 多次调用把同一条日志转发多份。
+export const PINO_HOOKS_SYMBOL = Symbol.for('pino.hooks');
+const SYSLOG_TAP_ATTACHED = Symbol.for('addashboard.syslogTapAttached');
+
+export function attachSyslogTap(pinoInstance, forwarder) {
+  if (!pinoInstance || typeof pinoInstance !== 'object') return false;
+  if (!forwarder || typeof forwarder.tap !== 'function') return false;
+  if (pinoInstance[SYSLOG_TAP_ATTACHED]) return false;
+
+  const registry = pinoInstance[PINO_HOOKS_SYMBOL] || {};
+  const existingLogMethod = typeof registry.logMethod === 'function' ? registry.logMethod : null;
+
+  pinoInstance[PINO_HOOKS_SYMBOL] = {
+    ...registry,
+    logMethod(args, method, level) {
+      // 原有 hook 先跑，别人的行为不被静默吞掉。
+      if (existingLogMethod) {
+        try { existingLogMethod.apply(this, [args, method, level]); } catch { /* 别人的 hook 失败不关我们的事 */ }
+      }
+      try {
+        forwarder.tap(buildSyslogRecord(args, level));
+      } catch { /* 旁路 tap 永不抛 */ }
+      return method.apply(this, args);
+    }
+  };
+
+  // ★ 必须重新触发 setLevel：pino 只在 setLevel 时把 hook 包进级别方法。
+  try { pinoInstance.level = pinoInstance.level; } catch { /* 极端情况下失败也不影响文件日志 */ }
+
+  Object.defineProperty(pinoInstance, SYSLOG_TAP_ATTACHED, {
+    value: true, enumerable: false, writable: false, configurable: true
+  });
+  return true;
+}
+
+// 把 pino 的原始实参（(obj,msg) / (msg) / (err,msg) 等形态）规整成日志对象。
+const ERROR_KEYS = new Set(['type', 'message', 'stack']);
+function buildSyslogRecord(args, level) {
+  const record = { level: typeof level === 'number' ? level : (level?.value ?? 30) };
+  let extra = null;
+  let msg = null;
+  for (const a of args) {
+    if (a instanceof Error) {
+      record.err = { message: a.message, name: a.name, stack: a.stack };
+    } else if (typeof a === 'number') {
+      // pino 的 (level, ...) 形态不经过 logMethod hook，这里防御性忽略
+    } else if (a && typeof a === 'object') {
+      extra = a;
+    } else if (typeof a === 'string') {
+      msg = a;
+    }
+  }
+  if (extra) {
+    for (const k of Object.keys(extra)) record[k] = extra[k];
+  }
+  if (msg !== null && record.msg === undefined) record.msg = msg;
+  if (record.time === undefined) record.time = Date.now();
+  return record;
+}
+
+export function withModuleLogger(modLog, { component } = {}) {  if (!modLog || typeof modLog.info !== 'function') {
     throw new Error('withModuleLogger: modLog must be a pino instance');
   }
   // Surface the component on the underlying logger if it wasn't already.

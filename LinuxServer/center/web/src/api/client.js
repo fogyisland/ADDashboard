@@ -21,8 +21,13 @@ api.interceptors.request.use(cfg => {
 //
 // 白名单命中 → 仅 return Promise.reject(err),不动 token,不 redirect.
 // 白名单不命中 → 走原 401 拦截器逻辑 (清 token + push /login).
+//
+// R159 (2026-10-25 重放, 2026-11-06) — /api/admin/system-alerts/since 加入:
+// in-app notification polling (main.js startInappPolling) 的 401 同样该被
+// store swallow, 不该清 token 跳 /login —— 与 feature-flags 完全同类.
 const ANONYMOUS_OK_401 = new Set([
   '/api/admin/system-settings-v2/feature-flags',
+  '/api/admin/system-alerts/since',
 ]);
 
 function _isAnonymousOk401(err) {

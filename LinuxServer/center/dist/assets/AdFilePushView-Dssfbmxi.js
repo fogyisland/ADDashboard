@@ -1,1 +1,0 @@
-import{F as e}from"./FilePushView-BtmBWKnO.js";import{c as t,b as r}from"./index-CwWy9vCp.js";const _={__name:"AdFilePushView",setup(a){return(c,o)=>(r(),t(e,{"target-type":"dc"}))}};export{_ as default};

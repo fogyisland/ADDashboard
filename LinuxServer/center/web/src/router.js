@@ -1,5 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import api from './api/client.js';
+// R159 重放 (2026-11-06) — init 状态只留**一个** owner (lib/initState.js 单例)。
+//   router 与 main.js 共用同一份缓存 —— 两个模块各问一次 /api/init/status 会
+//   重复请求, 且两边缓存可能打架 (finalize 之后必须能失效)。router 侧 fail-open:
+//   状态未知 → 当作"不需要初始化" → 不把用户锁死在 /init (与旧行为一致, 避免
+//   /api/init/status 抖动时全站卡死); main.js 侧 fail-closed (轮询不起)。
+import { getInitState, resetInitState } from './lib/initState.js';
 // R161.6 — feature flag 判定的唯一实现 (前端侧) —— 语义与后端
 //   src/utils/featureFlag.js 逐字对齐, 由 tests/feature-flag-semantics.test.js
 //   锁死两端一致。不在别处内联判定表达式。
@@ -588,16 +594,13 @@ const routes = [
 
 const router = createRouter({ history: createWebHistory(), routes });
 
-let initStatusCache = null;
+// R159 重放 — 自建缓存删掉, 改用 lib/initState.js 共享单例。
+// fail-open (router 侧): 状态未知 (known=false) → 当作"不需要初始化",
+// 不把用户锁死在 /init; 只有明确 needsInit=true 才重定向。
 async function getInitStatus() {
-  if (initStatusCache !== null) return initStatusCache;
-  try {
-    const r = await api.get('/api/init/status');
-    initStatusCache = r.data;
-  } catch {
-    initStatusCache = { needsInit: false };
-  }
-  return initStatusCache;
+  const state = await getInitState();
+  if (!state || state.known !== true) return { needsInit: false };
+  return { needsInit: state.needsInit };
 }
 
 router.beforeEach(async (to) => {
@@ -610,7 +613,7 @@ router.beforeEach(async (to) => {
   // R158.License-expiry (2026-10-15) — license gate: expired → redirect to license 页.
   //   1:1 平行 init wizard gate 范式 (line 425). 死循环 guard: 已在 license 页 → 放行.
   //   公开端点 fail-closed (R158.103): API 失败 → status='unknown' → 0 redirect.
-  //   模块级 cache 30s TTL, 跟 getInitStatus 1:1 平行 (但 initStatusCache 0 TTL,
+  //   模块级 cache 30s TTL, 跟 getInitStatus 1:1 平行 (但 init 状态 0 TTL,
   //   license 有 30s 避免每次 route change 都查 DB).
   //
   // R158.X.99-trial (2026-10-21) — 2 处改动:
@@ -707,11 +710,12 @@ async function getLicenseStatus() {
   return licenseStatusCache;
 }
 
+// R159 重放 — 委托给共享单例的 reset (stores/init.js 的 finalize 调这里)。
 export function resetInitStatusCache() {
-  initStatusCache = null;
+  resetInitState();
 }
 
-// Exported for tests so the module-level cache can be reset between cases.
-export function _resetInitStatusCacheForTest() { initStatusCache = null; }
+// Exported for tests so the shared gate can be reset between cases.
+export function _resetInitStatusCacheForTest() { resetInitState(); }
 
 export default router;

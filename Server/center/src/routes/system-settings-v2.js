@@ -50,6 +50,8 @@ import { getPrimaryIPv4 } from '../utils/network.js';
 import { enqueueLicenseNotify } from '../services/license-notify.js';
 // R158.AdminEmail — setConfig / getConfig 走 audit trail, 0 改 config service.
 import { setConfig, getConfig, getConfigMap } from '../services/config.js';
+// R161.28 (2026-11-06) — syslog 转发状态 / 自检 / 热重载。
+import { getSyslogForwarder, parseSyslogConfig } from '../services/syslog-forwarder.js';
 // R158.LA (2026-10-15) — 5 段 base32 license 闭环 service.
 import { installPathFromConfigPath } from '../init/marker.js';
 import { encodeLicenseCode, verifyLicenseCode } from '../services/license-codec.js';
@@ -1211,6 +1213,79 @@ export function createSystemSettingsV2Router({ db, requireAuth, requirePerm, log
       server,
       checkedAt: new Date().toISOString()
     });
+  });
+
+
+  // ---- R161.28 (2026-11-06) — syslog 转发管理 ---------------------------------
+  //
+  // 操作员需求：运维日志可转发到中央 syslog 服务器，**默认关闭**，开启并设定
+  // 目标后即可推送。这里提供 3 个端点：
+  //   GET   /syslog          当前状态（是否启用 / 目标 / 已发条数 / 丢弃数 / 最近错误）
+  //   POST  /syslog/test     发一条自检日志（前端「测试转发」按钮）
+  //   POST  /syslog/reload   配置改动后热重载（不需要重启中心）
+  //
+  // 配置本身走既有的 PUT /api/admin/config（system_config KV），本组端点只负责
+  // 「状态 / 自检 / 热重载」—— 避免再造一套配置读写路径。
+  //
+  // ★ 权限 admin:config（与其它系统设置 1:1 平行）。
+  // ★ forwarder 是进程级单例（server.js 启动时 setSyslogForwarder）。init 模式下
+  //   它是 null ⇒ 端点回报 enabled:false + reason，而不是 500（别让 UI 报错）。
+
+  function syslogStatusPayload() {
+    const fwd = getSyslogForwarder();
+    if (!fwd) {
+      return {
+        enabled: false,
+        reason: 'forwarder not initialised (init mode, or centre started before this feature)',
+        target: null,
+        minLevel: null,
+        connected: null,
+        sent: 0,
+        dropped: 0,
+        errors: 0,
+        queued: 0,
+        lastError: null,
+        lastSentAt: null
+      };
+    }
+    return fwd.getStatus();
+  }
+
+  router.get('/api/admin/system-settings-v2/syslog', userAuth, configPerm, (_req, res) => {
+    try {
+      res.json(syslogStatusPayload());
+    } catch (e) {
+      logger.error({ err: e?.message }, 'syslog status read failed');
+      res.status(500).json({ error: 'internal' });
+    }
+  });
+
+  router.post('/api/admin/system-settings-v2/syslog/test', userAuth, configPerm, async (_req, res) => {
+    try {
+      const fwd = getSyslogForwarder();
+      if (!fwd) return res.status(409).json({ ok: false, error: 'forwarder not initialised' });
+      const result = await fwd.sendTestMessage();
+      res.json(result);
+    } catch (e) {
+      logger.error({ err: e?.message }, 'syslog test send failed');
+      res.status(500).json({ ok: false, error: 'internal' });
+    }
+  });
+
+  router.post('/api/admin/system-settings-v2/syslog/reload', userAuth, configPerm, async (_req, res) => {
+    try {
+      const fwd = getSyslogForwarder();
+      if (!fwd) return res.status(409).json({ ok: false, error: 'forwarder not initialised' });
+      // 重新读 system_config 并热重载（改配置后无需重启中心）。
+      const bundle = await getConfigMap().catch(() => ({}));
+      fwd.applyConfig(parseSyslogConfig(bundle));
+      const status = fwd.getStatus();
+      logger.info({ component: 'syslog', enabled: status.enabled, target: status.target }, 'syslog forwarding reloaded');
+      res.json({ ok: true, status });
+    } catch (e) {
+      logger.error({ err: e?.message }, 'syslog reload failed');
+      res.status(500).json({ ok: false, error: 'internal' });
+    }
   });
 
   return router;
