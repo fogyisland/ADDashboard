@@ -1,12 +1,17 @@
 import axios from 'axios';
 import router from '../router.js';
 import { notifyError } from '../lib/notify.js';
+import { getInstallerToken } from './init.js';
 
 const api = axios.create({ baseURL: '/', timeout: 30000 });
 
 api.interceptors.request.use(cfg => {
   const t = localStorage.getItem('ad_token');
   if (t) cfg.headers.Authorization = `Bearer ${t}`;
+  // R161.30 (2026-11-07) — S1 修复: init 向导写请求携带 installer token。
+  // 只在向导流程里存在 (sessionStorage), 不影响正常模式的任何请求。
+  const installerToken = getInstallerToken();
+  if (installerToken) cfg.headers['x-installer-token'] = installerToken;
   return cfg;
 });
 
@@ -39,9 +44,12 @@ function _isAnonymousOk401(err) {
 api.interceptors.response.use(
   r => r,
   err => {
+    // R161.30 — /init 向导路径上的 401 (installer token 错误) 同理不清 token
+    // 不跳 /login: 此时用户本来就没有登录态, 跳转会覆盖掉向导路由。
     if (!_isAnonymousOk401(err)
         && err.response?.status === 401
-        && !location.pathname.startsWith('/login')) {
+        && !location.pathname.startsWith('/login')
+        && !location.pathname.startsWith('/init')) {
       localStorage.removeItem('ad_token');
       router.push('/login');
     }
