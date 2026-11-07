@@ -60,6 +60,11 @@ reg delete "HKLM\SOFTWARE\ADDashboard\Initialized" /f
 `install-center.ps1 -ListenPort <port>` 的口径改，或初始化完成后在管理后台改
 （改完需重启服务生效 —— 见 R161.25 端口真值表）。
 
+★ **R161.29（2026-11-07）单端口架构**：Web/管理界面、Agent 心跳（原 8081）、
+Agent 大包上报（原 8082）**共用这一个端口**。防火墙只放通 `listenPort` 一个口；
+8081/8082 不再监听。**Agent 必须随中心一起升级**（老 Agent 硬编码 :8081/:8082，
+指向死端口会静默 404）。
+
 ## 5. 常见问题
 
 | 现象 | 原因 / 处理 |
