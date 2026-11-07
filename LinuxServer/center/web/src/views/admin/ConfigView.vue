@@ -291,9 +291,11 @@ const SECTIONS = [
   {
     title: '中心端口',
     rows: [
-      { key: 'listenPort',     label: '中心 Web 端口', description: '对外 Web/管理界面端口。改完需重启 center 后生效。',           type: 'number' },
-      { key: 'heartbeat_port', label: '心跳端口',      description: 'Agent 心跳接收端口。DB 改后 5 min 内 agent 自动刷新。',       type: 'number' },
-      { key: 'report_port',    label: '报告端口',      description: 'Agent replication snapshot 上报端口。',                     type: 'number' },
+      // R161.29 单端口架构：heartbeat_port / report_port 两个键已不再决定
+      // 实际监听（server.js 里三角色共用 listenPort，config.js 广播值也
+      // 等于主端口）。不再显示输入框 —— 留着只会诱导运维去改一个无效值。
+      // 旧的 DB 行保留不删（getAgentConfig 仍读取作兜底），但界面不暴露。
+      { key: 'listenPort',     label: '中心端口',      description: 'Web/管理界面、Agent 心跳、上报共用这一个端口（单端口架构）。改完需重启 center 后生效。', type: 'number' },
     ]
   },
 ];
@@ -309,9 +311,11 @@ const labels = {
   ad_agent_token: 'Agent 令牌',
   discovery_interval_hours: '拓扑发现周期',
   site_matrix_refresh_seconds: '站点矩阵刷新',
-  listenPort: '中心 Web 端口',
-  heartbeat_port: '心跳端口',
-  report_port: '报告端口',
+  listenPort: '中心端口',
+  // heartbeat_port / report_port：单端口架构（R161.29）后已不在界面暴露，
+  // 但审计记录里可能还有历史行 —— 保留标签供回显。
+  heartbeat_port: '心跳端口（已并入中心端口）',
+  report_port: '报告端口（已并入中心端口）',
   access_domain: '访问域名',
   email_enabled: '邮件总开关',
   ad_mgmt_retention_days: '数据保留天数',
