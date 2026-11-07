@@ -546,18 +546,24 @@ export class PackageManager {
       // (single-app deploy) the override target is still "the heartbeat
       // app" — the operator configured the host and we trust it.
       env: {
-        CENTER_URL: this.centerBaseUrl.replace(/:\d+$/, '') + ':8081',
+        // R161.29 (2026-11-06) — **单端口** 中心：心跳 / 上报 / web 全在同一端口。
+        //   旧写法把尾端口换成写死的 :8081（心跳 app 专用）。单端口中心上
+        //   8081 根本没人监听 ⇒ collect.ps1 全部 404 ⇒ 采集静默停摆。
+        //   现在直接用 operator 配的 centerUrl（含它自己的端口），不再改写。
+        //   ★ 兼容: 若中心的 /config.json 广播了 heartbeatPort（新中心会广播，
+        //     且值 == 主端口），PackageManager 已经在 refreshPortList() 里
+        //     把它当成首选；这里的 CENTER_URL 是**兜底**，必须指向同一个口。
+        CENTER_URL: this.centerBaseUrl,
         // R158.15 (2026-10-01) — collect.ps1 读 $env:DASHBOARD_CENTER_PORT 解析
         // 心跳端口 (默认 8081). 不注入 → PowerShell 展开为 $null → centre
         // endpoint 调用 silently no-op → metrics.probes=[] 空跑 15min 周期.
         // 从 this.centerBaseUrl 动态解析尾端口, 不在 env 写死.
+        // R161.29 — 同样不再回落 8081。centerUrl 没写端口时用中心默认 8080
+        //   （单端口部署下就是 web 口，agent-facing endpoint 全在这里）。
         DASHBOARD_CENTER_PORT: (() => {
           const m = String(this.centerBaseUrl || '').match(/:(\d+)$/);
           if (m) return m[1];
-          // 单 app deploy (heartbeat 跟 web 同端口): 默认 8081, 但 fallback 到
-          // '8080' 让 collect.ps1 走 web 路径 (注: web 8080 不 mount agent-facing
-          // endpoint, 仍 404; 真实场景必须 heartbeat 8081 才行).
-          return '8081';
+          return '8080';
         })(),
         AGENT_AUTH_TOKEN: this.agentToken,
         AGENT_HOSTNAME: this.hostname,

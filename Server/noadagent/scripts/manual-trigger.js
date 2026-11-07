@@ -171,7 +171,9 @@ const runs = settled.map((r, i) => {
 console.log('[info] all runs complete; posting batch to /api/agent/packages/report');
 const r = await signedRequestJson({
   method: 'POST',
-  url: `${baseUrl({ centerUrl: cfg.centerUrl, port: 8082 })}/api/agent/packages/report`,
+  // R161.29 (2026-11-06) — 单端口中心：不再强制改写到 8082（那个口已不监听）。
+  //   直接用 operator 配的 centerUrl（含端口），与 postReport 的兜底路径一致。
+  url: `${baseUrl({ centerUrl: cfg.centerUrl })}/api/agent/packages/report`,
   headers: {},
   body: { source: 'manual-trigger', runs },
   timeoutMs: 30000,
