@@ -204,12 +204,27 @@ import { createSystemSettingsV2Router } from './src/routes/system-settings-v2.js
 // (the `mount` parameter on agentRouter gates which routes each app exposes)
 // and by the runtime IIFE below which feeds the three apps to startServers.
 export function buildServerApps({ config, db, logger, needsInit, systemConfig = {}, moduleLoggers = {}, featureLoggers = {} }) {
-  // systemConfig shape: { heartbeat_port, report_port, heartbeat_stale_seconds }
-  // — same key naming as the system_config table (Task 1). When the table is
-  // unreachable (init mode / db not yet bootstrapped) the caller passes an
-  // empty object and we fall back to the documented defaults (8081, 8082).
-  const heartbeatPort = Number(systemConfig.heartbeat_port) || 8081;
-  const reportPort    = Number(systemConfig.report_port)    || 8082;
+  // R161.29 (2026-11-06) — **单端口模式**。
+  //
+  // 旧架构: 三个独立 Express app 各占一个端口 (web 8080 / heartbeat 8081 /
+  //   report 8082), Agent 靠 /config.json 拿端口再分别去打。代价是运维要
+  //   开三个防火墙口、宝塔/nginx 要配三个 upstream。
+  //
+  // 新架构: 只有**一个**端口 (config.listenPort), 三个 app 的**全部路由**
+  //   合并进 webApp —— 具体做法是把 agentRouter 挂成 'full'
+  //   (heartbeat ∪ report ∪ web, 见 routes/agent.js 的 mount 门)。
+  //
+  // ★ 老 Agent 兼容: 旧 Agent 仍然会打 :8081 / :8082。startServers 本来
+  //   就有"同端口去重"语义, 但**去重会静默丢弃后两个 app 的路由** ⇒ 所以
+  //   这里改成让三个角色共用**同一个** webApp 实例, 而不是靠去重兜底。
+  //   (旧 Agent 若未升级, 需要把它的 centerUrl 指到新端口 —— 见 README。)
+  //
+  // systemConfig 里的 heartbeat_port / report_port 仍然被读取, 只用于
+  // /config.json 对外**广播**这两个值 (老 Agent 的 cachedPorts 期望它们存在);
+  // 广播值 = 同一个 listenPort, 这样老 Agent 改变端口后仍能连上。
+  const singlePort = config.listenPort;
+  const heartbeatPort = singlePort;
+  const reportPort    = singlePort;
 
   // Web app: createApp gives us healthz + static + SPA fallback + JSON body
   // parsing + the req.log middleware. Routes are mounted below in the IIFE
@@ -435,36 +450,6 @@ await ((async () => {
     ],
     baseDir: installPath
   });
-
-  // R161.28 (2026-11-06) — syslog 转发（默认关闭）。**必须**在 system_config
-  // 可读之后（needsInit=false 分支）才能拿到配置；init 模式下 DB 还没建，
-  // 一律视为关闭。失败绝不让中心起不来 —— 转发是旁路能力，不是启动依赖。
-  let syslogForwarder = null;
-  if (!needsInit && db) {
-    try {
-      const syslogBundle = await getConfigMap().catch(() => ({}));
-      syslogForwarder = createSyslogForwarder({ logger });
-      syslogForwarder.start(parseSyslogConfig(syslogBundle));
-      setSyslogForwarder(syslogForwarder);
-      attachSyslogTap(logger, syslogForwarder);
-      for (const modLogger of Object.values(moduleLoggers)) {
-        attachSyslogTap(modLogger, syslogForwarder);
-      }
-      for (const featLogger of Object.values(featureLoggers)) {
-        attachSyslogTap(featLogger, syslogForwarder);
-      }
-      const syslogStatus = syslogForwarder.getStatus();
-      if (syslogStatus.enabled) {
-        logger.info({ component: 'syslog', target: syslogStatus.target, minLevel: syslogStatus.minLevel }, 'syslog forwarding active');
-      } else {
-        logger.info({ component: 'syslog', reason: syslogStatus.reason }, 'syslog forwarding off');
-      }
-    } catch (err) {
-      // 绝不因为日志转发把中心带崩。
-      logger.warn({ err: err?.message ?? String(err) }, 'syslog forwarder init failed; continuing without forwarding');
-      syslogForwarder = null;
-    }
-  }
 
   // R119.B / R119.B.UPGRADE — boot version anchor. Read build-manifest.json
   // (committed source of truth — see R119 spec §3) and emit one structured
@@ -996,6 +981,44 @@ function latestRoundId(rounds) {
 
   const apps = buildServerApps({ config: finalConfig, db, logger, needsInit, systemConfig, moduleLoggers, featureLoggers });
 
+  // R161.28 (2026-11-06) — syslog 转发（默认关闭）。
+  //
+  // ★★ 位置很关键（2026-11-06 现场事故）：这段必须在
+  //    `const needsInit = ...` 与 `let db = ...` **之后**。第一版把它写在
+  //    moduleLoggers 构造之后（server.js 约 430 行），而那两个变量分别在
+  //    496 / 681 行才声明 ⇒ TDZ（temporal dead zone）⇒
+  //      ReferenceError: Cannot access 'needsInit' before initialization
+  //    ⇒ bootstrap 在 logger 就绪前就挂了 ⇒ Ubuntu 上服务起不来。
+  //    Pino/pino-roll 构造不依赖 db，所以很容易误以为"这里就能判断了"。
+  //
+  // 行为：init 模式下 DB 还没建 ⇒ 一律视为关闭；任何异常只 warn，
+  // 绝不让中心起不来 —— 转发是旁路能力，不是启动依赖。
+  let syslogForwarder = null;
+  if (!needsInit && db) {
+    try {
+      const syslogBundle = await getConfigMap().catch(() => ({}));
+      syslogForwarder = createSyslogForwarder({ logger });
+      syslogForwarder.start(parseSyslogConfig(syslogBundle));
+      setSyslogForwarder(syslogForwarder);
+      attachSyslogTap(logger, syslogForwarder);
+      for (const modLogger of Object.values(moduleLoggers)) {
+        attachSyslogTap(modLogger, syslogForwarder);
+      }
+      for (const featLogger of Object.values(featureLoggers)) {
+        attachSyslogTap(featLogger, syslogForwarder);
+      }
+      const syslogStatus = syslogForwarder.getStatus();
+      if (syslogStatus.enabled) {
+        logger.info({ component: 'syslog', target: syslogStatus.target, minLevel: syslogStatus.minLevel }, 'syslog forwarding active');
+      } else {
+        logger.info({ component: 'syslog', reason: syslogStatus.reason }, 'syslog forwarding off');
+      }
+    } catch (err) {
+      logger.warn({ err: err?.message ?? String(err) }, 'syslog forwarder init failed; continuing without forwarding');
+      syslogForwarder = null;
+    }
+  }
+
   // Declared at module scope so the normal-mode bootstrap below can assign
   // it and the normal-mode shutdown handler can stop it. The init-mode
   // branch never starts a probe loop (no DB) and so leaves this as null.
@@ -1053,7 +1076,11 @@ function latestRoundId(rounds) {
     // module logger above; the web mount is the third leg of the same
     // /api/agent/* surface.
     app.use(withModuleLogger(moduleLoggers.agent, { component: 'agent' }));
-    app.use(agentRouter({ config: finalConfig, logger, mount: 'web' }));
+    // R161.29 (2026-11-06) — 单端口模式：挂 'full' 而不是 'web'。
+    //   'full' 是 heartbeat / report / web 三段的**并集** —— routes/agent.js 里
+    //   每一段的条件都是 "mount === 'xxx' || mount === 'full'"，没有任何一段
+    //   排除 full ⇒ 心跳上行 / 上报 / 端口列表 / config.json 全部落在同一端口。
+    app.use(agentRouter({ config: finalConfig, logger, mount: 'full' }));
     // R158.102 (2026-10-14) — MCP Streamable HTTP endpoint at POST/GET/DELETE
     //   /mcp + no-auth /mcp/healthz. Mounted BEFORE dashboardRouter (跟
     //   healthz / systemRouter 1:1 平行 — 必在 /api/* 命名空间前). 8 个
@@ -1412,12 +1439,15 @@ function latestRoundId(rounds) {
     // (the spec says overlapping ports collapse to one server, first wins),
     // so a misconfigured triple-with-same-port falls back to single-server
     // behavior without throwing — matches the documented contract.
+    // R161.29 (2026-11-06) — 单端口: 只起 **一个** server, 挂 webApp
+    //   （webApp 现在已含 agentRouter 'full' = 心跳 + 上报 + web 全部路由）。
+    //   不能再把三个 app 一起交给 startServers —— 它的去重会静默丢弃后两个
+    //   app 的路由, 而当三个 app 已经合并成一份时, 那"丢弃"就等于什么都没丢;
+    //   但为了不依赖那个巧合, 这里显式只传一条。
     const servers = await startServers({
       logger,
       roleAppPortList: [
-        { role: 'web',       app: apps.webApp,       port: apps.ports.web },
-        { role: 'heartbeat', app: apps.heartbeatApp, port: apps.ports.heartbeat },
-        { role: 'report',    app: apps.reportApp,    port: apps.ports.report }
+        { role: 'web', app: apps.webApp, port: apps.ports.web }
       ]
     });
     // R161.25 (2026-10-29 部署审计) — 端口簿记, **必须在绑定成功之后**:

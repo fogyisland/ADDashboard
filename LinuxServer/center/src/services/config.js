@@ -662,8 +662,15 @@ export async function getAgentConfig() {
     heartbeatIntervalSeconds: Number(all.heartbeat_interval_seconds || 30),
     discoveryIntervalHours: Number(all.discovery_interval_hours || 4),
     agentToken: all.agent_token ?? null,
-    heartbeatPort: Number(all.heartbeat_port) || 8081,
-    reportPort: Number(all.report_port) || 8082,
+    // R161.29 (2026-11-06) — **单端口模式**：心跳 / 上报 / web 全部落在同一个
+    // 端口上。这里广播的 heartbeatPort / reportPort 都等于主端口，原因：
+    //   ① 新 Agent 读 /config.json 后照旧用这两个字段去连 —— 值正确它们就能连上；
+    //   ② 老 Agent 硬编码 :8081 (package-manager.js:549) 的情况必须靠**升级
+    //      Agent** 解决, 中心的广播改不了它已写死的地址。
+    //   ★ 不要在这里回落到 8081/8082 —— 单端口部署下那两个口根本没监听,
+    //     回落值会把 Agent 指向一个死端口。
+    heartbeatPort: Number(all.listenPort) || Number(all.heartbeat_port) || 8080,
+    reportPort: Number(all.listenPort) || Number(all.report_port) || 8080,
     heartbeatStaleSeconds: Number(all.heartbeat_stale_seconds) || 15
   };
 }
