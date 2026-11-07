@@ -1,5 +1,5 @@
 import express from 'express';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { withOneShotFacade } from './db-tester.js';
 import { getWizardFacade, closeWizardFacade } from './wizard-facade.js';
 import { applyAll, backfillMigrations, resolveRepoRoot } from './schema-applier.js';
@@ -7,6 +7,7 @@ import { createMigrationsService } from '../services/migrations.js';
 import { createAdmin, AdminConflictError } from './admin-creator.js';
 import { writeConfig } from './config-writer.js';
 import { writeMarker } from './marker.js';
+import { INSTALLER_TOKEN_HEADER, clearInstallerToken } from './installer-token.js';
 
 // Canonicalize conn params so equivalent params (different key order) produce
 // stable JSON.stringify output. This ensures getWizardFacade's key-order-sensitive
@@ -17,7 +18,17 @@ function canonicalize(p) {
   return Object.fromEntries(Object.entries(p).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-export function initRouter({ logger, configPath, installPath, getNeedsInit, _deps = null }) {
+// R161.30 (2026-11-07) — S1 修复: 常量时间比较。长度不同直接 false 是可接受
+// 的 (长度本身不泄密 —— 令牌是定长 96 字符 hex)。
+function installerTokenMatches(supplied, expected) {
+  if (typeof supplied !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+export function initRouter({ logger, configPath, installPath, getNeedsInit, installerToken, _deps = null }) {
   const deps = _deps ?? {
     withOneShotFacade, applyAll, createAdmin, writeConfig,
     getWizardFacade, closeWizardFacade, writeMarker,
@@ -40,7 +51,33 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
     next();
   });
 
-  r.post('/db/test', async (req, res) => {
+  // R161.30 (2026-11-07) — S1 修复: 向导写操作认证。
+  // init 模式的四个写端点 (db/test / db/apply / admin/create / finalize) 在
+  // 此前完全无认证 —— 内网任何人都能抢先 finalize 接管部署, 或借 /db/test
+  // 做 SSRF 探测。现在统一要求 x-installer-token 头 (常量时间比较)。
+  // 令牌由中心启动时生成并落在 <installPath>/.installer-token (0600),
+  // 只有能读到服务安装目录的人 (即真正的操作员) 拿得到。
+  // /status 仍故意公开: 前端 initState gate 依赖它, 且只回一个布尔值。
+  const requireInstallerToken = (req, res, next) => {
+    if (!installerToken) {
+      // 防御: token 未注入 (理论上 init 模式必然注入) ⇒ fail-closed。
+      logger.error('init wizard: no installer token configured — refusing all wizard writes');
+      return res.status(503).json({ error: 'installer token not configured' });
+    }
+    const supplied = req.headers[INSTALLER_TOKEN_HEADER];
+    if (!installerTokenMatches(supplied, installerToken)) {
+      logger.warn({
+        ip: req.ip,
+        hasHeader: supplied !== undefined
+      }, 'init wizard: missing/invalid installer token — request rejected');
+      return res.status(401).json({ error: 'installer token required (see .installer-token on the server host)' });
+    }
+    // 返回 next() 的 promise: 主 handler 是 async, 不 return 的话调用方
+    // (express 忽略返回值无碍, 但直连调用的测试) 拿不到完成时机。
+    return next();
+  };
+
+  r.post('/db/test', requireInstallerToken, async (req, res) => {
     const { dialect, ...connParams } = req.body || {};
     if (!dialect || !['mysql', 'mssql'].includes(dialect)) {
       return res.status(400).json({ error: 'dialect must be "mysql" or "mssql"' });
@@ -67,12 +104,17 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
       });
       res.json({ ok: true, dialect, ...result });
     } catch (e) {
-      logger.warn({ err: e.message, dialect }, 'init db test failed');
-      res.json({ ok: false, error: e.message });
+      // R161.30 (2026-11-07) — S1 修复: 不再原样回显驱动错误。原文可能包含
+      //   内部 host / 端口 / 驱动版本指纹 (SSRF 探测可借此确认目标可达性)。
+      //   完整原文留在服务端日志; 客户端只拿到"连接失败"这一结论。
+      //   (db/apply 保持详细回显 —— apply 已被 token 保护, 且操作员排障
+      //   需要看到 precedingErrors 链。)
+      logger.warn({ err: e.message, code: e.code, dialect }, 'init db test failed');
+      res.json({ ok: false, error: '连接失败 — 请检查主机/端口/用户名/密码 (详情见服务端 init 日志)' });
     }
   });
 
-  r.post('/db/apply', async (req, res) => {
+  r.post('/db/apply', requireInstallerToken, async (req, res) => {
     const { dialect, connParams, createDatabase } = req.body || {};
     if (!dialect || !['mysql', 'mssql'].includes(dialect)) {
       return res.status(400).json({ error: 'dialect must be "mysql" or "mssql"' });
@@ -171,7 +213,7 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
     }
   });
 
-  r.post('/admin/create', async (req, res) => {
+  r.post('/admin/create', requireInstallerToken, async (req, res) => {
     const { dialect, connParams, username, password } = req.body || {};
     if (!dialect || !username || !password) {
       return res.status(400).json({ error: 'dialect, username, password required' });
@@ -190,7 +232,7 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
     }
   });
 
-  r.post('/finalize', async (req, res) => {
+  r.post('/finalize', requireInstallerToken, async (req, res) => {
     const { dialect, connParams, listenPort, agentToken, jwtSecret, logLevel, env, staticDir } = req.body || {};
     try {
       // C6 fix: refuse to write appsettings.json with empty jwtSecret /
@@ -248,6 +290,13 @@ export function initRouter({ logger, configPath, installPath, getNeedsInit, _dep
         await deps.closeWizardFacade();
       } catch (e) {
         logger.error({ err: e.message }, 'init wizard facade close failed');
+      }
+      // R161.30 — 向导已被 marker 锁死, installer token 留着没有意义, 清掉。
+      // 失败不致命 (marker 才是主防线), 落日志即可。
+      try {
+        clearInstallerToken(installPath);
+      } catch (e) {
+        logger.warn({ err: e.message }, 'init installer token cleanup failed (non-fatal)');
       }
       res.json({ ok: true, path: configPath });
       // Exit so NSSM AppExit=Default Restart picks up the new appsettings.json

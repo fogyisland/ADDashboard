@@ -124,6 +124,7 @@ import { memberRouter } from './src/routes/member-servers.js';
 import { agentPackagesRouter } from './src/routes/agent-packages.js';
 import { agentToken } from './src/auth/agent-token.js';
 import { checkNeedsInit } from './src/init/needs-init.js';
+import { ensureInstallerToken } from './src/init/installer-token.js';
 import { closeWizardFacade } from './src/init/wizard-facade.js';
 import { hasMarker, writeMarker, installPathFromConfigPath } from './src/init/marker.js';
 import { userAuth } from './src/auth/user-auth.js';
@@ -665,6 +666,15 @@ function latestRoundId(rounds) {
   }
   const needsInit = markerLocked ? false : await checkNeedsInit(db);
 
+  // R161.30 (2026-11-07) — S1 修复: init 模式启动时生成/复用 installer token,
+  //   落 <installPath>/.installer-token (0600)。四个向导写端点统一校验
+  //   x-installer-token 头; /finalize 成功后由 router 清理该文件。
+  //   正常模式 (needsInit=false) 不生成 —— router 内 token 为 null 时写端点
+  //   fail-closed 返回 503, 且 getNeedsInit() guard 已把它们挡在 404 后面。
+  const installerToken = needsInit
+    ? ensureInstallerToken(installPath, logger)
+    : null;
+
   // Auto-apply pending DB migrations on every normal-mode startup. Runs
   // BEFORE buildServerApps so routes that reference newly-added columns
   // (e.g. ad_agent_heartbeat.report_requested_at from migration 018) see
@@ -1050,7 +1060,7 @@ function latestRoundId(rounds) {
   // and audit-sensitive (init logs ship to ops review); isolating
   // logs/APP/init.log means the wizard's chatter never appears in
   // /healthz scrapes or heartbeat log streams.
-  app.use('/api/init', withModuleLogger(moduleLoggers.init, { component: 'init' }), initRouter({ logger, configPath, installPath, getNeedsInit: () => needsInit }));
+  app.use('/api/init', withModuleLogger(moduleLoggers.init, { component: 'init' }), initRouter({ logger, configPath, installPath, getNeedsInit: () => needsInit, installerToken }));
   if (needsInit) {
     logger.info('init mode: serving /api/init/* and /init');
   } else {

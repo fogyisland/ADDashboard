@@ -105,6 +105,13 @@ function startPolling() {
 async function runSequence() {
   timedOut.value = false;
   restarting.value = false;
+  // R161.30 — 回到第 3 步前确认 token 仍在 (sessionStorage 可能被浏览器清掉)。
+  if (!initApi.getInstallerToken()) {
+    const failedStage = stages.find(s => s.status === 'pending');
+    setStatus(failedStage ? failedStage.key : 'createDb', 'failed',
+      '安装令牌丢失 — 请返回第 1 步重新粘贴 .installer-token 文件内容');
+    return;
+  }
   for (const s of stages) { s.status = 'pending'; s.error = null; }
   try {
     if (store.dialect === 'mysql') {

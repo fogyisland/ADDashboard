@@ -506,6 +506,8 @@ describe('F. init 向导的 /db/apply 必须把待办的编号迁移真的跑掉
       configPath: 'unused',
       installPath: 'unused',
       getNeedsInit: () => true,
+      // R161.30 — S1 修复后写端点要求 installer token; 传 null ⇒ fail-closed 503。
+      installerToken: 'f'.repeat(96),
       _deps: {
         withOneShotFacade: async () => ({}),
         applyAll: async () => ({ schema: [], seed: [], migrations: [], conflicts: [] }),
@@ -539,7 +541,7 @@ describe('F. init 向导的 /db/apply 必须把待办的编号迁移真的跑掉
     };
     const res = await fetch(`${baseUrl}/api/init/db/apply`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-installer-token': 'f'.repeat(96) },
       body: JSON.stringify({ dialect: 'mysql', connParams: { host: 'h' }, createDatabase: false })
     });
     assert.equal(res.status, 200);
@@ -557,7 +559,7 @@ describe('F. init 向导的 /db/apply 必须把待办的编号迁移真的跑掉
     };
     const res = await fetch(`${baseUrl}/api/init/db/apply`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-installer-token': 'f'.repeat(96) },
       body: JSON.stringify({ dialect: 'mysql', connParams: { host: 'h' }, createDatabase: false })
     });
     assert.equal(res.status, 500, '迁移失败必须报错 —— 静默放过 = 交付一棵残库');

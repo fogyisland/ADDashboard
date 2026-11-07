@@ -1,6 +1,25 @@
 <template>
   <div class="db-conn-step">
     <h3>第 1 步：数据库连接</h3>
+
+    <div class="installer-token-box">
+      <label class="token-label" for="installer-token-input">安装令牌</label>
+      <input
+        id="installer-token-input"
+        v-model="tokenLocal"
+        name="installer-token"
+        type="password"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="服务器 .installer-token 文件内容…"
+      />
+      <p class="hint">
+        为防止初始化被内网他人抢先接管，向导需要安装令牌认证。请在服务器上打开
+        安装目录下的 <code>.installer-token</code> 文件，把其中的内容粘贴到这里。
+      </p>
+      <p v-if="tokenMissing" class="err">请先粘贴安装令牌，否则后续步骤会被拒绝（401）。</p>
+    </div>
+
     <p class="hint">选择数据库类型并填写连接信息。建议先点击"测试连接"验证。</p>
 
     <div class="dialect-picker">
@@ -38,7 +57,7 @@
 
     <div class="actions">
       <button type="button" :disabled="!canTest || testing" @click="onTest">
-        {{ testing ? '测试中...' : '测试连接' }}
+        {{ testing ? '测试中…' : '测试连接' }}
       </button>
       <button type="button" :disabled="!store.dbTestResult?.ok" @click="onNext">下一步</button>
     </div>
@@ -49,13 +68,26 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useInitStore } from '../../stores/init.js';
+import { getInstallerToken, setInstallerToken } from '../../api/init.js';
 
 const store = useInitStore();
 const testing = ref(false);
 const dialectLocal = ref(store.dialect);
 const conn = ref({ ...store.connParams });
+const tokenLocal = ref(getInstallerToken());
+const tokenMissing = ref(false);
+
+onMounted(() => {
+  // token 为空时不阻塞输入, 但标红提醒 (测试连接会被 401 拒)。
+  tokenMissing.value = !getInstallerToken();
+});
+
+watch(tokenLocal, (v) => {
+  setInstallerToken(v);
+  tokenMissing.value = !getInstallerToken();
+});
 
 watch(dialectLocal, (v) => {
   if (v && v !== store.dialect) {
@@ -84,6 +116,10 @@ function onNext() { store.next(); }
 
 <style scoped>
 .db-conn-step { display: flex; flex-direction: column; gap: 16px; }
+.installer-token-box { padding: 12px; border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
+.token-label { font-size: 13px; font-weight: 600; }
+.installer-token-box input { padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--fg); font-family: monospace; }
+.installer-token-box .hint code { font-family: monospace; background: var(--accent-bg); padding: 1px 4px; border-radius: 3px; }
 .dialect-picker { display: flex; gap: 12px; }
 .dialect-card { flex: 1; padding: 16px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .dialect-card.active { border-color: var(--accent); background: var(--accent-bg); }
