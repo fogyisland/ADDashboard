@@ -34,7 +34,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   isFlagValueEnabled as serverIsFlagValueEnabled,
-  readFeatureFlag
+  readFeatureFlag,
+  readFeatureFlagStrict
 } from '../src/utils/featureFlag.js';
 import {
   isFlagValueEnabled as webIsFlagValueEnabled,
@@ -115,6 +116,37 @@ describe('R161.6 — feature flag 判定语义 (前后端一致 + fail-open)', (
     assert.match(warns[0].msg, /fail-open/, 'warn 文案要说明这是 fail-open');
   });
 
+  // R161.30 (2026-11-07) — S4: MCP 安全闸门专用 fail-closed 变体。
+  //   判定矩阵与 readFeatureFlag 逐格一致, 唯独读库抛错 ⇒ false (拦截)。
+  test('4b. readFeatureFlagStrict: 读库抛错 ⇒ false (fail-closed), 缺行仍放行', async () => {
+    const sql = { featureFlags: { getByKey: 'SELECT ...' } };
+
+    // 缺行 ⇒ 放行 (与 fail-open 版一致: 未配置 ≠ 关闭, 基线 seed 保证行存在)
+    const missing = { sql, execute: async () => ({ rows: [] }) };
+    assert.equal(await readFeatureFlagStrict(missing, 'x.enabled', null, 'test'), true,
+      '缺行 = 未配置 = 不拦 (与 fail-open 版一致)');
+
+    // "1" ⇒ 放行 / "0" ⇒ 拦截 (矩阵与 fail-open 版逐格一致)
+    const on = { sql, execute: async () => ({ rows: [{ value: '1' }] }) };
+    assert.equal(await readFeatureFlagStrict(on, 'x.enabled', null, 'test'), true);
+    const off = { sql, execute: async () => ({ rows: [{ value: '0' }] }) };
+    assert.equal(await readFeatureFlagStrict(off, 'x.enabled', null, 'test'), false,
+      '显式 "0" 必须拦');
+
+    // 读库抛错 ⇒ 拦截 (fail-closed) 且**必须** warn (不静默失败)
+    const warns = [];
+    const boom = {
+      sql,
+      execute: async () => { throw new Error('db down'); }
+    };
+    const result = await readFeatureFlagStrict(boom, 'x.enabled',
+      { warn: (obj, msg) => warns.push({ obj, msg }) }, 'test');
+    assert.equal(result, false, '安全闸门读库失败宁可误关 (503 可重试) 不可误开');
+    assert.equal(warns.length, 1, '读库失败必须 warn 一次 (严禁静默失败)');
+    assert.equal(warns[0].obj.flag, 'x.enabled', 'warn 里要带上出问题的 flag key');
+    assert.match(warns[0].msg, /fail-closed/, 'warn 文案要说明这是 fail-closed');
+  });
+
   test('4. resolveFeatureFlag 三态: true=开 / false=关 / null=未知(放行)', () => {
     const map = { 'a.enabled': '1', 'b.enabled': '0' };
     assert.equal(resolveFeatureFlag(map, 'a.enabled'), true);
@@ -153,8 +185,8 @@ describe('R161.6 — feature flag 判定语义 (前后端一致 + fail-open)', (
       { rel: 'center/web/src/router.js', must: /resolveFeatureFlag\(flagCache\.map,\s*key\)/ },
       { rel: 'center/web/src/views/admin/systemSettings/FeatureFlagsView.vue', must: /isFlagValueEnabled\(ffStore\.flags\[key\]\)/ },
       { rel: 'center/src/routes/report-center.js', must: /readFeatureFlag\(db,\s*key,\s*logger,\s*'report-center'\)/ },
-      { rel: 'center/src/routes/mcp.js', must: /readFeatureFlag\(db,\s*'mcp\.enabled',\s*logger,\s*'mcp'\)/ },
-      { rel: 'center/src/routes/mcp-write.js', must: /readFeatureFlag\(db,\s*'mcp_write\.enabled',\s*logger,\s*'mcp-write'\)/ }
+      { rel: 'center/src/routes/mcp.js', must: /readFeatureFlagStrict\(db,\s*'mcp\.enabled',\s*logger,\s*'mcp'\)/ },
+      { rel: 'center/src/routes/mcp-write.js', must: /readFeatureFlagStrict\(db,\s*'mcp_write\.enabled',\s*logger,\s*'mcp-write'\)/ }
     ];
     for (const site of sites) {
       const full = path.join(SERVER_ROOT, site.rel);

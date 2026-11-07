@@ -81,7 +81,7 @@
             <td class="key-label">健康检查 (无需鉴权)</td>
             <td>
               <code>GET /mcp-write/healthz</code>
-              <span class="hint">返回 ok 状态、工具数量 6、操作范围为域控写入</span>
+              <span class="hint">返回 { ok, enabled }（R161.30 收敛：不再回工具数量/版本指纹）</span>
             </td>
           </tr>
         </tbody>

@@ -63,7 +63,7 @@
             <td>健康检查 (no-auth)</td>
             <td>
               <code>{{ mcpHealthz }}</code>
-              <span class="hint">返 { ok, tool_count: 12, protocol: 'streamable-http' }</span>
+              <span class="hint">返 { ok, enabled }（R161.30 收敛：不再回 tool_count/protocol 指纹）</span>
             </td>
           </tr>
         </tbody>

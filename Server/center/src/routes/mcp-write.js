@@ -43,7 +43,8 @@ import { _clientIp } from '../auth/mcp-token.js';
 import { resolveTargetDc, buildAdParams, redactForAudit, HttpErr } from '../services/ad-command-dispatch.js';
 // R161.6 (2026-10-26) — flag 判定语义抽到公共函数 (与 mcp.js /
 //   report-center.js / 前端 web/src/lib/featureFlag.js 同一份定义)。
-import { readFeatureFlag } from '../utils/featureFlag.js';
+// R161.30 (2026-11-07) — S4: MCP 安全闸门改走 fail-closed 变体。
+import { readFeatureFlagStrict } from '../utils/featureFlag.js';
 
 const TOOL_TIMEOUT_MS = 30_000;
 const JSONRPC_INTERNAL_ERROR = -32603;
@@ -322,25 +323,26 @@ export function mcpWriteRouter({ logger, db, adAdminCommands }) {
   //   但要把 enabled=false 如实报出去, 否则探针会以为服务还活着而
   //   反复重试一个被刻意关掉的东西。
   //
-  //   fail-open: 查询失败 → 放行。理由同前端 router guard (R158.X.116.i)
-  //   与 license gate: 一次 DB 抖动不该把运维的写通道锁死。关掉是**显式**
-  //   动作 (operator 在开关页点), 不是故障的副作用。
+  //   R161.30 (2026-11-07) — S4 修复: 读库失败从 fail-open 改为
+  //   **fail-closed**。原理由 ("一次 DB 抖动不该把运维的写通道锁死") 在
+  //   安全审查里被定性为反模式: 写通道正是最不该在未知状态下放行的东西,
+  //   且 503 是可重试错误, DB 恢复后客户端重试即恢复 —— 误开的代价
+  //   (关闭状态被击穿) 远大于误关的代价 (一次重试)。缺行 = 未配置 =
+  //   放行, 语义不变。mcp.js 的同名闸门同批改, 两处永不漂移。
+  //   healthz 同步收敛到 {ok, enabled} 最小集 (去 version/tool_count/
+  //   protocol 指纹)。
   async function isWriteEnabled() {
-    // R161.6 — 判定逻辑搬进 src/utils/featureFlag.js, 语义与原实现**逐字相同**
-    //   (缺行=不拦 / 读库失败=fail-open / '1'|1|true=放行 / 其它值=拦), 行为零变化。
-    return readFeatureFlag(db, 'mcp_write.enabled', logger, 'mcp-write');
+    // R161.30 — 走 fail-closed 变体 readFeatureFlagStrict (安全闸门专用)。
+    return readFeatureFlagStrict(db, 'mcp_write.enabled', logger, 'mcp-write');
   }
 
   r.get('/healthz', async (_req, res) => {
     const enabled = await isWriteEnabled();
+    // R161.30 (S4) — 收敛暴露面: 只回 ok/enabled, 不回 version / tool_count /
+    //   protocol (版本与规模指纹, 无认证端点不该泄露)。
     res.json({
       ok: enabled,
       enabled,
-      server: 'dashboard-center-mcp-write',
-      version: '1.0.0',
-      tool_count: 5,   // R158.X.99.36: 6 → 5 (摘掉 mcp_write_ad_user_delete)
-      protocol: 'streamable-http',
-      scope: 'ad-write',
       ...(enabled ? {} : { reason: 'disabled_by_feature_flag:mcp_write.enabled' })
     });
   });

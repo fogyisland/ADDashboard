@@ -37,7 +37,7 @@ import { writeAudit } from '../services/audit.js';
 import { _clientIp } from '../auth/mcp-token.js';
 // R161.6 (2026-10-26) — flag 判定语义抽到公共函数 (与 mcp-write.js /
 //   report-center.js / 前端 web/src/lib/featureFlag.js 同一份定义)。
-import { readFeatureFlag } from '../utils/featureFlag.js';
+import { readFeatureFlagStrict } from '../utils/featureFlag.js';
 
 // Lazy-loaded service / SQL. 用 dynamic import 避免 0 必提前确认 path —
 // 服务模块 side-effect 必是 idempotent 0 启动副作用 (跟 R158.78 member-eventlog
@@ -718,24 +718,29 @@ export function mcpRouter({ logger, db }) {
   // R158.X.116.k (2026-10-23) — feature flag `mcp.enabled` 后端闸门。
   //   关闭时 POST/GET/DELETE /mcp 一律 503, 已持有的 mcp_ token 彻底失效。
   //   1:1 平行 mcp-write.js 的同名闸门 (本轮同批加的 mcp_write.enabled)。
-  //   fail-open (查询失败 → 放行) + /healthz 不拦的理由同 mcp-write.js,
-  //   不复述; 要改请两处一起改, 免得两个端点的开关语义漂移。
+  //   R161.30 (2026-11-07) — S4 修复: 读库失败从 fail-open 改为 **fail-closed**。
+  //     原语义: DB 抖动 ⇒ 放行 = 在不知道开关状态的情况下打开 MCP 通道,
+  //     "关掉 = 真关掉" 的保证被一次查询失败击穿。安全闸门宁可误关 (503,
+  //     客户端重试即恢复) 也不可误开。缺行 = 未配置 = 放行, 语义不变。
+  //   /healthz 不拦的理由不变 (公开探针端点, 见 mcp-write.js 同段注释);
+  //   但 healthz 只收敛到 {ok, enabled} 最小集 —— version/tool_count/
+  //   protocol 是版本与规模指纹, 不该从无认证端点泄露。
+  //   ★ 两处 (mcp.js + mcp-write.js) 必须一起改, 免得开关语义漂移。
   async function isMcpEnabled() {
-    // R161.6 — 判定逻辑搬进 src/utils/featureFlag.js, 语义与原实现**逐字相同**
-    //   (缺行=不拦 / 读库失败=fail-open / '1'|1|true=放行 / 其它值=拦), 行为零变化。
-    return readFeatureFlag(db, 'mcp.enabled', logger, 'mcp');
+    // R161.30 — 走 fail-closed 变体 readFeatureFlagStrict (安全闸门专用);
+    //   判定矩阵 ('1' 放行 / '0' 拦截 / 缺行放行) 与原实现一致, 仅读库
+    //   抛错分支从 true → false。
+    return readFeatureFlagStrict(db, 'mcp.enabled', logger, 'mcp');
   }
 
   // 永远 no-auth 健康检查. 跟 /healthz 1:1 平行 (R112 / R113 precedent).
   r.get('/healthz', async (_req, res) => {
     const enabled = await isMcpEnabled();
+    // R161.30 (S4) — 收敛暴露面: 只回 ok/enabled, 不回 version / tool_count /
+    //   protocol (版本与规模指纹, 无认证端点不该泄露)。
     res.json({
       ok: enabled,
       enabled,
-      server: 'dashboard-center-mcp',
-      version: '1.0.0',
-      tool_count: 12,
-      protocol: 'streamable-http',
       ...(enabled ? {} : { reason: 'disabled_by_feature_flag:mcp.enabled' })
     });
   });
