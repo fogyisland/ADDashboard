@@ -1,33 +1,35 @@
 // 诊断: 对比 baseline seed 值 vs 真库现值, 找出存量库缺哪些键 / 值不一致哪些键。
 // 只读, 不写库。不打印任何凭据 (system_config 里可能有 ad_bind_password 等,
 // 一律只打印"存在/缺失", 绝不打印 config_value)。
+//
+// R161.32: baseline 解析收敛到 src/utils/config-seed.js 单一真源
+//   —— 修复 D1 (硬编码 D:/dashboard/... 任何机器都不存在, 脚本从未跑通过)
+//      D2 (只读 mssql 侧, MySQL 部署读错方言)
+//      D3 (行扫描正则漏掉 mssql 跨行 `+ CHAR(10) +` 的 seed)
+//   现在按**当前连接的方言**取 baseline, 路径由 resolveRepoRoot 定位。
 
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
 
 const CONFIG_PATH = resolve('appsettings.json');
-
-// ---- 1. 从 baseline 解析 seed 值 ----
-function parseMssqlSeeds() {
-  const p = 'D:/dashboard/db/migrations/mssql/1.0.0-baseline.sql';
-  const txt = readFileSync(p, 'utf8');
-  const out = new Map();
-  // baseline 的 system_config seed 形如 ('key', 'value', 'description'),
-  // 跨行, 一行一条。用行扫描 + 括号深度跟踪。
-  for (const line of txt.split(/\r?\n/)) {
-    const m = /^\s*\('([a-z0-9_]+)',\s*'((?:[^']|'')*)'/i.exec(line);
-    if (m) out.set(m[1], m[2].replace(/''/g, "'"));
-  }
-  return out;
-}
-
-const baselineSeeds = parseMssqlSeeds();
-console.log(`baseline (mssql) 解析到 ${baselineSeeds.size} 条 system_config seed\n`);
 
 // ---- 2. 读真库 ----
 const { init, close } = await import('../src/db/index.js');
 const { loadConfig } = await import('../src/config.js');
 const db = await init(loadConfig(CONFIG_PATH), { bootstrapMigrations: async () => {} });
+
+// ---- 1. 从 baseline 解析 seed 值 (按当前连接的方言) ----
+const { loadConfigSeeds } = await import('../src/utils/config-seed.js');
+let baselineSeeds;
+try {
+  const { path, seeds } = loadConfigSeeds({ dialect: db.dialect });
+  baselineSeeds = seeds;
+  console.log(`baseline (${db.dialect}) 解析到 ${baselineSeeds.size} 条 system_config seed`);
+  console.log(`  来源: ${path}\n`);
+} catch (e) {
+  console.error(`FAIL: 解析 baseline 失败 — ${e?.message || e}`);
+  await close();
+  process.exit(1);
+}
 
 // 敏感键: 只报存在性, 不报值
 const SENSITIVE = /password|secret|token|bind_dn|_to$|_cc$/i;

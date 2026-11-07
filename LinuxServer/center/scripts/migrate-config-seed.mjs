@@ -36,7 +36,6 @@
 // 默认 --dry-run: 这是改生产数据的脚本。
 
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const CONFIG_PATH = resolve(
@@ -60,18 +59,11 @@ const DESC = Object.freeze({
 });
 
 // 值从 baseline 文件里取, 不在本脚本硬编码 —— 两库同源, 免得手抄走样。
-function loadMssqlSeeds() {
-  const p = 'D:/dashboard/db/migrations/mssql/1.0.0-baseline.sql';
-  const txt = readFileSync(p, 'utf8');
-  const out = new Map();
-  for (const line of txt.split(/\r?\n/)) {
-    const m = /^\s*\('([a-z0-9_]+)',\s*'((?:[^']|'')*)'/i.exec(line);
-    if (m) out.set(m[1], m[2].replace(/''/g, "'"));
-  }
-  return out;
-}
-
-const SEEDS = loadMssqlSeeds();
+// R161.32: 解析收敛到 src/utils/config-seed.js 单一真源
+//   —— 修复 D1 (硬编码 D:/dashboard/... 任何机器都不存在, 脚本从未跑通过)
+//      D2 (只读 mssql 侧, MySQL 部署读错方言)
+//      D3 (行扫描正则漏掉 mssql 跨行 `+ CHAR(10) +` 的 seed)
+//   dialect 要等 db init 后才知道 ⇒ SEEDS 延迟到 main() 里加载。
 
 function sqlFor(dialect) {
   return dialect === 'mssql' ? {
@@ -99,6 +91,19 @@ async function main() {
   const { loadConfig } = await import('../src/config.js');
   const db = await init(loadConfig(CONFIG_PATH), { bootstrapMigrations: async () => {} });
   const S = sqlFor(db.dialect);
+
+  // baseline seed 按当前连接的方言解析 (R161.32 单一真源)
+  const { loadConfigSeeds } = await import('../src/utils/config-seed.js');
+  let SEEDS;
+  try {
+    const { path, seeds } = loadConfigSeeds({ dialect: db.dialect });
+    SEEDS = seeds;
+    console.log(`baseline (${db.dialect}) 解析到 ${SEEDS.size} 条 system_config seed: ${path}`);
+  } catch (e) {
+    console.error(`FAIL: 解析 baseline 失败 — ${e?.message || e}`);
+    await close();
+    process.exit(1);
+  }
 
   let inserted = 0;
   let updated = 0;
