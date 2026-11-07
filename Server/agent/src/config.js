@@ -1,5 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// R161.33 (2026-11-07) — DEFAULTS 里的路径**不许**再写死盘符。本模块位于
+// <installRoot>/agent/src/config.js, 因此 agent 目录 = 本文件的上一级。
+// 之前写死 'C:\\agentInstall\\agent\\...' 的后果: 操作员把绿色包装到任意
+// install root (R158.94 以后是受支持的布局) 且 appsettings.json 缺 key 时,
+// 这些默认值静默指向一个不存在的盘符路径 —— queue 打开失败、脚本 spawn
+// ENOENT, 报错里看到的全是陌生路径。Register-ADDashboardAgent.ps1 安装时
+// 仍写绝对路径进 appsettings.json (shallow-merge 里 appsettings 永远赢),
+// 这里只兜底, 而兜底必须落在真实安装位置。
+const AGENT_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))));
 
 const REQUIRED = ['centerUrl', 'agentId', 'agentToken'];
 const DEFAULTS = {
@@ -12,17 +24,17 @@ const DEFAULTS = {
   // :905 都读这个字段,改一处全 agent 同步生效。
   heartbeatIntervalSeconds: 60,
   discoveryIntervalHours: 1,
-  // 2026-09-27 — green-package defaults. The MSI install path
-  // (`C:\\addashboard\\Agent\\data`) is wrong for the green-package
-  // layout at `C:\\agentInstall\\agent\\`. Resolved relative to the
-  // CWD at launch (NSSM runs the service with CWD = install dir),
-  // which is exactly where PackageManager creates its queue file
-  // and package cache. appsettings.json still wins via shallow-merge.
-  psDiscoveryScriptPath: 'C:\\agentInstall\\agent\\scripts\\collect-discovery.ps1',
-  queueDbPath: 'C:\\agentInstall\\agent\\queue.db',
-  agentDataDir: 'C:\\agentInstall\\agent\\data',
+  // 2026-09-27 — green-package defaults. 旧默认写死 `C:\\agentInstall\\...`;
+  // R161.33 改为相对本模块推导 (<installRoot>/agent/...), 任意 install root
+  // 都成立. Resolved relative to the CWD at launch (NSSM runs the service
+  // with CWD = install dir), which is exactly where PackageManager creates
+  // its queue file and package cache. appsettings.json still wins via
+  // shallow-merge.
+  psDiscoveryScriptPath: join(AGENT_DIR, 'scripts', 'collect-discovery.ps1'),
+  queueDbPath: join(AGENT_DIR, 'queue.db'),
+  agentDataDir: join(AGENT_DIR, 'data'),
   powerShellPath: 'powershell.exe',
-  psScriptPath: 'C:\\agentInstall\\agent\\scripts\\collect-replication.ps1',
+  psScriptPath: join(AGENT_DIR, 'scripts', 'collect-replication.ps1'),
   healthCheckIntervalMs: 600_000,
   // T16: agent type discriminator. 'ad' = DC-collector (legacy); 'non-ad'
   // = member-server heartbeat + self-register + per-host package fetch.

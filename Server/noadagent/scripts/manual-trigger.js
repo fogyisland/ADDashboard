@@ -5,9 +5,12 @@
 // C:\agentInstall\agent\data\manual-trigger-results.json 便于核对。
 
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { signedRequestJson, baseUrl } from '../src/reporter.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // R158.100 (2026-10-14) — appsettingsPath must be derived from environment
 // rather than hard-coded. R158.86.6 split the member-server install root
@@ -18,16 +21,26 @@ import { signedRequestJson, baseUrl } from '../src/reporter.js';
 // override), the R158.86.6 install root, the legacy R158.13 install
 // root. This matches the resolution order agent.js uses to locate
 // appsettings.json at boot — see agent.js:54-72.
+// R161.33 (2026-11-07) — 候选顺序改为**从脚本自身位置推导优先**:
+// 本脚本随 bundle 部署在 <installRoot>/agent/scripts/ 下, 所以
+// ../appsettings.json 就是本机 agent 的 appsettings —— 任意 install root
+// 都成立, 不再依赖名机布局。旧的 C:\MemberServer / C:\agentInstall 两个
+// 名机候选降级为向后兼容兜底 (老部署的脚本被单独拷走运行时仍能找到)。
+// 查找顺序: $env:AD_AGENT_APP_SETTINGS (显式覆盖) → 相对推导 → 名机兜底。
+// 这与 agent.js 启动时的定位顺序保持同构 — see agent.js configPath。
 const appsettingsPath = (() => {
   if (process.env.AD_AGENT_APP_SETTINGS) return process.env.AD_AGENT_APP_SETTINGS;
   const candidates = [
-    'C:\\MemberServer\\agent\\appsettings.json',   // R158.86.6+ member-server
-    'C:\\agentInstall\\agent\\appsettings.json',   // R158.13 legacy (pre-R158.86.6)
+    join(__dirname, '..', 'appsettings.json'),      // 相对推导 (任意 install root)
+    'C:\\MemberServer\\agent\\appsettings.json',   // R158.86.6+ member-server 名机兜底
+    'C:\\agentInstall\\agent\\appsettings.json',   // R158.13 legacy 名机兜底
   ];
   for (const c of candidates) {
     try {
       if (existsSync(c)) return c;
-    } catch {}
+    } catch (e) {
+      console.error(`[warn] existsSync failed for ${c}: ${e?.message || e}`);
+    }
   }
   return candidates[0];   // fall through, will throw on readFileSync
 })();
