@@ -20,6 +20,8 @@ import {
   decommissionHost, pauseHost, resumeHost, previewLifecycle, HostStatusError
 } from '../services/host-status.js';
 import { listPorts, createPort, updatePort, deletePort } from '../services/ports.js';
+// R161.30 (S5) — Content-Disposition filename 安全拼装
+import { contentDispositionFilename } from '../utils/content-disposition.js';
 import { getDb } from '../db/index.js';
 import { sha256Hex, LISTEN_PORT_SOURCE_ADMIN } from '../config.js';
 import * as email from '../services/email.js';
@@ -1035,7 +1037,9 @@ export function adminRouter({ config, logger, db }) {
       const full = await listAudit({ ...opts, page: 1, size: EXPORT_CAP + 1 });
       const ts = formatTsForFilename(new Date());
       const filename = `audit-${category || 'all'}-${ts}.${format}`;
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      // R161.30 (S5) — category 来自 query, 也走同一转义 (统一收口)
+      res.setHeader('Content-Disposition',
+        `attachment; filename="${contentDispositionFilename(filename)}"`);
       if (format === 'json') {
         res.setHeader('Content-Type', 'application/json');
         res.send(JSON.stringify(full.rows, null, 2));

@@ -10,6 +10,8 @@ import { upsertPortStatuses } from '../services/port-status.js';
 // dropped). service/replication-port-config.js is also deleted in T8 —
 // dashboard.js no longer imports it after T3 strips port fields.
 import { getDb } from '../db/index.js';
+// R161.30 (S5) — Content-Disposition filename 安全拼装
+import { contentDispositionFilename } from '../utils/content-disposition.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 import { getAgentTokenState } from '../services/agent-token.js';
 // 2026-10-01 R158.13 — parallel to getAgentTokenState above. Reads the
@@ -1029,7 +1031,9 @@ export function agentRouter({ config, logger, mount = 'full' }) {
         }
         const buf = await getTaskFile(req.params.id);
         res.setHeader('Content-Type', 'application/octet-stream');
-        res.setHeader('Content-Disposition', `attachment; filename="${t.filename}"`);
+        // R161.30 (S5) — filename 注入转义 (与 file-push.js 同批)
+        res.setHeader('Content-Disposition',
+          `attachment; filename="${contentDispositionFilename(t.filename)}"`);
         res.setHeader('X-File-Sha256', t.sha256);
         res.send(buf);
       } catch (e) {

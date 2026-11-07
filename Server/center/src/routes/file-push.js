@@ -35,6 +35,8 @@ import { Buffer } from 'node:buffer';
 import { userAuth } from '../auth/user-auth.js';
 import { requirePerm } from '../auth/rbac.js';
 import { writeAudit } from '../services/audit.js';
+// R161.30 (S5) — Content-Disposition filename 安全拼装
+import { contentDispositionFilename } from '../utils/content-disposition.js';
 import {
   createTask, listTasks, getTask, getTaskFile, ackTask
 } from '../services/file-push.js';
@@ -162,7 +164,10 @@ export function filePushRouter({ logger, db }) {
       const t = await getTask(req.params.id);
       const buf = await getTaskFile(req.params.id);
       res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${t.filename}"`);
+      // R161.30 (2026-11-07) — S5 修复: filename 双引号/换行注入 (共用
+      //   src/utils/content-disposition.js, agent.js / admin.js 同批)。
+      res.setHeader('Content-Disposition',
+        `attachment; filename="${contentDispositionFilename(t.filename)}"`);
       res.setHeader('X-File-Sha256', t.sha256);
       res.send(buf);
     } catch (e) {

@@ -193,6 +193,21 @@ export async function createTask({ filename, buffer, targetType, targets, target
   if (!Array.isArray(targets) || targets.length === 0) {
     throw httpErr(400, 'targets array required (non-empty)');
   }
+  if (!targetPath || typeof targetPath !== 'string') {
+    throw httpErr(400, 'targetPath required');
+  }
+  // R161.30 (2026-11-07) — S6 修复: 中心端拦截**相对路径** targetPath
+  //   (防御纵深第二层)。Agent 侧 path-safety.js 已拒绝相对路径, 但任务
+  //   是中心持久化的 —— 拦在源头可以避免相对路径任务常驻队列, 等 agent
+  //   侧某天放宽校验时成为静默写盘向量。允许的形态: 盘符开头 (C:\ / C:/)
+  //   或 UNC (\\server\share)。route 层的 `..` 检查 (file-push.js) 仍保留。
+  //   注意: 必须在 findOffManagementHosts 之前 —— 参数级校验先于业务校验,
+  //   否则非法输入先打一次 DB 才被拒。
+  const isAbsoluteTarget = /^(?:[a-zA-Z]:[\\/]|\\\\)/.test(targetPath);
+  if (!isAbsoluteTarget) {
+    throw httpErr(400,
+      `targetPath 必须是绝对路径 (盘符 C:\\ 或 UNC \\\\server\\share 开头), 收到: ${targetPath}`);
+  }
   // R158.X.115 (2026-10-20) — 拒绝把文件下发到退役/暂停管控的主机。
   //   退役 = agent 已卸载, 推了永远没人 claim, task 会永远卡在 queued 且
   //   targetStatus 停在 pending, 在 UI 上看起来像"下发失败"其实是"不该下发";
@@ -211,9 +226,6 @@ export async function createTask({ filename, buffer, targetType, targets, target
     throw httpErr(400,
       `以下目标已退役/暂停管控或不存在, 不能作为下发目标: ${offMgmtTargets.join(', ')}。`
       + '如需下发, 请先恢复该主机的管控。');
-  }
-  if (!targetPath || typeof targetPath !== 'string') {
-    throw httpErr(400, 'targetPath required');
   }
   const sha256 = createHash('sha256').update(buffer).digest('hex');
   const taskId = randomUUID();
