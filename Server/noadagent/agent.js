@@ -27,6 +27,15 @@ import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
 // (R158.75 — drainAdCommands / dispatchAdCommand removed; member-commands
 // drainer below is the only PowerShell-style work puller.)
 import { drainFilePush } from './src/file-push-drainer.js';
+// R161.30 S3 (2026-11-07) — noad httpGetBinary 补签名 (R158.75 fork 漏项 #2)。
+// drainer 传进来的 headers 只有 X-Agent-Token ⇒ S2 把 grace 收紧为 0 后,
+// GET /api/agent/file-push/:id/file 无签名 = 401 'missing agent signature',
+// 成员服务器永远下载不到文件。修法与 AD 树 agent.js agentHttpGetBinary 1:1:
+// 用 signRequest 盖齐 X-Agent-Token + X-Agent-Id + X-Agent-Hostname +
+// X-Agent-Signature 四头 (GET 无 body, HMAC over hostname:agentId:<empty>)。
+import { signRequest } from './src/lib/agent-identity.js';
+import http from 'node:http';
+import https from 'node:https';
 // 2026-09-05 R81 — member-server PowerShell drainer joins the heartbeat pool.
 import { drainMemberCommands } from './src/member-commands-drainer.js';
 import { dispatchMemberCommand } from './src/dispatchers/member-commands.js';
@@ -643,15 +652,37 @@ async function runNonAdRuntime({ config, logger }) {
   // X-File-Sha256 header (see routes/agent.js:985-988). We capture the
   // header so drainFilePush can compare the wire sha256 against the task
   // record (file-push-drainer.js:25).
-  const httpGetBinary = ({ url, headers, timeoutMs }) => new Promise((resolve) => {
+  //
+  // R161.30 S3 (2026-11-07) — 补签名。R158.75 fork 时这里只抄走了
+  // Buffer-collecting 的 GET 实现, 没抄 AD 树 agentHttpGetBinary 的
+  // 签名四头注入 ⇒ 请求只带 drainer 传入的 X-Agent-Token。S82 中间件
+  // (auth/agent-token.js) 在 grace 窗口外对无签名请求 401 —— S2 把
+  // grace 默认收紧为 0 后, noad agent 的文件下载全部 401。
+  // 修法 = AD 树 agent.js:346 agentHttpGetBinary 1:1: 覆盖整个 header dict,
+  // 盖 X-Agent-Token + X-Agent-Id + X-Agent-Hostname + X-Agent-Signature
+  // (HMAC over `${hostname}:${agentId}:` — GET 无 body ⇒ 空体签名)。
+  const noadHost = config.hostname || osInfo.hostname;
+  const httpGetBinary = ({ url, headers = {}, timeoutMs }) => new Promise((resolve) => {
     let u;
     try { u = new URL(url); }
     catch (e) { return resolve({ ok: false, status: 0, error: `bad url: ${e.message}` }); }
-    const lib = u.protocol === 'https:' ? httpsRequest : httpRequest;
+    const lib = u.protocol === 'https:' ? https : http;
+    const authHeaders = {
+      'X-Agent-Token': config.agentToken,
+      'X-Agent-Id': config.agentId || noadHost,
+      'X-Agent-Hostname': noadHost,
+      'X-Agent-Signature': signRequest({
+        hostname: noadHost,
+        agentId: config.agentId || noadHost,
+        body: null,
+        token: config.agentToken
+      }),
+      ...headers
+    };
     const req = lib({
       method: 'GET', hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname + u.search,
-      headers: { ...headers }, timeout: timeoutMs || 60_000
+      headers: authHeaders, timeout: timeoutMs || 60_000
     }, (res) => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
