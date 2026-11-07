@@ -1185,6 +1185,10 @@ BEGIN
     [local_dc] NVARCHAR(128) NOT NULL,
     [peer_dc] NVARCHAR(128) NOT NULL,
     [naming_context] NVARCHAR(128) NOT NULL,
+    -- R161.31 (2026-11-07) — 本列**本来就是** INT (MySQL 侧是 TINYINT,
+    --   上限 127, 装不下真实 Windows 错误码 1398 ⇒ dc-partners-refresh
+    --   在 MySQL 上静默丢行)。本次把 MySQL 侧加宽到 INT ⇒ 两个方言对齐。
+    --   ⇒ MSSQL 侧**不需要**迁移, 只需基线保持 INT。
     [status_code] INT NOT NULL DEFAULT 0,
     [last_success_time] DATETIME2 NULL,
     [last_attempt_time] DATETIME2 NOT NULL,
@@ -1223,6 +1227,10 @@ BEGIN
     [local_dc] NVARCHAR(128) NOT NULL,
     [peer_dc] NVARCHAR(128) NOT NULL,
     [naming_context] NVARCHAR(128) NOT NULL,
+    -- R161.31 (2026-11-07) — 本列**本来就是** INT (MySQL 侧是 TINYINT,
+    --   上限 127, 装不下真实 Windows 错误码 1398 ⇒ dc-partners-refresh
+    --   在 MySQL 上静默丢行)。本次把 MySQL 侧加宽到 INT ⇒ 两个方言对齐。
+    --   ⇒ MSSQL 侧**不需要**迁移, 只需基线保持 INT。
     [status_code] INT NOT NULL DEFAULT 0,
     [last_success_time] DATETIME2 NULL,
     [last_attempt_time] DATETIME2 NOT NULL,
@@ -1310,6 +1318,12 @@ BEGIN CREATE NONCLUSTERED INDEX [ix_remote_probe_ok] ON [ad_remote_port_probe] (
 -- --------------------------------------------------------------------------
 -- Table: [ad_replication_active_errors]
 -- --------------------------------------------------------------------------
+-- R161.31 (2026-11-07) — status_code 从 TINYINT 加宽到 INT。
+--   T-SQL 里**没有** TINYINT —— 它是 SMALLINT 的同义词 (上限 32767),
+--   而 ad_replication_status.status_code 在两个方言上都是 INT
+--   (Windows 错误码最大 65535, NTSTATUS 空间有超过 32767 的码)。
+--   ⇒ 三个表统一到 INT, 两个方言收敛到同一个最终 schema (README 规则 4)。
+--   升级路径上的对应迁移: mssql/1.0.10-active-errors-status-code-int.sql
 IF OBJECT_ID('[ad_replication_active_errors]', 'U') IS NULL
 BEGIN
   CREATE TABLE [ad_replication_active_errors] (
@@ -1317,7 +1331,7 @@ BEGIN
     [source_dc] VARCHAR(128) NOT NULL,
     [dest_dc] VARCHAR(128) NOT NULL,
     [naming_context] VARCHAR(128) NOT NULL,
-    [status_code] TINYINT NOT NULL,
+    [status_code] INT NOT NULL,
     [last_attempt_time] DATETIME2 NOT NULL,
     [first_seen_at] DATETIME2 NOT NULL DEFAULT sysutcdatetime(),
     [last_reported_at] DATETIME2 NOT NULL DEFAULT sysutcdatetime(),
@@ -1383,7 +1397,16 @@ BEGIN
     [naming_context] NVARCHAR(256) NOT NULL,
     [attempt_at] DATETIME2 NOT NULL,
     [result] NVARCHAR(16) NOT NULL,
-    [status_code] TINYINT NOT NULL,
+    -- R161.31 (2026-11-07) — status_code 从 TINYINT 加宽到 INT。
+    --   ★ T-SQL 里**没有** TINYINT 类型 —— 它是 SMALLINT 的**同义词**
+    --     (值域 -32768..32767) ⇒ 旧基线实际建出来的是 SMALLINT。
+    --   ★ SMALLINT 也**不是**"无上限": NTSTATUS 完整错误码空间里有超过
+    --     32767 的码 (0x8007... 系列) ⇒ agent 上报这类码照样越界。
+    --   ★ 写入路径 center/src/services/replication-status-probe.js:40-42 是
+    --     **无钳位 passthrough** ⇒ 真实 NTSTATUS 码随时会触发。
+    --   ⇒ 与 ad_replication_status / ad_replication_history 统一到 INT,
+    --     两个方言收敛到同一个最终 schema (README 规则 4)。
+    [status_code] INT NOT NULL,
     [duration_ms] INT NULL,
     [objects_transferred] INT NULL,
     [error_code] INT NULL,

@@ -62,6 +62,12 @@ Server/center/data/instance_id
 Server/center/data/license-requests/
 Server/center/data/file-push/
 
+# ★ R161.31 — 有些运行期路径是相对 **cwd** 解析的 (不是相对 center 根):
+#   在 Server/ 目录下起进程时, instance_id 会落到 Server/data/instance_id
+#   (与 Server/center/data/instance_id 是**两个不同的机器身份** —— 内容不同!)。
+#   那个目录是运行期产物, 绝不入库。
+Server/data/
+
 # 交付包里的运行期数据：包源入库，其余是运行期产物。
 LinuxServer/center/data/*
 !LinuxServer/center/data/packages/

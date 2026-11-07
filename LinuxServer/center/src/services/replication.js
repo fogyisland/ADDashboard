@@ -5,6 +5,20 @@ import { getDb } from '../db/index.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 // R161.10.2 (2026-10-26) — 行数上限的唯一整数闸门 (见 utils/limit.js)。
 import { clampRowLimit } from '../utils/limit.js';
+// R161.31 (2026-11-07) — 性能项 3: 批量 upsert 的 SQL builder + 分片助手。
+// 见 db/sql/replication-batch.js 的文件头 (约束 1/2/3 与语义等价性说明)。
+import {
+  BATCH_LIMITS,
+  batchLimitFor,
+  chunkRows,
+  upsertStatusBatchMySql,
+  upsertStatusBatchMssql,
+  upsertActiveErrorBatchMySql,
+  upsertActiveErrorBatchMssql,
+  removeActiveErrorBatchMySql,
+  removeActiveErrorBatchMssql,
+  upsertHistoryBatch
+} from '../db/sql/replication-batch.js';
 
 // Coerce a value to either null or string. The tedious MSSQL driver validates
 // parameters at the protocol layer (tedious/lib/data-types/nvarchar.js:121-128):
@@ -103,15 +117,68 @@ function historyParams(row) {
   ];
 }
 
+/**
+ * dedupeByMergeKey — 按 (source_dc, dest_dc, naming_context) 去重, **保留最后
+ * 一条** (last-wins)。
+ *
+ * R161.31 (2026-11-07) — 批量 upsert 的前置步骤。
+ *
+ * ★ 为什么必须去重:
+ *   - MSSQL 的 MERGE 在源里出现重复 merge key 时报错误 8672
+ *     ("The MERGE statement attempted to UPDATE or DELETE the same row
+ *      more than once")。这不是可以 catch 的软失败 —— 整条 MERGE 回滚,
+ *     整批数据丢失。
+ *   - MySQL 的 ON DUPLICATE KEY UPDATE 没这限制 (按出现顺序逐行应用)。
+ *   ⇒ 两个方言的输出必须一致 ⇒ 都要去重。
+ *
+ * ★ 为什么保留最后一条:
+ *   逐行版 (本函数之前) 的语义是"后写的 upsert 覆盖前写的 upsert"
+ *   ⇒ 同一个 pair 在一个 payload 里出现两次时, 库里留下的是**第二条**。
+ *   保留最后一条 = 批量版与逐行版一致。保留第一条会引入方言间差异。
+ *
+ * ★ 键的分隔符用 \u0000 (NUL): DC 名 / NC 里理论上可能出现任何字符,
+ *   用可打印分隔符会有碰撞风险 (a="x|y" b="z" vs a="x" b="y|z")。
+ *
+ * @param {Array<object>} rows
+ * @returns {Array<object>} 去重后的行 (保持首次出现的位置顺序, 值取最后一条)
+ */
+export function dedupeByMergeKey(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  // Map 保持插入顺序: 重复键覆盖值但**不改变位置** ⇒ 输出顺序 = 首次
+  // 出现顺序。这跟逐行版一致 (逐行版的第一条决定了行的位置, 后续只是
+  // 更新同一行的内容)。
+  const byKey = new Map();
+  for (const row of rows) {
+    const key = `${row?.sourceDc ?? ''}\u0000${row?.destDc ?? ''}\u0000${row?.namingContext ?? ''}`;
+    byKey.set(key, row);
+  }
+  return Array.from(byKey.values());
+}
+
 export async function upsertStatus(rows, { appendHistory = false, logger = null } = {}) {
   const db = getDb();
   const errors = [];
+
+  // ---------------------------------------------------------------------
+  // R161.31 (2026-11-07) — 性能项 3: 批量 upsert。
+  //
+  // 旧实现 (逐行) 每行 1~3 条语句 ⇒ 一次 agent report (N 个 partner)
+  // 要付 2N~3N 次网络往返。34 台 DC × ~20 partner 的完整周期 = 2000+ 次
+  // 往返, 全部打在 pool 上 ⇒ 排队 + 连接占用 + 审计日志里的慢查询。
+  //
+  // 批量化后每批 1~3 条语句 ⇒ 往返数降到 N/150 量级。
+  // ★ 语义等价性 (含 1 处**有意的**行为修正) 见
+  //   db/sql/replication-batch.js 的文件头, 这里不重复。
+  // ---------------------------------------------------------------------
+
+  // ---- 步骤 0: 行级校验 (与旧实现逐字一致) ----
+  // R158.52 — reject rows missing sourceDc/destDc/agentId. MySQL
+  // NOT NULL columns throw "Column 'X' cannot be null" on bind and
+  // cascade-abort the rest of the envelope. Push to errors so the
+  // caller can surface them, mirroring lockout.js / eventlog.js /
+  // dc-overview.js reject patterns.
+  const validRows = [];
   for (const row of rows) {
-    // R158.52 — reject rows missing sourceDc/destDc/agentId. MySQL
-    // NOT NULL columns throw "Column 'X' cannot be null" on bind and
-    // cascade-abort the rest of the envelope. Push to errors so the
-    // caller can surface them, mirroring lockout.js / eventlog.js /
-    // dc-overview.js reject patterns.
     if (!row.sourceDc || !row.destDc || !row.agentId) {
       errors.push({
         sourceDc: row.sourceDc ?? null,
@@ -121,72 +188,172 @@ export async function upsertStatus(rows, { appendHistory = false, logger = null 
       });
       continue;
     }
-    try {
-      await db.execute(db.sql.replication.upsertStatus, rowParams(row));
-      // R158.X.99.29.b (2026-10-19) — 操作员 directive 双锁: status=0
-      // 成功时 DELETE ad_replication_active_errors 同三元组 (auto-remove),
-      // status>0 失败时 UPSERT 走新表.
-      //
-      // R158.X.116.p (2026-10-23) — 真因修复. 原判定 `sc === 1 || sc === 2`
-      // 与 ad_replication_status.status_code 的实际值域不符: 该列既有包
-      // (ad_replication_status_probe collect.ps1:173-178, partner-port-probe.js
-      // deriveStatus:100-107) 产出的 0/1/2 枚举, 也有历史写入方留下的
-      // Windows 错误码 (实测库内 1398=命名空间绑定失败 / 1722=RPC 服务器
-      // 不可用). 枚举判定导致 Windows 错误码整条走不进分支,
-      // ad_replication_active_errors 恒 0 行 → /admin/replication-errors
-      // 恒显示「无错误」, 与 /errors 口径分裂.
-      // 改为 `sc > 0` — 与老端点 sql.dashboard.errors 的
-      // `status_code <> 0 AND status_code > 0` 收敛单源 (lesson 158/159).
-      // -1 (META 哨兵行) 走 else 分支不处理, 不进新表.
-      const sc = Number(row.statusCode);
-      if (sc === 0) {
-        // 成功 → 整条 pair 真从新表消失 (操作员 "恢复后必 auto-remove" 锁)
-        try {
-          await db.execute(db.sql.replication.removeActiveError, [
-            row.sourceDc, row.destDc, row.namingContext ?? ''
-          ]);
-        } catch (e) {
-          // 静默吞异常是本 bug 潜伏 4 天没被发现的原因 (R158.X.99.29.b
-          // 起就是 /* best-effort */), 补 warn 让下次同类问题能查。
-          logger?.warn?.({ err: e?.message, sourceDc: row.sourceDc, destDc: row.destDc },
-            'replication removeActiveError failed (auto-remove skipped)');
-        }
-      } else if (sc > 0) {
-        // 失败 → UPSERT 进新表. 复用 rowParams 已有字段, first_seen_at
-        // 用 lastAttemptTime 兜底 (新行 init = lastAttemptTime, 老行保留
-        // 既有 first_seen_at). 走 8 列 bind (reportedCount init=1 走 SQL 内嵌).
-        try {
-          // R161.5 (2026-10-26) — 三个时间戳落 ad_replication_active_errors 的
-          //   last_attempt_time / first_seen_at / last_reported_at (DATETIME)。
-          //   MySQL 5.7 拒 ISO ⇒ ER 1292 ⇒ 整条 active-error 行写不进去 ⇒
-          //   /admin/replication-errors 恒空 (catch 只 warn, 静默)。
-          //   本文件既有惯例 = 无条件 toMysqlDatetime (见 rowParams/historyParams),
-          //   mssql 段用 CAST(? AS DATETIME2) 两种格式都吃 ⇒ 保持一致。
-          const lastAttempt = toMysqlDatetime(row.lastAttemptTime ?? null);
-          await db.execute(db.sql.replication.upsertActiveError, [
-            row.sourceDc, row.destDc, row.namingContext ?? '',
-            row.statusCode, lastAttempt,
-            lastAttempt, lastAttempt,
-            row.errorMessage ?? null
-          ]);
-        } catch (e) {
-          logger?.warn?.({ err: e?.message, sourceDc: row.sourceDc, destDc: row.destDc,
-            namingContext: row.namingContext, statusCode: row.statusCode },
-            'replication upsertActiveError failed (active-error row NOT recorded)');
-        }
-      }
-    } catch (e) {
-      errors.push({ sourceDc: row.sourceDc, destDc: row.destDc, error: e?.message || String(e) });
-      continue;
+    validRows.push(row);
+  }
+
+  if (validRows.length === 0) {
+    // 与旧实现一致: 没有有效行时返回 rows.length - errors.length
+    // (旧实现走完 for 循环后返回同一算式)。
+    if (errors.length > 0) {
+      return { upserted: rows.length - errors.length, errors };
     }
-    if (appendHistory) {
-      try {
-        await db.execute(db.sql.replication.upsertHistory, historyParams(row));
-      } catch (e) {
-        errors.push({ sourceDc: row.sourceDc, destDc: row.destDc, phase: 'history', error: e?.message || String(e) });
+    return rows.length;
+  }
+
+  const dialect = db.dialect === 'mysql' ? 'mysql' : 'mssql';
+  const limit = batchLimitFor(dialect);
+
+  // ---- 步骤 0.5: 按 merge key 去重 (last-wins) ----
+  // ★ MSSQL MERGE 的硬限制: 源里出现重复 merge key 会报错误 8672
+  //   ("The MERGE statement attempted to UPDATE or DELETE the same row
+  //    more than once")。MySQL 的 ON DUPLICATE KEY UPDATE 没这限制
+  //   (按出现顺序逐行应用, 最后一行赢)。
+  // ⇒ 两个方言必须对齐 ⇒ 这里按 (source_dc, dest_dc, naming_context)
+  //   去重, **保留最后一条** (last-wins, 与 MySQL 的顺序语义一致)。
+  //
+  // ★ 为什么保留最后一条而不是第一条: 逐行版的语义就是"后写的覆盖前写的"
+  //   (每次 upsertStatus 都覆盖前一次的结果)。批量版若保留第一条, 同一批
+  //   数据在两个方言下写出的内容会不同 —— 那就是"批量版改了行为"。
+  //
+  // ★ agent report 路径不做去重 (routes/agent.js 只按 __history__: 前缀
+  //   分流), 所以同一个 pair 在一个 payload 里出现两次是**可能的**。
+  //   这不是理论风险, 是真实的输入形状。
+  const statusRows = dedupeByMergeKey(validRows);
+
+  // ---- 步骤 1: status upsert (分片批量) ----
+  // 逐行版对每行单独执行 upsertStatus, 失败只影响那一行 (errors.push +
+  // continue) ⇒ 批量化后, 一批失败会丢掉整批。
+  // ⇒ 补偿: 某批失败时**降级成逐行重试**, 只有真正坏掉的那行进 errors,
+  //   其余行仍然落库。这样"批量化"不改变"一行坏不影响其它行"的语义。
+  for (const batch of chunkRows(statusRows, limit)) {
+    const sql = dialect === 'mysql'
+      ? upsertStatusBatchMySql(batch.length)
+      : upsertStatusBatchMssql(batch.length);
+    const params = batch.flatMap((row) => rowParams(row));
+    try {
+      await db.execute(sql, params);
+    } catch (e) {
+      logger?.warn?.({ err: e?.message, batchSize: batch.length, dialect },
+        'replication batch upsertStatus failed; retrying row-by-row');
+      for (const row of batch) {
+        try {
+          await db.execute(db.sql.replication.upsertStatus, rowParams(row));
+        } catch (e2) {
+          errors.push({ sourceDc: row.sourceDc, destDc: row.destDc, error: e2?.message || String(e2) });
+        }
       }
     }
   }
+
+  // ---- 步骤 2: active-error 双分支 ----
+  // R158.X.99.29.b (2026-10-19) — 操作员 directive 双锁: status=0
+  // 成功时 DELETE ad_replication_active_errors 同三元组 (auto-remove),
+  // status>0 失败时 UPSERT 走新表.
+  //
+  // R158.X.116.p (2026-10-23) — 真因修复. 原判定 `sc === 1 || sc === 2`
+  // 与 ad_replication_status.status_code 的实际值域不符: 该列既有包
+  // (ad_replication_status_probe collect.ps1:173-178, partner-port-probe.js
+  // deriveStatus:100-107) 产出的 0/1/2 枚举, 也有历史写入方留下的
+  // Windows 错误码 (实测库内 1398=命名空间绑定失败 / 1722=RPC 服务器
+  // 不可用). 枚举判定导致 Windows 错误码整条走不进分支,
+  // ad_replication_active_errors 恒 0 行 → /admin/replication-errors
+  // 恒显示「无错误」, 与 /errors 口径分裂.
+  // 改为 `sc > 0` — 与老端点 sql.dashboard.errors 的
+  // `status_code <> 0 AND status_code > 0` 收敛单源 (lesson 158/159).
+  // -1 (META 哨兵行) 走 else 分支不处理, 不进新表.
+  const okRows = [];
+  const failRows = [];
+  for (const row of statusRows) {
+    const sc = Number(row.statusCode);
+    if (sc === 0) {
+      okRows.push(row);
+    } else if (sc > 0) {
+      failRows.push(row);
+    }
+    // sc 为 NaN / -1 / 其它 → 不动 active_errors (与旧实现一致)
+  }
+
+  // 2a. 成功 → 整条 pair 真从新表消失 (操作员 "恢复后必 auto-remove" 锁)
+  if (okRows.length > 0) {
+    const deleteLimit = Math.max(1, Math.floor(limit / 3));
+    for (const batch of chunkRows(okRows, deleteLimit)) {
+      const sql = dialect === 'mysql'
+        ? removeActiveErrorBatchMySql(batch.length)
+        : removeActiveErrorBatchMssql(batch.length);
+      const params = batch.flatMap((row) => [
+        row.sourceDc, row.destDc, row.namingContext ?? ''
+      ]);
+      try {
+        await db.execute(sql, params);
+      } catch (e) {
+        // 静默吞异常是本 bug 潜伏 4 天没被发现的原因 (R158.X.99.29.b
+        // 起就是 /* best-effort */), 补 warn 让下次同类问题能查。
+        logger?.warn?.({ err: e?.message, batchSize: batch.length, dialect },
+          'replication removeActiveError failed (auto-remove skipped)');
+      }
+    }
+  }
+
+  // 2b. 失败 → UPSERT 进新表.
+  //   first_seen_at 用 lastAttemptTime 兜底 (新行 init = lastAttemptTime,
+  //   老行保留既有 first_seen_at). 走 8 列 bind (reportedCount init=1 走
+  //   SQL 内嵌).
+  //   R161.5 (2026-10-26) — 三个时间戳落 ad_replication_active_errors 的
+  //   last_attempt_time / first_seen_at / last_reported_at (DATETIME)。
+  //   MySQL 5.7 拒 ISO ⇒ ER 1292 ⇒ 整条 active-error 行写不进去 ⇒
+  //   /admin/replication-errors 恒空 (catch 只 warn, 静默)。
+  //   本文件既有惯例 = 无条件 toMysqlDatetime (见 rowParams/historyParams),
+  //   mssql 段用 CAST(? AS DATETIME2) 两种格式都吃 ⇒ 保持一致。
+  if (failRows.length > 0) {
+    for (const batch of chunkRows(failRows, limit)) {
+      const sql = dialect === 'mysql'
+        ? upsertActiveErrorBatchMySql(batch.length)
+        : upsertActiveErrorBatchMssql(batch.length);
+      const params = batch.flatMap((row) => {
+        const lastAttempt = toMysqlDatetime(row.lastAttemptTime ?? null);
+        return [
+          row.sourceDc, row.destDc, row.namingContext ?? '',
+          row.statusCode, lastAttempt,
+          lastAttempt, lastAttempt,
+          row.errorMessage ?? null
+        ];
+      });
+      try {
+        await db.execute(sql, params);
+      } catch (e) {
+        logger?.warn?.({ err: e?.message, batchSize: batch.length, dialect,
+          namingContext: batch[0]?.namingContext, statusCode: batch[0]?.statusCode },
+          'replication upsertActiveError failed (active-error row NOT recorded)');
+      }
+    }
+  }
+
+  // ---- 步骤 3: history (纯 INSERT, 分片批量) ----
+  // ★ history **不**去重: ad_replication_history 是纯追加的每次尝试日志,
+  //   同一个 pair 的多次尝试是**不同的行**, 必须全部落库。
+  //   去重只适用于 status/active-error (它们按 merge key 是"最新状态")。
+  if (appendHistory) {
+    for (const batch of chunkRows(validRows, limit)) {
+      const sql = upsertHistoryBatch(batch.length);
+      const params = batch.flatMap((row) => historyParams(row));
+      try {
+        await db.execute(sql, params);
+      } catch (e) {
+        logger?.warn?.({ err: e?.message, batchSize: batch.length },
+          'replication batch upsertHistory failed');
+        // 旧实现是逐行 catch → 单行失败进 errors 且不影响其它行。
+        // 批量化后降级成逐行重试, 只有真坏的行进 errors。
+        for (const row of batch) {
+          try {
+            await db.execute(db.sql.replication.upsertHistory, historyParams(row));
+          } catch (e2) {
+            errors.push({ sourceDc: row.sourceDc, destDc: row.destDc, phase: 'history', error: e2?.message || String(e2) });
+          }
+        }
+      }
+    }
+  }
+
   if (errors.length > 0) {
     return { upserted: rows.length - errors.length, errors };
   }
@@ -207,8 +374,23 @@ export async function upsertStatus(rows, { appendHistory = false, logger = null 
 export async function insertHistoryEntries(historyEntries) {
   if (!Array.isArray(historyEntries) || historyEntries.length === 0) return 0;
   const db = getDb();
-  for (const row of historyEntries) {
-    await db.execute(db.sql.replication.upsertHistory, historyParams(row));
+  // R161.31 (2026-11-07) — 性能项 3: 同样批量化。
+  //   旧实现逐行 INSERT (N 次往返) ⇒ 同样改成按批一条多行 INSERT。
+  //   ★ 失败语义保持一致: 旧实现**没有** try/catch (任一行失败即整体抛),
+  //   批量化后一批失败 → 降级逐行重试, 让真正的坏行抛出来 (错误信息更准),
+  //   其余行照常落库。
+  const dialect = db.dialect === 'mysql' ? 'mysql' : 'mssql';
+  const limit = batchLimitFor(dialect);
+  for (const batch of chunkRows(historyEntries, limit)) {
+    const sql = upsertHistoryBatch(batch.length);
+    const params = batch.flatMap((row) => historyParams(row));
+    try {
+      await db.execute(sql, params);
+    } catch (e) {
+      for (const row of batch) {
+        await db.execute(db.sql.replication.upsertHistory, historyParams(row));
+      }
+    }
   }
   return historyEntries.length;
 }

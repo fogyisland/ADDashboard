@@ -129,6 +129,11 @@ function parseCreateTable(stmt) {
   if (cur.trim()) parts.push(cur);
   const columns = [];
   const foreignKeys = [];
+  // R161.31 — 列类型 (基本类型名, 小写)。'int(11)' → 'int',
+  //   'TINYINT(1)' → 'tinyint', '[status_code] INT NOT NULL' → 'int'。
+  //   只取**第一个**类型关键字 —— 列定义里后面可能还有 NOT NULL / DEFAULT /
+  //   COMMENT 之类的修饰词, 但类型只有一个。
+  const columnTypes = {};
   for (const part of parts) {
     const raw = part.trim();
     if (!raw) continue;
@@ -145,17 +150,29 @@ function parseCreateTable(stmt) {
     if (!token) continue;
     const literal = token[1];
     const isQuoted = literal[0] === '[' || literal[0] === '`';
-    const name = isQuoted ? literal.slice(1, -1) : literal;
+    const name = isQuoted ? literal.slice(1, -1) : name0(raw);
     if (!isQuoted && NON_COLUMN_TOKENS.has(name.toUpperCase())) continue;
     columns.push(name);
+    // 类型: 去掉列名后的部分里找第一个类型关键字。
+    const rest = raw.slice(token[0].length);
+    const typeMatch = /\b(int|integer|bigint|smallint|tinyint|bit|decimal|numeric|float|double|real|money|smallmoney|char|varchar|nvarchar|nchar|text|ntext|xml|date|time|datetime|datetime2|smalldatetime|datetimeoffset|varbinary|binary|image|uniqueidentifier|uuid|json)\b/i
+      .exec(rest);
+    if (typeMatch) columnTypes[name.toLowerCase()] = typeMatch[1].toLowerCase();
   }
-  return { columns, foreignKeys };
+  return { columns, foreignKeys, columnTypes };
+}
+
+// 取裸列名 (不带引号的形态)。
+function name0(raw) {
+  const m = /^([A-Za-z0-9_]+)/.exec(raw);
+  return m ? m[1] : '';
 }
 
 function createFakeDb(dialect = 'mysql') {
   const objects = new Set();       // 已存在的表/视图名
   const indexes = new Set();       // 已存在的索引名 (限定名 <table>.<index>)
   const columns = new Set();       // 已存在的列 (限定名 <table>.<column>)
+  const columnTypes = new Map();   // 列的类型 (限定名 <table>.<column> -> 基本类型名)
   const foreignKeys = new Set();   // 已存在的外键 (限定名 <table>.<constraint>)
   const ledger = new Map();        // version -> row
   const executed = [];             // 跑过的每一条语句
@@ -201,6 +218,10 @@ function createFakeDb(dialect = 'mysql') {
       if (parsed) {
         for (const c of parsed.columns) columns.add(`${tableName.toLowerCase()}.${c.toLowerCase()}`);
         for (const fk of parsed.foreignKeys) foreignKeys.add(`${tableName.toLowerCase()}.${fk.toLowerCase()}`);
+        // R161.31 — 列类型 (基本类型名, 小写)。
+        for (const [col, type] of Object.entries(parsed.columnTypes)) {
+          columnTypes.set(`${tableName.toLowerCase()}.${col}`, type);
+        }
       }
     }
     // ADD CONSTRAINT 是外键/PK, 不是列 —— 必须先排除, 否则会把 CONSTRAINT
@@ -209,6 +230,18 @@ function createFakeDb(dialect = 'mysql') {
       const colRe = /ALTER\s+TABLE\s+\[?`?([A-Za-z0-9_]+)`?\]?\s+ADD\s+(?:COLUMN\s+)?\[?`?([A-Za-z0-9_]+)`?\]?/i;
       const cm = clean.match(colRe);
       if (cm) columns.add(`${cm[1].toLowerCase()}.${cm[2].toLowerCase()}`);
+    }
+
+    // R161.31 — ALTER TABLE ... MODIFY/ALTER COLUMN [c] <TYPE> ...
+    //   这是"加宽列类型"这类迁移的执行形态 ⇒ 必须把**新类型**登记进去,
+    //   否则 columntype 探针永远说"还没改" (探针不过 ⇒ 迁移被跳过 ⇒
+    //   迁移跑完还是旧类型 ⇒ 端到端断言成了哑巴)。
+    const alterColRe = /ALTER\s+TABLE\s+\[?`?([A-Za-z0-9_]+)`?\]?\s+(?:MODIFY|ALTER)\s+(?:COLUMN\s+)?\[?`?([A-Za-z0-9_]+)`?\]?\s+([A-Za-z]+)/i;
+    const am = clean.match(alterColRe);
+    if (am) {
+      const key = `${am[1].toLowerCase()}.${am[2].toLowerCase()}`;
+      columns.add(key);
+      columnTypes.set(key, am[3].toLowerCase());
     }
 
     // 外键 (R161.18): ALTER TABLE ... ADD CONSTRAINT [fk] FOREIGN KEY ...
@@ -261,6 +294,16 @@ function createFakeDb(dialect = 'mysql') {
       probes.push({ kind: 'column', name: `${params[0]}.${params[1]}` });
       return { rows: columns.has(`${params[0]}.${params[1]}`.toLowerCase()) ? [{ ok: 1 }] : [] };
     }
+    if (sql === 'PROBE_COLUMN_TYPE') {
+      // R161.31 — 列类型探针: 比对**类型**, 不是存在性。
+      //   ★ 大小写不敏感 (MySQL 的 DATA_TYPE 是小写, MSSQL 的 sys.types.name
+      //     是原样大小写) ⇒ 双方都 LOWER 后比对。
+      const key = `${params[0]}.${params[1]}`.toLowerCase();
+      const want = String(params[2] ?? '').toLowerCase();
+      const got = columnTypes.get(key);
+      probes.push({ kind: 'columntype', name: key, type: got ?? null, want });
+      return { rows: got !== undefined && got === want ? [{ ok: 1 }] : [] };
+    }
     if (sql === 'PROBE_FOREIGNKEY') {
       probes.push({ kind: 'foreignkey', name: `${params[0]}.${params[1]}` });
       return { rows: foreignKeys.has(`${params[0]}.${params[1]}`.toLowerCase()) ? [{ ok: 1 }] : [] };
@@ -280,7 +323,13 @@ function createFakeDb(dialect = 'mysql') {
   const db = {
     dialect,
     sql: {
-      probe: { table: 'PROBE_TABLE', column: 'PROBE_COLUMN', index: 'PROBE_INDEX', foreignKey: 'PROBE_FOREIGNKEY' },
+      probe: {
+        table: 'PROBE_TABLE',
+        column: 'PROBE_COLUMN',
+        columnType: 'PROBE_COLUMN_TYPE',
+        index: 'PROBE_INDEX',
+        foreignKey: 'PROBE_FOREIGNKEY'
+      },
       schemaMigrations: {
         upsert: 'UPSERT_LEDGER',
         findByVersion: 'FIND_BY_VERSION',
@@ -293,7 +342,7 @@ function createFakeDb(dialect = 'mysql') {
     session: async (work) => work({ execute: exec })
   };
 
-  return { db, objects, indexes, columns, foreignKeys, ledger, executed, probes };
+  return { db, objects, indexes, columns, columnTypes, foreignKeys, ledger, executed, probes };
 }
 
 const silentLogger = {
@@ -366,7 +415,7 @@ describe('B. 标记指名的产物必须真的由这个迁移建出来', () => {
         if (markers.length === 0) return;
         const body = stripComments(content);
         for (const m of markers) {
-          if (!['table', 'column', 'index', 'foreignkey'].includes(m.kind)) {
+          if (!['table', 'column', 'columntype', 'index', 'foreignkey'].includes(m.kind)) {
             assert.fail(`未知的 verify 标记类型 ${m.kind}`);
           }
           const parts = m.name.split('.');
@@ -374,6 +423,15 @@ describe('B. 标记指名的产物必须真的由这个迁移建出来', () => {
             assert.ok(
               new RegExp(`\\b${escapeRe(part)}\\b`, 'i').test(body),
               `${file} 声明了 \`-- verify: ${m.kind} ${m.name}\`, 但文件正文里根本没提到 ${part} —— `
+              + '这个标记会让探针说谎 (它探的不是这个迁移的产物)'
+            );
+          }
+          // R161.31 — columntype 的第二个参数 (期望的类型名) 也必须在正文里出现。
+          if (m.kind === 'columntype') {
+            assert.ok(m.type, `${file} 的 columntype 标记缺期望的类型名`);
+            assert.ok(
+              new RegExp(`\\b${escapeRe(m.type)}\\b`, 'i').test(body),
+              `${file} 声明了 \`-- verify: columntype ${m.name} ${m.type}\`, 但文件正文里没有出现 ${m.type} —— `
               + '这个标记会让探针说谎 (它探的不是这个迁移的产物)'
             );
           }
@@ -409,7 +467,7 @@ describe('D. 端到端: 走一遍新装路径, 每条标记指名的产物都必
   for (const dialect of DIALECTS) {
     test(`${dialect}: applyAll → backfill → upgrade 之后, 标记指名的产物全部就位`, async () => {
       const fake = createFakeDb(dialect);
-      const { db, objects, indexes, columns, foreignKeys, ledger } = fake;
+      const { db, objects, indexes, columns, columnTypes, foreignKeys, ledger } = fake;
 
       // 1. 建库 (跑基线)
       await applyAll(dialect, db, {
@@ -446,18 +504,26 @@ describe('D. 端到端: 走一遍新装路径, 每条标记指名的产物都必
         const markers = parseVerifyMarker(content);
         const version = file.match(NUMBERED_RE)?.[1];
         for (const m of markers) {
-          // 表/视图看 objects; 索引 (点号限定名) 看 indexes。
-          const present = m.kind === 'index'
-            ? indexes.has(m.name.toLowerCase())
-            : m.kind === 'column'
-              ? columns.has(m.name.toLowerCase())
-              : m.kind === 'foreignkey'
-                ? foreignKeys.has(m.name.toLowerCase())
-                : objects.has(m.name.toLowerCase());
+          // 表/视图看 objects; 索引 (点号限定名) 看 indexes;
+          // columntype 看**类型** (R161.31) —— 列存在但类型不对, 一样是缺。
+          let present;
+          if (m.kind === 'index') {
+            present = indexes.has(m.name.toLowerCase());
+          } else if (m.kind === 'column') {
+            present = columns.has(m.name.toLowerCase());
+          } else if (m.kind === 'columntype') {
+            present = columnTypes.get(m.name.toLowerCase()) === String(m.type ?? '').toLowerCase();
+          } else if (m.kind === 'foreignkey') {
+            present = foreignKeys.has(m.name.toLowerCase());
+          } else {
+            present = objects.has(m.name.toLowerCase());
+          }
           assert.ok(
             present,
-            `${dialect}/${file} 声明要建 ${m.name}, 但新装路径跑完之后它**不在库里** —— `
+            `${dialect}/${file} 声明要建 ${m.name}${m.type ? ' = ' + m.type : ''}, 但新装路径跑完之后它**不在库里** —— `
             + `objects=[${[...objects].join(', ')}] indexes=[${[...indexes].join(', ')}] `
+            + `columns=[${[...columns].join(', ')}] `
+            + `columnTypes=${JSON.stringify([...columnTypes])} `
             + `backfill.skipped=${JSON.stringify(backfill.skipped)}`
           );
           const row = ledger.get(version);

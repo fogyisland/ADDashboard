@@ -3208,7 +3208,22 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                     WHERE CONSTRAINT_SCHEMA = DATABASE()
                       AND TABLE_NAME = ?
                       AND CONSTRAINT_NAME = ?
-                      AND CONSTRAINT_TYPE = 'FOREIGN KEY' LIMIT 1`
+                      AND CONSTRAINT_TYPE = 'FOREIGN KEY' LIMIT 1`,
+      // R161.31 — 列**类型**探针。
+      //   为什么需要它: 上面那个 `column` 探针只查列**在不在**, 不查**类型**。
+      //   而"把某列从 TINYINT 加宽到 INT"这类迁移改的**就是类型** ——
+      //   列本来就存在 ⇒ column 探针必然通过 ⇒ backfillMigrations 会把
+      //   迁移**登记成 applied 而从不执行** ⇒ 存量库的列永远是窄类型。
+      //   (这跟 R161.17 "编号迁移从来没被真正执行过" 是同一个坑换了个形状。)
+      //   ⇒ 类型变更类迁移必须用 `columntype` 标记, 探针比对 DATA_TYPE。
+      //   ★ 比 DATA_TYPE (基本类型名 'int'/'tinyint'/'smallint') 而不是
+      //     COLUMN_TYPE ('int(11)' 带显示宽度, MySQL 8.0 已移除显示宽度)。
+      //   ★ 第三个参数是**期望的类型名**, 大小写不敏感 (MySQL 的
+      //     information_schema 里 DATA_TYPE 是小写的)。
+      columnType: `SELECT 1 AS ok FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = ? AND COLUMN_NAME = ?
+                     AND LOWER(DATA_TYPE) = LOWER(?) LIMIT 1`
     },
     // Non-AD server management (migration 014). Eight tables total split
     // across five domains so services can scope their reads: member-servers
@@ -6759,7 +6774,23 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       foreignKey: `SELECT TOP 1 1 AS ok
                     FROM sys.foreign_keys f
                     JOIN sys.tables t ON f.parent_object_id = t.object_id
-                   WHERE t.name = ? AND f.name = ?`
+                   WHERE t.name = ? AND f.name = ?`,
+      // R161.31 — 列**类型**探针 (MySQL 侧的 1:1 平行)。
+      //   理由见 mysql 侧同名探针的注释: `column` 探针只查存在性, 而
+      //   "加宽列类型"这类迁移改的**就是类型** ⇒ 必须比对类型名。
+      //   ★ sys.types.name 是**基本类型名** ('int' / 'smallint' / 'varchar')。
+      //   ★ 排除用户自定义类型 (user_type_id <> system_type_id): 用户类型
+      //     带着基类型的名字出现在 sys.types 里, 不排除会误判成"已经是 int"。
+      //   ★ MSSQL 里 TINYINT 不是独立类型, 它是 SMALLINT 的同义词 ⇒
+      //     sys.types.name 会返回 'tinyint' (ALTER 出来的别名) 或 'smallint'
+      //     (基线里写的那个别名) —— 两种都 != 'int' ⇒ 探针正确地判"还没加宽"。
+      columnType: `SELECT TOP 1 1 AS ok
+                   FROM sys.columns c
+                   JOIN sys.types t ON t.user_type_id = c.user_type_id
+                   WHERE c.object_id = OBJECT_ID(?)
+                     AND c.name = ?
+                     AND LOWER(t.name) = LOWER(?)
+                     AND t.user_type_id = t.system_type_id`
     },
     // Non-AD server management (migration 014). See mysql counterpart.
     memberServers: memberServers.mssql,

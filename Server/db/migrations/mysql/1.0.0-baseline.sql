@@ -85,7 +85,13 @@ CREATE TABLE IF NOT EXISTS ad_replication_probe_history (
   naming_context      VARCHAR(256) NOT NULL,
   attempt_at          DATETIME(3)  NOT NULL,
   result              VARCHAR(16)  NOT NULL,
-  status_code         TINYINT      NOT NULL,
+  -- R161.31 (2026-11-07) — status_code 从 TINYINT 加宽到 INT。
+  --   真库证据: ad_replication_probe_history.status_code 是 tinyint(4)
+  --   (上限 127), 而真实的 Windows 错误码是 1398 / 1722 ...
+  --   ⇒ 写不进 ⇒ 该行被 driver 拒掉 (ER_WARN_DATA_OUT_OF_RANGE) ⇒ 丢行。
+  --   写入路径 center/src/services/replication-status-probe.js:40-42 是
+  --   **无钳位 passthrough** ⇒ agent 上报真实 NTSTATUS 码就会触发。
+  status_code         INT          NOT NULL,
   duration_ms         INT          NULL,
   objects_transferred INT          NULL,
   error_code          INT          NULL,
@@ -1045,7 +1051,12 @@ CREATE TABLE IF NOT EXISTS ad_dc_inbound_partners (
   local_dc            VARCHAR(128)  NOT NULL,
   peer_dc             VARCHAR(128)  NOT NULL,
   naming_context      VARCHAR(128)  NOT NULL,
-  status_code         TINYINT       NOT NULL DEFAULT 0,
+  -- R161.31 (2026-11-07) — status_code 从 TINYINT 加宽到 INT。
+  --   真库证据: ad_replication_status.status_code 的实际值域 min=0 max=1398
+  --   (真实 Windows 错误码)。dc-partners-refresh.js:111 把那个值**原样**
+  --   复制进本列 ⇒ TINYINT (上限 127) 装不下 ⇒ 写入被拒 ⇒ 静默丢行
+  --   (失败只被 logger.warn 掉)。MSSQL 侧本来就是 INT ⇒ 本次是对齐。
+  status_code         INT           NOT NULL DEFAULT 0,
   last_success_time   DATETIME(3)   NULL,
   last_attempt_time   DATETIME(3)   NOT NULL,
   error_message       VARCHAR(2048) NULL,
@@ -1064,7 +1075,12 @@ CREATE TABLE IF NOT EXISTS ad_dc_outbound_partners (
   local_dc            VARCHAR(128)  NOT NULL,
   peer_dc             VARCHAR(128)  NOT NULL,
   naming_context      VARCHAR(128)  NOT NULL,
-  status_code         TINYINT       NOT NULL DEFAULT 0,
+  -- R161.31 (2026-11-07) — status_code 从 TINYINT 加宽到 INT。
+  --   真库证据: ad_replication_status.status_code 的实际值域 min=0 max=1398
+  --   (真实 Windows 错误码)。dc-partners-refresh.js:111 把那个值**原样**
+  --   复制进本列 ⇒ TINYINT (上限 127) 装不下 ⇒ 写入被拒 ⇒ 静默丢行
+  --   (失败只被 logger.warn 掉)。MSSQL 侧本来就是 INT ⇒ 本次是对齐。
+  status_code         INT           NOT NULL DEFAULT 0,
   last_success_time   DATETIME(3)   NULL,
   last_attempt_time   DATETIME(3)   NOT NULL,
   error_message       VARCHAR(2048) NULL,
@@ -1649,12 +1665,19 @@ CREATE TABLE IF NOT EXISTS ad_notify_outbox (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ==================== ad_replication_active_errors ====================
+-- R161.31 (2026-11-07) — status_code 从 TINYINT 加宽到 INT。
+--   真库证据: ad_replication_status.status_code 实际值域 min=0 **max=1398**
+--   (Windows 错误码: 1398=命名空间绑定失败 / 1722=RPC 服务器不可用),
+--   而 TINYINT 有符号上限只有 127 ⇒ 每写一次 active_errors 都报
+--   "Out of range value for column 'status_code'" ⇒ 该表**恒为 0 行** ⇒
+--   /admin/replication-errors 恒显示「无错误」。
+--   升级路径上的对应迁移: mysql/1.0.4-active-errors-status-code-int.sql
 CREATE TABLE IF NOT EXISTS ad_replication_active_errors (
   id INT NOT NULL AUTO_INCREMENT,
   source_dc VARCHAR(128) NOT NULL,
   dest_dc VARCHAR(128) NOT NULL,
   naming_context VARCHAR(128) NOT NULL,
-  status_code TINYINT NOT NULL,
+  status_code INT NOT NULL,
   last_attempt_time DATETIME NOT NULL,
   first_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   last_reported_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
