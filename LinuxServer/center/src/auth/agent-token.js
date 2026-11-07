@@ -29,10 +29,14 @@
 // this, agent A could authenticate with their valid token and then
 // claim hostname=B in the body — impersonating B's reporting surface.
 //
-// To avoid breaking older agents in the field, the unsigned-request
-// grace window is 60 seconds after each process restart. Beyond that
-// window, missing signature = 401 'missing agent signature'. Mismatched
-// signature = 401 'identity mismatch' immediately.
+// To avoid breaking older agents in the field, an unsigned-request grace
+// window was originally 60 seconds after each process restart.
+// R161.30 S2 (2026-11-07): the grace default is now 0 (fail-closed) — every
+// in-field agent tree signs its requests, so the window only served as an
+// impersonation window after each center restart. Opt back in via
+// ADDASHBOARD_AGENT_IDENTITY_GRACE_MS if ever needed. Beyond the window
+// (now: always), missing signature = 401 'missing agent signature'.
+// Mismatched signature = 401 'identity mismatch' immediately.
 import crypto from 'node:crypto';
 
 // Fallback literal used when the db facade doesn't expose db.sql (ad-hoc
@@ -69,10 +73,23 @@ function constantTimeEqual(a, b) {
 }
 
 // 2026-09-09 S82 (security) — unsigned-request grace window. After
-// process restart, 60s window where old agents (no signature lib) keep
-// working. Restart marker is set when the module is first imported;
-// tests can override with _resetIdentityGraceForTests.
-const IDENTITY_GRACE_MS = 60 * 1000;
+// process restart, old agents (no signature lib) keep working for
+// IDENTITY_GRACE_MS. Restart marker is set when the module is first
+// imported; tests can override with _resetIdentityGraceForTests.
+//
+// R161.30 S2 (2026-11-07) — grace 默认收紧为 **0 (fail-closed)**:
+//   - 全部在野 agent 树 (Server/agent + Server/noadagent) 的出站请求
+//     已经由 agent.js 的 signedRequestJson / agentHttpGetBinary wrapper
+//     统一盖 X-Agent-Signature (R91.4 / R93.1 收口)，grace 已无保护对象;
+//   - R161.29 单端口后老 Agent (硬编码 :8081/:8082) 本来就静默 404，
+//     grace 不再换回任何兼容性;
+//   - 60s 窗口 = 每次 center 重启后一个免签冒充窗口，收益为负。
+//   逃生阀: 环境变量 ADDASHBOARD_AGENT_IDENTITY_GRACE_MS (毫秒, >=0)，
+//   仅当操作员明确要混入未升级 agent 时才设置；负值钳为 0。
+const IDENTITY_GRACE_MS = Math.max(
+  0,
+  Number(process.env.ADDASHBOARD_AGENT_IDENTITY_GRACE_MS ?? 0) || 0
+);
 let _processStartedAt = Date.now();
 
 export function _resetIdentityGraceForTests(now = Date.now()) {
@@ -180,7 +197,7 @@ export function agentToken({ db, logger }) {
       }
       logger?.warn?.(
         { path: req.path, agentId, hostname, graceRemainingSec: Math.ceil((IDENTITY_GRACE_MS - (Date.now() - _processStartedAt)) / 1000) },
-        'agent request missing X-Agent-Signature within 60s restart grace (S82) — accepted with warning'
+        `agent request missing X-Agent-Signature within ${IDENTITY_GRACE_MS}ms restart grace (S82) — accepted with warning`
       );
     } else {
       const ok = verifySignature({ suppliedSig, token: activeToken, hostname, agentId, body: req.body });
