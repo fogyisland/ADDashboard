@@ -76,7 +76,8 @@ export async function applySettingsDelivery({
   config,
   configPath,
   logger,
-  heartbeat
+  heartbeat,
+  deferWrite = false
 }) {
   if (!result || !result.ok || !result.data) return { applied: false };
   const data = result.data;
@@ -105,7 +106,13 @@ export async function applySettingsDelivery({
   // Atomic write to appsettings.json. If the disk write fails, return
   // without bumping so the next heartbeat retries. Same pattern as
   // applyAgentTokenDelivery:25-31.
-  const w = writeAppsettingsPatchAtomic({ path: configPath, patch: cleaned });
+  //
+  // R161.31 (2026-11-07) — deferWrite 模式: 只算 patch 不写盘, 由调用方
+  // 跟其它 delivery 的 patch 合成一次原子写 (三次串行写 = 三倍 IO;
+  // 三次并行写 = 丢更新 + 共用 tmp 文件名损坏)。
+  const w = deferWrite
+    ? { ok: true, deferred: true }
+    : writeAppsettingsPatchAtomic({ path: configPath, patch: cleaned });
   if (!w.ok) {
     logger.error(
       { error: w.error, version: incomingVersion },
@@ -161,6 +168,7 @@ export async function applySettingsDelivery({
     previousVersion,
     newVersion: incomingVersion,
     restarted,
-    fields: Object.keys(cleaned)
+    fields: Object.keys(cleaned),
+    patch: cleaned
   };
 }

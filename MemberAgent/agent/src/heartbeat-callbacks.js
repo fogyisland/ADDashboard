@@ -51,11 +51,21 @@
 // member-server hostname; the next heartbeat picks it up and runs
 // it via run-member-script.ps1. Same shape as ad-commands — runs on
 // every heartbeat, NOT gated by reportRequested.
+//
+// R161.31 (2026-11-07) — 心跳后的落盘改走合并写入编排器
+// (heartbeat-deliveries.js), 一次心跳只写一次 appsettings.json。
+
+import { applyHeartbeatDeliveries } from './heartbeat-deliveries.js';
 
 export function makeSendCallback({
   postHeartbeat,
   applyAgentTokenDelivery,
   scheduler,
+  // R161.31 (2026-11-07) — 合并写入编排器需要 config (要更新内存里的
+  // tokenVersion 等) + configPath (落盘路径)。两者缺省时编排器退化成
+  // "什么都不写" (向后兼容: 现有单测的 makeSendCallback 调用没传这两个)。
+  config,
+  configPath,
   logger,
   getPendingClear,
   setPendingClear,
@@ -85,7 +95,24 @@ export function makeSendCallback({
 }) {
   return async function send(payload) {
     const r = await postHeartbeat(payload);
-    await applyAgentTokenDelivery({ result: r, payload, logger });
+    // R161.31 (2026-11-07) — 走合并写入编排器, 跟 AD 树
+    // (Server/agent/src/heartbeat-callbacks.js) 1:1 平行。
+    //
+    // ★ 旧实现这里是独立的一次 applyAgentTokenDelivery (自己 read→write
+    //   appsettings.json)。而 noadagent/agent.js 的 inline 路径也在同一个
+    //   心跳周期里写同一个文件 ⇒ 两条路径并发时会有读-改-写丢更新 (后写的
+    //   快照缺前一个的改动) + 共享 `${path}.tmp` 的内容交错 ⇒
+    //   appsettings.json 可能变损坏 JSON。合并写把两个来源的 patch 收成
+    //   一次原子写。
+    await applyHeartbeatDeliveries({
+      result: r,
+      config,
+      configPath,
+      logger,
+      applyAgentToken: applyAgentTokenDelivery,
+      applySettings: undefined,
+      applyUpgrade: undefined,
+    });
 
     // 2026-09-04 R78 — drainers fire on every heartbeat. They have
     // their own natural cadence (operator queues commands → next

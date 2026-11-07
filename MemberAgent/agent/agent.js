@@ -23,6 +23,11 @@ import { applySettingsDelivery } from './src/settings-delivery.js';
 import { applyUpgradeDelivery } from './src/upgrade-delivery.js';
 import { fetchUpgrade as _fetchUpgrade } from './src/reporter.js';
 import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
+// R161.31 (2026-11-07) — 心跳后的合并写入编排器 (跟 AD 树
+// Server/agent/src/heartbeat-deliveries.js 1:1 平行)。
+// 一次心跳只写一次 appsettings.json: 三个 delivery 各自只算 patch,
+// 由编排器合成一次 read→mutate→write-tmp→fsync→rename。
+import { applyHeartbeatDeliveries } from './src/heartbeat-deliveries.js';
 // 2026-09-04 R78: file-push drainer wired into the heartbeat loop.
 // (R158.75 — drainAdCommands / dispatchAdCommand removed; member-commands
 // drainer below is the only PowerShell-style work puller.)
@@ -763,11 +768,27 @@ async function runNonAdRuntime({ config, logger }) {
           agentId: drainerAgentId,
           payload: p
         });
-        await applyAgentTokenDelivery({ result: r, config, configPath, logger });
-        // 2026-10-01 R158.13 — non-AD path also consumes settingsPatch.
-        await applySettingsDelivery({ result: r, config, configPath, logger, heartbeat: heartbeatRef.current });
-        // R158.48 (2026-10-06) — agent auto-update (non-AD path).
-        const upgradeR = await applyUpgradeDelivery({ result: r, agentInstallDir: __dirname, config, configPath, logger, fetchUpgrade: boundFetchUpgrade });
+        // R161.31 (2026-11-07) — 合并写入: 三个 delivery 各自只算 patch,
+        // 合成**一次**原子写 appsettings.json。
+        //
+        //   ★ 旧实现是三次串行 writeAppsettingsPatchAtomic ⇒ 一次心跳付
+        //     三倍读+写+fsync。改成 Promise.all 更糟: 三个 writer 各自
+        //     read 一个快照各自 rename ⇒ 读-改-写丢更新; 且旧实现三处
+        //     共用 `${path}.tmp` ⇒ 并发时 tmp 内容交错 ⇒ appsettings.json
+        //     变损坏 JSON。合并写 + tmp 唯一化一起解决。
+        const { upgradeOutcome } = await applyHeartbeatDeliveries({
+          result: r,
+          config,
+          configPath,
+          logger,
+          applyAgentToken: (args) => applyAgentTokenDelivery(args),
+          applySettings: (args) => applySettingsDelivery({ ...args, heartbeat: heartbeatRef.current }),
+          applyUpgrade: (args) => applyUpgradeDelivery({
+            ...args,
+            agentInstallDir: __dirname,
+            fetchUpgrade: boundFetchUpgrade,
+          }),
+        });
         // R161.22 (2026-10-29) — 升级装盘后必须自杀, NSSM 才会重拉。
         //
         //   ★ R158.88.BF1 (2026-10-13) 的教训在 noad fork 里没落地: AD 端
@@ -776,13 +797,22 @@ async function runNonAdRuntime({ config, logger }) {
         //   noad fork 抄调用点时把这个也漏了 ⇒ 「bundle 装盘但 0 进程死」
         //   ⇒ 新代码不生效, 一直跑到操作员手动重启服务为止。
         //   setImmediate 让 await 链先干净 return 再死 (跟 AD 端 1:1 平行)。
+        const upgradeR = upgradeOutcome;
         if (upgradeR && upgradeR.applied === true && upgradeR.exiting === true) {
           logger?.info?.({ event: 'agent.upgrade.applied.sigterm', toVersion: upgradeR.newVersion, fromVersion: upgradeR.previousVersion, runtime: 'non-ad' }, 'agent upgrade applied (non-AD); SIGTERM self for NSSM relaunch');
           setImmediate(() => process.kill(process.pid, 'SIGTERM'));
         }
         return r;
       },
-      applyAgentTokenDelivery,
+      // R161.31 (2026-11-07) — 透传 config/configPath + deferWrite。
+      //   旧写法直接把 applyAgentTokenDelivery 原函数传进去, 但合并写入
+      //   编排器要的是 (args) => fn({...args, deferWrite:true}) 形状;
+      //   直接传原函数时 deferWrite 会被丢掉 ⇒ 编排器收不到 patch。
+      applyAgentTokenDelivery: (args) => applyAgentTokenDelivery({ ...args, config, configPath, logger }),
+      // R161.31 (2026-11-07) — makeSendCallback 里的 token 落盘也走合并写
+      //   编排器, 需要 config (更新内存) + configPath (落盘路径)。
+      config,
+      configPath,
       scheduler,
       logger,
       getPendingClear,

@@ -31,6 +31,9 @@ import { applySettingsDelivery } from './src/settings-delivery.js';
 // itself so NSSM relaunches with the new bundle. See
 // agent/src/upgrade-delivery.js for the full flow.
 import { applyUpgradeDelivery } from './src/upgrade-delivery.js';
+// R161.31 (2026-11-07) — 心跳后三个 delivery 的合并写入编排器。
+// 一次心跳只写一次 appsettings.json (旧实现是串行三次全量 read+write+fsync)。
+import { applyHeartbeatDeliveries } from './src/heartbeat-deliveries.js';
 import { fetchUpgrade as _fetchUpgrade, postUpgradeResult as _postUpgradeResult } from './src/reporter.js';
 import { makeSendCallback, makePayload } from './src/heartbeat-callbacks.js';
 // 2026-09-24 R91.4 — agentHttpGetBinary (raw-bytes endpoint) needs the
@@ -591,9 +594,15 @@ async function runAdRuntime({ config, logger }) {
       agentId: config.agentId,
       payload
     }),
-    applyAgentTokenDelivery: ({ result }) => applyAgentTokenDelivery({
-      result, config, configPath, logger
+    // R161.31 (2026-11-07) — 编排器会传 deferWrite=true (只算 patch 不
+    // 写盘, 由编排器合并成一次原子写)。这里必须**透传**整个 args, 不能
+    // 只解构 result —— 否则 deferWrite 丢失 = 又回到独立写 = 合并写白做。
+    applyAgentTokenDelivery: (args) => applyAgentTokenDelivery({
+      ...args, config, configPath, logger
     }),
+    // R161.31 (2026-11-07) — 合并写入编排器需要 config + configPath。
+    config,
+    configPath,
     // 2026-10-01 R158.13 — parallel to applyAgentTokenDelivery above.
     // Consumes the centre's settingsPatch / clientSettingsVersion
     // envelope, persists the patch atomically via writeAppsettingsPatch
@@ -902,22 +911,52 @@ async function runAdRuntime({ config, logger }) {
         agentId: config.agentId,
         payload
       }).then(async (r) => {
-        await applyAgentTokenDelivery({ result: r, config, configPath, logger });
-        // 2026-10-01 R158.13 — apply settingsPatch envelope after every
-        // scheduler-driven heartbeat (parallel to applyAgentTokenDelivery
-        // above). heartbeatRef.current resolves to the live handle
-        // assigned below in startHeartbeat.
-        await applySettingsDelivery({ result: r, config, configPath, logger, heartbeat: heartbeatRef.current });
-        // R158.48 (2026-10-06) — agent auto-update. Consumes the
-        // {upgradeAvailable, upgradeVersion} envelope from the centre.
-        // On success the delivery module SIGTERMs this process via
-        // setImmediate so NSSM relaunches with the new bundle.
-        // R158.50.7e (2026-10-07) — pass agentInstallDir (line 62
-        // __dirname = dirname of this script). Without it
-        // applyUpgradeDelivery short-circuits at upgrade-delivery.js:114
-        // with event='agent.upgrade.skip' reason='no-agent-install-dir'.
-        const upgradeR = await applyUpgradeDelivery({ result: r, agentInstallDir: __dirname, config, configPath, logger, fetchUpgrade: boundFetchUpgrade, fetchUpgradeResult: boundFetchUpgradeResult });
-        // R158.88.BF1 (2026-10-13) — SIGTERM after apply. R158.48 注释 (upgrade-delivery.js:18) 谎话 "caller schedules setImmediate" 24h 0 真调 = bundle 装盘但 0 进程死 = NSSM 不重拉 = 24h 0 applied 铁证真因. 修在 inline caller (line 769/1248) 不在 makeSendCallback.
+        // R161.31 (2026-11-07) — 三个 delivery 合并成**一次**原子写。
+        //
+        // ★ 旧实现: 串行 await 三个 applyXxxDelivery, 每个都 read → parse
+        //   → mutate → write-tmp → fsync → rename 同一个 appsettings.json
+        //   ⇒ 一次心跳付三倍全量读 + 三倍全量写 + 三次 fsync。
+        // ★ 不能简单改 Promise.all: 那会 (a) 读-改-写丢更新 (三个 writer
+        //   各自 read 快照, 后两个的快照缺前一个的改动) + (b) 共用
+        //   `${path}.tmp` 让并发 writer 写坏 JSON。两处都已在
+        //   heartbeat-deliveries.js / appsettings-writer.js 里根治。
+        //
+        // ★ applyUpgradeDelivery 的额外参数 (agentInstallDir / fetchUpgrade
+        //   / fetchUpgradeResult) 通过包装函数注入 —— 编排器的接口保持统一。
+        // ★ 编排器返回 upgradeOutcome (applyUpgradeDelivery 的原始返回值),
+        //   SIGTERM 判定读它 —— **绝不能**再单独调一次 applyUpgradeDelivery:
+        //   那会把 bundle 装两遍 (装盘 + 写 history + 二次 SIGTERM 竞争)。
+        const { upgradeOutcome } = await applyHeartbeatDeliveries({
+          result: r,
+          config,
+          configPath,
+          logger,
+          applyAgentToken: (args) => applyAgentTokenDelivery(args),
+          // 2026-10-01 R158.13 — apply settingsPatch envelope after every
+          // scheduler-driven heartbeat. heartbeatRef.current resolves to the
+          // live handle assigned below in startHeartbeat.
+          applySettings: (args) => applySettingsDelivery({ ...args, heartbeat: heartbeatRef.current }),
+          // R158.48 (2026-10-06) — agent auto-update. Consumes the
+          // {upgradeAvailable, upgradeVersion} envelope from the centre.
+          // On success the delivery module SIGTERMs this process via
+          // setImmediate so NSSM relaunches with the new bundle.
+          // R158.50.7e (2026-10-07) — pass agentInstallDir (line 62
+          // __dirname = dirname of this script). Without it
+          // applyUpgradeDelivery short-circuits at upgrade-delivery.js:114
+          // with event='agent.upgrade.skip' reason='no-agent-install-dir'.
+          // R158.88.BF1 (2026-10-13) — SIGTERM after apply. R158.48 注释
+          // (upgrade-delivery.js:18) 谎话 "caller schedules setImmediate"
+          // 24h 0 真调 = bundle 装盘但 0 进程死 = NSSM 不重拉 = 24h 0
+          // applied 铁证真因. 修在 inline caller (line 769/1248) 不在
+          // makeSendCallback.
+          applyUpgrade: (args) => applyUpgradeDelivery({
+            ...args,
+            agentInstallDir: __dirname,
+            fetchUpgrade: boundFetchUpgrade,
+            fetchUpgradeResult: boundFetchUpgradeResult,
+          }),
+        });
+        const upgradeR = upgradeOutcome;
         if (upgradeR && upgradeR.applied === true && upgradeR.exiting === true) {
           logger?.info?.({ event: 'agent.upgrade.applied.sigterm', toVersion: upgradeR.newVersion, fromVersion: upgradeR.previousVersion }, 'agent upgrade applied; SIGTERM self for NSSM relaunch');
           setImmediate(() => process.kill(process.pid, 'SIGTERM'));
@@ -1161,18 +1200,39 @@ async function runNonAdRuntime({ config, logger }) {
         agentId: config.agentId || osInfo.hostname,
         payload: p
       });
-      await applyAgentTokenDelivery({ result: r, config, configPath, logger });
-      // 2026-10-01 R158.13 — non-AD path also consumes settingsPatch;
-      // heartbeatRef.current resolves to the live handle (the lazy
-      // getter exists at module scope and resolves at the moment a
-      // settingsPatch arrives).
-      await applySettingsDelivery({ result: r, config, configPath, logger, heartbeat: heartbeatRef.current });
-      // R158.48 (2026-10-06) — agent auto-update (non-AD path).
-      // Mirror of the AD scheduler call above.
-      // R158.50.7e (2026-10-07) — pass agentInstallDir (see line 768
-      // R158.50.7e fix rationale; same short-circuit otherwise).
-      // R158.88.BF1 (2026-10-13) — non-AD inline caller 跟 AD scheduler inline caller 1:1 平行 SIGTERM. 24h 0 applied 真因 = 两处 inline caller 0 读 r.exiting 0 调 process.kill. setImmediate 让 await chain 干净 return 再死, 跟 upgrade-delivery.js:18 注释 "caller schedules setImmediate" 1:1 闭合.
-      const upgradeR2 = await applyUpgradeDelivery({ result: r, agentInstallDir: __dirname, config, configPath, logger, fetchUpgrade: boundFetchUpgrade, fetchUpgradeResult: boundFetchUpgradeResult });
+      // R161.31 (2026-11-07) — 三个 delivery 合并成**一次**原子写 (跟 AD
+      // 侧 runAdRuntime 的调用点 1:1 平行)。详见那里的注释: 旧实现是
+      // 串行三次 read→parse→mutate→write-tmp→fsync→rename 同一个
+      // appsettings.json; 改成 Promise.all 会有丢更新 + tmp 文件名冲突两
+      // 个缺陷; 合并写是唯一正确且快的解法。
+      const { upgradeOutcome } = await applyHeartbeatDeliveries({
+        result: r,
+        config,
+        configPath,
+        logger,
+        applyAgentToken: (args) => applyAgentTokenDelivery(args),
+        // 2026-10-01 R158.13 — non-AD path also consumes settingsPatch;
+        // heartbeatRef.current resolves to the live handle (the lazy
+        // getter exists at module scope and resolves at the moment a
+        // settingsPatch arrives).
+        applySettings: (args) => applySettingsDelivery({ ...args, heartbeat: heartbeatRef.current }),
+        // R158.48 (2026-10-06) — agent auto-update (non-AD path).
+        // Mirror of the AD scheduler call above.
+        // R158.50.7e (2026-10-07) — pass agentInstallDir (see line 768
+        // R158.50.7e fix rationale; same short-circuit otherwise).
+        // R158.88.BF1 (2026-10-13) — non-AD inline caller 跟 AD scheduler
+        // inline caller 1:1 平行 SIGTERM. 24h 0 applied 真因 = 两处 inline
+        // caller 0 读 r.exiting 0 调 process.kill. setImmediate 让 await
+        // chain 干净 return 再死, 跟 upgrade-delivery.js:18 注释
+        // "caller schedules setImmediate" 1:1 闭合.
+        applyUpgrade: (args) => applyUpgradeDelivery({
+          ...args,
+          agentInstallDir: __dirname,
+          fetchUpgrade: boundFetchUpgrade,
+          fetchUpgradeResult: boundFetchUpgradeResult,
+        }),
+      });
+      const upgradeR2 = upgradeOutcome;
       if (upgradeR2 && upgradeR2.applied === true && upgradeR2.exiting === true) {
         logger?.info?.({ event: 'agent.upgrade.applied.sigterm', toVersion: upgradeR2.newVersion, fromVersion: upgradeR2.previousVersion, runtime: 'non-ad' }, 'agent upgrade applied (non-AD); SIGTERM self for NSSM relaunch');
         setImmediate(() => process.kill(process.pid, 'SIGTERM'));

@@ -173,7 +173,8 @@ export async function applyUpgradeDelivery({
   configPath,
   logger,
   fetchUpgrade,
-  fetchUpgradeResult
+  fetchUpgradeResult,
+  deferWrite = false
 }) {
   if (!result || !result.ok || !result.data) {
     // R158.87.6.5 (2026-10-12) — silent fail log. R158.69.3 铁证 envelope
@@ -343,10 +344,16 @@ export async function applyUpgradeDelivery({
   // Stage 5 — persist installedAgentVersion atomically. Best-effort: log and
   // continue on failure (bundle is on disk; next heartbeat will retry the
   // persist). Mirror the R158.13 settings-delivery path.
-  const w = writeAppsettingsPatchAtomic({
-    path: configPath,
-    patch: { installedAgentVersion: upgradeVersion }
-  });
+  //
+  // R161.31 (2026-11-07) — deferWrite 模式: 只算 patch 不写盘, 由心跳的
+  // 合并写入器跟 token/settings 的 patch 合成一次原子写 (三次串行写 =
+  // 三倍 IO; 三次并行写 = 丢更新 + 共用 tmp 文件名损坏)。
+  const w = deferWrite
+    ? { ok: true, deferred: true }
+    : writeAppsettingsPatchAtomic({
+      path: configPath,
+      patch: { installedAgentVersion: upgradeVersion }
+    });
   if (!w.ok) {
     logger?.warn?.({ event: 'agent.upgrade.persist.warn', error: w.error, upgradeVersion },
       'agent upgrade bundle applied but persist failed; next heartbeat will retry persist');
@@ -427,6 +434,7 @@ export async function applyUpgradeDelivery({
     previousVersion,
     newVersion: upgradeVersion,
     fileCount: r.data.files.length,
-    exiting: true
+    exiting: true,
+    patch: { installedAgentVersion: upgradeVersion }
   };
 }
