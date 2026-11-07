@@ -17,6 +17,7 @@
 import express from 'express';
 import { handleListFailure, logRouteError, OUTBOX_DIAGNOSTICS_URL } from './email-outbox-common.js';
 import { classifyDbError } from '../utils/dbError.js';
+import { clampRowLimit } from '../utils/limit.js';
 
 export function createEmailHistoryRouter({ db, requireAuth, requirePerm, logger }) {
   const router = express.Router();
@@ -27,7 +28,7 @@ export function createEmailHistoryRouter({ db, requireAuth, requirePerm, logger 
     // Input validation. Cap days at 180 (6 month), limit at 500 (UI 简单表用).
     // kind whitelist = 'all' / 'alert' / 'report'. bad input falls back to default.
     const days = Math.max(1, Math.min(180, Number(req.query.days) || 30));
-    const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 200));
+    const limit = clampRowLimit(req.query.limit, { min: 1, max: 500, fallback: 200 });
     const kind = (req.query.kind === 'alert' || req.query.kind === 'report') ? req.query.kind : 'all';
 
     try {

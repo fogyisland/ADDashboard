@@ -101,6 +101,15 @@ const GET_STATUS_MSSQL_MEMBER =
 
 // 全局生命周期列表 (/admin/server-lifecycle 用), 支持按状态过滤。
 // status 取值: all(退役∪暂停, 默认) | decommissioned | paused | active
+//
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mysql `LIMIT n` /
+//   mssql `TOP n`) ⇒ 上游漏下小数就内联出 `LIMIT 12.7` ⇒ 双方言语法错误 500。
+//   ★ 当前调用方 (routes/admin.js) 传 `{ status }` 不带 limit ⇒ 这 4 个内联点
+//     暂时**不可达**; 但它们**没有第二道闸** —— 谁将来加一句
+//     `limit: Number(req.query.limit)` 就立刻变缺陷。
+//   ⇒ 现在就上 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const hostStatus = {
   mysql: {
     setLifecycleDc: SET_LIFECYCLE_MYSQL_DC,
@@ -108,7 +117,7 @@ export const hostStatus = {
     getStatusDc: GET_STATUS_MYSQL_DC,
     getStatusMember: GET_STATUS_MYSQL_MEMBER,
     listLifecycleDc: ({ status = 'all', limit = 500 } = {}) => {
-      const lim = Math.min(1000, Math.max(1, Number(limit) || 500));
+      const lim = clampRowLimit(limit, { min: 1, max: 1000, fallback: 500 });
       let cond;
       if (status === 'decommissioned') cond = 'd.decommissioned_at IS NOT NULL';
       else if (status === 'paused') cond = 'd.decommissioned_at IS NULL AND d.monitoring_paused_at IS NOT NULL';
@@ -123,7 +132,7 @@ export const hostStatus = {
               LIMIT ${lim}`;
     },
     listLifecycleMember: ({ status = 'all', limit = 500 } = {}) => {
-      const lim = Math.min(1000, Math.max(1, Number(limit) || 500));
+      const lim = clampRowLimit(limit, { min: 1, max: 1000, fallback: 500 });
       let cond;
       if (status === 'decommissioned') cond = 'ms.decommissioned_at IS NOT NULL';
       else if (status === 'paused') cond = 'ms.decommissioned_at IS NULL AND ms.monitoring_paused_at IS NOT NULL';
@@ -145,7 +154,7 @@ export const hostStatus = {
     getStatusDc: GET_STATUS_MSSQL_DC,
     getStatusMember: GET_STATUS_MSSQL_MEMBER,
     listLifecycleDc: ({ status = 'all', limit = 500 } = {}) => {
-      const lim = Math.min(1000, Math.max(1, Number(limit) || 500));
+      const lim = clampRowLimit(limit, { min: 1, max: 1000, fallback: 500 });
       let cond;
       if (status === 'decommissioned') cond = 'd.decommissioned_at IS NOT NULL';
       else if (status === 'paused') cond = 'd.decommissioned_at IS NULL AND d.monitoring_paused_at IS NOT NULL';
@@ -159,7 +168,7 @@ export const hostStatus = {
               ORDER BY d.decommissioned_at DESC, d.dc_name`;
     },
     listLifecycleMember: ({ status = 'all', limit = 500 } = {}) => {
-      const lim = Math.min(1000, Math.max(1, Number(limit) || 500));
+      const lim = clampRowLimit(limit, { min: 1, max: 1000, fallback: 500 });
       let cond;
       if (status === 'decommissioned') cond = 'ms.decommissioned_at IS NOT NULL';
       else if (status === 'paused') cond = 'ms.decommissioned_at IS NULL AND ms.monitoring_paused_at IS NOT NULL';

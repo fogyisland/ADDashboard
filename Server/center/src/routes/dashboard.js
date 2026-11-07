@@ -14,6 +14,7 @@ import * as accountChangeService from '../services/account-change.js';
 // kept local here to avoid expanding the dashboardRouter() factory
 // signature.
 import { getConfig as getSystemConfig } from '../services/config.js';
+import { clampRowLimit } from '../utils/limit.js';
 
 // Helpers ---------------------------------------------------------------
 
@@ -1438,7 +1439,7 @@ export function dashboardRouter({ config, logger, db }) {
     try {
       const sourceRaw = String(req.query.source || '').trim();
       const destRaw = String(req.query.dest || '').trim();
-      const limit = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
+      const limit = clampRowLimit(req.query.limit, { min: 1, max: 50, fallback: 10 });
       if (!sourceRaw || !destRaw) {
         return res.status(400).json({ error: 'source and dest required' });
       }

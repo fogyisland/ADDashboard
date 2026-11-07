@@ -11,6 +11,11 @@
 // ad_system_registration.id 1:1). 列存值 = license_activated 时是
 // ad_system_registration.id, license_request 时是 NULL (申请单无 license row).
 
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mssql `TOP n`) ⇒
+//   上游漏下小数就内联出 `TOP 12.7` ⇒ 语法错误 ⇒ 端点 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const licenseEmailOutbox = {
   mysql: {
     // enqueue: 1 个待发邮件
@@ -62,7 +67,7 @@ export const licenseEmailOutbox = {
 
     // mssql TOP n interpolation (跟 ad-notify-outbox.js 1:1 平行)
     listPending: (limit) =>
-      `SELECT TOP ${Number(limit) || 25} id, license_id, to_addrs, cc_addrs, subject, body_text, body_html,
+      `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 25 })} id, license_id, to_addrs, cc_addrs, subject, body_text, body_html,
               attempt_count, max_attempts, next_attempt_at, last_error, sent_at
        FROM license_email_outbox
        WHERE sent_at IS NULL

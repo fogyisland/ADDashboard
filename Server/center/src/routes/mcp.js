@@ -735,7 +735,18 @@ export function mcpRouter({ logger, db }) {
 
   // 永远 no-auth 健康检查. 跟 /healthz 1:1 平行 (R112 / R113 precedent).
   r.get('/healthz', async (_req, res) => {
-    const enabled = await isMcpEnabled();
+    // ★ R161.32 (2026-11-07) — 加 try/catch: Express 4 **不接** async handler
+    //   的 rejection ⇒ 一个逃逸的 rejection = unhandledRejection ⇒ 进程死。
+    //   isMcpEnabled 当前是 fail-closed (内部自己吞异常 ⇒ 返 false), 所以这里
+    //   是**防御性**的: 万一它将来改了实现, healthz 不能把进程带走。
+    let enabled = false;
+    try {
+      enabled = await isMcpEnabled();
+    } catch (e) {
+      logger?.error?.({ err: e?.message }, 'mcp healthz feature flag read failed');
+      res.status(503).json({ ok: false, enabled: false, reason: 'feature_flag_read_failed' });
+      return;
+    }
     // R161.30 (S4) — 收敛暴露面: 只回 ok/enabled, 不回 version / tool_count /
     //   protocol (版本与规模指纹, 无认证端点不该泄露)。
     res.json({
@@ -746,7 +757,24 @@ export function mcpRouter({ logger, db }) {
   });
 
   async function gate(req, res, next) {
-    const enabled = await isMcpEnabled();
+    // ★ R161.32 (2026-11-07) — 同上: gate 是 async 中间件, 它的 rejection
+    //   同样不被 Express 4 接住 ⇒ 请求会**永久挂起** (无响应) + 进程死。
+    //   ⇒ 显式 catch ⇒ 503 + JSON-RPC 错误, 请求有明确结局, 进程活着。
+    let enabled = false;
+    try {
+      enabled = await isMcpEnabled();
+    } catch (e) {
+      logger?.error?.(
+        { err: e?.message, method: req.method, path: req.path },
+        'mcp gate feature flag read failed'
+      );
+      res.status(503).json({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32603, message: 'MCP feature flag read failed' }
+      });
+      return;
+    }
     if (enabled) return next();
     logger?.warn?.({ method: req.method, path: req.path },
       'mcp request blocked: feature flag mcp.enabled is off');
@@ -835,6 +863,23 @@ export function mcpRouter({ logger, db }) {
     _pendingInit.set(headerSession || undefined, initPromise);
     try {
       return await initPromise;
+    } catch (err) {
+      // ★ R161.32 (2026-11-07) — 这段原来只有 `finally` 没有 `catch`,
+      //   而 initPromise 内部 `await server.connect(transport)` 是**会 reject** 的
+      //   (SDK 的 webStandardStreamableHttp 在 transport 已启动时抛
+      //   'Transport already started')。
+      //   ⇒ 原形状: rejection 从这里一路逃到 handleMcp 的 `await
+      //     getOrCreateSession(req)` (在 try **之外**) ⇒ Express 4 不接 async
+      //     handler 的 rejection ⇒ unhandledRejection ⇒ server.js 的
+      //     `log.fatal + process.exit(1)` ⇒ **中心进程死** (NSSM 拉起,
+      //     期间整个看板 502)。
+      //   ⇒ 现在: 转成带上下文的错误抛出, 由调用方 (handleMcp) 的 try 接住,
+      //     返回 500 而不是杀进程。
+      logger?.error?.(
+        { event: 'mcp.session.init_failed', err: err?.message },
+        'mcp session init failed'
+      );
+      throw new Error(`mcp session init failed: ${err?.message || 'unknown error'}`);
     } finally {
       // initPromise 完成后, _pendingInit 已经被 onsessioninitialized 钩子清
       // 掉了 (sid 拿到时). 但如果 transport 还没收到 initialize 就异常,
@@ -846,7 +891,24 @@ export function mcpRouter({ logger, db }) {
   }
 
   async function handleMcp(req, res) {
-    const session = await getOrCreateSession(req);
+    // ★ R161.32 (2026-11-07) — 原来这行在 try **之外** ⇒ getOrCreateSession 的
+    //   rejection 会一路逃到 Express 4 (它**不接** async handler 的 rejection)
+    //   ⇒ unhandledRejection ⇒ server.js 的 `log.fatal + process.exit(1)`
+    //   ⇒ **中心进程死** (NSSM 拉起, 期间整个看板 502)。
+    //   ⇒ 现在自己接住: 返回 500 JSON-RPC 错误, 不杀进程。
+    let session;
+    try {
+      session = await getOrCreateSession(req);
+    } catch (e) {
+      logger?.error?.(
+        { err: e?.message, method: req.method, path: req.path },
+        'mcp session acquisition failed'
+      );
+      if (!res.headersSent) {
+        res.status(500).json(jsonRpcError(null, JSONRPC_INTERNAL_ERROR, 'mcp session unavailable'));
+      }
+      return;
+    }
     // Audit per request: 0 暴露 token. 30s timeout per request (跟 tool
     // timeout 一致, 防止 SSE 客户端 hang).
     const startMs = Date.now();

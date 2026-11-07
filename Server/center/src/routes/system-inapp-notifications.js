@@ -34,6 +34,7 @@
 
 import { Router } from 'express';
 import { toMysqlDatetime } from '../utils/datetime.js';
+import { clampRowLimit } from '../utils/limit.js';
 
 export function createSystemInappNotificationsRouter({ db, requireAuth, requirePerm, logger }) {
   const auth = [requireAuth, requirePerm('admin:users')];
@@ -55,7 +56,7 @@ export function createSystemInappNotificationsRouter({ db, requireAuth, requireP
       //   ⚠ sinceIso 仍用于 response body (前端 watermark 必须是 ISO),
       //     两者不能混用同一个变量。
       const sinceParam = db.dialect === 'mssql' ? sinceIso : toMysqlDatetime(sinceIso);
-      const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+      const limit = clampRowLimit(req.query.limit, { min: 1, max: 200, fallback: 50 });
       const fn = db.sql.systemAlerts.listSince;
       const sqlText = typeof fn === 'function' ? fn({ since: sinceParam, limit }) : fn;
       // params 顺序: [fired_at, recovered_at, acked_at] 各 1 个 since 占位符.

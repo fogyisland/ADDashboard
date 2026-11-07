@@ -35,6 +35,7 @@
 import express from 'express';
 import { handleListFailure, logRouteError, OUTBOX_DIAGNOSTICS_URL } from './email-outbox-common.js';
 import { classifyDbError } from '../utils/dbError.js';
+import { clampRowLimit } from '../utils/limit.js';
 
 export function createEmailQueueRouter({ db, requireAuth, requirePerm, logger }) {
   const router = express.Router();
@@ -57,7 +58,7 @@ export function createEmailQueueRouter({ db, requireAuth, requirePerm, logger })
 
   // GET /api/admin/email-queue?limit=500
   router.get('/api/admin/email-queue', guard, async (req, res) => {
-    const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 500));
+    const limit = clampRowLimit(req.query.limit, { min: 1, max: 500, fallback: 500 });
     try {
       const helperSet = db.sql.emailQueue;
       if (!helperSet) {

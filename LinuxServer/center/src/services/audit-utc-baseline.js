@@ -88,6 +88,11 @@
 //
 //   任何一条不满足 ⇒ status != 'detected' ⇒ **只记 warn, 一行都不改**。
 
+// R161.32 (2026-11-07) — limit 会被内联进 SQL 文本 ⇒ 上游漏个小数就
+//   内联出 `LIMIT 12.7` / `TOP 12.7` ⇒ 双方言语法错误 ⇒ 端点 500。
+//   ⇒ 一律过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 NaN/Infinity)。
+import { clampRowLimit } from '../utils/limit.js';
+
 import { getDb } from '../db/index.js';
 
 // system_config 里的单一真源 key
@@ -472,7 +477,7 @@ function naiveExpr(dialect, column) {
  * @returns {Promise<Array<{id:number, createdAt:string, payload:unknown}>>}
  */
 async function readAuditRows(db, limit = MAX_SCAN_ROWS) {
-  const capped = Number.isInteger(limit) && limit > 0 ? Math.min(limit, MAX_SCAN_ROWS) : MAX_SCAN_ROWS;
+  const capped = clampRowLimit(limit, { min: 1, max: MAX_SCAN_ROWS, fallback: MAX_SCAN_ROWS });
   // 行数上限**内联**成整数常量 (不绑参数): MySQL 的 LIMIT ? 只吃整数,
   // MSSQL 的 TOP (?) 吃参数但两边写法不同 —— 内联一个已经校验过的整数常量
   // 是唯一两种方言都安全的写法。

@@ -9,6 +9,14 @@
 //   - threshold JSON 存触发时阈值快照 (后续调整阈值不抹历史)
 //   - last_notified_at + notify_count 实现邮件节流 (避免重复邮件轰炸)
 
+// R161.32 (2026-11-07) — **行数上限的整数闸门**。
+//   本文件的 limit 值会被**内联进 SQL 文本** (mysql `LIMIT n` / mssql `TOP n`),
+//   而 driver 层**不修复 SQL 文本** ⇒ 上游漏下一个小数, 这里就会内联出
+//   `LIMIT 12.7` / `TOP 12.7` ⇒ **双方言都是语法错误** ⇒ 端点 500。
+//   ⇒ 所有 limit 一律先过 clampRowLimit (它用 Math.trunc 截小数、
+//     Number.isFinite 挡 Infinity), 产物**必是正整数** ⇒ 无注入面。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const systemAlerts = {
   mysql: {
     // INSERT, 返 lastInsertId (mysql2 driver 走 result.insertId)
@@ -56,7 +64,7 @@ export const systemAlerts = {
                  WHERE state = 'firing'`;
       if (kind) sql += ` AND kind = ?`;
       if (scope_ref) sql += ` AND scope_ref = ?`;
-      sql += ` ORDER BY fired_at DESC, id DESC LIMIT ${Number(limit) || 100}`;
+      sql += ` ORDER BY fired_at DESC, id DESC LIMIT ${clampRowLimit(limit, { min: 1, max: 500, fallback: 100 })}`;
       return sql;
     },
 
@@ -67,7 +75,7 @@ export const systemAlerts = {
                  FROM system_alerts
                  WHERE 1=1`;
       if (kind) sql += ` AND kind = ?`;
-      sql += ` ORDER BY fired_at DESC, id DESC LIMIT ${Number(limit) || 100}`;
+      sql += ` ORDER BY fired_at DESC, id DESC LIMIT ${clampRowLimit(limit, { min: 1, max: 500, fallback: 100 })}`;
       return sql;
     },
 
@@ -78,7 +86,7 @@ export const systemAlerts = {
     //   前端 store 派生 3 类 state-transition (新 firing / firing→recovered /
     //   firing→acked) 推 in-app toast + BellIcon badge. 1:1 平行 mssql 段 listSince.
     listSince: ({ since, limit = 50 } = {}) => {
-      const lim = Math.min(200, Math.max(1, Number(limit) || 50));
+      const lim = clampRowLimit(limit, { min: 1, max: 200, fallback: 50 });
       return `SELECT id, kind, scope_type, scope_ref, state, threshold, detail,
                     fired_at, recovered_at, acked_at, acked_by, last_notified_at, notify_count
              FROM system_alerts
@@ -168,7 +176,7 @@ export const systemAlerts = {
     //   只按 fired_at 过滤会漏掉 (b) 类 —— 那正是操作员最想看的"几点恢复".
     //   detail JSON 离线分钟数由调用方 parse (driver 侧无统一 JSON 提取函数).
     listOfflineInWindow: ({ periodStart, periodEnd, limit = 200 } = {}) => {
-      const lim = Math.min(500, Math.max(1, Number(limit) || 200));
+      const lim = clampRowLimit(limit, { min: 1, max: 500, fallback: 200 });
       return `SELECT id, kind, scope_type, scope_ref, state, detail,
                        fired_at, recovered_at, acked_at
                 FROM system_alerts
@@ -223,7 +231,7 @@ export const systemAlerts = {
 
     // mssql LIMIT 用 TOP n interpolation (binding 不支持)
     listFiring: ({ kind = null, scope_ref = null, limit = 100 } = {}) => {
-      let sql = `SELECT TOP ${Number(limit) || 100} id, kind, scope_type, scope_ref, state, threshold, detail,
+      let sql = `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 100 })} id, kind, scope_type, scope_ref, state, threshold, detail,
                         fired_at, recovered_at, acked_at, acked_by, last_notified_at, notify_count
                  FROM system_alerts
                  WHERE state = 'firing'`;
@@ -234,7 +242,7 @@ export const systemAlerts = {
     },
 
     listRecent: ({ kind = null, limit = 100 } = {}) => {
-      let sql = `SELECT TOP ${Number(limit) || 100} id, kind, scope_type, scope_ref, state, threshold, detail,
+      let sql = `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 100 })} id, kind, scope_type, scope_ref, state, threshold, detail,
                         fired_at, recovered_at, acked_at, acked_by, last_notified_at, notify_count
                  FROM system_alerts
                  WHERE 1=1`;
@@ -246,7 +254,7 @@ export const systemAlerts = {
     // R158.X.99.34.d (2026-10-19) — in-app notification 列表端点 helper
     //   MSSQL mirror, 跟 MySQL 段 listSince 1:1 平行 (除 LIMIT → TOP).
     listSince: ({ since, limit = 50 } = {}) => {
-      const lim = Math.min(200, Math.max(1, Number(limit) || 50));
+      const lim = clampRowLimit(limit, { min: 1, max: 200, fallback: 50 });
       return `SELECT TOP ${lim} id, kind, scope_type, scope_ref, state, threshold, detail,
                     fired_at, recovered_at, acked_at, acked_by, last_notified_at, notify_count
              FROM system_alerts
@@ -308,7 +316,7 @@ export const systemAlerts = {
     //   仅 LIMIT → TOP n 的语法差异, 语义/窗口口径/OR 过滤完全一致.
     //   口径限定 (告警级离线, 阈值以下抖动不记录) 见 mysql 段长注释.
     listOfflineInWindow: ({ periodStart, periodEnd, limit = 200 } = {}) => {
-      const lim = Math.min(500, Math.max(1, Number(limit) || 200));
+      const lim = clampRowLimit(limit, { min: 1, max: 500, fallback: 200 });
       return `SELECT TOP ${lim} id, kind, scope_type, scope_ref, state, detail,
                           fired_at, recovered_at, acked_at
                FROM system_alerts

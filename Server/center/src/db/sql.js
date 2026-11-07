@@ -867,7 +867,7 @@ const VARIANTS = {
         //   语义不是"今天", 而是"agent 每天 06:00 跑的那一批" ——
         //   那些 run 在 UTC 里落在**昨天**, 用 CURDATE() 会取到空集.
         //   跟 builtin-packages.js:548 的 agent 侧口径 1:1 对齐.
-        const safeLimit = Math.max(1, Math.min(200000, Number.parseInt(limit, 10) || 50));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 200000, fallback: 50 });
         const sql = `SELECT sam, COALESCE(display_name, '') AS display_name,
                  created_at, modified_at, change_date, dc_name, COALESCE(operator_user, '') AS operator_user
                  FROM ad_account_change
@@ -1036,7 +1036,7 @@ const VARIANTS = {
       //   最新 N 条比全窗口更代表当前活跃调用方, 且有界 (防 90 天窗口全扫).
       //   1:1 平行 mssql 段 listRecentMcpCalls.
       listRecentMcpCalls: ({ limit = 500 } = {}) => {
-        const lim = Math.min(2000, Math.max(1, Number(limit) || 500));
+        const lim = clampRowLimit(limit, { min: 1, max: 2000, fallback: 500 });
         return `SELECT a.action, a.payload, a.created_at
                  FROM audit_logs a
                  WHERE a.action IN ('mcp.request','mcp.request.failed','mcp.write.request','mcp.write.request.failed')
@@ -1756,7 +1756,7 @@ const VARIANTS = {
                AND naming_context NOT IN ('__dc_summary__', 'META')
            )
          ORDER BY source_dc, dest_dc
-         LIMIT ${Number(limit)}`,
+         LIMIT ${clampRowLimit(limit, { min: 1, max: 1000, fallback: 100 })}`,
       // 2026-08-26 round-19+: heartbeat-table delete buttons. The operator
       // removes a row when a host is decommissioned; cascades through
       // ad_replication_status (both source_dc and dest_dc matches) so the
@@ -2013,7 +2013,7 @@ const VARIANTS = {
       // as memberSummary24hByName. MySQL LIMIT <int> at end; the
       // mssql mirror below uses TOP <int> after SELECT per R158.17.6
       // (T-SQL position rule).
-      memberRecentByName: (limit, since) => `SELECT * FROM package_runs WHERE package_name = ? AND started_at >= ? AND agent_id IN (SELECT agent_id FROM ad_member_heartbeat WHERE agent_id IS NOT NULL) ORDER BY started_at DESC LIMIT ${Math.max(1, Math.min(1000, parseInt(limit, 10) || 10))}`,
+      memberRecentByName: (limit, since) => `SELECT * FROM package_runs WHERE package_name = ? AND started_at >= ? AND agent_id IN (SELECT agent_id FROM ad_member_heartbeat WHERE agent_id IS NOT NULL) ORDER BY started_at DESC LIMIT ${clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 })}`,
       // 2026-10-20 perf — batched variant. Caller used to call recentByName
       //   N times in a for-loop (one query per package, typically 10–14).
       //   On /api/dashboard/packages-runs the call counted in timeline
@@ -2037,7 +2037,7 @@ const VARIANTS = {
       //   索引 —— 但那要走 db/migrations 迁移, 不能手改已冻结的 baseline。
       recentByNames: (names, limit, since) => {
         const n = Array.isArray(names) ? names : [names];
-        const safeLimit = Math.max(1, Math.min(1000, parseInt(limit, 10) || 10));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 });
         const parts = n.map(() =>
           `(SELECT package_name, id, agent_id, started_at, finished_at, exit_code, status
               FROM package_runs
@@ -2053,7 +2053,7 @@ const VARIANTS = {
       },
       memberRecentByNames: (names, limit, since) => {
         const n = Array.isArray(names) ? names : [names];
-        const safeLimit = Math.max(1, Math.min(1000, parseInt(limit, 10) || 10));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 });
         const parts = n.map(() =>
           `(SELECT package_name, id, agent_id, started_at, finished_at, exit_code, status
               FROM package_runs
@@ -3010,7 +3010,7 @@ const VARIANTS = {
         if (!eventIdList) {
           throw new Error('eventlog.queryAccountManagementEvents: eventIds must be positive integers');
         }
-        const safeLimit = Math.max(1, Math.min(200000, Number.parseInt(limit, 10) || 200));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 200000, fallback: 200 });
         return {
           sql: `SELECT collected_at, dc_name, channel, severity,
                        event_id, record_id, message, ts, audit_failure
@@ -4521,7 +4521,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
         //   AccountChangeDetailView 8 列 "操作人").
         // R158.X.99.20 (2026-10-19) — 「当日」改 **UTC 昨天**, 1:1 平行
         //   mysql 段 (DATEADD(DAY, -1, ...) ≡ DATE_SUB(CURDATE(), INTERVAL 1 DAY)).
-        const safeLimit = Math.max(1, Math.min(200000, Number.parseInt(limit, 10) || 50));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 200000, fallback: 50 });
         const sql = `SELECT TOP ${safeLimit} sam, COALESCE(display_name, '') AS display_name,
                  created_at, modified_at, change_date, dc_name, COALESCE(operator_user, '') AS operator_user
                  FROM ad_account_change
@@ -5081,15 +5081,15 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       // tedious driver does NOT auto-rewrite `TOP (?)` — that's a stale
       // comment from R45; the value is interpolated by the JS builder.
       // Caller binds [source, dest] only (limit is embedded in the SQL).
-      replicationLogPerPair: (limit) => `SELECT TOP ${Math.max(1, Math.min(500, Number(limit) || 100))} source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY collected_at DESC`,
+      replicationLogPerPair: (limit) => `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 100 })} source_dc, dest_dc, naming_context, status_code, last_success_time, last_attempt_time, attempt_duration_ms, objects_transferred, error_message, collected_at FROM ad_replication_history WHERE source_dc = ? AND dest_dc = ? AND collected_at >= DATEADD(HOUR, -24, SYSUTCDATETIME()) ORDER BY collected_at DESC`,
       // R158.17 (2026-10-01) — 复制状态概览展开历史 MSSQL mirror.
       // 走 TOP N (limit inlined, 不支持 LIMIT + bind). 数据源 ad_replication_probe_history.
-      probeHistoryPerPair: (limit) => `SELECT TOP ${Math.max(1, Math.min(50, Number(limit) || 10))} source_dc, dest_dc, attempt_at, result FROM ad_replication_probe_history WHERE source_dc = ? AND dest_dc = ? ORDER BY attempt_at DESC`,
+      probeHistoryPerPair: (limit) => `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 50, fallback: 10 })} source_dc, dest_dc, attempt_at, result FROM ad_replication_probe_history WHERE source_dc = ? AND dest_dc = ? ORDER BY attempt_at DESC`,
       // R158.103.2 (2026-10-15) — 复制状态概览 "明细" drawer, mssql mirror.
       // 跟 mysql section probeHistoryPerPairDetail 1:1 平行. function-form
       // (limit) =>, TOP N (limit inlined, 不支持 LIMIT + bind), default 50,
       // cap 50 跟 inline caret 同不升档.
-      probeHistoryPerPairDetail: (limit) => `SELECT TOP ${Math.max(1, Math.min(50, Number(limit) || 50))} source_dc, dest_dc, naming_context, agent_id, attempt_at, result, status_code, duration_ms, objects_transferred, error_code, error_message FROM ad_replication_probe_history WHERE source_dc = ? AND dest_dc = ? ORDER BY attempt_at DESC`,
+      probeHistoryPerPairDetail: (limit) => `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 50, fallback: 50 })} source_dc, dest_dc, naming_context, agent_id, attempt_at, result, status_code, duration_ms, objects_transferred, error_code, error_message FROM ad_replication_probe_history WHERE source_dc = ? AND dest_dc = ? ORDER BY attempt_at DESC`,
       // R158.103.1 (2026-10-15) — silent reporter 检测, mssql mirror.
       // 跟 mysql section probeReporterLiveness 1:1 平行. SYSUTCDATETIME()
       // 替代 UTC_TIMESTAMP() - INTERVAL 24 HOUR. matrix UI 标红用.
@@ -5593,7 +5593,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                           AND agent_id IN (SELECT agent_id FROM ad_member_heartbeat WHERE agent_id IS NOT NULL)
                         GROUP BY package_name`,
       // R158.99.3 — recent member-side runs (mssql). TOP <int> after SELECT.
-      memberRecentByName: (limit, since) => `SELECT TOP ${Math.max(1, Math.min(1000, parseInt(limit, 10) || 10))} * FROM package_runs WHERE package_name = ? AND started_at >= ? AND agent_id IN (SELECT agent_id FROM ad_member_heartbeat WHERE agent_id IS NOT NULL) ORDER BY started_at DESC`,
+      memberRecentByName: (limit, since) => `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 })} * FROM package_runs WHERE package_name = ? AND started_at >= ? AND agent_id IN (SELECT agent_id FROM ad_member_heartbeat WHERE agent_id IS NOT NULL) ORDER BY started_at DESC`,
       // 2026-10-20 perf — MSSQL mirror of MySQL recentByNames / memberRecentByNames.
       //   Same CTE + ROW_NUMBER() pattern; both dialects (MSSQL 2017+/MySQL 8.0+)
       //   support window functions identically. Replaces 14 round-trips in
@@ -5602,7 +5602,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       recentByNames: (names, limit, since) => {
         const n = Array.isArray(names) ? names : [names];
         const placeholders = n.map(() => '?').join(', ');
-        const safeLimit = Math.max(1, Math.min(1000, parseInt(limit, 10) || 10));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 });
         const sql = `WITH ranked AS (
             SELECT package_name, id, agent_id, started_at, finished_at, exit_code, status,
                    ROW_NUMBER() OVER (PARTITION BY package_name ORDER BY started_at DESC) AS rn
@@ -5616,7 +5616,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       memberRecentByNames: (names, limit, since) => {
         const n = Array.isArray(names) ? names : [names];
         const placeholders = n.map(() => '?').join(', ');
-        const safeLimit = Math.max(1, Math.min(1000, parseInt(limit, 10) || 10));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 });
         const sql = `WITH ranked AS (
             SELECT package_name, id, agent_id, started_at, finished_at, exit_code, status,
                    ROW_NUMBER() OVER (PARTITION BY package_name ORDER BY started_at DESC) AS rn
@@ -6579,7 +6579,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
         // 当作 inline integer 拼到 SQL, 不暴露给 SQL injection 因为
         // router 已经用 clampInt(MIN_LIMIT..MAX_LIMIT) 整数夹紧, 而且
         // 这个值不是 user string 而是 server-side resolve 出来的.
-        const safeLimit = Math.max(1, Math.min(200000, Number.parseInt(limit, 10) || 200));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 200000, fallback: 200 });
         return {
           sql: `SELECT TOP ${safeLimit} collected_at, dc_name, channel, severity,
                        event_id, record_id, message, ts, audit_failure
@@ -6606,7 +6606,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
         if (!eventIdList) {
           throw new Error('eventlog.queryAccountManagementEvents: eventIds must be positive integers');
         }
-        const safeLimit = Math.max(1, Math.min(200000, Number.parseInt(limit, 10) || 200));
+        const safeLimit = clampRowLimit(limit, { min: 1, max: 200000, fallback: 200 });
         return {
           sql: `SELECT TOP ${safeLimit} collected_at, dc_name, channel, severity,
                        event_id, record_id, message, ts, audit_failure
@@ -6860,7 +6860,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       // (services/ad-admin-commands.js:claimForAgent) calls this as a
       // function on MSSQL and as a plain string on MySQL — same call site
       // after safeLimit is clamped to [1, 100].
-      claimPick: (limit) => `SELECT TOP ${Math.max(1, Math.min(100, Number(limit) || 5))} id FROM ad_admin_commands
+      claimPick: (limit) => `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 100, fallback: 5 })} id FROM ad_admin_commands
                     WHERE status = CAST('queued' AS NVARCHAR(16))
                       AND target_dc = CAST(? AS NVARCHAR(128))
                     ORDER BY created_at ASC, id ASC`,
@@ -6949,7 +6949,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
       // see adAdminCommands.claimPick comment for the full root cause.
       // claimPick becomes a function so the integer limit is inlined; the
       // MySQL sibling below keeps `LIMIT ?` because mysql2 accepts it.
-      claimPick: (limit) => `SELECT TOP ${Math.max(1, Math.min(100, Number(limit) || 5))} id FROM ad_member_commands
+      claimPick: (limit) => `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 100, fallback: 5 })} id FROM ad_member_commands
                     WHERE status = CAST('queued' AS NVARCHAR(16))
                       AND hostname = CAST(? AS NVARCHAR(128))
                     ORDER BY created_at ASC, id ASC`,
@@ -6997,7 +6997,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                              LEFT JOIN sys_users u ON u.id = c.operator_id
                             WHERE c.operator_id = ?
                             ORDER BY c.created_at DESC, c.id DESC
-                            OFFSET ? ROWS FETCH NEXT ${Math.max(1, Math.min(200, Number(size) || 20))} ROWS ONLY`,
+                            OFFSET ? ROWS FETCH NEXT ${clampRowLimit(size, { min: 1, max: 200, fallback: 20 })} ROWS ONLY`,
       listAll: (size) => `SELECT c.id, c.hostname, c.command_type, c.status,
                               c.operator_id, u.username AS operator_username,
                               c.created_at, c.claimed_at, c.completed_at,
@@ -7005,7 +7005,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                          FROM ad_member_commands c
                          LEFT JOIN sys_users u ON u.id = c.operator_id
                         ORDER BY c.created_at DESC, c.id DESC
-                        OFFSET ? ROWS FETCH NEXT ${Math.max(1, Math.min(200, Number(size) || 20))} ROWS ONLY`,
+                        OFFSET ? ROWS FETCH NEXT ${clampRowLimit(size, { min: 1, max: 200, fallback: 20 })} ROWS ONLY`,
       listByStatus: (size) => `SELECT c.id, c.hostname, c.command_type, c.status,
                                 c.operator_id, u.username AS operator_username,
                                 c.created_at, c.claimed_at, c.completed_at,
@@ -7014,7 +7014,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                            LEFT JOIN sys_users u ON u.id = c.operator_id
                           WHERE c.status = CAST(? AS NVARCHAR(16))
                           ORDER BY c.created_at DESC, c.id DESC
-                          OFFSET ? ROWS FETCH NEXT ${Math.max(1, Math.min(200, Number(size) || 20))} ROWS ONLY`,
+                          OFFSET ? ROWS FETCH NEXT ${clampRowLimit(size, { min: 1, max: 200, fallback: 20 })} ROWS ONLY`,
       listByHost: (size) => `SELECT c.id, c.hostname, c.command_type, c.status,
                               c.operator_id, u.username AS operator_username,
                               c.created_at, c.claimed_at, c.completed_at,
@@ -7023,7 +7023,7 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                          LEFT JOIN sys_users u ON u.id = c.operator_id
                         WHERE c.hostname = CAST(? AS NVARCHAR(128))
                         ORDER BY c.created_at DESC, c.id DESC
-                        OFFSET ? ROWS FETCH NEXT ${Math.max(1, Math.min(200, Number(size) || 20))} ROWS ONLY`,
+                        OFFSET ? ROWS FETCH NEXT ${clampRowLimit(size, { min: 1, max: 200, fallback: 20 })} ROWS ONLY`,
       getById: `SELECT c.id, c.hostname, c.command_type, c.params_json,
                        c.result_json, c.status, c.operator_id,
                        u.username AS operator_username,

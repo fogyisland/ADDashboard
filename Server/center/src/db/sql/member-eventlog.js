@@ -168,7 +168,7 @@ function queryEventsMssql({ hostname, channel, severity = null, sinceHours = 1, 
     sevClause += ' AND audit_failure = CAST(1 AS BIT)';
   }
   // R158.17.5 — MSSQL 不接受参数化 TOP. router 已经用 clampInt 夹紧.
-  const safeLimit = Math.max(1, Math.min(200000, Number.parseInt(limit, 10) || 200));
+  const safeLimit = clampRowLimit(limit, { min: 1, max: 200000, fallback: 200 });
   return {
     sql: `SELECT TOP ${safeLimit} collected_at, hostname, channel, severity,
                  event_id, record_id, message, ts, audit_failure
@@ -200,6 +200,11 @@ function purgeOlderThanMssql({ cutoffIso }) {
     sqlSummary: { sql: PURGE_OLDER_THAN_MSSQL_SUMMARY, params: [cutoffIso] }
   };
 }
+
+// R161.32 (2026-11-07) — limit 会被内联进 SQL 文本 ⇒ 上游漏个小数就
+//   内联出 `LIMIT 12.7` / `TOP 12.7` ⇒ 双方言语法错误 ⇒ 端点 500。
+//   ⇒ 一律过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 NaN/Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
 
 export const memberEventlog = {
   mysql: {

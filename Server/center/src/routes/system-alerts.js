@@ -19,6 +19,7 @@
 import { Router } from 'express';
 import { getConfig as getSystemConfig } from '../services/config.js';
 import { writeAudit } from '../services/audit.js';
+import { clampRowLimit } from '../utils/limit.js';
 
 const CONFIG_KEYS = [
   'system_alert_heartbeat_offline_minutes',
@@ -71,7 +72,7 @@ export function createSystemAlertsRouter({ db, requireAuth, requirePerm, logger 
           ? req.query.state : 'firing';
         const kind = (typeof req.query.kind === 'string' && req.query.kind.trim()) ? req.query.kind.trim() : null;
         const scopeRef = (typeof req.query.scope_ref === 'string' && req.query.scope_ref.trim()) ? req.query.scope_ref.trim() : null;
-        const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+        const limit = clampRowLimit(req.query.limit, { min: 1, max: 500, fallback: 100 });
         const fn = db.sql.systemAlerts[state === 'firing' ? 'listFiring' : 'listRecent'];
         const sqlText = typeof fn === 'function' ? fn({ kind, scope_ref: scopeRef, limit }) : fn;
         const params = [];
@@ -93,7 +94,7 @@ export function createSystemAlertsRouter({ db, requireAuth, requirePerm, logger 
     async listRecent(req, res) {
       try {
         const kind = (typeof req.query.kind === 'string' && req.query.kind.trim()) ? req.query.kind.trim() : null;
-        const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+        const limit = clampRowLimit(req.query.limit, { min: 1, max: 500, fallback: 100 });
         const fn = db.sql.systemAlerts.listRecent;
         const sqlText = typeof fn === 'function' ? fn({ kind, limit }) : fn;
         const params = typeof fn === 'function' ? [] : (kind ? [kind] : []);
@@ -273,7 +274,7 @@ export function createSystemAlertsRouter({ db, requireAuth, requirePerm, logger 
     async listSuppressions(req, res) {
       const params = validateKindScopeParams(req, res);
       if (!params) return;
-      const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 500));
+      const limit = clampRowLimit(req.query.limit, { min: 1, max: 500, fallback: 500 });
       try {
         const fn = db.sql.systemAlertSuppressions.listActiveByKind;
         const sqlText = typeof fn === 'function' ? fn({ kind: params.kind, limit }) : fn;

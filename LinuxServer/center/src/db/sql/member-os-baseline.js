@@ -388,7 +388,7 @@ const QUERY_BY_HOSTNAME_MYSQL = `SELECT s.collected_at,
   LIMIT ?`;
 
 function queryByHostname({ hostname, hours = 24, limit = 500 }) {
-  const safeLimit = Math.max(1, Math.min(20000, Number.parseInt(limit, 10) || 500));
+  const safeLimit = clampRowLimit(limit, { min: 1, max: 20000, fallback: 500 });
   return {
     sql: QUERY_BY_HOSTNAME_MYSQL,
     params: [hostname, hours, safeLimit]
@@ -397,7 +397,7 @@ function queryByHostname({ hostname, hours = 24, limit = 500 }) {
 
 function queryByHostnameMssql({ hostname, hours = 24, limit = 500 }) {
   // R158.17.5 — MSSQL 不接受参数化 TOP. 路由用 clampInt 夹紧.
-  const safeLimit = Math.max(1, Math.min(20000, Number.parseInt(limit, 10) || 500));
+  const safeLimit = clampRowLimit(limit, { min: 1, max: 20000, fallback: 500 });
   return {
     sql: `SELECT TOP ${safeLimit} s.collected_at,
                  s.cpu_pct, s.memory_pct, s.c_used_pct, s.disk_free_bytes, s.services_count,
@@ -554,6 +554,11 @@ function purgeLatestByStaleServerMssql({ cutoffIso }) {
     params: [cutoffIso]
   };
 }
+
+// R161.32 (2026-11-07) — limit 会被内联进 SQL 文本 ⇒ 上游漏个小数就
+//   内联出 `LIMIT 12.7` / `TOP 12.7` ⇒ 双方言语法错误 ⇒ 端点 500。
+//   ⇒ 一律过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 NaN/Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
 
 export const memberOsBaseline = {
   mysql: {

@@ -4,6 +4,11 @@
 // attempt_count/next_attempt_at/last_error/sent_at), 但 R158.68 简化为只接
 // 单一 kind (内置告警), 不再有 kind 列, FK 用 alert_id 而不是 alert_event_id.
 
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mssql `TOP n`) ⇒
+//   上游漏下小数就内联出 `TOP 12.7` ⇒ 语法错误 ⇒ 端点 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const systemAlertOutbox = {
   mysql: {
     // enqueue: 1 个待发邮件
@@ -79,7 +84,7 @@ export const systemAlertOutbox = {
     // mssql TOP n interpolation
     // R158.100-fix (2026-10-14) — 加 attempt_count < max_attempts 过滤 (见 mysql 同注释).
     listPending: (limit) =>
-      `SELECT TOP ${Number(limit) || 25} id, alert_id, to_addrs, cc_addrs, subject, body_text, body_html,
+      `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 25 })} id, alert_id, to_addrs, cc_addrs, subject, body_text, body_html,
               attempt_count, max_attempts, next_attempt_at, last_error, sent_at
        FROM system_alert_outbox
        WHERE sent_at IS NULL

@@ -58,7 +58,7 @@ function buildListSql({ dialect, agentId, packageName, limit }) {
   // LIMIT is integer-only — we coerce at the JS layer because the mssql
   // driver does not support `LIMIT ?`. The mysql driver accepts both
   // `LIMIT <int>` and `LIMIT ?`.
-  const safeLimit = Math.max(1, Math.min(parseInt(limit, 10) || 20, 1000));
+  const safeLimit = clampRowLimit(limit, { min: 1, max: 1000, fallback: 20 });
   const where = [];
   const params = [];
   if (agentId) { where.push('agent_id = ?'); params.push(agentId); }
@@ -77,6 +77,11 @@ function buildListSql({ dialect, agentId, packageName, limit }) {
   const sql = `SELECT * FROM package_runs ${whereClause} ORDER BY started_at DESC LIMIT ${safeLimit}`;
   return { sql, params };
 }
+
+// R161.32 (2026-11-07) — limit 会被内联进 SQL 文本 ⇒ 上游漏个小数就
+//   内联出 `LIMIT 12.7` / `TOP 12.7` ⇒ 双方言语法错误 ⇒ 端点 500。
+//   ⇒ 一律过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 NaN/Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
 
 export const packageRunsSql = {
   insert: { mysql: INSERT_MYSQL, mssql: INSERT_MSSQL }
@@ -198,7 +203,7 @@ export const packageRuns = {
   // 范式. 老 caller 路径 (无 since 入参) 0 破: since=null 时不加 AND 子句 +
   // 不 bind, 走原行为.
   async recentByName(db, { packageName, limit = 10, since = null }) {
-    const safeLimit = Math.max(1, Math.min(1000, parseInt(limit, 10) || 10));
+    const safeLimit = clampRowLimit(limit, { min: 1, max: 1000, fallback: 10 });
     // R158.87.6.1 (2026-10-12) — /packages-runs 过滤 member-server agent (预防性 ship).
     //   跟 buildListSql + summary24hByName 同 precedent (R158.86.5.1 NOT IN IS NOT NULL guard).
     const sinceClause = since != null ? ' AND started_at >= ?' : '';

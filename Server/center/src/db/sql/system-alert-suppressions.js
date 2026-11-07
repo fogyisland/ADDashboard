@@ -10,6 +10,12 @@
 //
 //   跟 R158.100-suppression 跟历史 14 ship 0 触碰: 0 改 system_alerts / 0 改 4 个其他
 //   detector / 0 改 email.js / 0 改 outbox 表.
+//
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mysql `LIMIT n` /
+//   mssql `TOP n`) ⇒ 上游漏下小数就内联出 `LIMIT 12.7` ⇒ 双方言语法错误 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const systemAlertSuppressions = {
   mysql: {
     // upsert: 同 (kind, scope_ref) 已存在 → 更新 reason + set_by + expires_at; 操作员多次 PUT
@@ -35,7 +41,7 @@ export const systemAlertSuppressions = {
     // listActive: GET /suppressions 给 UI 列已暂停清单.
     //   0-arg repr: kind 是必填 query param, 这一轮 UI 端只传 'replication_failed'.
     listActiveByKind: ({ kind, limit = 500 } = {}) => {
-      const lim = Math.min(500, Math.max(1, Number(limit) || 500));
+      const lim = clampRowLimit(limit, { min: 1, max: 500, fallback: 500 });
       let sql = `SELECT id, kind, scope_ref, reason, set_by, set_at, expires_at
                  FROM system_alert_suppressions
                  WHERE expires_at IS NULL OR expires_at > UTC_TIMESTAMP(3)`;
@@ -69,7 +75,7 @@ export const systemAlertSuppressions = {
     remove: `DELETE FROM system_alert_suppressions WHERE kind = ? AND scope_ref = ?`,
 
     listActiveByKind: ({ kind, limit = 500 } = {}) => {
-      const lim = Math.min(500, Math.max(1, Number(limit) || 500));
+      const lim = clampRowLimit(limit, { min: 1, max: 500, fallback: 500 });
       let sql = `SELECT TOP ${lim} id, kind, scope_ref, reason, set_by, set_at, expires_at
                  FROM system_alert_suppressions
                  WHERE expires_at IS NULL OR expires_at > SYSUTCDATETIME()`;

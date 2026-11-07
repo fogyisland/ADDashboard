@@ -64,8 +64,15 @@ function capPayload(payload) {
 // which re-throws on failure so the surrounding operation does not commit
 // without an audit row. See dashboard-code-review-2026-09-30.md S6.
 export async function writeAudit({ userId, action, target, payload }, logger, tx = null) {
-  const conn = tx ?? getDb();
+  // ★ R161.32 (2026-11-07) — `getDb()` 原来在 try **外面** (上一行),
+  //   而 getDb() 会 throw 'db not initialized; call db.init(config) first'
+  //   ⇒ writeAudit **会 reject** ⇒ 违反上面 I2 的承诺 ("writeAudit always
+  //   resolves") ⇒ 任何 `await writeAudit(...)` 且不在 try 里的调用方,
+  //   一次 getDb 失败就能把中心进程带走 (unhandledRejection ⇒ process.exit(1))。
+  //   ⇒ 现在把 getDb() 挪进 try: 非 tx 分支吞掉 (兑现 "always resolves"),
+  //     tx 分支照样 re-throw (事务照样回滚, 审计原子性不变)。
   try {
+    const conn = tx ?? getDb();
     await conn.execute(conn.sql.audit.write, [
       userId ?? null,
       action,

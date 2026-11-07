@@ -74,12 +74,26 @@ export function reportCenterRouter({ requireAuth, requirePerm, db, logger }) {
   function gateFor(...flagKeys) {
     const required = [MASTER_FLAG, ...flagKeys];
     return async function gate(req, res, next) {
-      for (const key of required) {
-        if (!(await readFlag(key))) {
-          logger?.warn?.({ method: req.method, path: req.path, flag: key },
-            'report-center request blocked: feature flag off');
-          return res.status(503).json({ error: 'disabled_by_feature_flag', flag: key });
+      // ★ R161.32 (2026-11-07) — 加 try/catch: Express 4 **不接** async
+      //   中间件的 rejection ⇒ 一个逃逸的 rejection = unhandledRejection
+      //   ⇒ 进程死; 且请求会**永久挂起** (next 从来没被调用)。
+      //   ⇒ 显式 catch ⇒ 500 + 明确结局, 进程活着。
+      //   (readFeatureFlag 当前是 fail-open, 内部自己吞异常 ⇒ 不会 reject;
+      //    这里是**防御性**的, 防它将来改成别的实现。)
+      try {
+        for (const key of required) {
+          if (!(await readFlag(key))) {
+            logger?.warn?.({ method: req.method, path: req.path, flag: key },
+              'report-center request blocked: feature flag off');
+            return res.status(503).json({ error: 'disabled_by_feature_flag', flag: key });
+          }
         }
+      } catch (e) {
+        logger?.error?.(
+          { err: e?.message, method: req.method, path: req.path },
+          'report-center feature flag read failed'
+        );
+        return res.status(500).json({ error: 'feature_flag_read_failed' });
       }
       return next();
     };
@@ -89,12 +103,22 @@ export function reportCenterRouter({ requireAuth, requirePerm, db, logger }) {
   //   都没有 1:1 归属。所以语义是「总闸开 且 至少一把子闸开」, 而不是绑死某一把:
   //   绑死的话, 关掉任意一把子闸会把另外两个页面的下拉框一起打空。
   const dcOptionsGate = async (req, res, next) => {
-    if (!(await readFlag(MASTER_FLAG))) {
-      return res.status(503).json({ error: 'disabled_by_feature_flag', flag: MASTER_FLAG });
-    }
-    const any = await Promise.all(Object.values(SUB_FLAGS).map(readFlag));
-    if (!any.some(Boolean)) {
-      return res.status(503).json({ error: 'disabled_by_feature_flag', flag: MASTER_FLAG });
+    // ★ R161.32 (2026-11-07) — 同 gateFor: async 中间件的 rejection 不会被
+    //   Express 4 接住 ⇒ 请求永久挂起 + 进程死。⇒ 显式 catch。
+    try {
+      if (!(await readFlag(MASTER_FLAG))) {
+        return res.status(503).json({ error: 'disabled_by_feature_flag', flag: MASTER_FLAG });
+      }
+      const any = await Promise.all(Object.values(SUB_FLAGS).map(readFlag));
+      if (!any.some(Boolean)) {
+        return res.status(503).json({ error: 'disabled_by_feature_flag', flag: MASTER_FLAG });
+      }
+    } catch (e) {
+      logger?.error?.(
+        { err: e?.message, method: req.method, path: req.path },
+        'report-center dc-options feature flag read failed'
+      );
+      return res.status(500).json({ error: 'feature_flag_read_failed' });
     }
     return next();
   };

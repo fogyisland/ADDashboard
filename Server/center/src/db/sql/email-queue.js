@@ -11,6 +11,13 @@
 //   - 已失败 (att>=5): R158.100-fix listPending 跳过, 永远不会再发,
 //     操作员可 [放弃] 硬删 (双层防御 markExhausted 已就位, 删后不复活)
 
+//     next_attempt_at=now, 不重置 attempt_count, 不重置 last_error)
+
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mysql `LIMIT n` /
+//   mssql `TOP (n)`) ⇒ 上游漏下小数就内联出 `LIMIT 12.7` ⇒ 双方言语法错误 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const emailQueue = {
   mysql: {
     // UNION ALL 跨 2 表 (跟 email-history.listSent 同 precedent, shape 平行).
@@ -40,7 +47,7 @@ export const emailQueue = {
         WHERE sent_at IS NULL
       ) u
       ORDER BY next_attempt_at ASC, id ASC
-      LIMIT ${Number(limit) || 500}`,
+      LIMIT ${clampRowLimit(limit, { min: 1, max: 500, fallback: 500 })}`,
 
     // R158.100.B (2026-10-14) — retry 单行 alert.
     //   [id] 单参.
@@ -86,7 +93,7 @@ export const emailQueue = {
         WHERE sent_at IS NULL
         ORDER BY next_attempt_at ASC, id ASC
       )
-      SELECT TOP (${Number(limit) || 500}) * FROM (
+      SELECT TOP (${clampRowLimit(limit, { min: 1, max: 500, fallback: 500 })}) * FROM (
         SELECT * FROM a
         UNION ALL
         SELECT * FROM r

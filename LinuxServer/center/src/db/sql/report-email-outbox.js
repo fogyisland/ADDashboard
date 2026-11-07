@@ -8,6 +8,11 @@
 // services/reports.js 改点: db.sql.alertOutbox.enqueue → db.sql.reportEmailOutbox.enqueue
 //   params: [null/report_id, to, cc, subject, text, html, nextAttempt, 'daily'/'weekly']
 
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mssql `TOP n`) ⇒
+//   上游漏下小数就内联出 `TOP 12.7` ⇒ 语法错误 ⇒ 端点 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const reportEmailOutbox = {
   mysql: {
     enqueue: `INSERT INTO report_email_outbox
@@ -54,7 +59,7 @@ export const reportEmailOutbox = {
 
     // R158.100-fix (2026-10-14) — 加 attempt_count < max_attempts 过滤 (见 mysql 同注释).
     listPending: (limit) =>
-      `SELECT TOP ${Number(limit) || 25} id, report_id, to_addrs, cc_addrs, subject, body_text, body_html,
+      `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 25 })} id, report_id, to_addrs, cc_addrs, subject, body_text, body_html,
               attempt_count, max_attempts, next_attempt_at, last_error, sent_at, kind
        FROM report_email_outbox
        WHERE sent_at IS NULL

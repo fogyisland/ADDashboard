@@ -4,6 +4,11 @@
 //   投递 loop 走 email.js createEmailDeliveryLoop listPending UNION 3 表
 //   (system_alert + report + ad_notify), capacity 1/3 each.
 
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mssql `TOP n`) ⇒
+//   上游漏下小数就内联出 `TOP 12.7` ⇒ 语法错误 ⇒ 端点 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 export const adNotifyOutbox = {
   mysql: {
     // enqueue: 1 个待发邮件
@@ -54,7 +59,7 @@ export const adNotifyOutbox = {
 
     // mssql TOP n interpolation
     listPending: (limit) =>
-      `SELECT TOP ${Number(limit) || 25} id, ad_command_id, to_addrs, cc_addrs, subject, body_text, body_html,
+      `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 500, fallback: 25 })} id, ad_command_id, to_addrs, cc_addrs, subject, body_text, body_html,
               attempt_count, max_attempts, next_attempt_at, last_error, sent_at
        FROM ad_notify_outbox
        WHERE sent_at IS NULL

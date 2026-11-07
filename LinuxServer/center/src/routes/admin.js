@@ -2554,20 +2554,34 @@ export function adminRouter({ config, logger, db }) {
       ? Number(params.timeoutSec)
       : null;
     const auditParams = params ? redactPasswordsForAudit(params) : null;
-    await writeAudit({
-      userId: req.user?.sub ?? null,
-      action: 'ad_member_command_queued',
-      target: `host:${hostname}`,
-      payload: {
-        commandId: row.id,
-        hostname,
-        commandType: 'member_script',
-        timeoutSec,
-        scriptSummary,
-        params: auditParams
-      },
-      logger
-    });
+    // ★ R161.32 (2026-11-07) — 这行原来在**任何 try 之外** (admin.js 51 个
+    //   writeAudit 调用点里唯一一个)。而 writeAudit 的非 tx 分支会 reject:
+    //   audit.js:67 的 `const conn = tx ?? getDb();` 在 try **外面** ⇒
+    //   getDb() 抛 'db not initialized' ⇒ writeAudit reject。
+    //   ⇒ 逃逸的 rejection = unhandledRejection ⇒ server.js 的
+    //     `log.fatal + process.exit(1)` ⇒ **中心进程死** (NSSM 拉起,
+    //     期间整个看板 502)。
+    //   ⇒ 现在自己接住: 记日志 + **仍然返回 201** (命令已经入队了,
+    //     返回 5xx 会让操作员以为没下成功又点一次 ⇒ 重复执行)。
+    try {
+      await writeAudit({
+        userId: req.user?.sub ?? null,
+        action: 'ad_member_command_queued',
+        target: `host:${hostname}`,
+        payload: {
+          commandId: row.id,
+          hostname,
+          commandType: 'member_script',
+          timeoutSec,
+          scriptSummary,
+          params: auditParams
+        },
+        logger
+      });
+    } catch (e) {
+      logger.error({ err: e, hostname, commandId: row.id },
+        'member-commands audit write failed (command already queued; returning 201 anyway)');
+    }
     res.status(201).json({
       id: row.id,
       hostname: row.hostname,

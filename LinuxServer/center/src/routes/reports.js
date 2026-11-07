@@ -18,6 +18,7 @@
 
 import express from 'express';
 import { enqueueReport, listRecentReports, previewReport } from '../services/reports.js';
+import { clampRowLimit } from '../utils/limit.js';
 
 export function createReportsRouter({ db, requireAuth, requirePerm }) {
   const router = express.Router();
@@ -29,7 +30,7 @@ export function createReportsRouter({ db, requireAuth, requirePerm }) {
   // GET /api/admin/reports/history?kind=daily&limit=20
   router.get('/api/admin/reports/history', guard, async (req, res) => {
     const kind = (req.query.kind === 'daily' || req.query.kind === 'weekly') ? req.query.kind : null;
-    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 20));
+    const limit = clampRowLimit(req.query.limit, { min: 1, max: 200, fallback: 20 });
     try {
       const rows = await listRecentReports({ kind, limit });
       res.json({ rows, count: rows.length, kind, limit });

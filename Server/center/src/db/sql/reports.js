@@ -43,6 +43,11 @@ const finishMssql = `UPDATE daily_reports
 // 在投递完成 / 失败时回写 daily_reports.status. R158.61 ship 漏了 status
 // 回写, 导致 daily_reports 永远 'pending'. html_size 不动 (enqueue 已写),
 // outbox_id 不动. 3 参: status, last_error, id.
+// R161.32 (2026-11-07) — limit 值会被内联进 SQL 文本 (mysql `LIMIT n` /
+//   mssql `TOP n`) ⇒ 上游漏下小数就内联出 `LIMIT 12.7` ⇒ 双方言语法错误 500。
+//   ⇒ 一律先过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 Infinity)。
+import { clampRowLimit } from '../../utils/limit.js';
+
 const markStatusMysql = `UPDATE daily_reports
                          SET status = ?, last_error = ?
                          WHERE id = ?`;
@@ -57,9 +62,9 @@ const listRecentMysql = (limit) =>
    FROM daily_reports
    WHERE (? IS NULL OR kind = ?)
    ORDER BY generated_at DESC
-   LIMIT ${Number(limit) || 20}`;
+   LIMIT ${clampRowLimit(limit, { min: 1, max: 200, fallback: 20 })}`;
 const listRecentMssql = (limit) =>
-  `SELECT TOP ${Number(limit) || 20} id, kind, period_start, period_end, generated_at, to_addrs, cc_addrs,
+  `SELECT TOP ${clampRowLimit(limit, { min: 1, max: 200, fallback: 20 })} id, kind, period_start, period_end, generated_at, to_addrs, cc_addrs,
           subject, status, last_error, outbox_id, html_size
    FROM daily_reports
    WHERE (? IS NULL OR kind = CAST(? AS VARCHAR(16)))

@@ -48,6 +48,13 @@ export function clampRowLimit(limit, { min = 1, max = 1000, fallback = 100 } = {
   // NaN / Infinity ⇒ 兜底; 其余截断到整数 (12.7 → 12)
   const truncated = Number.isFinite(n) ? Math.trunc(n) : fallback;
   // 0 与既有写法一致 (0 || fallback) ⇒ 走兜底, 不是 min
+  //
+  // ⚠ R161.32 (2026-11-07) 复核后**保留**这个语义, 没有改:
+  //   截断成 0 的小数 (0.5 / 0.9) 因此也走兜底 (⇒ fallback)。
+  //   - 它是 R161.10 的**已测契约** (tests/license-request-placeholder-and-audit-tz.test.js
+  //     B2 明确断言 `clampRowLimit(0.9) === 100`), 改它属于超出本次修复范围;
+  //   - 它的后果只是"多取几行", **不是 500**, 与本族缺陷 (语法错误) 不同量级;
+  //   - 真正要防的是**小数原样透传** (12.7 → `LIMIT 12.7`), 那个已经修掉了。
   const v = truncated === 0 ? fallback : truncated;
   return Math.max(min, Math.min(max, v));
 }

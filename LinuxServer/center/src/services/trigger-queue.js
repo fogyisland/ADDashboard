@@ -36,6 +36,10 @@
 // src/db/sql.js:150/:1493).
 
 import { getDb } from '../db/index.js';
+// R161.32 (2026-11-07) — limit 会被内联进 SQL 文本 (mssql `TOP n` / mysql
+//   `LIMIT n`) ⇒ `parseInt` 遇到 undefined 会产出 NaN ⇒ 内联出 `TOP NaN`
+//   ⇒ 语法错误。⇒ 一律过 clampRowLimit (Math.trunc + Number.isFinite 挡 NaN/Infinity)。
+import { clampRowLimit } from '../utils/limit.js';
 
 const CONSUMED_MARKER = 'consumed-trigger';
 const DEFAULT_LIMIT = 5;
@@ -97,7 +101,7 @@ export function buildClaimSql({ dialect, agentId, limit }) {
   if (dialect === 'mssql') {
     return {
       sql: `
-        SELECT TOP ${parseInt(limit, 10)} t.package_name, t.started_at, t.script_version, t.trigger_once
+        SELECT TOP ${clampRowLimit(limit, { min: 1, max: 50, fallback: 5 })} t.package_name, t.started_at, t.script_version, t.trigger_once
         FROM package_runs t
         WHERE t.status = 'pending_trigger'
           AND t.agent_id = '__cron__'
@@ -157,7 +161,7 @@ export function buildClaimSql({ dialect, agentId, limit }) {
             AND c.status IN ('completed', 'failed', 'consumed', '${CONSUMED_MARKER}')
         )
       ORDER BY t.started_at ASC
-      LIMIT ${parseInt(limit, 10)}
+      LIMIT ${clampRowLimit(limit, { min: 1, max: 50, fallback: 5 })}
     `.replace(/\s+/g, ' ').trim(),
     // 占位符顺序跟 mssql 段 1:1 平行 (LOCATE → ad_dcs → ad_member_servers →
     // dedup), 同样 4 个 agentId。理由见 mssql 段 params 注释。

@@ -24,6 +24,11 @@
 // disabled) are explicit.
 
 import express from 'express';
+// R161.32 (2026-11-07) — limit 会被内联进 SQL 文本 ⇒ 上游漏个小数就
+//   内联出 `LIMIT 12.7` / `TOP 12.7` ⇒ 双方言语法错误 ⇒ 端点 500。
+//   ⇒ 一律过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 NaN/Infinity)。
+import { clampRowLimit } from '../utils/limit.js';
+
 import { packageScripts } from '../db/sql/package-scripts.js';
 import { packagePolicies } from '../db/sql/package-policies.js';
 import { packageRuns } from '../db/sql/package-runs.js';
@@ -178,7 +183,16 @@ function joinSelect({ limit, agentType } = {}) {
   // limit=0 → explicit no-cap (legacy / opt-in via agent query).
   // limit not provided → default cap of 200 (P3-1's new default).
   // limit > 0 → that value.
-  const cap = (typeof limit === 'number' && limit > 0) ? limit : 200;
+  //
+  // R161.32 (2026-11-07) — cap 会被**内联进 SQL 文本** (mssql `TOP n` /
+  //   mysql `LIMIT n`) ⇒ 上游漏下一个小数 (12.7) 就内联出 `TOP 12.7`
+  //   ⇒ 双方言语法错误 ⇒ 端点 500。
+  //   ⇒ 过 clampRowLimit (Math.trunc 截小数 + Number.isFinite 挡 NaN/Infinity)。
+  //   ⚠ limit===0 的"无上限"语义必须保留 (下面单独分支处理), 不能被
+  //     clampRowLimit 的 fallback 改掉 —— 那会悄悄把 unlimited 变成 200。
+  const cap = (typeof limit === 'number' && limit > 0)
+    ? clampRowLimit(limit, { min: 1, max: 1000, fallback: 200 })
+    : 200;
   // R158.86.5 (2026-10-12) — scope filter 拆细. agentType='ad' or
   // 'non-ad' → only 'global' + 'agent_type:<type>'. agentType omitted
   // → legacy 全返 (兼容老 agent 不传 query).
