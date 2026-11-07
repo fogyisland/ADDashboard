@@ -2142,7 +2142,25 @@ export function adminRouter({ config, logger, db }) {
     // _succeeded / _failed rows are emitted by the agent routes).
     // Payload shape: redact password fields per spec §3.4 ruling #8.
     // password-bearing params become { hasPassword: true, passwordLength }.
-    await _auditAdCommand(req, row, commandType, params, logger);
+    //
+    // R161.31 (2026-11-07) — 审计写**不能**让整个进程死掉。
+    //   ★ 为什么这一行需要单独的 try:
+    //     server.js 的 process.on('unhandledRejection') 在非 init 模式下是
+    //     `log.fatal(...) + process.exit(1)` ⇒ 一次逃逸的 rejection = 中心进程
+    //     直接死 (NSSM 会拉起来, 但期间整个看板 502)。
+    //   ★ 当前 writeAudit (非 tx) 自己吞异常, 所以**理论上**不会 reject;
+    //     但这个"安全"是**借来的** —— 只要有人把 writeAudit 改成 fail-close
+    //     (R161.x 已经在做这类收紧), 或者 _auditAdCommand 内部新增一个会
+    //     抛的 await, 这个请求就变成**进程杀手**。
+    //   ⇒ 显式包一层: 审计写失败 ⇒ 记日志 + 继续返回 201。
+    //     命令**已经入队**了 (row 已写), 审计写失败不该把操作员变成"以为没
+    //     下成功又点一次" ⇒ 仍然返回 201, 但日志里留痕。
+    try {
+      await _auditAdCommand(req, row, commandType, params, logger);
+    } catch (e) {
+      logger.error({ err: e, targetDc, commandType, commandId: row?.id },
+        'ad-commands audit write failed (command already queued; returning 201 anyway)');
+    }
     res.status(201).json({
       id: row.id,
       taskId: row.task_id,   // R158.56 (2026-10-08) — 让前端在 queue 后立刻拿到 task_id
@@ -2310,7 +2328,15 @@ export function adminRouter({ config, logger, db }) {
       logger.error({ err: e, targetDc }, 'ad-account/quickfix queue failed');
       return res.status(500).json({ error: '内部错误' });
     }
-    await _auditAdCommand(req, row, 'ad_account_quickfix', params, logger);
+    // R161.31 (2026-11-07) — 同 POST /api/admin/ad-commands: 审计写失败
+    //   不得让 rejection 逃到 process.on('unhandledRejection') ⇒ 进程死。
+    //   命令已入队 ⇒ 仍返回 201, 但日志留痕。
+    try {
+      await _auditAdCommand(req, row, 'ad_account_quickfix', params, logger);
+    } catch (e) {
+      logger.error({ err: e, targetDc, commandId: row?.id },
+        'ad-account/quickfix audit write failed (command already queued; returning 201 anyway)');
+    }
     res.status(201).json({
       commandId: row.id,
       taskId: row.task_id,    // R158.56 — quickfix endpoint 同步回传 task_id
@@ -4321,6 +4347,23 @@ async function _checkDcOnline(targetDc, force) {
 // single endpoint and the batch endpoint emit the same shape per queued
 // command — operator-visible actions only, passwords REDACTED in the
 // payload per spec §3.4 ruling #8.
+// R161.31 (2026-11-07) — 审计写**三���防御**。
+//
+//   ★ 为什么这里必须自己吞异常:
+//     server.js 的 process.on('unhandledRejection') 在非 init 模式下是
+//     `log.fatal(...) + process.exit(1)` ⇒ 一次逃逸的 rejection = 中心进程死
+//     (NSSM 会拉起来, 但期间整个看板 502)。
+//
+//   ★ 三层防御 (从外到内):
+//     L1 调用点: admin.js 的 3 处 `await _auditAdCommand(...)` 各自包了 try;
+//     L2 本函数: 自己 catch 住 writeAudit 的任何异常 (不论将来 writeAudit
+//                改成 fail-close 还是不是);
+//     L3 writeAudit: 非 tx 分支自己吞 (只 warn 不 re-throw)。
+//     ⇒ 任何一层单独失效都不会让进程死。
+//
+//   ★ 为什么审计写失败**不**让请求失败:
+//     命令**已经入队** (row 已写进 DB)。审计写失败时返回 5xx 会让操作员
+//     以为"没下成功"又点一次 ⇒ 重复下发。⇒ 记日志 + 继续返回 201。
 async function _auditAdCommand(req, row, commandType, params, logger) {
   const auditAction = commandTypeToAuditAction(commandType);
   const auditPayload = {
@@ -4333,15 +4376,22 @@ async function _auditAdCommand(req, row, commandType, params, logger) {
     commandType,
     paramsSummary: redactPasswordsForAudit(params)
   };
-  await writeAudit({
-    userId: req.user?.sub ?? null,
-    action: auditAction,
-    target: typeof params?.sam === 'string' ? params.sam
-      : typeof params?.name === 'string' ? params.name
-      : `dc:${row.target_dc}`,
-    payload: auditPayload,
-    logger
-  });
+  try {
+    await writeAudit({
+      userId: req.user?.sub ?? null,
+      action: auditAction,
+      target: typeof params?.sam === 'string' ? params.sam
+        : typeof params?.name === 'string' ? params.name
+        : `dc:${row.target_dc}`,
+      payload: auditPayload,
+      logger
+    });
+  } catch (e) {
+    // L2 兜底: 审计写失败**绝不**向上抛 (抛了就是进程杀手)。
+    // 日志里带上 commandId 便于操作员事后人工补审计。
+    logger?.error?.({ err: e, action: auditAction, target: row?.target_dc, commandId: row?.id },
+      'ad-command audit write failed (best-effort; command already queued)');
+  }
 }
 
 function commandTypeToAuditAction(commandType) {
