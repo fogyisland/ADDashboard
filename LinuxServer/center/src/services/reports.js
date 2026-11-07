@@ -29,6 +29,15 @@
 
 import { getDb } from '../db/index.js';
 import { getConfig as getSystemConfig } from './config.js';
+// R161.31 (2026-11-07) — 显示时区真源 (R161.11 时区契约第 3 条)。
+//   邮件正文/标题里的时间戳必须按**操作员选的时区**渲染, 且偏移含 DST。
+import {
+  DISPLAY_TIMEZONE_KEY,
+  DEFAULT_DISPLAY_TIMEZONE,
+  normalizeDisplayTimeZone,
+  offsetMinutesFor,
+  formatOffsetMinutes
+} from './timezone.js';
 
 const REPORT_KINDS = new Set(['daily', 'weekly']);
 
@@ -38,16 +47,35 @@ function getWindowHours(kind) {
   throw new Error(`unknown report kind: ${kind}`);
 }
 
-function fmtTsUtcCst(d) {
-  if (!d) return '—';
+/**
+ * 把一个 UTC 时刻渲染成**显示时区**的墙上时间 (邮件正文用)。
+ *
+ * R161.31 (2026-11-07) — 去掉写死的 `+ 8 * 3600 * 1000` (R161.11 时区契约
+ *   的第 3 条: 不许写死固定偏移)。改动原因与做法:
+ *   - 旧实现把 **CST** 写死了 ⇒ 操作员在「系统设置 → 时区」里选
+ *     Europe/Berlin, 邮件里**还是** CST 时间。
+ *   - 旧实现也**不含 DST** ⇒ 任何有夏令时的时区都算不对。
+ *   - 旧输出末尾的字面量 "CST" 也是写死的时区标签。
+ *   ⇒ 现在偏移由 IANA 时区名在**被渲染的那个时刻**算出来 (含 DST),
+ *     标签也跟着变成 "UTC+08:00" 这种与偏移一致的形态。
+ *
+ * ★ 为什么偏移逐个时间戳算 (而不是整篇报告算一次):
+ *   DST 时区在报告窗口内可能跨过切换点 ⇒ 前半段 UTC+1、后半段 UTC+2
+ *   ⇒ 用一个常数偏移会让同一篇报告内部自相矛盾。
+ *
+ * @param {Date|string|number|null|undefined} d UTC 时刻
+ * @param {string} timeZone IANA 时区名 (非法 ⇒ 回落 UTC)
+ * @returns {string} 'YYYY-MM-DD HH:mm:ss UTC+08:00'
+ */
+function fmtTsUtcCst(d, timeZone) {
   const x = (d instanceof Date) ? d : new Date(d);
-  // Display as CST (UTC+8) for operator-friendly emails. 中心 stores UTC;
-  // email recipients read in their local timezone (which is CST for this
-  // operator's environment). YYYY-MM-DD HH:MM:SS CST.
-  const cstMs = x.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(cstMs);
+  if (!d || Number.isNaN(x.getTime())) return '—';
+  const offsetMinutes = offsetMinutesFor(timeZone, x);
+  const shifted = new Date(x.getTime() + offsetMinutes * 60000);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${cst.getUTCFullYear()}-${pad(cst.getUTCMonth() + 1)}-${pad(cst.getUTCDate())} ${pad(cst.getUTCHours())}:${pad(cst.getUTCMinutes())}:${pad(cst.getUTCSeconds())} CST`;
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} `
+    + `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())} `
+    + `UTC${formatOffsetMinutes(offsetMinutes)}`;
 }
 
 // R158.X.116 (2026-10-22) — 时长中文格式化, 给「离线 X 小时 Y 分」用.
@@ -625,10 +653,16 @@ async function fetchMcpSection(db, dialect, periodStart, periodEnd) {
 // R158.64 (2026-10-10) — 邮件化重写. 三段结构: header (greeting + KPI 摘
 // 要) + 5 sections (greeting + summary 句 + table) + signature (closing +
 // run id + data source). inline CSS 保留 (Gmail/Outlook 兼容, R158.61 lesson).
-function renderHtml(kind, periodStart, periodEnd, sections) {
+function renderHtml(kind, periodStart, periodEnd, sections, timeZone) {
   const kindLabel = kind === 'daily' ? '日报' : '周报';
-  const periodLabel = `${fmtTsUtcCst(periodStart)} → ${fmtTsUtcCst(periodEnd)}`;
+  const periodLabel = `${fmtTsUtcCst(periodStart, timeZone)} → ${fmtTsUtcCst(periodEnd, timeZone)}`;
   const periodHours = Math.max(1, Math.round((new Date(periodEnd) - new Date(periodStart)) / 3600000));
+  // R161.31 — 表头里的时区标签。
+  //   旧实现写死 "(CST)" ⇒ 操作员换时区后表头还在说 CST, 跟正文的实际
+  //   渲染值对不上 (正文已经是新时区了, 表头还是 CST) ⇒ 误导。
+  //   ⇒ 表头显示**该时刻的真实偏移** (含 DST), 跟正文逐字一致。
+  //   示例: 'UTC+08:00' / 'UTC+02:00' (夏令时) / 'UTC-05:30'。
+  const tzLabel = `UTC${formatOffsetMinutes(offsetMinutesFor(timeZone, new Date(periodEnd)))}`;
   // 公共 cell 样式
   const td = 'border:1px solid #d0d7de;padding:5px 8px;font-size:12.5px;';
   const th = `${td}background:#eef3f8;text-align:left;font-weight:600;`;
@@ -683,7 +717,7 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
       // 表格
       if (userRows.length) {
         html += `<table style="width:100%;border-collapse:collapse;">`;
-        html += `<thead><tr><th style="${th}">登录名 (sam)</th><th style="${th}">显示名</th><th style="${thR}">${isFL ? '错误次数' : '锁定次数'}</th><th style="${thR}">涉及 DC</th><th style="${th}">最后${isFL ? '错误' : '锁定'}时间 (CST)</th></tr></thead><tbody>`;
+        html += `<thead><tr><th style="${th}">登录名 (sam)</th><th style="${th}">显示名</th><th style="${thR}">${isFL ? '错误次数' : '锁定次数'}</th><th style="${thR}">涉及 DC</th><th style="${th}">最后${isFL ? '错误' : '锁定'}时间 (${tzLabel})</th></tr></thead><tbody>`;
         for (const u of userRows) {
           const cnt = u[isFL ? 'errorCount' : 'lockoutCount'];
           const lastAt = u[isFL ? 'lastErrorAt' : 'lastLockoutAt'];
@@ -693,7 +727,7 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
           html += `<td style="${td}">${escHtml(u.displayName || '(无显示名)')}</td>`;
           html += `<td style="${tdR}${boldStyle}">${cnt.toLocaleString()}</td>`;
           html += `<td style="${tdR}">${u.dcCount}</td>`;
-          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(lastAt))}</td>`;
+          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(lastAt, timeZone))}</td>`;
           html += `</tr>`;
         }
         html += `</tbody></table>`;
@@ -712,7 +746,7 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
       if (s.bySite && s.bySite.length) {
         html += `<h3 style="margin:12px 0 4px;font-size:12.5px;color:#003366;">4.1 站点间复制矩阵</h3>`;
         html += `<table style="width:100%;border-collapse:collapse;">`;
-        html += `<thead><tr><th style="${th}">源站点</th><th style="${th}">目标站点</th><th style="${thR}">总链路</th><th style="${thR}">正常</th><th style="${thR}">失败</th><th style="${th}">最后探测 (CST)</th></tr></thead><tbody>`;
+        html += `<thead><tr><th style="${th}">源站点</th><th style="${th}">目标站点</th><th style="${thR}">总链路</th><th style="${thR}">正常</th><th style="${thR}">失败</th><th style="${th}">最后探测 (${tzLabel})</th></tr></thead><tbody>`;
         for (const m of s.bySite) {
           const failingCol = m.failingCount > 0 ? 'color:#c00;font-weight:600;' : 'color:#0a0;';
           html += `<tr>`;
@@ -721,7 +755,7 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
           html += `<td style="${tdR}">${m.linkCount}</td>`;
           html += `<td style="${tdR}color:#0a0;">${m.healthyCount}</td>`;
           html += `<td style="${tdR}${failingCol}">${m.failingCount}</td>`;
-          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(m.lastProbeAt))}</td>`;
+          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(m.lastProbeAt, timeZone))}</td>`;
           html += `</tr>`;
         }
         html += `</tbody></table>`;
@@ -730,15 +764,15 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
       if (s.topFailing && s.topFailing.length) {
         html += `<h3 style="margin:12px 0 4px;font-size:12.5px;color:#003366;">4.2 失败链路明细 (top 30)</h3>`;
         html += `<table style="width:100%;border-collapse:collapse;">`;
-        html += `<thead><tr><th style="${th}">源 DC</th><th style="${th}">目标 DC</th><th style="${th}">分区</th><th style="${thR}">状态码</th><th style="${th}">最后成功 (CST)</th><th style="${th}">最后尝试 (CST)</th></tr></thead><tbody>`;
+        html += `<thead><tr><th style="${th}">源 DC</th><th style="${th}">目标 DC</th><th style="${th}">分区</th><th style="${thR}">状态码</th><th style="${th}">最后成功 (${tzLabel})</th><th style="${th}">最后尝试 (${tzLabel})</th></tr></thead><tbody>`;
         for (const f of s.topFailing) {
           html += `<tr style="background:#fff5f5;">`;
           html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(f.sourceDc || '')}</td>`;
           html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(f.destDc || '')}</td>`;
           html += `<td style="${td}">${escHtml(f.namingContext || '')}</td>`;
           html += `<td style="${tdR}color:#c00;font-weight:600;">${f.statusCode}</td>`;
-          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(f.lastSuccessTime))}</td>`;
-          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(f.lastAttemptTime))}</td>`;
+          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(f.lastSuccessTime, timeZone))}</td>`;
+          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(f.lastAttemptTime, timeZone))}</td>`;
           html += `</tr>`;
         }
         html += `</tbody></table>`;
@@ -764,7 +798,7 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
           const siteHeadStyle = `margin:10px 0 4px;font-size:12.5px;color:#003366;background:#f0f4f8;padding:4px 8px;border-radius:3px;`;
           html += `<h3 style="${siteHeadStyle}">${escHtml(site.siteName)} <span style="font-weight:normal;color:#666;margin-left:6px;">${site.reachableDcs}/${site.totalDcs} 可达</span></h3>`;
           html += `<table style="width:100%;border-collapse:collapse;">`;
-          html += `<thead><tr><th style="${th}">DC 名称</th><th style="${thR}">用户</th><th style="${thR}">组</th><th style="${thR}">GPO</th><th style="${th}">状态</th><th style="${th}">最后心跳 (CST)</th></tr></thead><tbody>`;
+          html += `<thead><tr><th style="${th}">DC 名称</th><th style="${thR}">用户</th><th style="${thR}">组</th><th style="${thR}">GPO</th><th style="${th}">状态</th><th style="${th}">最后心跳 (${tzLabel})</th></tr></thead><tbody>`;
           for (const d of site.dcs) {
             const reachableStyle = d.reachable ? '' : 'background:#fff0f0;';
             // R158.X.116 — 离线时长直接标在状态列. 只显示「离线」的话, 收到
@@ -781,7 +815,7 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
             html += `<td style="${tdR}">${d.groupsCount.toLocaleString()}</td>`;
             html += `<td style="${tdR}">${d.gposCount.toLocaleString()}</td>`;
             html += `<td style="${td}">${statusMark}</td>`;
-            html += `<td style="${td}color:#666;">${d.neverBeaten ? '—' : escHtml(fmtTsUtcCst(d.lastHeartbeatAt))}</td>`;
+            html += `<td style="${td}color:#666;">${d.neverBeaten ? '—' : escHtml(fmtTsUtcCst(d.lastHeartbeatAt, timeZone))}</td>`;
             html += `</tr>`;
           }
           html += `</tbody></table>`;
@@ -795,13 +829,13 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
       html += `<section data-section="directory-sync">`;
       html += `<h2 style="margin:14px 0 6px;font-size:14.5px;color:#003366;border-left:3px solid #003366;padding-left:8px;">5. ${escHtml(s.title)}</h2>`;
       html += `<p style="margin:0 0 8px;color:#444;font-size:12.5px;line-height:1.7;">`;
-      html += `同步运行 <strong>${s.runs}</strong> 次, 成功 <strong style="color:#0a0;">${s.success}</strong>, 失败 <strong style="color:${s.failed > 0 ? '#c00' : '#0a0'};">${s.failed}</strong>, 最近一次结束 ${escHtml(fmtTsUtcCst(s.lastFinish))}.`;
+      html += `同步运行 <strong>${s.runs}</strong> 次, 成功 <strong style="color:#0a0;">${s.success}</strong>, 失败 <strong style="color:${s.failed > 0 ? '#c00' : '#0a0'};">${s.failed}</strong>, 最近一次结束 ${escHtml(fmtTsUtcCst(s.lastFinish, timeZone))}.`;
       html += `</p>`;
       if (s.lastRuns && s.lastRuns.length) {
         html += `<table style="width:100%;border-collapse:collapse;">`;
         html += `<thead><tr><th style="${th}">DC</th><th style="${th}">开始</th><th style="${th}">结束</th><th style="${th}">状态</th><th style="${th}">U/G/OU</th><th style="${th}">触发</th></tr></thead><tbody>`;
         for (const r of s.lastRuns) {
-          html += `<tr><td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(r.dc)}</td><td style="${td}color:#666;">${escHtml(fmtTsUtcCst(r.startedAt))}</td><td style="${td}color:#666;">${escHtml(fmtTsUtcCst(r.finishedAt))}</td><td style="${td}">${escHtml(r.status)}</td><td style="${tdR}">${r.userCount}/${r.groupCount}/${r.ouCount}</td><td style="${td}">${escHtml(r.triggeredBy || '')}</td></tr>`;
+          html += `<tr><td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(r.dc)}</td><td style="${td}color:#666;">${escHtml(fmtTsUtcCst(r.startedAt, timeZone))}</td><td style="${td}color:#666;">${escHtml(fmtTsUtcCst(r.finishedAt, timeZone))}</td><td style="${td}">${escHtml(r.status)}</td><td style="${tdR}">${r.userCount}/${r.groupCount}/${r.ouCount}</td><td style="${td}">${escHtml(r.triggeredBy || '')}</td></tr>`;
         }
         html += `</tbody></table>`;
       } else {
@@ -822,12 +856,12 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
       if (s.topCreated && s.topCreated.length) {
         html += `<h3 style="margin:12px 0 4px;font-size:12.5px;color:#003366;">6.1 当日新建账户 (top 50)</h3>`;
         html += `<table style="width:100%;border-collapse:collapse;">`;
-        html += `<thead><tr><th style="${th}">登录名 (sam)</th><th style="${th}">显示名</th><th style="${th}">创建时间 (CST)</th><th style="${th}">DC</th></tr></thead><tbody>`;
+        html += `<thead><tr><th style="${th}">登录名 (sam)</th><th style="${th}">显示名</th><th style="${th}">创建时间 (${tzLabel})</th><th style="${th}">DC</th></tr></thead><tbody>`;
         for (const u of s.topCreated) {
           html += `<tr>`;
           html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(u.sam)}</td>`;
           html += `<td style="${td}">${escHtml(u.displayName || '(无显示名)')}</td>`;
-          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(u.whenCreated))}</td>`;
+          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(u.whenCreated, timeZone))}</td>`;
           html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(u.dcName || '')}</td>`;
           html += `</tr>`;
         }
@@ -839,12 +873,12 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
       if (s.topDisabled && s.topDisabled.length) {
         html += `<h3 style="margin:12px 0 4px;font-size:12.5px;color:#003366;">6.2 当日禁用账户 (top 50)</h3>`;
         html += `<table style="width:100%;border-collapse:collapse;">`;
-        html += `<thead><tr><th style="${th}">登录名 (sam)</th><th style="${th}">显示名</th><th style="${th}">修改时间 (CST)</th><th style="${th}">DC</th></tr></thead><tbody>`;
+        html += `<thead><tr><th style="${th}">登录名 (sam)</th><th style="${th}">显示名</th><th style="${th}">修改时间 (${tzLabel})</th><th style="${th}">DC</th></tr></thead><tbody>`;
         for (const u of s.topDisabled) {
           html += `<tr style="background:#fff5f5;">`;
           html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(u.sam)}</td>`;
           html += `<td style="${td}">${escHtml(u.displayName || '(无显示名)')}</td>`;
-          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(u.whenModified))}</td>`;
+          html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(u.whenModified, timeZone))}</td>`;
           html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(u.dcName || '')}</td>`;
           html += `</tr>`;
         }
@@ -879,13 +913,13 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
         const evs = s.events || [];
         if (evs.length) {
           html += `<table style="width:100%;border-collapse:collapse;">`;
-          html += `<thead><tr><th style="${th}">主机</th><th style="${th}">离线开始 (CST)</th><th style="${th}">恢复时间 (CST)</th><th style="${thR}">离线时长</th><th style="${th}">状态</th></tr></thead><tbody>`;
+          html += `<thead><tr><th style="${th}">主机</th><th style="${th}">离线开始 (${tzLabel})</th><th style="${th}">恢复时间 (${tzLabel})</th><th style="${thR}">离线时长</th><th style="${th}">状态</th></tr></thead><tbody>`;
           for (const ev of evs) {
             const still = ev.stillOffline;
             html += `<tr${still ? ' style="background:#fff5f5;"' : ''}>`;
             html += `<td style="${td}font-family:Consolas,monospace;font-size:12px;">${escHtml(ev.host || '')}</td>`;
-            html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(ev.firedAt))}</td>`;
-            html += `<td style="${td}color:#666;">${still ? '<span style="color:#c00;font-weight:600;">未恢复</span>' : escHtml(fmtTsUtcCst(ev.recoveredAt))}</td>`;
+            html += `<td style="${td}color:#666;">${escHtml(fmtTsUtcCst(ev.firedAt, timeZone))}</td>`;
+            html += `<td style="${td}color:#666;">${still ? '<span style="color:#c00;font-weight:600;">未恢复</span>' : escHtml(fmtTsUtcCst(ev.recoveredAt, timeZone))}</td>`;
             const m = ev.minutes;
             const durTxt = m == null ? '—'
               : m < 60 ? `${m} 分钟`
@@ -953,16 +987,16 @@ function renderHtml(kind, periodStart, periodEnd, sections) {
   html += `<p style="margin:0;">— AD Dashboard 自动运维系统</p>`;
   // R158.X.99.report — 补齐数据源列表. 此前漏了 R158.72 加的 ad_account_change,
   //   本次一并补上新增 2 段的来源 (system_alerts / audit_logs).
-  html += `<p style="margin:4px 0 0;">生成时间: <strong>${escHtml(fmtTsUtcCst(now))}</strong> · 数据源: ad_failed_logon_events / ad_lockout_events / ad_dc_overview + ad_sites / ad_replication_status / ad_directory_sync_runs / ad_account_change / system_alerts / audit_logs</p>`;
+  html += `<p style="margin:4px 0 0;">生成时间: <strong>${escHtml(fmtTsUtcCst(now, timeZone))}</strong> · 数据源: ad_failed_logon_events / ad_lockout_events / ad_dc_overview + ad_sites / ad_replication_status / ad_directory_sync_runs / ad_account_change / system_alerts / audit_logs</p>`;
   html += `<p style="margin:4px 0 0;color:#999;">本邮件由 createEmailDeliveryLoop 投递 (R158.61+1). 收件人如有疑问请联系运维.</p>`;
   html += `</div>`;
   html += `</div>`;
   return html;
 }
 
-function renderText(kind, periodStart, periodEnd, sections) {
+function renderText(kind, periodStart, periodEnd, sections, timeZone) {
   const kindLabel = kind === 'daily' ? '日报' : '周报';
-  const periodLabel = `${fmtTsUtcCst(periodStart)} → ${fmtTsUtcCst(periodEnd)}`;
+  const periodLabel = `${fmtTsUtcCst(periodStart, timeZone)} → ${fmtTsUtcCst(periodEnd, timeZone)}`;
   const periodHours = Math.max(1, Math.round((new Date(periodEnd) - new Date(periodStart)) / 3600000));
   const lines = [`AD Dashboard ${kindLabel}`, `数据窗口: ${periodLabel} (${periodHours} 小时)`, ''];
   for (const s of sections) {
@@ -974,20 +1008,20 @@ function renderText(kind, periodStart, periodEnd, sections) {
       const last = isFL ? 'lastErrorAt' : 'lastLockoutAt';
       lines.push(`总计 ${s.total} 次, ${s.uniqueUsers} 账户, ${s.affectedDcs} DC`);
       for (const u of (s.topByUser || []).slice(0, 50)) {
-        lines.push(`  - ${u.sam} (${u.displayName || '(无显示名)'}): ${u[cnt]} 次, 涉及 ${u.dcCount} DC, 最后${verb} ${fmtTsUtcCst(u[last])}`);
+        lines.push(`  - ${u.sam} (${u.displayName || '(无显示名)'}): ${u[cnt]} 次, 涉及 ${u.dcCount} DC, 最后${verb} ${fmtTsUtcCst(u[last], timeZone)}`);
       }
     } else if (s.title === 'AD 复制状态') {
       lines.push(`链路 ${s.totalLinks} / 健康 ${s.healthy} / 失败 ${s.failing} / 持续失败 ${s.staleFailing}`);
       if (s.bySite && s.bySite.length) {
         lines.push('  -- 4.1 站点矩阵 --');
         for (const m of s.bySite) {
-          lines.push(`  - ${m.sourceSite} → ${m.destSite}: 总 ${m.linkCount} 健康 ${m.healthyCount} 失败 ${m.failingCount} (最后探测 ${fmtTsUtcCst(m.lastProbeAt)})`);
+          lines.push(`  - ${m.sourceSite} → ${m.destSite}: 总 ${m.linkCount} 健康 ${m.healthyCount} 失败 ${m.failingCount} (最后探测 ${fmtTsUtcCst(m.lastProbeAt, timeZone)})`);
         }
       }
       if (s.topFailing && s.topFailing.length) {
         lines.push('  -- 4.2 失败链路明细 --');
         for (const f of s.topFailing) {
-          lines.push(`  - ${f.sourceDc} → ${f.destDc} (${f.namingContext}) status=${f.statusCode} 最后成功 ${fmtTsUtcCst(f.lastSuccessTime)} 最后尝试 ${fmtTsUtcCst(f.lastAttemptTime)}`);
+          lines.push(`  - ${f.sourceDc} → ${f.destDc} (${f.namingContext}) status=${f.statusCode} 最后成功 ${fmtTsUtcCst(f.lastSuccessTime, timeZone)} 最后尝试 ${fmtTsUtcCst(f.lastAttemptTime, timeZone)}`);
         }
       }
     } else if (s.title === 'DC 健康') {
@@ -1000,14 +1034,14 @@ function renderText(kind, periodStart, periodEnd, sections) {
             const mark = d.reachable
               ? '● 正常'
               : (d.neverBeaten ? '● 未上报' : `● 离线 ${fmtDurationCn(d.offlineMinutes)}`);
-            lines.push(`  - ${d.dcName} U${d.usersCount}/G${d.groupsCount}/GPO${d.gposCount} ${mark} 最后心跳 ${d.neverBeaten ? '—' : fmtTsUtcCst(d.lastHeartbeatAt)}`);
+            lines.push(`  - ${d.dcName} U${d.usersCount}/G${d.groupsCount}/GPO${d.gposCount} ${mark} 最后心跳 ${d.neverBeaten ? '—' : fmtTsUtcCst(d.lastHeartbeatAt, timeZone)}`);
           }
         }
       }
     } else if (s.title === 'Directory 同步') {
-      lines.push(`运行 ${s.runs} / 成功 ${s.success} / 失败 ${s.failed} / 最近结束 ${fmtTsUtcCst(s.lastFinish)}`);
+      lines.push(`运行 ${s.runs} / 成功 ${s.success} / 失败 ${s.failed} / 最近结束 ${fmtTsUtcCst(s.lastFinish, timeZone)}`);
       for (const r of (s.lastRuns || []).slice(0, 5)) {
-        lines.push(`  - #${r.id} ${r.dc} ${r.status} U${r.userCount} G${r.groupCount} O${r.ouCount} (${fmtTsUtcCst(r.startedAt)} → ${fmtTsUtcCst(r.finishedAt)})`);
+        lines.push(`  - #${r.id} ${r.dc} ${r.status} U${r.userCount} G${r.groupCount} O${r.ouCount} (${fmtTsUtcCst(r.startedAt, timeZone)} → ${fmtTsUtcCst(r.finishedAt, timeZone)})`);
       }
     } else if (s.title === 'AD 账户变更') {
       // R158.72 (2026-10-11) — 6 段 text 镜像
@@ -1015,13 +1049,13 @@ function renderText(kind, periodStart, periodEnd, sections) {
       if (s.topCreated && s.topCreated.length) {
         lines.push('  -- 6.1 当日新建账户 (top 50) --');
         for (const u of s.topCreated.slice(0, 50)) {
-          lines.push(`  - ${u.sam} (${u.displayName || '(无显示名)'}) 创建于 ${fmtTsUtcCst(u.whenCreated)} (${u.dcName || ''})`);
+          lines.push(`  - ${u.sam} (${u.displayName || '(无显示名)'}) 创建于 ${fmtTsUtcCst(u.whenCreated, timeZone)} (${u.dcName || ''})`);
         }
       }
       if (s.topDisabled && s.topDisabled.length) {
         lines.push('  -- 6.2 当日禁用账户 (top 50) --');
         for (const u of s.topDisabled.slice(0, 50)) {
-          lines.push(`  - ${u.sam} (${u.displayName || '(无显示名)'}) 修改于 ${fmtTsUtcCst(u.whenModified)} (${u.dcName || ''})`);
+          lines.push(`  - ${u.sam} (${u.displayName || '(无显示名)'}) 修改于 ${fmtTsUtcCst(u.whenModified, timeZone)} (${u.dcName || ''})`);
         }
       }
     } else if (s.title === '节点离线明细') {
@@ -1040,7 +1074,7 @@ function renderText(kind, periodStart, periodEnd, sections) {
             : m < 60 ? `${m} 分钟`
             : m < 1440 ? `${Math.floor(m / 60)} 小时 ${m % 60} 分`
             : `${Math.floor(m / 1440)} 天 ${Math.floor((m % 1440) / 60)} 小时`;
-          lines.push(`  - ${ev.host} 离线于 ${fmtTsUtcCst(ev.firedAt)}, ${ev.stillOffline ? '仍未恢复' : `恢复于 ${fmtTsUtcCst(ev.recoveredAt)}`}, 时长 ${dur}`);
+          lines.push(`  - ${ev.host} 离线于 ${fmtTsUtcCst(ev.firedAt, timeZone)}, ${ev.stillOffline ? '仍未恢复' : `恢复于 ${fmtTsUtcCst(ev.recoveredAt, timeZone)}`}, 时长 ${dur}`);
         }
       } else {
         lines.push('✓ 本时段无告警级节点离线 (阈值以上)');
@@ -1075,8 +1109,17 @@ function renderText(kind, periodStart, periodEnd, sections) {
   return lines.join('\n');
 }
 
-function buildSubject(kind, periodStart, periodEnd) {
-  const d = new Date(periodEnd.getTime() + 8 * 3600 * 1000);
+// 报告标题里的日历日 (日报/周报 YYYY-MM-DD)。
+//
+// R161.31 (2026-11-07) — 去掉写死的 `+ 8 * 3600 * 1000`。
+//   ★ 这处比正文更危险: 标题是整封邮件里**最显眼**的时间戳, 而且错的是
+//     **日期本身** —— 例如柏林操作员在 2026-11-07 02:00 收到报告, 旧实现
+//     会标成 2026-11-06 (整整差一天)。
+//   ⇒ 偏移按 periodEnd 那一刻求值 (含 DST)。
+function buildSubject(kind, periodStart, periodEnd, timeZone) {
+  const pe = (periodEnd instanceof Date) ? periodEnd : new Date(periodEnd);
+  const offsetMinutes = offsetMinutesFor(timeZone, pe);
+  const d = new Date(pe.getTime() + offsetMinutes * 60000);
   const ymd = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
   return kind === 'daily' ? `AD Dashboard 日报 ${ymd}` : `AD Dashboard 周报 ${ymd}`;
 }
@@ -1089,6 +1132,21 @@ export async function renderReport(kind, periodStart, periodEnd) {
   const dialect = db.dialect;
   const ps = (periodStart instanceof Date) ? periodStart : new Date(periodStart);
   const pe = (periodEnd instanceof Date) ? periodEnd : new Date(periodEnd);
+
+  // R161.31 (2026-11-07) — 显示时区真源。**整篇报告只解析一次**。
+  //   ★ 为什么在这里解析而不是每个时间戳各查一次:
+  //     - 配置只查一次 (getSystemConfig 走 system_config 全表);
+  //     - 偏移**仍然逐个时间戳算** (offsetMinutesFor(tz, at)) —— DST 时区
+  //       在报告窗口内跨切换点时, 前后半段偏移不同, 用一个常数会让报告
+  //       内部自相矛盾。这里解析的是**时区名**, 不是偏移。
+  //   ★ 读配置失败 ⇒ 回落默认时区 (不因配置问题让整份报告渲染不出来)。
+  let displayTimeZone = DEFAULT_DISPLAY_TIMEZONE;
+  try {
+    const cfg = await getSystemConfig();
+    displayTimeZone = normalizeDisplayTimeZone(cfg?.[DISPLAY_TIMEZONE_KEY]);
+  } catch {
+    // 拿不到配置 ⇒ 用默认时区 (normalizeDisplayTimeZone 内部已做合法性判定)。
+  }
   // Run all 6 sections in parallel — they read independent tables.
   // R158.72 (2026-10-11) — 加 fetchAccountChangeSection (第 6 段).
   // R158.X.99.report (2026-10-21) — 加第 7 段 (节点离线明细) + 第 8 段
@@ -1117,9 +1175,9 @@ export async function renderReport(kind, periodStart, periodEnd) {
   const s7 = s7raw;
   const s8 = s8raw;
   const sections = [s1, s2, s3, s4, s5, s6, s7, s8];
-  const html = renderHtml(kind, ps, pe, sections);
-  const text = renderText(kind, ps, pe, sections);
-  const subject = buildSubject(kind, ps, pe);
+  const html = renderHtml(kind, ps, pe, sections, displayTimeZone);
+  const text = renderText(kind, ps, pe, sections, displayTimeZone);
+  const subject = buildSubject(kind, ps, pe, displayTimeZone);
   // Byte size check (UTF-8). 200 KB hard warn; 60 KB "ideal" soft warn.
   // We do NOT fail — instead we log a warning so the operator can decide.
   const htmlSize = Buffer.byteLength(html, 'utf8');

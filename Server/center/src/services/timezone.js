@@ -152,6 +152,161 @@ export function offsetMinutesFor(timeZone, at = new Date()) {
   return Math.round((asUtc - Math.floor(atMs / 1000) * 1000) / 60000);
 }
 
+// ---------------------------------------------------------------------------
+// R161.31 (2026-11-07) — 服务端渲染入口 (与 web/src/lib/timezone.js 1:1 平行)
+// ---------------------------------------------------------------------------
+//
+// ★ 为什么要补这几个函数:
+//   契约第 3 条说"任何地方都不许再写死 +8h / CST" —— 但服务端**没有**
+//   任何渲染入口, 于是写报表邮件的人只能自己手搓 `+ 8 * 3600 * 1000`
+//   (reports.js / report-scheduler.js 都是这么干的 —— 它们是 R161.11
+//   **漏掉**的地方, 因为漂移守卫只扫 web/src)。
+//   ⇒ 补上服务端入口 = 让"正确做法"有地方可去, 而不是只立一条禁令。
+//
+// ★ 与 web/src/lib/timezone.js 的关系:
+//   web 侧已有 formatOffsetMinutes / formatDateTime 等, 服务端这份是
+//   **同语义**的服务端实现 (两端都受 tests/timezone-settings.test.js 的
+//   VALUE_MATRIX 交叉验证约束 —— 见该文件 "E. 两端时区实现必须一致")。
+//   ⚠ 但**不是**逐字复制: web 侧用 Intl.DateTimeFormat 一次性渲染,
+//     服务端这里用 offsetMinutesFor + getUTC*() —— 因为服务端要拿到
+//     **机器可读的窄列** ('YYYY-MM-DD HH:mm:ss') 给邮件正文/CSV 用,
+//     且 offsetMinutesFor 已经处理了 DST。
+
+/**
+ * 把偏移分钟数格式化成 '+08:00' / '-05:30' / '+00:00'。
+ * 与 web/src/lib/timezone.js 的同名函数 1:1 平行。
+ *
+ * @param {number} minutes 偏移分钟数 (正 = 东边)
+ * @returns {string}
+ */
+export function formatOffsetMinutes(minutes) {
+  const m = Number(minutes);
+  if (!Number.isFinite(m)) return '—';
+  const sign = m < 0 ? '-' : '+';
+  const abs = Math.abs(Math.trunc(m));
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mm = String(abs % 60).padStart(2, '0');
+  return `${sign}${hh}:${mm}`;
+}
+
+/**
+ * 任意输入 → Date。**naive 形态按 UTC 解释** (存储契约)。
+ * 与 web/src/lib/timezone.js 的 parseTimestamp 1:1 平行。
+ *
+ * @param {Date|string|number|null|undefined} value
+ * @returns {Date|null}
+ */
+export function parseTimestamp(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'number') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (!s) return null;
+  // 带时区标记 ⇒ 交给引擎解析。
+  if (/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  // naive 形态 ⇒ 按 UTC 补上 Z (MySQL DATETIME 的天然形态)。
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?/);
+  if (m) {
+    const [, y, mo, d, h, mi, sec, frac] = m;
+    const msPart = frac ? String(frac).padStart(3, '0').slice(0, 3) : '000';
+    const ms = Date.UTC(+y, +mo - 1, +d, +h, +mi, +(sec ?? 0), +msPart);
+    return Number.isFinite(ms) ? new Date(ms) : null;
+  }
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
+ * 把一个 UTC 时刻渲染成**显示时区**的墙上时间, 机器可读窄列形态。
+ *
+ *   'YYYY-MM-DD HH:mm:ss'
+ *
+ * ★ 为什么偏移要**逐个时间戳**算:
+ *   DST 时区 (Europe/Berlin) 在报告窗口内可能跨过切换点 ⇒ 同一份报告里
+ *   前半段是 UTC+1、后半段是 UTC+2 ⇒ 用一个常数偏移会让报告内部自相矛盾。
+ *   ⇒ offsetMinutesFor(tz, at) 的 `at` 必须是**被渲染的那个时刻**。
+ *
+ * @param {Date|string|number|null|undefined} value UTC 时刻
+ * @param {string} timeZone IANA 时区名 (非法 ⇒ 回落 UTC)
+ * @param {object} [opts]
+ * @param {boolean} [opts.withSeconds=true]
+ * @param {string}  [opts.fallback='—']
+ * @returns {string}
+ */
+export function formatDateTime(value, timeZone, opts = {}) {
+  const { withSeconds = true, fallback = '—' } = opts || {};
+  const d = parseTimestamp(value);
+  if (!d) return fallback;
+  const tz = isValidTimeZone(timeZone) ? timeZone.trim() : 'UTC';
+  const offsetMinutes = offsetMinutesFor(tz, d);
+  const shifted = new Date(d.getTime() + offsetMinutes * 60000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const date = `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+  const time = `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}` +
+    (withSeconds ? `:${pad(shifted.getUTCSeconds())}` : '');
+  return `${date} ${time}`;
+}
+
+/**
+ * 把一个 UTC 时刻渲染成**显示时区**的日历日 (机器可读 'YYYY-MM-DD')。
+ * 报告标题 (日报/周报 YYYYMMDD) 用的就是这个。
+ *
+ * @param {Date|string|number|null|undefined} value UTC 时刻
+ * @param {string} timeZone IANA 时区名
+ * @returns {string} 'YYYY-MM-DD' 或 '—'
+ */
+export function formatDateOnly(value, timeZone) {
+  const d = parseTimestamp(value);
+  if (!d) return '—';
+  const tz = isValidTimeZone(timeZone) ? timeZone.trim() : 'UTC';
+  const offsetMinutes = offsetMinutesFor(tz, d);
+  const shifted = new Date(d.getTime() + offsetMinutes * 60000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+}
+
+/**
+ * 解析某个时区的"日历日"对应的 UTC 时刻 (即该时区的当地午夜)。
+ *
+ * ★ 为什么不能简单 `Date.UTC(y, m, d) - 8h`:
+ *   只有**固定偏移**时区才成立。对:
+ *   - DST 时区 (Europe/Berlin): 半年里差 1 小时 ⇒ 窗口边界整体偏移 1h;
+ *   - 半小时偏移时区 (Asia/Kolkata +05:45 / Asia/Kathmandu +05:45):
+ *     **每天都**差 15~45 分钟 ⇒ "日报窗口"根本不是午夜到午夜。
+ *   ⇒ 偏移必须在**午夜那一刻**求值。
+ *
+ * @param {number} year
+ * @param {number} month 1-12
+ * @param {number} day 1-31
+ * @param {string} timeZone IANA 时区名
+ * @returns {Date} 该时区当地午夜对应的 UTC 时刻
+ */
+export function utcInstantOfLocalMidnight(year, month, day, timeZone) {
+  const tz = isValidTimeZone(timeZone) ? timeZone.trim() : 'UTC';
+  // 先按"把这个 ymd 当 UTC 墙钟"算一个近似点, 用它求偏移。
+  const naiveMs = Date.UTC(year, month - 1, day);
+  // ★ 两遍法: 用近似点求偏移 ⇒ 得到真正的午夜 ⇒ 再用真正的午夜复算一次
+  //   偏移。DST 切换恰好发生在午夜附近时 (少数时区存在, 如 America/Sao_Paulo
+  //   历史上的午夜切换), 第二遍能把偏移纠正过来。
+  let offsetMinutes = offsetMinutesFor(tz, new Date(naiveMs));
+  let resultMs = naiveMs - offsetMinutes * 60000;
+  const secondOffset = offsetMinutesFor(tz, new Date(resultMs));
+  if (secondOffset !== offsetMinutes) {
+    offsetMinutes = secondOffset;
+    resultMs = naiveMs - offsetMinutes * 60000;
+  }
+  return new Date(resultMs);
+}
+
 // 应用会话的时钟探针。**必须走应用自己的 db facade** (db.query) ⇒
 // 拿到的 session tz 就是应用池里那条连接的会话时区。
 //

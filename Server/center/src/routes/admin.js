@@ -42,6 +42,17 @@ import { rotateJwtSecret, commitJwtSecret, getJwtSecretState } from '../services
 import { invalidateJwtSecretCache } from '../auth/user-auth.js';
 import { getPrimaryIPv4 } from '../utils/network.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
+// R161.31 (2026-11-07) — 审计导出走显示时区真源。
+//   旧实现写死 'Asia/Shanghai' + 表头字面量 "时间 (UTC+8)" + 文件名用
+//   服务器 OS 本地时区 (getFullYear/getMonth/getDate/getHours) ⇒
+//   操作员换显示时区后, CSV 内容、CSV 表头、文件名三者互相矛盾。
+import {
+  DISPLAY_TIMEZONE_KEY,
+  DEFAULT_DISPLAY_TIMEZONE,
+  normalizeDisplayTimeZone,
+  offsetMinutesFor,
+  formatOffsetMinutes
+} from '../services/timezone.js';
 // R158.35 (2026-10-03) — AD directory LDAP sync. The route layer triggers
 // sync + reads snapshot tables; the heavy lifting (LDAP bind, paged
 // search, UPSERT, orphan DELETE) lives in services/ad-directory-sync.js.
@@ -1035,7 +1046,18 @@ export function adminRouter({ config, logger, db }) {
       }
       // The export cap is enforced by the probe above; the fetch intentionally bypasses the list-route size limit.
       const full = await listAudit({ ...opts, page: 1, size: EXPORT_CAP + 1 });
-      const ts = formatTsForFilename(new Date());
+      // R161.31 (2026-11-07) — 显示时区真源。文件名与 CSV 正文必须用**同一个**
+      //   时区, 否则两者互相矛盾 (旧实现: 文件名走服务器 OS 时区, CSV 写死
+      //   'Asia/Shanghai', 表头写死 "UTC+8")。
+      //   ★ 读配置失败 ⇒ 回落默认时区 (导出不能因为配置读不到就整个挂掉)。
+      let displayTimeZone = DEFAULT_DISPLAY_TIMEZONE;
+      try {
+        const cfgMap = await getConfigMap();
+        displayTimeZone = normalizeDisplayTimeZone(cfgMap?.[DISPLAY_TIMEZONE_KEY]);
+      } catch {
+        // 拿不到配置 ⇒ 用默认时区。
+      }
+      const ts = formatTsForFilename(new Date(), displayTimeZone);
       const filename = `audit-${category || 'all'}-${ts}.${format}`;
       // R161.30 (S5) — category 来自 query, 也走同一转义 (统一收口)
       res.setHeader('Content-Disposition',
@@ -1045,7 +1067,7 @@ export function adminRouter({ config, logger, db }) {
         res.send(JSON.stringify(full.rows, null, 2));
       } else {
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.send(toCsv(full.rows));
+        res.send(toCsv(full.rows, displayTimeZone));
       }
     } catch (e) {
       if (e.httpStatus === 400) return res.status(400).json({ error: e.message });
@@ -4400,13 +4422,46 @@ function isBuiltinAdOsBaseline(packageName) {
   return BUILTIN_AD_OS_BASELINE_ALIASES.has(String(packageName ?? '').trim().toLowerCase());
 }
 
-function formatTsForFilename(d) {
+// R161.31 (2026-11-07) — CSV 时间列渲染。
+//   旧实现是 `new Date(r.createdAt).toLocaleString('zh-CN', { hour12:false,
+//   timeZone:'Asia/Shanghai' })` —— 写死时区, 而且 toLocale* 的输出格式
+//   **跟着 ICU 版本变** ('2026/10/19 13:13:08' vs '2026/10/19 13:13:08')。
+//   ⇒ 换成自己渲染的固定窄列形态 'YYYY-MM-DD HH:mm:ss', 时区由入参决定,
+//     偏移**逐个时间戳**求值 (含 DST)。
+function formatCsvTimestamp(value, timeZone) {
+  const at = (value instanceof Date) ? value : new Date(value);
+  if (value == null || Number.isNaN(at.getTime())) return '';
+  const offsetMinutes = offsetMinutesFor(timeZone, at);
+  const shifted = new Date(at.getTime() + offsetMinutes * 60000);
   const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} `
+    + `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
 }
 
-function toCsv(rows) {
-  const headers = ['时间 (UTC+8)', '用户名', '动作', '目标', '严重性', '类别', 'payload(json)'];
+// R161.31 (2026-11-07) — 文件名时间戳改用**显示时区**。
+//   旧实现用 getFullYear/getMonth/getDate/getHours —— 那是**服务器 OS 时区**
+//   (Windows = CST), 跟同文件里 CSV 正文用的 'Asia/Shanghai' 只是碰巧
+//   相同 (本部署是 CST)。换一台 OS 时区不同的服务器 (或 UTC) 就跟正文对不上。
+//   ⇒ 文件名与正文必须用**同一个时区**。
+function formatTsForFilename(d, timeZone) {
+  const at = (d instanceof Date) ? d : new Date(d);
+  if (Number.isNaN(at.getTime())) return 'unknown';
+  const offsetMinutes = offsetMinutesFor(timeZone, at);
+  const shifted = new Date(at.getTime() + offsetMinutes * 60000);
+  const pad = n => String(n).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}${pad(shifted.getUTCMonth() + 1)}${pad(shifted.getUTCDate())}`
+    + `-${pad(shifted.getUTCHours())}${pad(shifted.getUTCMinutes())}${pad(shifted.getUTCSeconds())}`;
+}
+
+// R161.31 (2026-11-07) — CSV 走显示时区真源。
+//   旧实现写死 `timeZone: 'Asia/Shanghai'` + 表头字面量 "时间 (UTC+8)"。
+//   ⇒ 操作员在「系统设置 → 时区」选了 Europe/Berlin 之后, 导出的 CSV
+//   **仍然是上海时间**, 而表头还写着 "UTC+8" ⇒ 导出件与界面不一致。
+//   ⇒ 时间列与表头标签都从传入的 timeZone 派生。
+function toCsv(rows, timeZone) {
+  const offsetMinutes = offsetMinutesFor(timeZone, new Date());
+  const tzLabel = `UTC${formatOffsetMinutes(offsetMinutes)}`;
+  const headers = [`时间 (${tzLabel})`, '用户名', '动作', '目标', '严重性', '类别', 'payload(json)'];
   const esc = v => {
     if (v == null) return '';
     const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
@@ -4415,7 +4470,7 @@ function toCsv(rows) {
   const lines = [headers.join(',')];
   for (const r of rows) {
     lines.push([
-      esc(new Date(r.createdAt).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })),
+      esc(formatCsvTimestamp(r.createdAt, timeZone)),
       esc(r.username),
       esc(r.actionLabel),
       esc(r.target),

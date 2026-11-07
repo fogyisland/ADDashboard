@@ -14,61 +14,108 @@
 //   - stop()  clears the interval and awaits the in-flight tick so a slow
 //     tick doesn't get cut off during NSSM shutdown.
 //   - tick()  reads report_daily_cron / report_weekly_cron / *_enabled from
-//     system_config, computes whether the current CST minute matches each
-//     expression, and if so calls reports.enqueueReport(kind). Reentry
-//     guard prevents overlap if a tick is still running.
+//     system_config, computes whether the current minute matches each
+//     expression **in the operator's display timezone**, and if so calls
+//     reports.enqueueReport(kind). Reentry guard prevents overlap if a tick
+//     is still running.
 //
 // Cron parser: a ~50-line pure function supporting the 5-field
 // "M H DoM Mon DoW" form. Supports `*` (any), `1,3,5` (list), `1-5`
 // (range), `*/5` (step). No seconds field. No @reboot. No L/W modifiers.
-// Operator mental model is CST (per R158.61 plan §风险: 中心存 UTC, cron
-// 表达式按 CST 解析). Internal `nowCst()` is used by both the parser and
-// the loop's "have we already fired this minute?" guard so the two
-// never disagree on the wall clock.
+// Operator mental model = the configured display timezone (per R158.61 plan
+// §风险: 中心存 UTC, cron 表达式按显示时区解析).
+//
+// ---------------------------------------------------------------------------
+// R161.31 (2026-11-07) — 去掉写死的 +8h (R161.11 时区契约的第 3 条)
+// ---------------------------------------------------------------------------
+//
+// ★ 背景:
+//   契约第 3 条 = "任何地方都不许再写死 +8h / CST 这类固定偏移"。但这个文件
+//   从 R158.61 起就是写死的 `+ 8 * 3600 * 1000`, 而 R161.11 的漂移守卫
+//   **只扫 web/src** ⇒ 服务端被漏掉了。
+//   ⇒ 本次把偏移改成"由 IANA 时区名在**当前时刻**算出来" (含 DST)。
+//
+// ★ 改了哪两处 (两处必须一起改, 否则窗口边界会双重算错):
+//   (1) nowCstComponents — 取显示时区的墙上时间分量;
+//   (2) getReportWindow   — 显示时区当地午夜 ⇒ UTC 时刻。
+//
+// ★ 为什么 (2) 不能简单写成 `Date.UTC(y, m, d) - offset`:
+//   - DST 时区 (Europe/Berlin): 半年里差 1 小时;
+//   - 半小时偏移时区 (Asia/Kolkata +05:45): **每天都**差 15~45 分钟
+//     ⇒ "日报窗口"根本不是午夜到午夜。
+//   ⇒ 偏移必须在**午夜那一刻**求值 —— 见 services/timezone.js 的
+//     utcInstantOfLocalMidnight (两遍法, 处理午夜切换)。
 
 import { enqueueReport } from './reports.js';
+// R161.31 — 显示时区真源 (IANA 名 + 该时刻的偏移, 含 DST)。
+import {
+  DISPLAY_TIMEZONE_KEY,
+  normalizeDisplayTimeZone,
+  offsetMinutesFor,
+  utcInstantOfLocalMidnight
+} from './timezone.js';
 
 const REPORT_KINDS = ['daily', 'weekly'];
 
-// Convert a Date to CST wall-clock components. We do the +8h shift in JS
-// rather than relying on Intl (CST is technically a half-hourless UTC+8
-// offset; Intl with Asia/Shanghai returns the same components in this
-// environment but adds ~5µs overhead per call).
-function nowCstComponents(d = new Date()) {
-  const ms = d.getTime() + 8 * 3600 * 1000;
-  const cst = new Date(ms);
+// 某个时刻在**显示时区**的墙上时间分量。
+//
+// R161.31 (2026-11-07) — 偏移从"写死 8 小时"改成"按 IANA 时区名在**该时刻**
+//   算出来" (含 DST)。函数名从 nowCstComponents 改成 nowZoneComponents ——
+//   旧名里的 "Cst" 本身就是契约禁止的那个假设。
+//
+// ★ 为什么偏移要按时刻算 (而不是一次算好缓存):
+//   DST 时区 (Europe/Berlin) 在报告窗口内可能跨过切换点 ⇒ 同一份报告的
+//   前半段是 UTC+1、后半段是 UTC+2 ⇒ 用一个常数偏移会让报告内部自相矛盾。
+//
+// @param {Date} [d] 目标时刻
+// @param {string} [timeZone] IANA 时区名 (非法 ⇒ 回落 UTC)
+export function nowZoneComponents(d = new Date(), timeZone = 'UTC') {
+  const offsetMinutes = offsetMinutesFor(timeZone, d);
+  const shifted = new Date(d.getTime() + offsetMinutes * 60000);
   return {
-    year: cst.getUTCFullYear(),
-    minute: cst.getUTCMinutes(),
-    hour: cst.getUTCHours(),
-    dayOfMonth: cst.getUTCDate(),
-    month: cst.getUTCMonth() + 1,   // 1-12 (JS Date.getUTCMonth is 0-11)
-    dayOfWeek: cst.getUTCDay()      // 0=Sun..6=Sat
+    year: shifted.getUTCFullYear(),
+    minute: shifted.getUTCMinutes(),
+    hour: shifted.getUTCHours(),
+    dayOfMonth: shifted.getUTCDate(),
+    month: shifted.getUTCMonth() + 1,   // 1-12 (JS Date.getUTCMonth is 0-11)
+    dayOfWeek: shifted.getUTCDay()      // 0=Sun..6=Sat
   };
 }
 
-// R158.100.B+3 (2026-10-14) — catch-up dedup window. 跟 nowCstComponents
-//   平级, 返 CST "今天/本周" 对应的 UTC [windowStartUtc, windowEndUtc)
+// 兼容旧名 (R161.11 之前的服务端调用方/测试用的是 nowCstComponents)。
+// ⚠ 默认时区改成 'UTC' 而不是 'Asia/Shanghai' —— 契约要求偏移必须由
+//   IANA 时区名算出来, 旧的写死 +8h 已被移除。调用方应显式传时区。
+export function nowCstComponents(d = new Date(), timeZone = 'UTC') {
+  return nowZoneComponents(d, timeZone);
+}
+
+// R158.100.B+3 (2026-10-14) — catch-up dedup window. 跟 nowZoneComponents
+//   平级, 返显示时区 "今天/本周" 对应的 UTC [windowStartUtc, windowEndUtc)
 //   半开区间. catch-up 用这个区间查 daily_reports, n>0 skip 重启放大.
 //
-//   daily: windowStartUtc = 今天 CST 00:00 (→ UTC).
-//   weekly: windowStartUtc = 本周一 00:00 CST (→ UTC). JS getUTCDay 0=Sun,
+//   daily: windowStartUtc = 今天当地 00:00 (→ UTC).
+//   weekly: windowStartUtc = 本周一当地 00:00 (→ UTC). JS getUTCDay 0=Sun,
 //     1=Mon..6=Sat. "本周一" offset = (dayOfWeek + 6) % 7. Mon(1)→0,
-//     Tue(2)→1, ..., Sat(6)→5, Sun(0)→6. 减这个数 = 本周一 00:00 CST.
+//     Tue(2)→1, ..., Sat(6)→5, Sun(0)→6. 减这个数 = 本周一当地 00:00.
 //
 //   windowEndUtc 用 now (UTC), 跟 R158.61 reports.js:766 periodEnd=now 1:1
 //   平行, "滑动窗口" 语义跟 generated_at 默认 SYSUTCDATETIME() 对齐.
-function getReportWindow(kind, now = new Date()) {
-  const cst = nowCstComponents(now);
-  // 当前 CST ymd 构造 00:00 CST → UTC (CST = UTC+8, 所以 CST 00:00 = UTC -8h)
-  const cstMidnightUtcMs = Date.UTC(cst.year, cst.month - 1, cst.dayOfMonth) - 8 * 3600 * 1000;
+//
+// R161.31 (2026-11-07) — 当地午夜 → UTC 的换算不再写死 -8h。
+//   偏移必须在该时区**午夜那一刻**求值 (DST / 半小时偏移时区才正确),
+//   见 services/timezone.js 的 utcInstantOfLocalMidnight。
+export function getReportWindow(kind, now = new Date(), timeZone = 'UTC') {
+  const zone = nowZoneComponents(now, timeZone);
+  // 显示时区当地午夜对应的 UTC 时刻。
+  const midnightUtc = utcInstantOfLocalMidnight(zone.year, zone.month, zone.dayOfMonth, timeZone);
+  const midnightUtcMs = midnightUtc.getTime();
   let windowStartUtc;
   if (kind === 'daily') {
-    windowStartUtc = new Date(cstMidnightUtcMs);
+    windowStartUtc = new Date(midnightUtcMs);
   } else {
-    // weekly: 本周一 00:00 CST. (dayOfWeek + 6) % 7 → Mon=0, Tue=1..Sat=5, Sun=6
-    const dowOffset = (cst.dayOfWeek + 6) % 7;
-    windowStartUtc = new Date(cstMidnightUtcMs - dowOffset * 86400 * 1000);
+    // weekly: 本周一当地 00:00. (dayOfWeek + 6) % 7 → Mon=0, Tue=1..Sat=5, Sun=6
+    const dowOffset = (zone.dayOfWeek + 6) % 7;
+    windowStartUtc = new Date(midnightUtcMs - dowOffset * 86400 * 1000);
   }
   return { windowStartUtc, windowEndUtc: now };
 }
@@ -321,13 +368,15 @@ function minuteKey(kind, cst) {
 //   (c) 203 行的 mon9CstMs 算了却没用 (死代码)
 //
 //   新语义: 从 cron 表达式算出"**上一次**已经过去的 cron 触发时刻"
-//   (CST, 含日期), 返回与 minuteKey 同格式的 key.
+//   (显示时区的墙上时间, 含日期), 返回与 minuteKey 同格式的 key.
 //   daily: 今天 09:00 (若已过) 否则昨天 09:00
 //   weekly: 本周一 09:00 (若已过) 否则上周一 09:00
 //
 //   找不到候选时返回 null (表达式无法解析) —— 调用方不占 lastFired.
-function lastCronFireMinuteKey(kind, now, expression) {
-  const cst = nowCstComponents(now);
+//
+// R161.31 — timeZone 参数: 墙上时间分量必须按显示时区算 (DST 正确)。
+function lastCronFireMinuteKey(kind, now, expression, timeZone = 'UTC') {
+  const cst = nowZoneComponents(now, timeZone);
   const pad = (n) => String(n).padStart(2, '0');
 
   // 解析 cron 表达式, 取出 候选分钟 × 候选小时
@@ -487,6 +536,12 @@ export function createReportLoop({ db, getIntervalSeconds, getSystemConfig, logg
     const expr = String(cfg?.[cronKey] || '').trim();
     if (!expr) return;                                              // no cron set
 
+    // R161.31 (2026-11-07) — cron 表达式的"墙上时间"按**显示时区**解释。
+    //   跟 enabled/cron 读的是同一份 cfg ⇒ 一次查询拿全, 不额外查库。
+    //   ★ 配置非法/缺失 ⇒ 回落 DEFAULT_DISPLAY_TIMEZONE (normalizeDisplayTimeZone
+    //     内部会做合法性判定, 脏值不会让整个 tick 挂掉)。
+    const displayTimeZone = normalizeDisplayTimeZone(cfg?.[DISPLAY_TIMEZONE_KEY]);
+
     // R158.101 (2026-10-26) — cadence 窗口长度. cronMatchWindow 用它算
     //   触发窗口 [T, T+windowMinutes). 必须 >= 实际 tick 间隔, 否则
     //   相位不相交的老问题会重现.
@@ -531,9 +586,9 @@ export function createReportLoop({ db, getIntervalSeconds, getSystemConfig, logg
       //   这修掉了 R158.100.B+1 #4 的根因: 老 key 是 `daily:09:00`,
       //   而 5min cadence 路径的 key 是 `daily:20261024-09:03` 之类 → 永不
       //   相等 → catch-up 之后的那次 cron 触发会**重复 fire**.
-      const lastFireKey = lastCronFireMinuteKey(kind, new Date(), expr);
+      const lastFireKey = lastCronFireMinuteKey(kind, new Date(), expr, displayTimeZone);
       try {
-        const { windowStartUtc, windowEndUtc } = getReportWindow(kind);
+        const { windowStartUtc, windowEndUtc } = getReportWindow(kind, new Date(), displayTimeZone);
         const sqlHelper = db.sql.reportRun.countByKindInWindow[db.dialect];
         const { rows } = await db.query(sqlHelper, [kind, windowStartUtc, windowEndUtc]);
         const n = Number(rows?.[0]?.n ?? 0);
@@ -576,7 +631,7 @@ export function createReportLoop({ db, getIntervalSeconds, getSystemConfig, logg
     //   从来没生效过 (21 天日志 0 命中 "firing daily report").
     //   新代码: cronMatchWindow 返回"本次 tick 覆盖的是哪个 cron 时刻",
     //   窗口 = [T, T+windowMinutes). 任何相位下 T 必被恰好一个 tick 覆盖.
-    const cst = nowCstComponents();
+    const cst = nowZoneComponents(new Date(), displayTimeZone);
     const fireKey = cronMatchWindow(expr, cst, windowMinutes);
     if (!fireKey) return;                                           // 不在任何窗口内
     // dedup key 用 **cron 时刻** (fireKey), 不是 tick 时刻 —— 同一 cron
@@ -584,7 +639,7 @@ export function createReportLoop({ db, getIntervalSeconds, getSystemConfig, logg
     const key = `${kind}:${fireKey}`;
     if (lastFired.get(kind) === key) return;                        // dedup this fire time
     lastFired.set(kind, key);
-    logInfo(`firing ${kind} report (cron='${expr}', cst=${cst.hour}:${String(cst.minute).padStart(2,'0')}, fire=${fireKey})`);
+    logInfo(`firing ${kind} report (cron='${expr}', tz=${displayTimeZone}, local=${cst.hour}:${String(cst.minute).padStart(2,'0')}, fire=${fireKey})`);
     try {
       const r = await enqueueReport(kind);
       if (!r.ok) {
@@ -664,9 +719,12 @@ export function createReportLoop({ db, getIntervalSeconds, getSystemConfig, logg
 // Exported for unit tests. Not used by the loop directly.
 // R158.100.B+3 (2026-10-14) — module-level export 给 diag 用. 跟 enqueueReport
 //   平级, 单独 export 是因为这是 pure helper, 0 副作用, 0 依赖 enqueueReport.
-export { getReportWindow };
+// R161.31 (2026-11-07) — getReportWindow 改成 `export function` 原地导出
+//   (加了 timeZone 形参), 所以下面这行 re-export 变成**重复导出**
+//   ⇒ SyntaxError: Duplicate export of 'getReportWindow'。
+//   ⇒ 删掉 re-export; 具名导出仍然存在, 调用方 (diag / 测试) 不受影响。
 
 export const __test = {
-  parseField, cronMatches, cronMatchWindow, nowCstComponents, minuteKey,
-  getReportWindow, lastCronFireMinuteKey, DOW_ALIASES
+  parseField, cronMatches, cronMatchWindow, nowCstComponents, nowZoneComponents,
+  minuteKey, getReportWindow, lastCronFireMinuteKey, DOW_ALIASES
 };
