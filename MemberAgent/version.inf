@@ -16,16 +16,19 @@
 ; Keep comments in English.
 
 [meta]
-updated         = 2026-10-29
+updated         = 2026-11-07
 release-notes   = https://internal/release-notes/0.1.6-noad
 schema-version  = 2
 
 [components]
 ; Overall package version, matches git tag
-version       = 0.1.6-noad
+version       = 0.1.7-noad
 
 ; agent process version (was agent/package.json pre-0.1.1)
-agent         = 0.1.6-noad
+agent         = 0.1.7-noad
 
 ; dashboard process version (was dashboard/package.json pre-0.1.1)
 dashboard     = 0.1.7
+
+; ---- release notes ----
+; R161.29 (2026-11-07): single-port center. manual-trigger report URL no longer pins port 8082. All agent traffic goes to center listenPort (default 8080). Old agents against a single-port center will silently 404 - upgrade required.

@@ -16,16 +16,19 @@
 ; Keep comments in English.
 
 [meta]
-updated         = 2026-10-21
+updated         = 2026-11-07
 release-notes   = https://internal/release-notes/0.1.9
 schema-version  = 2
 
 [components]
 ; Overall package version, matches git tag
-version       = 0.1.9
+version       = 0.1.10
 
 ; agent process version (was agent/package.json pre-0.1.1)
-agent         = 0.1.9
+agent         = 0.1.10
 
 ; dashboard process version (was dashboard/package.json pre-0.1.1)
 dashboard     = 0.1.7
+
+; ---- release notes ----
+; R161.29 (2026-11-07): single-port center. CENTER_URL no longer rewritten to :8081; report no longer targets :8082; DASHBOARD_CENTER_PORT fallback 8081->8080. All agent traffic goes to center listenPort (default 8080). Old agents against a single-port center will silently 404 - upgrade required.
