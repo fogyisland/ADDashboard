@@ -1,11 +1,18 @@
 {
-  "version": "0.1.6-noad",
-  "buildTime": "2026-10-17T11:00:00.000Z",
-  "gitCommit": "r158-72-x-12-trigger-once-noad",
+  "version": "0.1.7-noad",
+  "buildTime": "2026-11-07T00:00:00.000Z",
+  "gitCommit": "r161-29-single-port-agent",
   "lineage": "noad",
   "parentLineage": "ad-agent-0.1.9",
   "excludesAdRuntime": true,
   "rounds": [
+    {
+      "version": "0.1.7-noad",
+      "buildTime": "2026-11-07T00:00:00.000Z",
+      "gitCommit": "r161-29-single-port-agent",
+      "notes": "R161.29 (2026-11-07) — 单端口架构随行升级: CENTER_URL 不再改写 +\":8081\" / report 不再打 :8082, DASHBOARD_CENTER_PORT 回落 8081→8080; 心跳/上报/采集全部走中心 listenPort (默认 8080). 老 Agent 配单端口中心会静默 404, 必须升级到本版.",
+      "lineage": "noad"
+    },
     {
       "version": "0.1.6-noad",
       "buildTime": "2026-10-17T11:00:00.000Z",

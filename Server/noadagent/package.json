@@ -1,6 +1,6 @@
 {
   "name": "@ad-dashboard/noad-agent",
-  "version": "0.1.6-noad",
+  "version": "0.1.7-noad",
   "private": true,
   "type": "module",
   "main": "agent.js",
