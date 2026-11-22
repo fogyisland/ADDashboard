@@ -24,8 +24,31 @@ export const memberCommandsApi = {
   // Queue a new command. body = { hostname, commandType, params }.
   // commandType is always 'member_script' for R81; params = { script, timeoutSec }.
   // Returns 201 with the inserted row (id, status: 'queued', createdAt, ...).
-  queueCommand: ({ hostname, commandType = 'member_script', params }) =>
-    api.post('/api/admin/member-commands', { hostname, commandType, params }),
+  //
+  // R161.35 (2026-11-22) — `force` moved from `params` to the query string.
+  //
+  // ★ The bug: the UI's "跳过在线检查" checkbox put `force` inside `params`
+  //   (ExecuteCommandModal.vue:198), but the server reads the override from
+  //   the QUERY (`req.query.force` in admin.js:2517) and the service's
+  //   `validateMemberScript` normalizer silently drops every params field
+  //   except `script` and `timeoutSec` (member-commands.js:180). So the
+  //   checkbox was accepted by the UI, sent to the server, and **ignored** —
+  //   a silent failure: the operator believes the online check was skipped
+  //   when it was not, and gets a 503 instead.
+  //
+  // ★ Why it is a query param and not a body field: the online check is a
+  //   TRANSPORT-level concern (whether the admin route short-circuits with
+  //   503 before the row is written), not part of the command's payload.
+  //   The command payload is what gets stored in `params_json` and handed
+  //   to the agent — a "force" flag has no meaning there. Sending it in
+  //   the query keeps it out of the stored params and out of the audit
+  //   payload, which is where the AD side already does it (admin.js).
+  queueCommand: ({ hostname, commandType = 'member_script', params, force = false }) =>
+    api.post(
+      '/api/admin/member-commands',
+      { hostname, commandType, params },
+      { params: force ? { force: 'true' } : undefined }
+    ),
 
   // History list. Accepts any subset of { hostname, status, page, size }.
   // Defaults page=1 size=50 — matches the drawer "last 50" UX per R81 spec §1.1.

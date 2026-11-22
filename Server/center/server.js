@@ -1805,7 +1805,17 @@ function latestRoundId(rounds) {
     setInterval(async () => {
       try {
         const { sweepTimeouts } = await import('./src/services/member-commands.js');
-        await sweepTimeouts({ timeoutMs: _memberCmdSweepMs });
+        // R161.35 (2026-11-22) — pass logger so sweepTimeouts can emit
+        // `ad_member_command_timed_out` audit rows. The member sweeper had
+        // the same audit gap the AD sweeper closed in R158.47.1: it flipped
+        // the lifecycle row to 'timeout' and wrote no audit row at all, so
+        // a timed-out member command vanished from the operator-visible
+        // audit trail. The AD side at line ~1790 already passes logger —
+        // this mirrors it exactly.
+        const swept = await sweepTimeouts({ timeoutMs: _memberCmdSweepMs, logger });
+        if (swept > 0) {
+          logger.info({ swept, timeoutMs: _memberCmdSweepMs }, 'member commands swept to timeout');
+        }
       } catch (e) {
         logger.warn({ err: e.message }, 'member commands sweep failed (best-effort)');
       }

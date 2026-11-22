@@ -29,7 +29,7 @@
 // everywhere downstream of the cmdlet call).
 
 import { spawn } from 'node:child_process';
-import { writeFileSync, unlinkSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -206,9 +206,11 @@ export async function dispatchMemberCommand({
     Math.min(120, Math.floor(timeoutMs / 1_000) || DEFAULT_TIMEOUT_SEC)
   );
 
+  let paramsDir = null;
   let paramsPath = null;
   try {
     const tmp = writeParamsFile(params);
+    paramsDir = tmp.dir;
     paramsPath = tmp.file;
 
     const result = await executeScript({
@@ -222,8 +224,39 @@ export async function dispatchMemberCommand({
     });
     return result;
   } finally {
-    if (paramsPath) {
-      try { unlinkSync(paramsPath); } catch { /* ignore */ }
+    // R161.35 (2026-11-22) — remove the WHOLE temp directory, not just
+    // params.json.
+    //
+    // ★ The bug: writeParamsFile() creates a fresh mkdtempSync() directory
+    //   per command, but the cleanup only unlink'd params.json. The
+    //   directory itself was never removed ⇒ every member command left an
+    //   empty `addash-member-script-XXXXXX` folder behind in %TEMP%.
+    //   On an agent that runs every heartbeat (5s by default), that is a
+    //   steady accumulation of junk directories on every member server.
+    //
+    // ★ Why it also matters for security: params.json holds the command's
+    //   FULL script text (the free-form PowerShell). The file was
+    //   unlink'd, but on any abnormal path — a kill between write and
+    //   cleanup, a crash inside executeScript, or a process killed by the
+    //   OS — the file survived with the full script readable by anything
+    //   running as that user on the box. Removing the directory tree
+    //   removes both the leak and the residue risk.
+    //
+    //   rmSync(recursive) is used because the directory may still hold
+    //   params.json (the unlink above may have failed) — we want the
+    //   whole tree gone either way. Failures are swallowed: cleanup must
+    //   never mask the command's own result.
+    if (paramsDir) {
+      try {
+        rmSync(paramsDir, { recursive: true, force: true });
+      } catch (cleanupErr) {
+        // Fall back to removing just the file if the tree removal failed.
+        if (paramsPath) {
+          try { unlinkSync(paramsPath); } catch { /* ignore */ }
+        }
+        logger?.warn?.({ err: cleanupErr?.message, dir: paramsDir },
+          'member command temp dir cleanup failed (best-effort)');
+      }
     }
   }
 }

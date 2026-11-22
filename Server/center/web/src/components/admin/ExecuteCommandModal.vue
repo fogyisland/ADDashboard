@@ -194,9 +194,13 @@ async function submit() {
       commandType: 'member_script',
       params: {
         script: form.script,
-        timeoutSec: form.timeoutSec,
-        force: form.force
-      }
+        timeoutSec: form.timeoutSec
+      },
+      // R161.35 (2026-11-22) — `force` rides the query string, not params.
+      // The server reads it from req.query (admin.js) and the params
+      // normalizer drops anything but `script`/`timeoutSec`, so putting it
+      // in params made this checkbox a silent no-op.
+      force: form.force
     });
     activeCommand.value = resp.data;
     polling.start(resp.data);

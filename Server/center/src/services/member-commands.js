@@ -153,6 +153,27 @@ function validateMemberScript(params) {
   if (!isNonEmptyString(params.script)) {
     return { ok: false, error: 'invalid params: script' };
   }
+  // R161.35 (2026-11-22) — reject unknown params instead of dropping them
+  // silently. See the note at the `normalized` return below.
+  //
+  // ★ `force` gets a dedicated message because it has a real cause: older
+  //   frontend builds put it in `params` (ExecuteCommandModal.vue) where the
+  //   server never read it. Telling the caller to move it to the query
+  //   string turns a mystery 400 into an actionable message.
+  const unknownKeys = Object.keys(params)
+    .filter((k) => k !== 'script' && k !== 'timeoutSec');
+  if (unknownKeys.length > 0) {
+    if (unknownKeys.length === 1 && unknownKeys[0] === 'force') {
+      return {
+        ok: false,
+        error: 'invalid params: force is not a command parameter — send it as the ?force=true query parameter'
+      };
+    }
+    return {
+      ok: false,
+      error: `invalid params: unknown field(s) ${unknownKeys.map((k) => `"${k}"`).join(', ')} (allowed: script, timeoutSec)`
+    };
+  }
   // guard rail #2: 32KB cap on script size. We measure as bytes since the
   // JSON column stores the encoded form.
   const scriptBytes = Buffer.byteLength(params.script, 'utf8');
@@ -177,6 +198,24 @@ function validateMemberScript(params) {
   }
   return {
     ok: true,
+    // R161.35 (2026-11-22) — the normalizer now REJECTS unknown params
+    // instead of silently dropping them.
+    //
+    // ★ The bug this fixes: the normalizer used to return only
+    //   `{ script, timeoutSec }` and silently discard every other field.
+    //   The UI's "跳过在线检查" checkbox sent `params.force`, which was
+    //   accepted, sent, and then dropped — the operator saw a no-op
+    //   checkbox and got a 503 with no explanation. A silently-dropped
+    //   field is a silent failure: it looks like the feature works.
+    //
+    // ★ Why reject rather than keep dropping: "ignored" is indistinguishable
+    //   from "broken" from the operator's side, and a typo'd field name
+    //   (e.g. `timeout_secs`) would be swallowed the same way. Rejecting
+    //   turns a silent no-op into a loud 400 at queue time.
+    //
+    //   `force` is NOT a command parameter — it is a transport-level
+    //   override for the heartbeat-online check, read from the query
+    //   string (admin.js). It has no meaning in the stored payload.
     normalized: { script: params.script, timeoutSec }
   };
 }
@@ -372,12 +411,105 @@ export async function completeCommand(id, { success, data, error, exitCode, dura
 /**
  * Sweep 'running' commands older than `timeoutMs` to 'timeout'. Called
  * by the server.js setInterval every 10s.
+ *
+ * R161.35 (2026-11-22) — closes the timeout audit gap on the member-command
+ * side, 1:1 parallel to the AD side (R158.47.1, ad-admin-commands.js).
+ *
+ * ★ The bug: the member sweeper only flipped the lifecycle row to
+ *   'timeout' and never wrote an `audit_logs` row. The classifier
+ *   registers `ad_member_command_timed_out` (audit-classifier.js) and the
+ *   admin route comment claims the sweeper writes it — but there was NO
+ *   writeAudit call anywhere on this path. Consequence: a member command
+ *   that timed out (agent died mid-run, network partition, agent killed)
+ *   **vanished from the audit trail entirely** — the operator sees a row
+ *   that says "running" forever in the lifecycle table, and the operator-
+ *   visible audit log has no record that the command was ever abandoned.
+ *   On the AD side the same gap was found and fixed in R158.47.1; the
+ *   member side was simply missed.
+ *
+ * ★ Why this matters for the security work: R161.35's whole point is that
+ *   a member command is arbitrary PowerShell running as SYSTEM. If a
+ *   command is denied/timed out, that MUST be visible — an audit gap on
+ *   the deny path is exactly where an attacker would want to hide.
+ *
+ * SELECT+UPDATE is not atomic, but that is fine: the sweep SQL's
+ * `WHERE status = 'running'` means a second sweep of the same row will
+ * not match, so each victim produces exactly one audit row. Idempotency
+ * is held by the lifecycle table's status transition.
  */
-export async function sweepTimeouts({ timeoutMs = 30000, now: _now } = {}) {
+export async function sweepTimeouts({ timeoutMs = 30000, now: _now, logger = null } = {}) {
   const db = getDb();
   const timeoutSeconds = Math.max(1, Math.ceil(Number(timeoutMs) / 1000));
+
+  // 1) SELECT the victims first — after the UPDATE we can no longer tell
+  //    which rows were 'running' (and we need the context for the audit
+  //    payload anyway). MySQL / MSSQL both bind the interval as ? so the
+  //    two dialects stay symmetric.
+  const selectSql = db.dialect === 'mssql'
+    ? `SELECT id, hostname, command_type, operator_id, params_json
+         FROM ad_member_commands
+         WHERE status = CAST('running' AS NVARCHAR(16))
+           AND claimed_at < DATEADD(SECOND, -?, CAST(SYSUTCDATETIME() AS DATETIME2))`
+    : `SELECT id, hostname, command_type, operator_id, params_json
+         FROM ad_member_commands
+         WHERE status = 'running'
+           AND claimed_at < UTC_TIMESTAMP() - INTERVAL ? SECOND`;
+  let victims = [];
+  try {
+    const { rows } = await db.query(selectSql, [timeoutSeconds]);
+    victims = Array.isArray(rows) ? rows : [];
+  } catch (e) {
+    // SELECT failure is non-fatal: the lifecycle UPDATE still runs, only
+    // the audit rows are skipped. Never let an audit problem block the
+    // status transition (a row stuck in 'running' forever is worse).
+    logger?.warn?.({ err: e?.message }, 'member commands sweepTimeouts SELECT failed; audit skip');
+  }
+
+  // 2) UPDATE the lifecycle table.
   await db.execute(db.sql.adMemberCommands.sweepTimeouts, [timeoutSeconds]);
-  return 0;
+
+  // 3) One audit row per victim.
+  if (victims.length > 0) {
+    const audit = await import('./audit.js');
+    let auditFailures = 0;
+    for (const v of victims) {
+      try {
+        // writeAuditRequired throws on failure — the member side mirrors
+        // the AD side's "audit completeness" rule (R158.47.2): if EVERY
+        // audit write fails we escalate to logger.error so an operator /
+        // alert pipeline sees that audit_logs itself may be broken.
+        await audit.writeAuditRequired({
+          userId: null,                       // the sweeper has no operator
+          action: 'ad_member_command_timed_out',
+          target: `cmd:${v.id}`,
+          payload: {
+            commandId: v.id,
+            hostname: v.hostname,
+            commandType: v.command_type,
+            operatorId: v.operator_id ?? null,
+            errorMessage: 'command exceeded timeout threshold',
+            timeoutMs: Number(timeoutMs) || null
+          }
+        }, logger);
+      } catch (e) {
+        auditFailures++;
+        logger?.warn?.({ err: e?.message, commandId: v?.id },
+          'ad_member_command_timed_out audit write failed (best-effort counted)');
+      }
+    }
+    if (auditFailures === victims.length) {
+      logger?.error?.({ swept: victims.length, auditFailures, timeoutMs },
+        'member sweepTimeouts: ALL audit writes failed — investigate audit_logs table integrity');
+    } else if (auditFailures > 0) {
+      logger?.warn?.({ swept: victims.length, auditFailures, timeoutMs },
+        'member sweepTimeouts: some audit writes failed');
+    } else {
+      logger?.info?.({ swept: victims.length, timeoutMs },
+        'member commands swept to timeout');
+    }
+  }
+
+  return victims.length;
 }
 
 /**
@@ -502,5 +634,9 @@ export const _testInternals = Object.freeze({
   redactPasswords,
   truncateUtf8,
   containsDeniedPattern,
+  // R161.35 (2026-11-22) — exposed so the regression net can assert the
+  // params contract directly (unknown-field rejection, force handling)
+  // instead of only reading the source text.
+  validateMemberScript,
   httpErr
 });
