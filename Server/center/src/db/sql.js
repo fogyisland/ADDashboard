@@ -3389,6 +3389,20 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                     WHERE status = 'queued' AND hostname = ?
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?`,
+      // R161.35 第 3 步 (2026-11-22) — 参数校验失败的行**不进 running**, 直接 failed。
+      //
+      // ★ 为什么不走 'running' 等 sweeper: 那会把一次攻击尝试变成一条 30 秒后的
+      //   "超时", 操作员看到的是"网络/超时"而不是"这行是伪造的"。两者语义
+      //   完全不同。用 'failed' 让它在历史里一眼可见, 并冻结 sweepTimeouts
+      //   (它只扫 running)。
+      // ★ 这是一次状态转换, 不是补一条数据 —— claim 本就有幂等条件
+      //   (status='queued'), 所以重复领取不会重复失败。
+      rejectClaims: (idCount) => `UPDATE ad_member_commands
+                                     SET status = 'failed',
+                                         error_message = ?,
+                                         completed_at = UTC_TIMESTAMP()
+                                   WHERE id IN (${Array(idCount).fill('?').join(',')})
+                                     AND status = 'running'`,
       claim: (idCount) => `UPDATE ad_member_commands
                               SET status = 'running', claimed_at = UTC_TIMESTAMP()
                             WHERE id IN (${Array(idCount).fill('?').join(',')})
@@ -6961,6 +6975,13 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
                     WHERE status = CAST('queued' AS NVARCHAR(16))
                       AND hostname = CAST(? AS NVARCHAR(128))
                     ORDER BY created_at ASC, id ASC`,
+      // R161.35 第 3 步 — 见同级 MySQL 版本注释 (参数校验失败 ⇒ 直接 failed)。
+      rejectClaims: (idCount) => `UPDATE ad_member_commands
+                                     SET status = CAST('failed' AS NVARCHAR(16)),
+                                         error_message = CAST(? AS NVARCHAR(2000)),
+                                         completed_at = CAST(SYSUTCDATETIME() AS DATETIME2)
+                                   WHERE id IN (${Array(idCount).fill('?').join(',')})
+                                     AND status = CAST('running' AS NVARCHAR(16))`,
       claim: (idCount) => `UPDATE ad_member_commands
                                SET status = CAST('running' AS NVARCHAR(16)),
                                    claimed_at = CAST(SYSUTCDATETIME() AS DATETIME2)

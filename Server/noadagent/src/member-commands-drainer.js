@@ -73,30 +73,12 @@ export async function drainMemberCommands({
   let succeeded = 0;
   let failed = 0;
 
-  // 2) For each row: dispatch locally, then POST the result envelope.
-  // Sequential — the dispatcher spawns a PS1 process per row, and the
-  // PS1 has a 5-60s timeout. Running 10 in parallel would fork-bomb
-  // the member server. Same rationale as ad-commands-drainer.
-  for (const cmd of commands) {
-    processed++;
-    const commandId = cmd.id;
-    const commandType = cmd.commandType;
-    // dispatchMemberCommand always resolves (NEVER throws) — synthesizes
-    // {success:false, error, exitCode} on any internal failure.
-    const result = await dispatchMemberCommand({
-      commandType,
-      params: cmd.params ?? {},
-      timeoutMs,
-      logger,
-    });
-    if (result.success) succeeded++;
-    else failed++;
-
-    // 3) POST the result back to center. Failure is logged at warn —
-    // does NOT throw because the row is already claimed on the center
-    // side (status='running'). sweepTimeouts will eventually flip it
-    // to 'timeout' if we never ack; the next operator retry would
-    // then queue a fresh row.
+  // POST one result envelope back to center. Failure is logged at warn — it
+  // does NOT throw, because the row is already claimed on the center side
+  // (status='running') and sweepTimeouts will eventually flip it to
+  // 'timeout' if we never ack.
+  // ★ R161.35 第 3 步 — 抽成函数, 让"类型不合规"的拒绝路径也能回报结果。
+  async function postResult(commandId, commandType, result) {
     try {
       const ack = await httpPostJson({
         url: `${centerUrl}/api/agent/member-commands/${commandId}/result`,
@@ -124,9 +106,51 @@ export async function drainMemberCommands({
           status: ack.status,
         }, 'member-command result POST failed (next sweep will retry)');
       }
-    } catch (e) {
-      logger?.warn?.({ err: e.message, commandId }, 'member-command result POST threw');
+    } catch (err) {
+      logger?.warn?.({ err: err.message, commandId }, 'member-command result POST threw');
     }
+  }
+
+  // 2) For each row: dispatch locally, then POST the result envelope.
+  // Sequential — the dispatcher spawns a PS1 process per row, and the
+  // PS1 has a 5-60s timeout. Running 10 in parallel would fork-bomb
+  // the member server. Same rationale as ad-commands-drainer.
+  for (const cmd of commands) {
+    processed++;
+    const commandId = cmd.id;
+    const commandType = cmd.commandType;
+    // ★ R161.35 第 3 步 (2026-11-22) — 对命令类型做**最后一道**收口。
+    //
+    //   中心在 queue 与 claim 两处都校验过, 但 agent 不能把"中心校验过"当作
+    //   前提: 这条 HTTP 响应本身就是不可信输入 (中间人 / 旧版中心 / 直接写库)。
+    //   未声明的 commandType 一律不投给 dispatcher, 而是合成一个失败 envelope
+    //   回传 —— 行的结局是 failed 且原因可读, 而不是一条悬空的运行记录。
+    if (commandType !== 'member_action') {
+      logger?.warn?.({ commandId, commandType }, 'member-command rejected: unsupported commandType');
+      failed++;
+      await postResult(commandId, commandType, {
+        success: false,
+        data: null,
+        error: `unsupported commandType: ${commandType ?? '(none)'}`,
+        exitCode: 1,
+        durationMs: 0,
+      });
+      continue;
+    }
+    // dispatchMemberCommand always resolves (NEVER throws) — synthesizes
+    // {success:false, error, exitCode} on any internal failure. It also
+    // re-validates scriptId / args against the sealed manifest and the
+    // on-disk sha256 before powershell.exe is spawned.
+    const result = await dispatchMemberCommand({
+      commandType,
+      params: cmd.params ?? {},
+      timeoutMs,
+      logger,
+    });
+    if (result.success) succeeded++;
+    else failed++;
+
+    await postResult(commandId, commandType, result);
   }
 
   return { processed, succeeded, failed };

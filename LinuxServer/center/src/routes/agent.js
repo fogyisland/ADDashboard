@@ -1275,21 +1275,55 @@ export function agentRouter({ config, logger, mount = 'full' }) {
     // 'ad_member_command_timed_out' (server.js T4).
     r.get('/api/agent/member-commands', agentMw, async (req, res) => {
       // 2026-10-21 (security) — 同 /api/agent/ad-commands: 签名绑定身份优先,
-      // query 仅在未签名时兜底。member-commands 的 params.script 是自由格式
-      // PowerShell 全文(member-commands.js:153/180), 跨机领取等价于任意代码执行。
+      // query 仅在未签名时兜底。领取到的命令会以 SYSTEM 身份在成员机上执行,
+      // 跨机领取等价于对另一台机器下发动作。
       const hostname = String(
         (req._agentIdentityBound && req._agentIdentityBound.hostname)
         || req.query.hostname || ''
       ).trim();
       if (!hostname) return res.status(400).json({ error: 'hostname required' });
       try {
+        // R161.35 第 3 步 (2026-11-22) — 领取时再校验一次参数。
+        //
+        // ★ 为什么需要: queue 时的校验只保护 "通过 API 下发的命令"。中心被
+        //   拿下时, 攻击者最直接的做法是**直接往 ad_member_commands 插一行**
+        //   (或改一行的 params_json) —— 完全绕过 queueCommand。claimForAgent
+        //   现在在"读出口"再校验一次: 不合 schema 的行**不下发给 agent**,
+        //   而且在这里落一条 `ad_member_command_rejected` 审计 ⇒ 攻击尝试
+        //   可见, 而不是变成一条 30 秒后被扫成 timeout 的"谜之行"。
+        //
+        // ★ 被拒的行由 claimForAgent 置为 failed 并**随返回值**交回来; 这里给
+        //   每一行落一条 `ad_member_command_rejected` 审计。没有去重逻辑也安全:
+        //   行被置 failed 后不再满足 claimPick 的 status='queued', 同一行不会被
+        //   第二次领取, 所以审计恰好一条。
         const { claimForAgent } = await import('../services/member-commands.js');
-        const claimedRaw = await claimForAgent(hostname, 5);
-        // R158.52 — claimForAgent is documented to return an Array, but a
-        // future shape change or an edge-case driver returning a single
-        // object would throw `claimed.map is not a function` and 500 the
-        // entire route. Normalise defensively.
-        const claimed = Array.isArray(claimedRaw) ? claimedRaw : (claimedRaw ? [claimedRaw] : []);
+        const claimedRaw = await claimForAgent(hostname, 5, { logger });
+        // R158.52 — claimForAgent 文档承诺返回数组; 防御性地兼容单对象形态, 避免
+        // `claimed.map is not a function` 把整条路由打成 500。
+        const claimedResult = claimedRaw && !Array.isArray(claimedRaw) ? claimedRaw : { accepted: claimedRaw, rejected: [] };
+        const claimed = (Array.isArray(claimedResult.accepted) ? claimedResult.accepted : [])
+          .filter((c) => c && c.command_type === 'member_action');
+        const rejectedClaims = Array.isArray(claimedResult.rejected) ? claimedResult.rejected : [];
+        for (const { row, reason } of rejectedClaims) {
+          // 审计写失败不能让本次领取作废 (好行已翻成 running, 必须发给 agent);
+          // 但要留痕 —— 这是安全事件。
+          try {
+            await writeAudit({
+              action: 'ad_member_command_rejected',
+              target: `host:${hostname}`,
+              payload: {
+                commandId: row?.id ?? null,
+                hostname,
+                commandType: row?.command_type ?? null,
+                reason: String(reason ?? '').slice(0, 500)
+              },
+              logger
+            });
+          } catch (auditErr) {
+            logger.error({ err: auditErr?.message, commandId: row?.id },
+              'ad_member_command_rejected audit write failed');
+          }
+        }
         for (const c of claimed) {
           await writeAudit({
             action: 'ad_member_command_claimed',

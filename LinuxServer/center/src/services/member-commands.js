@@ -1,15 +1,17 @@
-// 2026-09-05 R81 — Member server PowerShell command execution service.
+// 2026-09-05 R81 — Member server command execution service.
 //
-// Center-staged + agent-pull: operator queues a free-form PowerShell via
-// POST /api/admin/member-commands; row inserted into ad_member_commands
-// with status='queued'. The agent polls GET /api/agent/member-commands
-// for its hostname; the service atomically flips up to `limit` queued
-// rows for the agent's hostname from 'queued' to 'running' (two-step
-// claimPick + claim — same atomic pattern as ad-admin-commands). The
-// agent runs the script via run-member-script.ps1 and POSTs back via
-// /api/admin/member-commands/:id/result; the service flips the row to
-// success / failed and writes the result blob. Rows persist after
-// completion for audit history.
+// ★ R161.35 第 2/3 步 (2026-11-22) — 通道从「自由 PowerShell」改为「密封动作」。
+//   operator 通过 POST /api/admin/member-commands 提交 { scriptId, args },
+//   行以 status='queued' 写入 ad_member_commands。agent 轮询
+//   GET /api/agent/member-commands?hostname=X; 服务原子地把该 hostname 的最多
+//   `limit` 行从 queued 翻成 running (claimPick + claim, 与 ad-admin-commands
+//   相同的两步领取)。agent 按密封清单执行 .ps1 并通过
+//   /api/agent/member-commands/:id/result 回报; 服务翻成 success / failed 并
+//   保存结果。行在完成后保留供审计。
+//
+//   第 3 步在这个文件里加了**读出口**再校验 (partitionClaims): 不论行是谁写进
+//   表的 (API / 直接插库 / 改 params_json), 只要不合 schema, claimForAgent
+//   就不下发, 而是把它置 failed 并写明原因。
 //
 // sweepTimeouts() runs on a setInterval from server.js (Task 4) and
 // flips 'running' rows whose claimed_at is older than the threshold to
@@ -307,7 +309,7 @@ export async function queueCommand({ hostname, params, operatorId, skipOnlineChe
  * service flips the row to 'running' atomically so two agents polling
  * simultaneously cannot claim the same row.
  */
-export async function claimForAgent(hostname, limit = 5) {
+export async function claimForAgent(hostname, limit = 5, { logger = null } = {}) {
   if (!hostname || typeof hostname !== 'string') {
     throw httpErr(400, 'hostname required');
   }
@@ -335,7 +337,42 @@ export async function claimForAgent(hostname, limit = 5) {
   const loadSql = db.sql.adMemberCommands.loadByIds(ids.length);
   const { rows } = await db.query(loadSql, ids);
   if (!rows) return [];
-  return rows.filter(r => r.status === 'running').map(parseParamsJson);
+  const running = rows.filter(r => r.status === 'running');
+  // 驱动把 params_json 作为文本列返回 (MySQL: string / Buffer, MSSQL: string)。
+  // 解析在这一处完成, 下游 (partitionClaims / 路由 / agent wire) 只处理对象。
+  const parsed = running.map((row) => ({ ...row, params_json: parseCommandParams(row?.params_json) }));
+  const { accepted, rejected } = partitionClaims(parsed);
+
+  // R161.35 第 3 步 (2026-11-22) — 被拒的行**当场**置 failed。
+  //
+  // ★ 不能留在 running / queued 等 sweeper:
+  //   - 留 running ⇒ 30 秒后变成一条 "超时审计", 操作员看到的是网络问题;
+  //   - 留 queued  ⇒ 没有任何 sweeper 扫 queued, 这一行会安静地躺到天荒地老,
+  //     而且**下一个人来领取时会再被拒一次**。
+  //   两种情况都把"有人往表里插了一行伪造命令"伪装成别的东西。
+  //
+  // ★ best-effort: reject 写不进去时行留在 queued/running, 行为与改动前一致,
+  //   不比现在更糟。领到的好行无论如何照常下发。
+  //
+  // ★ 返回值只含 accepted。被拒行随 `rejected` 返回给**调用方 (路由)** 用于审计,
+  //   绝不进入 agent 收到的 commands 数组。
+  if (rejected.length > 0) {
+    const ids = rejected.map(({ row }) => Number(row?.id)).filter(Number.isFinite);
+    if (ids.length > 0) {
+      const message = truncateUtf8(
+        `rejected at claim (R161.35): ${rejected.map((r) => r.reason).join('; ')}`, 1900
+      );
+      try {
+        await db.execute(db.sql.adMemberCommands.rejectClaims(ids.length), [message, ...ids]);
+      } catch (rejectErr) {
+        // 这是一次安全事件的状态记录, 写失败必须留痕 —— 但绝不能因此抛错
+        // 拖垮整批领取 (accepted 的行已经翻成 running, 必须发出去)。
+        logger?.warn?.({ err: rejectErr?.message, rejectedIds: ids },
+          'R161.35 rejectClaims failed — rejected rows may stay queued/running');
+      }
+    }
+  }
+  return { accepted, rejected };
 }
 
 /**
@@ -567,9 +604,61 @@ function tryParseJson(v) {
   try { return JSON.parse(v); } catch { return null; }
 }
 
-function parseParamsJson(row) {
-  if (!row) return row;
-  return { ...row, params_json: tryParseJson(row.params_json) };
+// ── R161.35 第 3 步 — params_json 的解码 ─────────────────────────────────
+//
+// ★ 从驱动出来的 params_json 是**文本**列的值 (MySQL 可能是 string 或 Buffer,
+//   MSSQL 是 string)。第 2 步之前这里有一段 parseParamsJson, 改造时被当成死代码
+//   删掉了 —— 但 loadByIds 依然原样返回文本列。若不解析, 校验函数看到的永远是
+//   "字符串不是对象", 每一行都会被判为非法 (正常命令 100% 被拒)。
+//
+// ★ 解析失败返回 null: 那不是"没参数", 而是一个**不合法的载荷**, 与
+//   `params` 为 null 一样会被 validateMemberAction 拒绝。两者走同一条路。
+function parseCommandParams(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'object' && !Buffer.isBuffer(raw)) return raw;
+  try {
+    const text = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// ── R161.35 第 3 步 (2026-11-22) — 领取时再校验一次 ────────────────────
+//
+// ★ 为什么 queue 时已经校验过, 这里还要再来一次:
+//   queue 校验保护的是"通过 API 下发的命令"。但 ad_member_commands 的行
+//   也可以被**别的路径**写进来 —— 中心被拿下的情形下, 最直接的做法就是
+//   直接往这张表插一行 (或者改一行 params_json)。这一步把闸门从"写入口"
+//   搬到了"读出口": 不论是谁写的, 只要参数不合 schema 就不往下发。
+//
+// ★ 为什么必须**拒绝**而不是"读出来交给 agent 判断":
+//   agent 侧的 schema 与中心逐项一致 (check-member-script-manifest 守着), 所以
+//   agent 迟早也会拒绝它。但那是一个"悄悄不执行"的结局: 行停在 running, 30 秒后
+//   被扫成 timeout, 操作员只看到"超时", 看不到"这行是伪造的"。中心在领取时拦住
+//   ⇒ 行**当场**置 failed 且 error_message 写明 `rejected at claim (R161.35): …`
+//   ⇒ 攻击尝试在历史里一眼可见; 路由再把 rejected 落成审计行。
+//
+// ★ 返回 { accepted, rejected } 给**调用方** (路由要写审计), 但 accepted 之外的
+//   行**绝不**进入给 agent 的 commands 数组 —— 那是下游唯一会执行的地方。
+export function partitionClaims(rows) {
+  const accepted = [];
+  const rejected = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const v = validateMemberAction(row?.params_json);
+    if (row?.command_type === 'member_action' && v.ok) {
+      // 用**归一化后**的对象下发给 agent: 未声明的字段不进 wire。
+      accepted.push({ ...row, params_json: v.normalized });
+    } else {
+      rejected.push({
+        row,
+        reason: row?.command_type === 'member_action'
+          ? (v.ok ? 'invalid' : v.error)
+          : `unsupported commandType: ${row?.command_type ?? '(none)'}`
+      });
+    }
+  }
+  return { accepted, rejected };
 }
 
 // 2026-09-25 R93.4 — MSSQL `TOP` cannot be parameter-bound. Inline the
@@ -585,8 +674,7 @@ function resolveClaimPickSql(db, safeLimit) {
   return db.sql.adMemberCommands.claimPick;
 }
 
-// ── Test helpers ─────────────────────────────────────────────────────────
-// Exposed so the test harness can reset in-memory state between runs
+// ── Test helpers ─────────────────────────────────────────────────────────// Exposed so the test harness can reset in-memory state between runs
 // without leaking across test files. NOT exported via the router.
 
 export const _testInternals = Object.freeze({
@@ -606,6 +694,9 @@ export const _testInternals = Object.freeze({
   // missing args, retired free-form `script`) instead of only reading the
   // source text.
   validateMemberAction,
+  // R161.35 第 3 步 — 领取时再校验的分流器 (测试直接验测分流结果)
+  parseCommandParams,
+  partitionClaims,
   MEMBER_SCRIPTS,
   SCRIPT_IDS,
   httpErr
