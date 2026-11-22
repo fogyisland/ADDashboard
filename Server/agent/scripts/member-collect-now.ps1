@@ -13,7 +13,7 @@
 #     -ParamsPath <tmpfile.json>
 #
 # Params file (JSON):
-#   { "kind": "replication" | "discovery" }
+#   { "kind": "collector" }
 #
 # Wire shape (PS1 -> dispatcher stdout last-line JSON):
 #   { success, data, error, exitCode, durationMs }
@@ -64,23 +64,45 @@ try {
 }
 
 $kind = [string]$params.kind
-
-# ★ `kind` selects a FIXED file. It is never used to build a path, so there
-#   is no path-traversal surface here even if the enum check were bypassed.
-$collectorMap = @{
-  'replication' = 'collect-replication.ps1'
-  'discovery'   = 'collect-discovery.ps1'
+if ($kind -ne 'collector') {
+  Fail "kind must be: collector" 1
 }
 
-if (-not $collectorMap.ContainsKey($kind)) {
-  Fail "kind must be one of: $($collectorMap.Keys -join ', ')" 1
+# ★ 只有一种采集动作, 采集脚本由 **本集** 的 config 决定:
+#   AD agent   → scripts/collect-replication.ps1 (+ collect-discovery.ps1)
+#   NoAD agent → scripts/collect.ps1 (config 默认值)
+# ★ 路径不能写死在清单里: AD 绿包里根本没有
+#   collect.ps1, 而 NoAD 绿包里根本没有 collect-replication.ps1 ——
+#   同一份清单覆盖两种发版, 只能让脚本自己发现。
+$agentRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$configPath = Join-Path $agentRoot 'appsettings.json'
+if (-not (Test-Path -LiteralPath $configPath)) {
+  Fail "appsettings.json not found at $configPath" 2
 }
 
-$agentScriptsDir = Split-Path -Parent $PSCommandPath
-$collectorPath = Join-Path $agentScriptsDir $collectorMap[$kind]
+$cfg = $null
+try {
+  $cfg = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {
+  Fail "cannot parse appsettings.json: $($_.Exception.Message)" 2
+}
+
+$rel = [string]$cfg.psScriptPath
+if ([string]::IsNullOrWhiteSpace($rel)) {
+  # config.js 的默认值是 <agent>/scripts/collect.ps1
+  $rel = Join-Path 'scripts' 'collect.ps1'
+}
+# 相对路径按 agent 根解析; 绝对路径照用 (部署线的真值).
+# ★ 这里不做路径白名单: collect.ps1 本身就是这个 agent
+#   每个心跳在执行的脚本, 这个动作只是"现在就跑",
+#   不引入任何新的执行面。
+$collectorPath = $rel
+if (-not [System.IO.Path]::IsPathRooted($collectorPath)) {
+  $collectorPath = Join-Path $agentRoot $collectorPath
+}
 
 if (-not (Test-Path -LiteralPath $collectorPath)) {
-  Fail "collector not found: $($collectorMap[$kind])" 2
+  Fail "collector not found: $rel" 2
 }
 
 try {
@@ -107,7 +129,7 @@ try {
     success    = $true
     data       = @{
       kind          = $kind
-      collector     = $collectorMap[$kind]
+      collector     = (Split-Path -Leaf $collectorPath)
       output        = $raw
       truncated     = $truncated
       originalBytes = $byteCount

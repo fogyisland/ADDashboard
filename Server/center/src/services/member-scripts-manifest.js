@@ -39,7 +39,7 @@ export const MEMBER_SCRIPTS = Object.freeze({
     timeoutSec: 60,
     label: '立即采集',
     args: {
-      kind: { type: 'enum', values: ['replication', 'discovery'], label: '采集类型' }
+      kind: { type: 'enum', values: ['collector'], label: '采集类型' }
     }
   },
   agent_diagnostics: {
