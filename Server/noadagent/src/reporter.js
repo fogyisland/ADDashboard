@@ -141,16 +141,57 @@ export function requestJson({ method, url, headers, body, timeoutMs = 30000 }) {
 // flushReportQueue POST. fetchConfig is intentionally kept on
 // requestJson (the /config.json endpoint expects hostname=agentId=''
 // and there's no body to bind).
+// R161.34 (2026-11-07, A-F1) — 本机专属签名密钥的**模块级缓存**。
+//
+// ★ 为什么用模块级缓存而不是每个调用点传参:
+//   签名发生在多个调用点 (signedRequestJson / fetchConfig /
+//   package-manager / discovery / port-config-fetcher …), 每个都手写一遍
+//   `signingKey: config.agentSigningKey` 极易漏 —— 漏一处就等于该路径
+//   仍用共享 token 签名 (⇒ 该路径可被冒充)。⇒ 单一入口 + 单一缓存。
+//
+// ★ 为什么不在 reporter 里 import config:
+//   reporter 是热路径 (每分钟心跳 + 每轮采集), config.loadConfig 是
+//   **同步读盘**; 缓存让签名路径零 I/O。
+//
+// ★ 缓存为空 ⇒ 签名回退共享 token (存量 agent 路径, 中心侧同样支持)。
+let _agentSigningKey = '';
+
+/**
+ * 设置本机当前使用的 per-agent 签名密钥 (空串 = 回退共享 token)。
+ * @param {string} key
+ */
+export function _setAgentSigningKey(key) {
+  _agentSigningKey = typeof key === 'string' ? key : '';
+}
+
+/**
+ * 取本机当前使用的 per-agent 签名密钥 (测试用)。
+ * @returns {string}
+ */
+export function _getAgentSigningKey() {
+  return _agentSigningKey;
+}
+
+// R161.34 (2026-11-07, A-F1) — per-agent 签名密钥。
+//   `signingKey` 是本机**专属**的密钥 (中心按 agentId 反查下发)。
+//   传了就用它签名, 中心的验签会先按 agentId 取该机密钥重算;
+//   没传 (存量 agent / 还没领到密钥) ⇒ 回退共享 token (旧路径)。
+//   ★ 签名消息不变, 只换密钥 ⇒ 中心端两条验签路径共用同一个构造。
 export function signedRequestJson({
   method, url, headers = {}, body, timeoutMs,
-  agentToken, hostname, agentId
+  agentToken, hostname, agentId, signingKey
 }) {
   const stamped = { ...headers };
   if (typeof agentToken === 'string' && agentToken.length > 0) {
     stamped['X-Agent-Token'] = agentToken;
     if (typeof hostname === 'string' && typeof agentId === 'string') {
       stamped['X-Agent-Signature'] = signRequest({
-        hostname, agentId, body: body ?? null, token: agentToken
+        hostname,
+        agentId,
+        body: body ?? null,
+        token: agentToken,
+        // ★ 显式传入优先; 没传就用模块级缓存 (由 delivery / boot 设好)。
+        signingKey: signingKey || _agentSigningKey
       });
       // X-Agent-Id lets the centre's middleware skip the body-first lookup
       // when body is empty (mirror of the agent-side convention).
@@ -384,7 +425,11 @@ export function fetchConfig({ centerUrl, agentToken, ifNoneMatch = null }) {
   // S82: GET requests have no body, but we still stamp a signature
   // derived from an empty body so the center can reject unsigned-for-1-
   // minute-after-restart requests from older agents in the field.
-  headers['X-Agent-Signature'] = signRequest({ hostname: '', agentId: '', body: null, token: agentToken });
+  // R161.34 (2026-11-07, A-F1) — 用本机专属密钥 (有的话); 没有则回退
+  //   共享 token (与 signedRequestJson 同一套回退逻辑)。
+  headers['X-Agent-Signature'] = signRequest({
+    hostname: '', agentId: '', body: null, token: agentToken, signingKey: _agentSigningKey
+  });
   return requestJson({
     method: 'GET',
     url: `${centerUrl}/config.json`,

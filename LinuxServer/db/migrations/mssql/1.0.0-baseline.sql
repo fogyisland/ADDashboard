@@ -2352,6 +2352,35 @@ BEGIN ALTER TABLE [system_config] ADD CONSTRAINT [PK__system_c__BDF6033C4D18051F
 -- (no FOREIGN KEYS on [system_config])
 
 -- --------------------------------------------------------------------------
+-- Table: [agent_signing_keys]
+-- R161.34 (2026-11-07) — per-agent 签名密钥表 (A-F1 修复)。详见
+--   db/migrations/mssql/1.0.12-agent-signing-keys.sql 的完整说明。
+--   每台 agent 一把独立签名密钥 ⇒ 中心按 agentId 反查验签 ⇒ 共享
+--   token 的"自报 hostname"循环论证被打断 (A 冒充 B 算不出 B 的签名)。
+--   signing_key 明文存 (中心必须能重算 HMAC; 与 agent_token_current
+--   同一风险面, 不引入新风险类别)。
+-- --------------------------------------------------------------------------
+IF OBJECT_ID('[agent_signing_keys]', 'U') IS NULL
+BEGIN
+  CREATE TABLE [agent_signing_keys] (
+    [agent_id] VARCHAR(64) NOT NULL,
+    [signing_key] VARCHAR(96) NOT NULL,
+    [key_version] INT NOT NULL DEFAULT 1,
+    [issued_at] DATETIME2(0) NOT NULL DEFAULT sysutcdatetime(),
+    [last_seen_at] DATETIME2(0) NULL,
+    [revoked_at] DATETIME2(0) NULL
+  );
+END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.key_constraints WHERE name = 'PK_agent_signing_keys')
+BEGIN ALTER TABLE [agent_signing_keys] ADD CONSTRAINT [PK_agent_signing_keys] PRIMARY KEY ([agent_id]); END;
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_agent_signing_keys_active' AND object_id = OBJECT_ID('[agent_signing_keys]'))
+BEGIN CREATE NONCLUSTERED INDEX [idx_agent_signing_keys_active] ON [agent_signing_keys] ([agent_id], [revoked_at]); END;
+
+-- (no FOREIGN KEYS on [agent_signing_keys])
+
+-- --------------------------------------------------------------------------
 -- Table: [system_ports]
 -- --------------------------------------------------------------------------
 IF OBJECT_ID('[system_ports]', 'U') IS NULL

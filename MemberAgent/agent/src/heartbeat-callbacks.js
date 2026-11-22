@@ -60,6 +60,10 @@ import { applyHeartbeatDeliveries } from './heartbeat-deliveries.js';
 export function makeSendCallback({
   postHeartbeat,
   applyAgentTokenDelivery,
+  // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥的接收器。中心在心跳
+  //   响应里下发本机专属密钥 ⇒ agent 落盘 ⇒ 之后所有出站请求用它签名。
+  //   falsey-safe (未接线时跳过) ⇒ 老调用点/单测不受影响。
+  applyAgentSigningKeyDelivery,
   scheduler,
   // R161.31 (2026-11-07) — 合并写入编排器需要 config (要更新内存里的
   // tokenVersion 等) + configPath (落盘路径)。两者缺省时编排器退化成
@@ -112,6 +116,9 @@ export function makeSendCallback({
       applyAgentToken: applyAgentTokenDelivery,
       applySettings: undefined,
       applyUpgrade: undefined,
+      // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥跟 token 一样走
+      //   合并写 (只算 patch, 由编排器一次落盘)。
+      applySigningKey: applyAgentSigningKeyDelivery,
     });
 
     // 2026-09-04 R78 — drainers fire on every heartbeat. They have

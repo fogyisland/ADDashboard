@@ -48,11 +48,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // appsettings.json 就在 agent/ 根下 (本脚本在 agent/scripts/ 里)。
+// R161.33 (2026-11-07) — 定位**只认部署路径, 不写死盘符**: 本脚本随 bundle
+// 部署在 <installRoot>/agent/scripts/ 下, 所以 ../appsettings.json 就是本机
+// agent 的 appsettings —— 任意 install root 都成立。查找顺序:
+// $env:AD_AGENT_APP_SETTINGS (显式覆盖) → 部署路径推导。找不到就响亮报错
+// 并打印实际查找过的路径, 绝不猜盘符 (与 agent.js/manual-trigger.js 同构)。
 const AGENT_ROOT = resolve(__dirname, '..');
-const APPSETTINGS_CANDIDATES = [
-  join(AGENT_ROOT, 'appsettings.json'),
-  'C:\\agentInstall\\agent\\appsettings.json',
-];
+const APPSETTINGS_CANDIDATES = [];
+if (process.env.AD_AGENT_APP_SETTINGS) {
+  APPSETTINGS_CANDIDATES.push(process.env.AD_AGENT_APP_SETTINGS);
+}
+APPSETTINGS_CANDIDATES.push(join(AGENT_ROOT, 'appsettings.json'));
 
 function fail(message) {
   console.error('[error] ' + message);

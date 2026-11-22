@@ -14,6 +14,10 @@ import { getDb } from '../db/index.js';
 import { contentDispositionFilename } from '../utils/content-disposition.js';
 import { toMysqlDatetime } from '../utils/datetime.js';
 import { getAgentTokenState } from '../services/agent-token.js';
+// R161.34 (2026-11-07) — per-agent 签名密钥下发 (A-F1 修复)。
+//   共享 token 只证明"持有 token 的人签了请求"; per-agent 密钥才证明
+//   "**这台机器**签了请求" ⇒ 打断"自报 hostname"的循环论证。
+import { buildSigningKeyDelivery, touchSigningKey } from '../services/agent-signing-key.js';
 // 2026-10-01 R158.13 — parallel to getAgentTokenState above. Reads the
 // two-row bundle from system_config (agent_settings + agent_settings_version)
 // and returns { settings, version } for the heartbeat delivery path.
@@ -445,9 +449,26 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           // (R158.13). 0 change to AD heartbeat path (line 691 spread
           // untouched). R158.86.6 #5 wire-shape invariant: AD 34 DC heartbeat
           // response payload is byte-identical before / after this ship.
+          // R161.34 (2026-11-07) — per-agent 签名密钥下发 (A-F1 修复)。
+          //   member agent 同样需要: 它也用共享 token 签名, 也同样能被
+          //   "拿共享 token 冒充别台机器" 攻击。
+          //   ★ 这里跟 AD 分支不同: 非 AD 分支历史上**不下发**任何 delivery
+          //     (R158.100 注释: member agents 的 token 是安装时静态写死的)。
+          //     但 per-agent 签名密钥**不是**那个共享 token —— 它是每台机器
+          //     **专属**的身份凭据, 必须逐台下发 ⇒ 这里必须加。
+          //   fail-soft: 下发失败返回 null, 不让 heartbeat 500。
+          const signingKeyDelivery = await buildSigningKeyDelivery(db, {
+            agentId,
+            reportedKeyVersion: req.body?.agentSigningKeyVersion,
+            logger
+          });
+          if (signingKeyDelivery) {
+            await touchSigningKey(db, agentId);
+          }
           return res.json({
             ok: true, accepted: 0, rejected: 0,
             reportRequested: false, packagesChangedAt: null, packagesTriggers: [],
+            ...(signingKeyDelivery || {}),
             upgradeAvailable: upgradeEnv.upgradeAvailable,
             upgradeVersion: upgradeEnv.upgradeVersion
           });
@@ -596,6 +617,24 @@ export function agentRouter({ config, logger, mount = 'full' }) {
           logger.warn({ err: e.message, agentId }, 'agent token state read failed; no delivery');
         }
 
+        // R161.34 (2026-11-07) — per-agent 签名密钥下发 (A-F1 修复)。
+        //   与 agentTokenDelivery 并列的第三条 delivery 通道。
+        //   ★ 区别 (别混淆):
+        //     · agentTokenDelivery = **全局共享** token 的轮换广播 ——
+        //       所有 agent 拿到的是同一把。它只证明"持有 token"。
+        //     · agentSigningKeyDelivery = **这台机器专属**的签名密钥 ——
+        //       它证明"**这台机器**签了这条请求"。⇒ 打断自报 hostname
+        //       的循环论证 (A 冒充 B 算不出 B 的签名)。
+        //   fail-soft 契约与上面两条一致: 失败只 log, 不 500 heartbeat。
+        const agentSigningKeyDelivery = await buildSigningKeyDelivery(db, {
+          agentId,
+          reportedKeyVersion: req.body?.agentSigningKeyVersion,
+          logger
+        });
+        if (agentSigningKeyDelivery) {
+          await touchSigningKey(db, agentId);
+        }
+
         // 2026-10-01 R158.13 — parallel to agentTokenDelivery above.
         // If the centre's current version is newer than what the agent
         // reported, attach the new settings patch so the agent can persist
@@ -717,6 +756,7 @@ export function agentRouter({ config, logger, mount = 'full' }) {
             reportRequested, packagesChangedAt, packagesTriggers,
             ...(agentTokenDelivery || {}),
             ...(agentSettingsDelivery || {}),
+            ...(agentSigningKeyDelivery || {}),
             upgradeAvailable: upgradeEnv.upgradeAvailable,
             upgradeVersion: upgradeEnv.upgradeVersion
           });

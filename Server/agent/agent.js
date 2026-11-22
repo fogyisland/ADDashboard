@@ -1,7 +1,7 @@
 import { loadConfig } from './src/config.js';
 import { createLogger } from './src/logger.js';
 import { runCollector } from './src/collector.js';
-import { postReport, postHeartbeat, fetchConfig, signedRequestJson, _refreshLogLevel } from './src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, signedRequestJson, _refreshLogLevel, _setAgentSigningKey } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { runDiscovery, postDiscovery, startDiscoveryScheduler } from './src/discovery.js';
 import { runHealthChecks } from './src/healthcheck.js';
@@ -18,6 +18,10 @@ import { getOsInfo } from './src/os-info.js';
 // import { discoverCenterPort } from './src/port-scanner.js';
 // import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
+// R161.34 (2026-11-07, A-F1) — per-agent 签名密钥的接收器 (与
+//   applyAgentTokenDelivery 同构: 版本守卫 → 算 patch → 合并写/独立写
+//   → 更新内存 + reporter 缓存)。
+import { applyAgentSigningKeyDelivery } from './src/agent-signing-key-delivery.js';
 // 2026-10-01 R158.13 — parallel to applyAgentTokenDelivery above. Used
 // at all three heartbeat call sites (AD scheduler inline + AD makeSend
 // Callback wiring + non-AD inline send) to consume the centre's
@@ -172,6 +176,14 @@ const logger = createLogger({ component: 'agent', level: config.logLevel });
 // before loadConfig runs). Hand it the operator's appsettings.json
 // logLevel so flipping to `debug` actually surfaces HTTP breadcrumbs.
 _refreshLogLevel(config.logLevel);
+// R161.34 (2026-11-07, A-F1) — 把盘上的 per-agent 签名密钥灌进 reporter
+//   的模块级缓存。★ 为什么 boot 就要灌: 存量 agent 重启后, 第一次心跳
+//   之前就会发别的请求 (采集上报 / file-push 领取 / 升级检查) —— 若缓存
+//   是空的, 那些请求会用**共享 token** 签名 ⇒ 那些路径仍可被冒充。
+//   灌了之后, 重启后**立刻**开始用本机专属密钥签名。
+//   没有密钥 (存量部署还没领到) ⇒ 传空串 ⇒ 签名回退共享 token, 与中心
+//   侧的兼容路径一致。
+_setAgentSigningKey(config.agentSigningKey || '');
 
 // 2026-09-24 R91.2 — hoist osInfo to module top level so the early
 // boot paths (port scanner, refreshPortList inside runAdRuntime,
@@ -364,7 +376,9 @@ async function runAdRuntime({ config, logger }) {
         hostname: agentHost,
         agentId: config.agentId,
         body: null,
-        token: config.agentToken
+        token: config.agentToken,
+        // R161.34 (2026-11-07, A-F1) — 用本机专属密钥 (有的话)。
+        signingKey: config.agentSigningKey
       }),
       ...headers
     };
@@ -598,6 +612,12 @@ async function runAdRuntime({ config, logger }) {
     // 写盘, 由编排器合并成一次原子写)。这里必须**透传**整个 args, 不能
     // 只解构 result —— 否则 deferWrite 丢失 = 又回到独立写 = 合并写白做。
     applyAgentTokenDelivery: (args) => applyAgentTokenDelivery({
+      ...args, config, configPath, logger
+    }),
+    // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥的接收器。与上面
+    //   同款透传 (必须把整个 args 传下去, 否则 deferWrite 丢失 = 又回到
+    //   独立写 = 合并写白做)。
+    applyAgentSigningKeyDelivery: (args) => applyAgentSigningKeyDelivery({
       ...args, config, configPath, logger
     }),
     // R161.31 (2026-11-07) — 合并写入编排器需要 config + configPath。
@@ -932,6 +952,9 @@ async function runAdRuntime({ config, logger }) {
           configPath,
           logger,
           applyAgentToken: (args) => applyAgentTokenDelivery(args),
+          // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥。跟 token
+          //   一样走合并写 (只算 patch, 由编排器一次落盘)。
+          applySigningKey: (args) => applyAgentSigningKeyDelivery(args),
           // 2026-10-01 R158.13 — apply settingsPatch envelope after every
           // scheduler-driven heartbeat. heartbeatRef.current resolves to the
           // live handle assigned below in startHeartbeat.
@@ -1211,6 +1234,9 @@ async function runNonAdRuntime({ config, logger }) {
         configPath,
         logger,
         applyAgentToken: (args) => applyAgentTokenDelivery(args),
+          // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥。跟 token
+          //   一样走合并写 (只算 patch, 由编排器一次落盘)。
+          applySigningKey: (args) => applyAgentSigningKeyDelivery(args),
         // 2026-10-01 R158.13 — non-AD path also consumes settingsPatch;
         // heartbeatRef.current resolves to the live handle (the lazy
         // getter exists at module scope and resolves at the moment a

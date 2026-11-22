@@ -37,6 +37,8 @@ import {
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { writeAppsettingsPatchAtomic } from './appsettings-writer.js';
+// R161.34 (2026-11-07, security) — upgradeVersion 路径段守卫用。
+import { isSafeSegment } from './lib/path-safety.js';
 
 const EBUSY_RETRY_COUNT = 3;
 const EBUSY_RETRY_DELAY_MS = 250;
@@ -173,7 +175,8 @@ export async function applyUpgradeDelivery({
   configPath,
   logger,
   fetchUpgrade,
-  fetchUpgradeResult
+  fetchUpgradeResult,
+  deferWrite = false
 }) {
   if (!result || !result.ok || !result.data) {
     // R158.87.6.5 (2026-10-12) — silent fail log. R158.69.3 铁证 envelope
@@ -218,6 +221,23 @@ export async function applyUpgradeDelivery({
     logger?.error?.({ event: 'agent.upgrade.skip', reason: 'no-fetch-upgrade' },
       'agent upgrade skipped: fetchUpgrade helper missing');
     return { applied: false, error: 'no-fetch-upgrade' };
+  }
+
+  // R161.34 (2026-11-07, security) — upgradeVersion 路径段守卫。
+  //   upgradeVersion 来自中心下发的 envelope (外部输入), 下面直接进
+  //     join(agentInstallDir, '.upgrade-staging', upgradeVersion)
+  //   ⇒ 中心下发 "../../Windows/System32" 就能让 agent (以 SYSTEM 身份)
+  //     在**任意目录** mkdir, 随后把 bundle 文件写进去。
+  //   ⇒ 复用 path-safety.js 的 isSafeSegment (字符白名单 + 拒绝 . / ..),
+  //     跟 package-manager 对 pkg.name / pkg.version 的守卫同构。
+  //   ⇒ 失败语义跟其它 stage 一致: {applied:false, error}, **不** SIGTERM
+  //     (不能因为一个坏版本号就把 agent 打死)。
+  if (!isSafeSegment(upgradeVersion)) {
+    logger?.error?.({ event: 'agent.upgrade.skip', reason: 'unsafe-upgrade-version', upgradeVersion },
+      'agent upgrade skipped: upgradeVersion is not a safe path segment');
+    await reportUpgradeResult({ event: 'agent.upgrade.skip', reason: 'unsafe-upgrade-version',
+      installedAgentVersion: config.installedAgentVersion, upgradeVersion, config, logger, fetchUpgradeResult });
+    return { applied: false, error: 'unsafe-upgrade-version' };
   }
 
   const previousVersion = String(config.installedAgentVersion || '');
@@ -343,10 +363,16 @@ export async function applyUpgradeDelivery({
   // Stage 5 — persist installedAgentVersion atomically. Best-effort: log and
   // continue on failure (bundle is on disk; next heartbeat will retry the
   // persist). Mirror the R158.13 settings-delivery path.
-  const w = writeAppsettingsPatchAtomic({
-    path: configPath,
-    patch: { installedAgentVersion: upgradeVersion }
-  });
+  //
+  // R161.31 (2026-11-07) — deferWrite 模式: 只算 patch 不写盘, 由心跳的
+  // 合并写入器跟 token/settings 的 patch 合成一次原子写 (三次串行写 =
+  // 三倍 IO; 三次并行写 = 丢更新 + 共用 tmp 文件名损坏)。
+  const w = deferWrite
+    ? { ok: true, deferred: true }
+    : writeAppsettingsPatchAtomic({
+      path: configPath,
+      patch: { installedAgentVersion: upgradeVersion }
+    });
   if (!w.ok) {
     logger?.warn?.({ event: 'agent.upgrade.persist.warn', error: w.error, upgradeVersion },
       'agent upgrade bundle applied but persist failed; next heartbeat will retry persist');
@@ -427,6 +453,7 @@ export async function applyUpgradeDelivery({
     previousVersion,
     newVersion: upgradeVersion,
     fileCount: r.data.files.length,
-    exiting: true
+    exiting: true,
+    patch: { installedAgentVersion: upgradeVersion }
   };
 }

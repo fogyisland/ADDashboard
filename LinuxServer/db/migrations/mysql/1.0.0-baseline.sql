@@ -195,6 +195,24 @@ CREATE TABLE IF NOT EXISTS system_config (
   updated_by   VARCHAR(64) NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ==================== agent_signing_keys ====================
+-- R161.34 (2026-11-07) — per-agent 签名密钥表 (A-F1 修复)。详见
+--   db/migrations/mysql/1.0.7-agent-signing-keys.sql 的完整说明。
+--   每台 agent 一把独立签名密钥 ⇒ 中心按 agentId 反查验签 ⇒ 共享
+--   token 的"自报 hostname"循环论证被打断 (A 冒充 B 算不出 B 的签名)。
+--   signing_key 明文存 (中心必须能重算 HMAC; 与 agent_token_current
+--   同一风险面, 不引入新风险类别)。
+CREATE TABLE IF NOT EXISTS agent_signing_keys (
+  agent_id     VARCHAR(64) NOT NULL,
+  signing_key  VARCHAR(96) NOT NULL,
+  key_version  INT NOT NULL DEFAULT 1,
+  issued_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NULL,
+  revoked_at   DATETIME NULL,
+  PRIMARY KEY (agent_id),
+  KEY idx_agent_signing_keys_active (agent_id, revoked_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ==================== sys_roles ====================
 CREATE TABLE IF NOT EXISTS sys_roles (
   id        INT AUTO_INCREMENT PRIMARY KEY,

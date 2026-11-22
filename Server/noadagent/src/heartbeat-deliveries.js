@@ -44,6 +44,7 @@ import { writeAppsettingsPatchAtomicMerged } from './appsettings-writer.js';
  * @param {function} params.applyAgentToken   applyAgentTokenDelivery 包装
  * @param {function} params.applySettings     applySettingsDelivery 包装
  * @param {function} params.applyUpgrade      applyUpgradeDelivery 包装
+ * @param {function} [params.applySigningKey]  R161.34: applyAgentSigningKeyDelivery 包装
  * @returns {Promise<{applied: boolean, deferred: boolean, patches: object[],
  *   error?: string, upgradeOutcome?: object}>}
  */
@@ -54,7 +55,8 @@ export async function applyHeartbeatDeliveries({
   logger,
   applyAgentToken,
   applySettings,
-  applyUpgrade
+  applyUpgrade,
+  applySigningKey
 }) {
   // 缺 config 或 configPath ⇒ 无处可写 (configPath 是落盘路径, config 是
   // 内存状态)。这种情况只在单测 / 旧调用点出现 ⇒ 直接跳过落盘, 但**仍
@@ -93,6 +95,19 @@ export async function applyHeartbeatDeliveries({
     if (upgradeResult && upgradeResult.applied === true && upgradeResult.patch) {
       patches.push(upgradeResult.patch);
     }
+  }
+
+  // ④ per-agent 签名密钥 (R161.34, A-F1)。
+  //   ★ 顺序: 放在 token 之后 —— 两者的版本守卫互不干扰 (agentTokenVersion
+  //     vs agentSigningKeyVersion), 但语义上"先换共享凭据, 再换专属密钥"
+  //     更符合直觉: 拿到新 token 的那一拍, 中心已经知道这台机的新密钥版本,
+  //     一起下发最省一次心跳往返。
+  //   ★ 落盘不是"语义关键" (跟 ③ 不同): 密钥落盘失败 ⇒ 重启后中心会
+  //     再推一次 ⇒ 只是多一次往返, 不丢功能 ⇒ 走合并写即可, 不需要
+  //     像 upgrade 那样回退到独立写。
+  if (typeof applySigningKey === 'function') {
+    const r = await applySigningKey({ result, config, configPath, logger, deferWrite: true });
+    if (r && r.applied === true && r.patch) patches.push(r.patch);
   }
 
   if (patches.length === 0) {

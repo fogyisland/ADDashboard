@@ -18,6 +18,10 @@ import { toMysqlDatetime } from '../utils/datetime.js';
 //   的预处理协议也只吃整数 (见 utils/limit.js 文件头的完整说明)。
 import { clampRowLimit } from '../utils/limit.js';
 import { memberServers } from './sql/member-servers.js';
+// R161.34 (2026-11-07) — per-agent 签名密钥表 (A-F1 修复)。
+//   每台 agent 一把独立签名密钥 ⇒ 中心按 agentId 反查验签 ⇒ 共享
+//   agent token 的"自报 hostname"循环论证被打断。
+import { agentSigningKeys } from './sql/agent-signing-keys.js';
 // R158.X.115 (2026-10-20) — 主机生命周期状态 (退役 / 暂停管控) helper.
 //   ad_dcs + ad_member_servers 两张目录表的 decommissioned_at /
 //   monitoring_paused_at 两列由 baseline 建表 + 守卫 ALTER 负责, 本 helper
@@ -3231,6 +3235,8 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
     // assignments), system-alerts (5 detector firing log, R158.68),
     // system-alert-outbox (built-in alert email delivery queue, R158.68).
     memberServers: memberServers.mysql,
+    // R161.34 (2026-11-07) — per-agent 签名密钥表 (A-F1 修复)。见 mysql 侧注释。
+    agentSigningKeys: agentSigningKeys.mysql,
     // R158.X.115 (2026-10-20) — 主机退役/暂停管控状态机 SQL。
     hostStatus: hostStatus.mysql,
     // R158.74 (2026-10-11) — ad_member_server_ports 业务端口表.
@@ -6794,6 +6800,8 @@ trendByBucketMinutes: ({ hours = 24, bucketMinutes = 5 } = {}) => {
     },
     // Non-AD server management (migration 014). See mysql counterpart.
     memberServers: memberServers.mssql,
+    // R161.34 (2026-11-07) — per-agent 签名密钥表 (A-F1 修复)。见 mysql 侧注释。
+    agentSigningKeys: agentSigningKeys.mssql,
     // R158.X.115 (2026-10-20) — 主机退役/暂停管控状态机 SQL。见 mysql 侧注释。
     hostStatus: hostStatus.mssql,
     // R158.74 (2026-10-11) — ad_member_server_ports 业务端口表.

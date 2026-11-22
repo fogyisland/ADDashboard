@@ -1,7 +1,7 @@
 import { readdirSync, writeFileSync, mkdirSync, existsSync, rmSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { requestJson, signedRequestJson, baseUrl, postPackagesReport } from './reporter.js';
+import { requestJson, signedRequestJson, baseUrl, postPackagesReport, _getAgentSigningKey } from './reporter.js';
 import { runPackageScript } from './package-runner.js';
 import { signRequest } from './lib/agent-identity.js';
 // 2026-10-21 (security) — 中心下发的 pkg.name / pkg.version 直接参与
@@ -572,7 +572,11 @@ export class PackageManager {
           hostname: this.hostname,
           agentId: this.agentId,
           body: null,
-          token: this.agentToken
+          token: this.agentToken,
+          // R161.34 (2026-11-07, A-F1) — 用本机专属密钥 (有的话)。
+          // ★ 惰性取 (不是构造时的快照): 密钥是中心**运行时**下发的,
+          //   PackageManager 构造时可能还没有 ⇒ 快照会永远停在空。
+          signingKey: _getAgentSigningKey()
         })
       }
     });

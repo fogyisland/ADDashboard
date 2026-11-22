@@ -1,5 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// R161.33 (2026-11-07) — DEFAULTS 里的路径**不许**再写死盘符。本模块位于
+// <installRoot>/agent/src/config.js, 因此 agent 目录 = 本文件的上一级。
+// 之前写死 'C:\\agentInstall\\...' / 'C:\\NoADagentInstall\\...' 的后果:
+// 操作员把绿色包装到任意 install root (R158.94 以后是受支持的布局) 且
+// appsettings.json 缺 key 时, 这些默认值静默指向一个不存在的盘符路径。
+// psDiscoveryScriptPath 更是双重残留: 本 bundle 自 R158.75 起就是 non-AD
+// 运行时, 不含 collect-discovery.ps1 (AD 血统文件), 但默认值仍指向它。
+// Register-ADDashboardAgent.ps1 安装时仍写绝对路径进 appsettings.json
+// (shallow-merge 里 appsettings 永远赢), 这里只兜底, 兜底必须落在真实
+// 安装位置。
+const AGENT_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))));
 
 const REQUIRED = ['centerUrl', 'agentId', 'agentToken'];
 const DEFAULTS = {
@@ -12,22 +26,21 @@ const DEFAULTS = {
   // :905 都读这个字段,改一处全 agent 同步生效。
   heartbeatIntervalSeconds: 60,
   discoveryIntervalHours: 1,
-  // 2026-09-27 — green-package defaults. The MSI install path
-  // (`C:\\addashboard\\Agent\\data`) is wrong for the green-package
-  // layout at `C:\\agentInstall\\agent\\`. Resolved relative to the
-  // CWD at launch (NSSM runs the service with CWD = install dir),
-  // which is exactly where PackageManager creates its queue file
-  // and package cache. appsettings.json still wins via shallow-merge.
-  psDiscoveryScriptPath: 'C:\\agentInstall\\agent\\scripts\\collect-discovery.ps1',
-  queueDbPath: 'C:\\agentInstall\\agent\\queue.db',
-  agentDataDir: 'C:\\agentInstall\\agent\\data',
+  // 2026-09-27 — green-package defaults. 旧默认写死 `C:\\agentInstall\\...`;
+  // R161.33 改为相对本模块推导 (<installRoot>/agent/...). psDiscoveryScriptPath
+  // 保留 key 是给老 appsettings.json 的 shallow-merge 兼容 (agent.js 仍会
+  // 读到但 non-AD 运行时不执行 AD 发现), 指向 scripts/ 下不存在的文件时
+  // 行为与 R158.75 一致 (fail-soft, spawn 报干净错误)。
+  psDiscoveryScriptPath: join(AGENT_DIR, 'scripts', 'collect-discovery.ps1'),
+  queueDbPath: join(AGENT_DIR, 'queue.db'),
+  agentDataDir: join(AGENT_DIR, 'data'),
   powerShellPath: 'powershell.exe',
   // R158.75 (2026-10-11) — collect-replication.ps1 is no longer shipped
   // with this bundle (the AD collector was deleted). Default psScriptPath
   // therefore points at a neutral operator-supplied script; members ship
-  // their own collect.ps1. healthCheckIntervalMs kept as a no-op for
-  // schema stability.
-  psScriptPath: 'C:\\NoADagentInstall\\agent\\scripts\\collect.ps1',
+  // their own collect.ps1. R161.33: 盘符写死改为相对本模块推导。
+  // healthCheckIntervalMs kept as a no-op for schema stability.
+  psScriptPath: join(AGENT_DIR, 'scripts', 'collect.ps1'),
   healthCheckIntervalMs: 600_000,
   // T16 + R158.75 — agent type discriminator. 'ad' = DC-collector (legacy,
   //     only in D:\dashboard\agent\, not this bundle); 'non-ad' = member-
@@ -54,6 +67,19 @@ const DEFAULTS = {
   // immediately deliver the live token). Persistent so the agent doesn't
   // re-request the same credential after a restart.
   agentTokenVersion: 0,
+  // R161.34 (2026-11-07, A-F1) — 本机**专属**的签名密钥 + 版本号。
+  //   跟 agentToken / agentTokenVersion 同构 (同一套下发 → 落盘 → 回读
+  //   流程), 但语义完全不同:
+  //     agentToken      — **全 fleet 共享**的凭据 (中心 → agent 认证用)
+  //     agentSigningKey — **本机独占**的签名密钥 (中心按 agentId 反查,
+  //                       用来证明"这台机器签了这条请求")
+  //   ★ 为什么必须有它: S82 的 X-Agent-Signature = HMAC(token, ...) 用的是
+  //     **共享**密钥 ⇒ 谁拿到 token 都能签 ⇒ hostname/agentId 全是自报的
+  //     ⇒ 循环论证 (用 A 的 token 伪造 hostname=B 可算出完全合法的签名)。
+  //   ★ agentSigningKeyVersion = 0 ⇒ 还没领到密钥 ⇒ 签名回退共享 token
+  //     (存量 agent 的正常路径, 零改造)。领到后由心跳响应自动下发并落盘。
+  agentSigningKey: '',
+  agentSigningKeyVersion: 0,
   // R158.48 (2026-10-06) — agent auto-update. The agent's last-applied
   // bundle version (mirrors agent.js:49 const VERSION at build time). The
   // centre reads its own boot-time cached version; if newer than this, the

@@ -6,6 +6,12 @@
   "gitCommit": "3a15817",
   "rounds": [
     {
+      "id": "R161.34",
+      "tag": "per-agent-signing-key",
+      "shippedAt": "2026-11-07",
+      "summary": "A-F1 修复 (per-agent 签名密钥) + 安全批次 S1/S4/S5/S6 + 性能项 3 项 + 路径穿越/参数注入修复. (1) ★A-F1 (P1): 中心与 agent 之间原来只有**一份全局共享**的 agent token, 而 S82 的 X-Agent-Signature = HMAC(token, hostname + ':' + agentId + ':' + body) 里的 hostname/agentId **全部由请求方自报** ⇒ 用 A 的合法 token + 伪造的 hostname=B 可算出**完全合法**的签名 ⇒ 循环论证 ⇒ member-commands 的 params.script (自由格式 PowerShell 全文) 跨机领取 ≈ 任意代码执行. 修复 = agent_signing_keys 表 (每台机器一把 384-bit 密钥) + 中间件按 agentId 反查重算 (per-agent 优先 → 共享 token 回退) + 吊销一律 401 + DB 查询失败 503 fail-closed (绝不降级, 否则一次 DB 抖动就打开冒充窗口). 存量零改造: 首次带签名请求到达 ⇒ 中心生成并下发 ⇒ agent 原子落盘 ⇒ 自动切换. 迁移: mysql 1.0.7 / mssql 1.0.12 增量 + 双方言基线 (verify: table). (2) upgradeVersion 路径穿越守卫 (isSafeSegment, 两棵 agent 树) + ad-admin.js quoteForPowerShell 一律加引号 (旧实现漏掉 $ ; | & $()). (3) healthz 去指纹 / readFeatureFlagStrict fail-closed / content-disposition helper / targetPath 绝对路径校验前置于 DB 查询 / mysql57 charset utf8mb4 / status_code TINYINT→INT 缺陷族 / 索引键长守卫 / 迁移引擎按 semver 执行. (4) Linux 交付镜像漂移归零 (12 个文件) + 漂移守卫接进 npm test."
+    },
+    {
       "id": "R119",
       "tag": "per-module-logs",
       "shippedAt": "2026-09-27",

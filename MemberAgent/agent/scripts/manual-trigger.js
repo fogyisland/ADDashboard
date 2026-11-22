@@ -2,34 +2,32 @@
 // 跑每个 collect.ps1，把 run 结果直接 POST 到
 // /api/agent/packages/report。不依赖 agent 进程的 PackageManager 状态，
 // 避免 disk-queue / in-memory batch 竞态。运行结束后把结果落盘到
-// C:\agentInstall\agent\data\manual-trigger-results.json 便于核对。
+// <installRoot>/agent/data/manual-trigger-results.json 便于核对。
 
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { signedRequestJson, baseUrl } from '../src/reporter.js';
 
-// R158.100 (2026-10-14) — appsettingsPath must be derived from environment
-// rather than hard-coded. R158.86.6 split the member-server install root
-// to C:\MemberServer\agent\ (was C:\agentInstall\agent\) for KDLFLPBISRV.
-// The hard-coded path crashed the manual-trigger one-shot script the
-// moment the operator tried to backfill a member package after a 24h
-// cadence gap. Search in order: $env:AD_AGENT_APP_SETTINGS (explicit
-// override), the R158.86.6 install root, the legacy R158.13 install
-// root. This matches the resolution order agent.js uses to locate
-// appsettings.json at boot — see agent.js:54-72.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// R161.33 (2026-11-07) — appsettings 定位**只认部署路径, 不写死盘符**:
+// 本脚本随 bundle 部署在 <installRoot>/agent/scripts/ 下, 所以
+// ../appsettings.json 就是本机 agent 的 appsettings —— 任意 install root
+// 都成立。查找顺序: $env:AD_AGENT_APP_SETTINGS (显式覆盖) → 部署路径推导。
+// 找不到就响亮报错并打印实际查找过的部署路径, 绝不猜盘符。
+// 这与 agent.js 启动时的定位顺序保持同构 — see agent.js configPath。
 const appsettingsPath = (() => {
   if (process.env.AD_AGENT_APP_SETTINGS) return process.env.AD_AGENT_APP_SETTINGS;
-  const candidates = [
-    'C:\\MemberServer\\agent\\appsettings.json',   // R158.86.6+ member-server
-    'C:\\agentInstall\\agent\\appsettings.json',   // R158.13 legacy (pre-R158.86.6)
-  ];
-  for (const c of candidates) {
-    try {
-      if (existsSync(c)) return c;
-    } catch {}
-  }
-  return candidates[0];   // fall through, will throw on readFileSync
+  const appsettings = join(__dirname, '..', 'appsettings.json');
+  if (existsSync(appsettings)) return appsettings;
+  console.error(
+    `[error] appsettings.json not found at deployed location: ${appsettings}\n`
+    + `        set AD_AGENT_APP_SETTINGS to override, or run this script`
+    + ` from <installRoot>/agent/scripts/`
+  );
+  process.exit(1);
 })();
 const cfg = JSON.parse(readFileSync(appsettingsPath, 'utf8').replace(/^﻿/, ''));
 

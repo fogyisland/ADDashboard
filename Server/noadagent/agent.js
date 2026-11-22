@@ -3,12 +3,16 @@
 // runtime only). Re-import only what's still wired up below.
 import { loadConfig } from './src/config.js';
 import { createLogger } from './src/logger.js';
-import { postReport, postHeartbeat, fetchConfig, signedRequestJson, postPackagesReport, _refreshLogLevel } from './src/reporter.js';
+import { postReport, postHeartbeat, fetchConfig, signedRequestJson, postPackagesReport, _refreshLogLevel, _setAgentSigningKey } from './src/reporter.js';
 import { startHeartbeat } from './src/heartbeat.js';
 import { getOsInfo } from './src/os-info.js';
 import { discoverCenterPort } from './src/port-scanner.js';
 import { writeCenterUrlAtomic } from './src/appsettings-writer.js';
 import { applyAgentTokenDelivery } from './src/agent-token-delivery.js';
+// R161.34 (2026-11-07, A-F1) — per-agent 签名密钥的接收器 (与
+//   applyAgentTokenDelivery 同构: 版本守卫 → 算 patch → 合并写/独立写
+//   → 更新内存 + reporter 缓存)。
+import { applyAgentSigningKeyDelivery } from './src/agent-signing-key-delivery.js';
 // 2026-10-01 R158.13 — parallel to applyAgentTokenDelivery above. Used
 // at all three heartbeat call sites to consume the centre's
 // settingsPatch / clientSettingsVersion envelope.
@@ -174,6 +178,14 @@ const logger = createLogger({ component: 'agent', level: config.logLevel });
 // before loadConfig runs). Hand it the operator's appsettings.json
 // logLevel so flipping to `debug` actually surfaces HTTP breadcrumbs.
 _refreshLogLevel(config.logLevel);
+// R161.34 (2026-11-07, A-F1) — 把盘上的 per-agent 签名密钥灌进 reporter
+//   的模块级缓存。★ 为什么 boot 就要灌: 存量 agent 重启后, 第一次心跳
+//   之前就会发别的请求 (采集上报 / file-push 领取 / 升级检查) —— 若缓存
+//   是空的, 那些请求会用**共享 token** 签名 ⇒ 那些路径仍可被冒充。
+//   灌了之后, 重启后**立刻**开始用本机专属密钥签名。
+//   没有密钥 (存量部署还没领到) ⇒ 传空串 ⇒ 签名回退共享 token, 与中心
+//   侧的兼容路径一致。
+_setAgentSigningKey(config.agentSigningKey || '');
 
 // 2026-09-24 R91.2 — hoist osInfo to module top level so the early
 // boot paths (port scanner + recovery at agent.js:102 / 236 / 285) can
@@ -680,7 +692,9 @@ async function runNonAdRuntime({ config, logger }) {
         hostname: noadHost,
         agentId: config.agentId || noadHost,
         body: null,
-        token: config.agentToken
+        token: config.agentToken,
+        // R161.34 (2026-11-07, A-F1) — 用本机专属密钥 (有的话)。
+        signingKey: config.agentSigningKey
       }),
       ...headers
     };
@@ -782,6 +796,9 @@ async function runNonAdRuntime({ config, logger }) {
           configPath,
           logger,
           applyAgentToken: (args) => applyAgentTokenDelivery(args),
+          // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥。跟 token
+          //   一样走合并写 (只算 patch, 由编排器一次落盘)。
+          applySigningKey: (args) => applyAgentSigningKeyDelivery(args),
           applySettings: (args) => applySettingsDelivery({ ...args, heartbeat: heartbeatRef.current }),
           applyUpgrade: (args) => applyUpgradeDelivery({
             ...args,
@@ -809,6 +826,10 @@ async function runNonAdRuntime({ config, logger }) {
       //   编排器要的是 (args) => fn({...args, deferWrite:true}) 形状;
       //   直接传原函数时 deferWrite 会被丢掉 ⇒ 编排器收不到 patch。
       applyAgentTokenDelivery: (args) => applyAgentTokenDelivery({ ...args, config, configPath, logger }),
+      // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥的接收器。与上面
+      //   同款透传 (必须把整个 args 传下去, 否则 deferWrite 丢失 = 又回到
+      //   独立写 = 合并写白做)。
+      applyAgentSigningKeyDelivery: (args) => applyAgentSigningKeyDelivery({ ...args, config, configPath, logger }),
       // R161.31 (2026-11-07) — makeSendCallback 里的 token 落盘也走合并写
       //   编排器, 需要 config (更新内存) + configPath (落盘路径)。
       config,

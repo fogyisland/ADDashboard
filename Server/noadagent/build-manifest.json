@@ -8,6 +8,12 @@
   "rounds": [
     {
       "version": "0.1.7-noad",
+      "buildTime": "2026-11-07T15:25:16.596Z",
+      "gitCommit": "r161-34-agent-signing-key",
+      "notes": "R161.34 (2026-11-07) — A-F1 修复: per-agent 签名密钥 (non-AD 血统). 中心与 agent 之间原来只有**一份全局共享**的 agent token, 而 S82 的 X-Agent-Signature = HMAC(token, hostname + ':' + agentId + ':' + body) 里的 hostname/agentId **全部由请求方自报** ⇒ 用 A 的合法 token + 伪造的 hostname=B 可算出**完全合法**的签名 ⇒ 循环论证. 修复 = 每台机器一把独立签名密钥, 中心按 agentId 反查重算 ⇒ 冒充者算不出 B 的签名. 零改造升级路径: 首次带签名请求到达 ⇒ 中心下发 ⇒ agent 原子落盘 ⇒ 自动切换; 未领到密钥的机器回退共享 token. 本轮同时含: R161.33 硬编码路径收敛, R161.34 路径穿越守卫 (upgradeVersion isSafeSegment). 版本号未变 —— 本轮不发版."
+    },
+    {
+      "version": "0.1.7-noad",
       "buildTime": "2026-11-07T00:00:00.000Z",
       "gitCommit": "r161-29-single-port-agent",
       "notes": "R161.29 (2026-11-07) — 单端口架构随行升级: CENTER_URL 不再改写 +\":8081\" / report 不再打 :8082, DASHBOARD_CENTER_PORT 回落 8081→8080; 心跳/上报/采集全部走中心 listenPort (默认 8080). 老 Agent 配单端口中心会静默 404, 必须升级到本版.",

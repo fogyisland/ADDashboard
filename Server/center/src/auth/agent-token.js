@@ -38,6 +38,10 @@
 // (now: always), missing signature = 401 'missing agent signature'.
 // Mismatched signature = 401 'identity mismatch' immediately.
 import crypto from 'node:crypto';
+// R161.34 (2026-11-07) — per-agent 签名密钥 service (A-F1 修复)。
+//   验签时按 agentId 反查该机的密钥 —— 共享 token 只能证明"持有 token
+//   的人签了这条请求", per-agent 密钥才能证明"**这台机器**签了这条请求"。
+import { lookupSigningKey } from '../services/agent-signing-key.js';
 
 // Fallback literal used when the db facade doesn't expose db.sql (ad-hoc
 // test stubs). Must remain identical to db.sql.config.getAgentTokenBundle
@@ -136,6 +140,42 @@ function verifySignature({ suppliedSig, token, hostname, agentId, body }) {
   }
 }
 
+// R161.34 (2026-11-07) — 取该 agent 的 per-agent 签名密钥 (A-F1)。
+//
+// 返回形状:
+//   { key, version, revoked, lookupFailed }
+//   · key           — 该机的密钥 (没有则为 null ⇒ 走共享 token 回退)
+//   · revoked       — 该机密钥已被吊销 (⇒ 一律 401)
+//   · lookupFailed  — DB 查询失败 (⇒ 503, **绝不**降级成共享 token 验签)
+//
+// ★ 为什么 lookupFailed 必须 fail-closed:
+//   如果 DB 抖动时降级成"用共享 token 验签就算过", 那攻击者只要持有
+//   共享 token, 就能冒充任意一台**已领过 per-agent 密钥**的机器 ——
+//   一次 DB 抖动就把修复效果清零。⇒ 宁可 503。
+async function resolvePerAgentVerification({ db, agentId, logger }) {
+  const id = String(agentId || '').trim();
+  if (!id) {
+    // 没有 agentId ⇒ 无从反查该机的密钥 ⇒ 走共享 token 路径
+    // (存量 agent 的 GET /config.json 就是 hostname/agentId 为空串)。
+    return { key: null, version: 0, revoked: false, lookupFailed: false };
+  }
+  const { row, error } = await lookupSigningKey(db, id);
+  if (error) {
+    logger?.error?.({ err: error.message, agentId: id }, 'per-agent signing key lookup failed');
+    return { key: null, version: 0, revoked: false, lookupFailed: true };
+  }
+  if (!row) {
+    // 该机还没领过 per-agent 密钥 (存量 agent) ⇒ 共享 token 路径。
+    return { key: null, version: 0, revoked: false, lookupFailed: false };
+  }
+  return {
+    key: row.signing_key || null,
+    version: Number(row.key_version || 0),
+    revoked: Boolean(row.revoked_at),
+    lookupFailed: false
+  };
+}
+
 export function agentToken({ db, logger }) {
   // Resolve the bundle SELECT once from the db facade's SQL registry. If
   // the db facade has no sql config (e.g. a test stub), pass undefined so
@@ -200,15 +240,72 @@ export function agentToken({ db, logger }) {
         `agent request missing X-Agent-Signature within ${IDENTITY_GRACE_MS}ms restart grace (S82) — accepted with warning`
       );
     } else {
-      const ok = verifySignature({ suppliedSig, token: activeToken, hostname, agentId, body: req.body });
-      if (!ok) {
+      // R161.34 (2026-11-07, A-F1) — per-agent 签名密钥验签 (真正的修复)。
+      //
+      // ★ 为什么必须多这一层:
+      //   共享 token 的 HMAC 只证明"**持有 token 的人**签了这条请求",
+      //   不证明"**这台机器**签了这条请求" —— 因为 hostname / agentId
+      //   全部是**请求方自报**的。⇒ 用 A 的合法 token + 伪造的
+      //   hostname=B, 可以算出**完全合法**的签名 (密钥全局共享, 谁都会签)
+      //   ⇒ 循环论证。
+      //   ⇒ per-agent 密钥把"自报"变成"可反查": 中心按 agentId 取该机的
+      //     密钥重算 HMAC ⇒ 冒充者没有 B 的密钥 ⇒ 算不出 B 的签名。
+      //
+      // ★★★ 验签路径的选择 (关键设计, 改这里之前先读这段):
+      //
+      //   情形 A — 该机**已有** per-agent 密钥 (库里查到了):
+      //     ⇒ **只**用该机的密钥验签。**不回退**共享 token。
+      //     ⇒ 为什么不能回退: 回退 = "共享 token 签的请求也算过"。而共享
+      //       token 是**全 fleet 共用**的 ⇒ 任何一台机器 (或任何拿到
+      //       token 的人) 都能用它算出任意 agentId 的合法签名 ⇒
+      //       per-agent 密钥的保护被**完全绕过** ⇒ A-F1 白修。
+      //       (这条被 end-to-end 测试抓到过: 中心"per-agent 优先 → 失败
+      //        回退共享 token"的写法下, 伪造请求照样过。)
+      //     ⇒ 该机的 agent 必须已经用新密钥签名 (下发后自动切换,
+      //       见 services/agent-signing-key.js 的 buildSigningKeyDelivery)。
+      //
+      //   情形 B — 该机**还没有** per-agent 密钥 (存量 agent):
+      //     ⇒ 走共享 token 验签 (旧路径, 零改造兼容)。
+      //     ⇒ 该机下一次心跳就会领到密钥并自动切换到情形 A。
+      //
+      //   情形 C — per-agent 密钥被吊销 ⇒ 一律 401 (已在上面处理)。
+      //
+      //   情形 D — DB 查询失败 ⇒ 503 (已在上面处理, 绝不降级)。
+      const perAgent = await resolvePerAgentVerification({ db, agentId, logger });
+      if (perAgent.lookupFailed) {
+        return res.status(503).json({ error: 'agent identity lookup failed' });
+      }
+      // 该机的密钥已被吊销 ⇒ 一律拒绝 (不落到共享 token 回退路径 ——
+      //   否则吊销就形同虚设: 该机仍可以用共享 token 继续冒充)。
+      if (perAgent.revoked) {
         logger?.warn?.(
           { path: req.path, agentId, hostname },
+          'agent signing key revoked — request rejected'
+        );
+        return res.status(401).json({ error: 'agent signing key revoked' });
+      }
+
+      let ok = false;
+      if (perAgent.key) {
+        // 情形 A: 该机已有专属密钥 ⇒ **只**用它验签 (不回退共享 token)。
+        ok = verifySignature({ suppliedSig, token: perAgent.key, hostname, agentId, body: req.body });
+      } else {
+        // 情形 B: 该机还没有专属密钥 (存量 agent) ⇒ 共享 token 路径。
+        ok = verifySignature({ suppliedSig, token: activeToken, hostname, agentId, body: req.body });
+      }
+      if (!ok) {
+        logger?.warn?.(
+          { path: req.path, agentId, hostname, usedPerAgentKey: Boolean(perAgent.key) },
           'agent signature mismatch (S82 identity binding) — possible impersonation'
         );
         return res.status(401).json({ error: 'identity mismatch' });
       }
       req._agentIdentityBound = { hostname, agentId };
+      // 该机已用 per-agent 密钥签名 ⇒ 中心持有的那把就是它的真身凭据。
+      // 把它挂到 req 上, 供 heartbeat 路由决定"要不要再下发一次"。
+      if (perAgent.key) {
+        req._agentSigningKeyVerified = { agentId, keyVersion: perAgent.version };
+      }
     }
     return next();
   };

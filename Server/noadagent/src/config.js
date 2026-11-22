@@ -67,6 +67,19 @@ const DEFAULTS = {
   // immediately deliver the live token). Persistent so the agent doesn't
   // re-request the same credential after a restart.
   agentTokenVersion: 0,
+  // R161.34 (2026-11-07, A-F1) — 本机**专属**的签名密钥 + 版本号。
+  //   跟 agentToken / agentTokenVersion 同构 (同一套下发 → 落盘 → 回读
+  //   流程), 但语义完全不同:
+  //     agentToken      — **全 fleet 共享**的凭据 (中心 → agent 认证用)
+  //     agentSigningKey — **本机独占**的签名密钥 (中心按 agentId 反查,
+  //                       用来证明"这台机器签了这条请求")
+  //   ★ 为什么必须有它: S82 的 X-Agent-Signature = HMAC(token, ...) 用的是
+  //     **共享**密钥 ⇒ 谁拿到 token 都能签 ⇒ hostname/agentId 全是自报的
+  //     ⇒ 循环论证 (用 A 的 token 伪造 hostname=B 可算出完全合法的签名)。
+  //   ★ agentSigningKeyVersion = 0 ⇒ 还没领到密钥 ⇒ 签名回退共享 token
+  //     (存量 agent 的正常路径, 零改造)。领到后由心跳响应自动下发并落盘。
+  agentSigningKey: '',
+  agentSigningKeyVersion: 0,
   // R158.48 (2026-10-06) — agent auto-update. The agent's last-applied
   // bundle version (mirrors agent.js:49 const VERSION at build time). The
   // centre reads its own boot-time cached version; if newer than this, the

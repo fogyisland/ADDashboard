@@ -138,7 +138,9 @@ function writeParamsFile(params) {
 // R158.40 (2026-10-03) — 把 params 对象平铺成 quickfix 风格的 argv.
 // 比如 { parentDn: 'OU=X,DC=corp,DC=local', name: 'TestOU', description: 'd' }
 // → ['--action','create','--parentDn','OU=X,DC=corp,DC=local','--name','TestOU','--description','d'].
-// 数字自动 toString, null/undefined 跳过. 字符串值含空格或 ' " ' 用单引号包裹.
+// 数字自动 toString, null/undefined 跳过. 字符串值**一律**用单引号包裹
+// (R161.34 安全修复: 旧实现只对含空格/引号/反斜杠的值加引号, 漏掉了
+// `;` `|` `&` `$()` 这些真正能注入命令的字符 —— 见 quoteForPowerShell).
 function flattenParamsToArgs(commandType, params) {
   const out = ['--action', mapActionForCommand(commandType)];
   for (const [k, v] of Object.entries(params)) {
@@ -159,12 +161,31 @@ function mapActionForCommand(commandType) {
   return m[commandType] || 'unknown';
 }
 
+// R161.34 (2026-11-07, security) — PowerShell 参数引用加固。
+//
+// ★ 原来的实现只在值里出现 /[\s'"\\]/ 时才加单引号, 其它情况原样透传。
+//   ⇒ 这是一个**命令注入**漏洞: PowerShell 的参数解析里, `$`、反引号、
+//     `;`、`|`、`&`、`(`、`)`、`<`、`>`、`{`、`}`、`#` 都有特殊含义, 而
+//     这些字符**全都不在旧正则里**。例如:
+//       params.parentDn = "DC=x;whoami"
+//     → 展开成 ['--parentDn', "DC=x;whoami"] → `;` 是命令分隔符
+//     → powershell -File script.ps1 --parentDn DC=x;whoami 会**执行 whoami**。
+//     更狠的是 "DC=x$(calc.exe)" —— `$(...)` 是子表达式求值, 直接跑命令。
+//
+// ★ 修法: **一律**用单引号包裹。
+//   PowerShell 单引号串内的语义非常干净:
+//     · 只有 ' 需要转义 (写成 '')
+//     · $ / ` / ; / | / & 等**全部是字面量** (单引号串不做变量展开、
+//       不做子表达式求值、不做转义)
+//   ⇒ "一律加引号"既堵死了注入, 又不改变任何合法值的语义 ——
+//     合法值加了引号之后传给 PS 脚本仍是同一个字符串。
+//   ⚠ 唯一的副作用: 空字符串。'' 在 PowerShell 里是合法的空串参数,
+//     而旧实现把空串原样传出去 (会被当作"缺参数")。加引号是**更正确**
+//     的行为 (显式传空串), 保持不变。
 function quoteForPowerShell(s) {
-  if (/[\s'"\\]/.test(s)) {
-    // 包外层单引号, 内嵌 ' 用 '' 重复
-    return "'" + s.replace(/'/g, "''") + "'";
-  }
-  return s;
+  const raw = String(s);
+  // 包外层单引号, 内嵌 ' 用 '' 重复 (PowerShell 的标准转义)。
+  return "'" + raw.replace(/'/g, "''") + "'";
 }
 
 // Execute the picked PS1 script and resolve with a normalized result

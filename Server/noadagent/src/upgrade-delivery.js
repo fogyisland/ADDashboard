@@ -37,6 +37,8 @@ import {
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { writeAppsettingsPatchAtomic } from './appsettings-writer.js';
+// R161.34 (2026-11-07, security) — upgradeVersion 路径段守卫用。
+import { isSafeSegment } from './lib/path-safety.js';
 
 const EBUSY_RETRY_COUNT = 3;
 const EBUSY_RETRY_DELAY_MS = 250;
@@ -176,6 +178,22 @@ export async function applyUpgradeDelivery({
     logger?.error?.({ event: 'agent.upgrade.skip', reason: 'no-fetch-upgrade' },
       'agent upgrade skipped: fetchUpgrade helper missing');
     return { applied: false, error: 'no-fetch-upgrade' };
+  }
+
+  // R161.34 (2026-11-07, security) — upgradeVersion 路径段守卫。
+  //   upgradeVersion 来自中心下发的 envelope (外部输入), 下面直接进
+  //     join(agentInstallDir, '.upgrade-staging', upgradeVersion)
+  //   ⇒ 中心下发 "../../Windows/System32" 就能让 agent (以 SYSTEM 身份)
+  //     在**任意目录** mkdir, 随后把 bundle 文件写进去。
+  //   ⇒ 复用 path-safety.js 的 isSafeSegment (字符白名单 + 拒绝 . / ..),
+  //     跟 package-manager 对 pkg.name / pkg.version 的守卫同构。
+  //   ⇒ 失败语义跟其它 stage 一致: {applied:false, error}, **不** SIGTERM
+  //     (不能因为一个坏版本号就把 agent 打死)。
+  //   ⚠ noad 树没有 reportUpgradeResult (不上报升级结果), 所以只落日志。
+  if (!isSafeSegment(upgradeVersion)) {
+    logger?.error?.({ event: 'agent.upgrade.skip', reason: 'unsafe-upgrade-version', upgradeVersion },
+      'agent upgrade skipped: upgradeVersion is not a safe path segment');
+    return { applied: false, error: 'unsafe-upgrade-version' };
   }
 
   const previousVersion = String(config.installedAgentVersion || '');

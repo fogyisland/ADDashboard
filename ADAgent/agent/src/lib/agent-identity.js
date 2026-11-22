@@ -41,18 +41,26 @@ function stableJson(value) {
  * @param {string} args.agentId     — agent's persistent identifier
  * @param {object|null} [args.body] — request body to be POSTed (or null for GET)
  * @param {string} args.token       — shared secret (same as X-Agent-Token)
+ * @param {string} [args.signingKey] — R161.34: 本机**专属**的签名密钥。
+ *   存在时用它签名 (而不是共享 token) —— 中心按 agentId 反查该密钥重算
+ *   ⇒ 别的机器拿共享 token 也算不出本机的合法签名 ⇒ 自报 hostname 的
+ *   循环论证被打断。缺失时回退共享 token (存量 agent / 还没领到密钥时)。
  * @returns {string} hex-encoded HMAC-SHA256 signature
  */
-export function signRequest({ hostname, agentId, body, token } = {}) {
+export function signRequest({ hostname, agentId, body, token, signingKey } = {}) {
   if (typeof token !== 'string' || token.length === 0) {
     throw new Error('token required');
   }
   if (typeof hostname !== 'string' || typeof agentId !== 'string') {
     throw new Error('hostname + agentId required');
   }
+  // R161.34 (2026-11-07, A-F1) — per-agent 密钥优先。
+  //   ★ 签名消息**不变** (仍是 hostname:agentId:body) —— 变的只是密钥。
+  //     ⇒ 中心端用同一套消息构造 + 该机密钥重算, 两侧天然对称。
+  const key = (typeof signingKey === 'string' && signingKey.length > 0) ? signingKey : token;
   const bodyStr = body == null ? '' : stableJson(body);
   const message = `${hostname}:${agentId}:${bodyStr}`;
-  return createHmac('sha256', token).update(message).digest('hex');
+  return createHmac('sha256', key).update(message).digest('hex');
 }
 
 /**
