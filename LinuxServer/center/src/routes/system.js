@@ -8,6 +8,12 @@ import { writeAudit } from '../services/audit.js';
 //   该解释已搬到 mcp-token.js 的 `_clientIp` 定义处 (含 ⚠ F4 反伪造警告),
 //   不要在别处重新解读 req.ip 的可信度.
 import { _clientIp as clientIp } from '../auth/mcp-token.js';
+// R161.34 (2026-11-07, security) — 对外错误脱敏。
+//   这个端点是 localhost-only, 但**不代表**原文可以外泄:
+//     · 浏览器 devtools / 代理 / 网关日志都会记录响应体
+//     · e.message 里通常带 SQL 片段 / 表名 / 连接串 / 文件路径
+//   ⇒ 响应体只回稳定短语; 完整原文进 pino (req.log.error 那行已经在记)。
+import { publicErrorBody } from '../utils/errorSanitizer.js';
 
 // System update endpoint — applies any pending DB migrations and then schedules
 // a process.exit(0) so NSSM picks the new code on the next launch. Intended
@@ -103,7 +109,9 @@ export function systemRouter({ logger, getRepoRoot, getExitDelayMs }) {
       });
     } catch (e) {
       req.log?.error?.({ err: e.message, stack: e.stack }, 'system_update failed');
-      res.status(500).json({ error: 'internal', message: e.message });
+      // ★ R161.34 — 响应体不再回 e.message (内部细节)。操作员要看细节
+      //   就看 pino 日志 (上一行已经记了 err + stack)。
+      res.status(500).json(publicErrorBody(e));
     }
   });
 

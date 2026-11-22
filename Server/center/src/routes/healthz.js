@@ -1,5 +1,10 @@
 import { Router } from 'express';
 import { getDb } from '../db/index.js';
+// R161.34 (2026-11-07, security) — 对外错误脱敏。
+//   /healthz 是**匿名**端点 (NSSM / 外部探针都打它, 没有任何认证),
+//   ⇒ 它返回的 e.message 原样就是"把内部实现细节发给任何能访问 8080 的人"。
+//   ⇒ 响应体只回稳定短语; 完整原文仍然进 pino (debug 级)。
+import { publicErrorBody } from '../utils/errorSanitizer.js';
 
 // R120 fix-up — healthz factory now takes { logger } so the catch can emit
 // a debug-level event. Healthz is polled every 1s by NSSM and external probes,
@@ -41,8 +46,12 @@ export function healthzRouter({ logger }) {
       // debug level — never floods because healthz is rarely failing in
       // steady state; if it IS failing continuously, the operator has
       // bigger problems than this log line.
-      logger?.debug?.({ event: 'healthz.degraded', err: e.message }, 'healthz degraded');
-      res.status(503).json({ status: 'degraded', error: e.message });
+      logger?.debug?.({ event: 'healthz.degraded', err: e.message, stack: e.stack }, 'healthz degraded');
+      // ★ R161.34 — **不**回 e.message。healthz 匿名可打 ⇒ 原文里若有
+      //   连接串 / SQL / 文件路径, 就等于直接送给了任何能访问 8080 的人。
+      //   操作员要看的细节在 pino 里 (上面那行 debug), 页面只需要知道
+      //   "是数据库层挂了还是别的"。
+      res.status(503).json({ status: 'degraded', ...publicErrorBody(e) });
     }
   });
   return r;

@@ -58,6 +58,13 @@
 import { ref, computed } from 'vue';
 import Papa from 'papaparse';
 
+// R161.34 (2026-11-07, security) — xlsx 导入的硬上限。
+//   旧库 (SheetJS) 没有任何上限 ⇒ 一个塞了百万行 / 单个单元格塞 100MB
+//   的 xlsx 就能把浏览器标签页打死 (内存 + 主线程)。
+//   ⇒ 解析阶段就掐断, 不让恶意文件走到提交。
+const MAX_XLSX_ROWS = 50000;
+const MAX_XLSX_CELL_CHARS = 100000;
+
 const props = defineProps({
   title: { type: String, required: true },
   columns: { type: Array, required: true },
@@ -149,19 +156,104 @@ function parseCsv(f) {
   });
 }
 
+// R161.34 (2026-11-07, security) — xlsx 解析库从 `xlsx` (SheetJS) 换成
+// `exceljs`。
+//
+// ★ 为什么必须换 (npm audit 实测):
+//   `xlsx@0.18.5` 有两个 **high** 级漏洞, 而且**两个都直接命中我们这个用法**
+//   (用户上传一个 xlsx → 我们在浏览器里解析它):
+//     · GHSA-4r6h-8v6p-xvw6 — Prototype Pollution in sheetJS (<0.19.3 受影响)
+//     · GHSA-5pgg-2g8v-p4x9 — SheetJS ReDoS (<0.20.2 受影响)
+//   ⇒ 攻击者上传一个精心构造的 xlsx 就能污染 Object.prototype, 或者
+//     用 ReDoS 把浏览器标签页卡死。
+//   ⇒ npm registry 上**没有**修复版 (`fixAvailable: false`) —— SheetJS 已经
+//     从 npm 下架, 修复版 (0.19.3+ / 0.20.2+) 只在它自己的 CDN 上。
+//     ⇒ 唯一出路 = 换库。
+//   ⇒ `exceljs@4.4.0`: 0 high / 0 critical, MIT, 活跃维护。
+//     (它带的 2 个 moderate 只是 uuid 的传递依赖, 且只在 Node 侧生成
+//      UUID 时才可能触发 —— 我们走的是浏览器路径, 碰不到。)
+//
+// ★ 行为等价性 (旧 xlsx.sheet_to_json 的语义已逐条复刻):
+//   · 只读**第一个** sheet
+//   · 第一行当表头
+//   · 缺列 / 空单元格 → 空字符串 (旧库是 `defval: ''`)
+//   · 表头两侧空白 trim 掉
+//   · 完全空白的行**跳过** (旧库 sheet_to_json 也会跳过)
+//
+// ★ 新增的防护 (旧库没有的):
+//   · **行数上限** —— 防止用一个塞了百万行的 xlsx 把浏览器打死
+//   · **单元格文本长度上限** —— 防止单个单元格塞 100MB 字符串撑爆内存
 async function parseXlsx(f) {
-  const XLSX = await import('xlsx');
+  const ExcelJS = (await import('exceljs')).default;
   const buf = await f.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
-  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+
+  const sheet = wb.worksheets[0];
   if (!sheet) throw new Error('Excel 文件没有 sheet');
-  const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-  // Normalize header whitespace
-  return json.map(row => {
-    const out = {};
-    for (const k of Object.keys(row)) out[k.trim()] = row[k];
-    return out;
+
+  // 表头行 —— ★ exceljs 的 row.values 是 **1-based 稀疏数组**
+  //   (row.getRow(1).values[0] 是 null 占位), 所以必须用 eachCell
+  //   按列号填, 不能直接 values.slice(1)。
+  const header = [];
+  sheet.getRow(1).eachCell({ includeEmpty: false }, (cell, colNumber) => {
+    header[colNumber - 1] = cellText(cell.value);
   });
+
+  // 全空的表头 = 没有任何可识别的列 ⇒ 直接报错, 不让用户白等
+  const hasHeader = header.some(h => h && h.trim() !== '');
+  if (!hasHeader) throw new Error('Excel 文件第一行是空的, 未找到表头');
+
+  const out = [];
+  const lastRow = Math.min(sheet.actualRowCount, MAX_XLSX_ROWS + 2);
+  for (let rowNumber = 2; rowNumber <= lastRow; rowNumber++) {
+    const row = sheet.getRow(rowNumber);
+    const obj = {};
+    let hasValue = false;
+    for (let col = 0; col < header.length; col++) {
+      const key = (header[col] || '').trim();
+      if (!key) continue;
+      let value = cellText(row.getCell(col + 1).value);
+      if (value.length > MAX_XLSX_CELL_CHARS) {
+        value = value.slice(0, MAX_XLSX_CELL_CHARS);
+      }
+      obj[key] = value;
+      if (value !== '') hasValue = true;
+    }
+    if (hasValue) out.push(obj);
+  }
+
+  if (sheet.actualRowCount > MAX_XLSX_ROWS + 1) {
+    throw new Error(`Excel 文件超过 ${MAX_XLSX_ROWS} 行上限, 请拆分后再导入`);
+  }
+  return out;
+}
+
+// exceljs 的 cell.value 是**多态**的, 必须归一化成字符串:
+//   · 字符串 / 数字 / 布尔 → 直接取
+//   · { richText: [{ text }] } → 富文本, 拼起来
+//   · { formula, result }      → 公式, 取计算结果
+//   · { text, hyperlink }      → 带超链接的文本
+//   · { error: '#REF!' }       → 错误值, 取文本
+//   · Date                    → ISO 字符串
+//   · null / undefined         → ''
+function cellText(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    if (Array.isArray(value.richText)) {
+      return value.richText.map(part => (part && part.text) ? part.text : '').join('');
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'result')) {
+      return cellText(value.result);
+    }
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.error === 'string') return value.error;
+    if (Array.isArray(value)) return value.map(cellText).join('');
+  }
+  return String(value);
 }
 
 async function onSubmit() {

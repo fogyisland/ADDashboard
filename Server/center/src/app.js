@@ -1,5 +1,9 @@
 import express from 'express';
 import { healthzRouter } from './routes/healthz.js';
+// R161.34 (2026-11-07, security) — 安全响应头。
+//   ★ 必须挂在**最前面** (早于 body parser / 静态资源 / 任何路由),
+//     否则静态资源响应、404、以及 error middleware 兜底的 500 都会漏掉。
+import { securityHeaders } from './middleware/securityHeaders.js';
 
 // Error middleware factory — exported so server.js can mount the same
 // handler on the heartbeat / report apps (R119 multi-port split). Prior
@@ -51,6 +55,10 @@ export function createApp({ config, db, logger, needsInit = false }) {
   const app = express();
   app.disable('x-powered-by');
   app.locals.needsInit = needsInit;
+  // R161.34 (2026-11-07, security) — 安全响应头 —— 进程内第一个 app.use。
+  //   放在这里 (早于 body parser) 的原因: 静态资源、API、404、**以及
+  //   error middleware 兜底的 500** 都要带上这些头。晚挂一个就漏一类。
+  app.use(securityHeaders());
   // R161.31 (2026-11-07) — body parser **按路径分流**。
   //
   // ★ 旧实现: 全局 express.json({limit:'50mb'})。后果 = **每一个** 请求
