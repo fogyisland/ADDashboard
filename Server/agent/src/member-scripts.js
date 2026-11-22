@@ -73,7 +73,7 @@ export const MEMBER_SCRIPTS = Object.freeze({
   // already runs on the heartbeat.
   collect_now: {
     file: 'member-collect-now.ps1',
-    sha256: 'ecaf29037f944a94480f66d80f66380442dca3f1bc05e941f46be393623512ef',
+    sha256: '54ecf5743c41f09bf27d96522488edd1edee1dcc95fc0899e810f0d74fc4cb1c',
     timeoutSec: 60,
     args: {
       kind: { type: 'enum', values: ['collector'] }
