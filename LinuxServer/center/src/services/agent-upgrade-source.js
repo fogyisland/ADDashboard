@@ -35,6 +35,8 @@
 import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+// R161.35 第 4 步 — bundle 签名 (Ed25519)。零第三方依赖。
+import { encodeBundleSignature } from './agent-bundle-signature.js';
 
 // Cap raw bytes — 50 MB matches server.js webApp body limit. If exceeded,
 // agent upgrade is permanently disabled until the bundle is slimmed.
@@ -47,7 +49,14 @@ const INCLUDE_NAME_RULES = [
   (relPath) => relPath.startsWith(`src${sep}`) && relPath.endsWith('.js')
 ];
 
-function shouldInclude(relPath) {
+// R161.35 第 4 步 — 把"哪些文件进包"的规则**导出**给构建脚本用。
+//   构建侧脚本 (scripts/release/sign-agent-bundle.mjs) 必须用**同一套**
+//   规则算清单 ⇒ 签名覆盖的文件集合 = 实际下发的文件集合。
+//   ★ 若两边规则不一致: 中心会把预签名当成"描述的是另一个包"而丢弃
+//     (fileCount / version 核对失败) ⇒ 签名降级为无签名 ⇒ 验签版 agent
+//     仍然能收 (双轨) 但**永远收不到带签名的包** ⇒ 漏洞静默敞开。
+//   ⇒ 规则只有一份, 构建脚本直接 import。
+export function shouldIncludeAgentFile(relPath) {
   return INCLUDE_NAME_RULES.some((rule) => {
     try { return rule(relPath); }
     catch { return false; }
@@ -91,7 +100,7 @@ function walkAgentTree(rootDir) {
         stack.push(abs);
       } else if (ent.isFile()) {
         const rel = relative(rootDir, abs);
-        if (shouldInclude(rel)) out.push(abs);
+        if (shouldIncludeAgentFile(rel)) out.push(abs);
       }
     }
   }
@@ -139,11 +148,24 @@ function readAgentVersionFromMeta(rootDir, logger) {
 }
 
 // Read agentRoot (assumed to be `<repoRoot>/agent`). Returns
-// {available, version, buildTime, gitCommit, files: [{path, sha256, base64, bytes}]}
+// {available, version, buildTime, gitCommit, files: [{path, sha256, base64, bytes}],
+//  signature: <wire 签名块>|null}
 // or null if unavailable (path missing / version unparsable / bundle > cap).
 //
 // `logger` is optional; errors log warn when present.
-export async function getAgentUpgradeSource(agentRoot, logger = null) {
+//
+// R161.35 第 4 步 — 签名。
+//   `signing` 可选, 两种形态:
+//   · {privateKeyPem, keyId}  ⇒ 现场签名 (中心持有私钥的场景)
+//   · {presigned: <wire 块>}   ⇒ 直接转发构建侧预签好的签名 (推荐)
+//   · 都没有 / 签名失败 ⇒ `signature = null` ⇒ 走**双轨**的老路:
+//     bundle 不带签名 ⇒ agent 放行但打 warn + 回报中心。
+//   ★ 为什么签名失败**不**让整个升级源变成 null:
+//     签名是**加固**, 不是**功能前提**。若签名失败就把升级源整个作废,
+//     那么"构建机没配私钥"会导致 fleet 完全失去自动升级能力 ——
+//     那比不签名更糟。正确做法: 降级到"无签名"并在中心日志里大声
+//     报警 (中心运维据此去修构建链)。
+export async function getAgentUpgradeSource(agentRoot, logger = null, signing = null) {
   if (!agentRoot || typeof agentRoot !== 'string') {
     logger?.error?.({ agentRoot }, 'agent-upgrade-source: agentRoot path invalid');
     return null;
@@ -201,6 +223,70 @@ export async function getAgentUpgradeSource(agentRoot, logger = null) {
     return null;
   }
 
+  // R161.35 第 4 步 — 生成 bundle 签名 (失败则降级为"无签名")。
+  //
+  //   两条路, 优先级:
+  //     (a) presigned: 构建侧已签好 ⇒ **原样转发** (中心不碰私钥)。
+  //     (b) 现场签名: 中心持有私钥 (内网自签场景) ⇒ 这里现签。
+  let signature = null;
+  if (signing && signing.presigned && typeof signing.presigned === 'object') {
+    // (a) 转发预签名。但**必须核对**预签名块描述的版本/文件数与本次
+    //     实际读到的包一致 —— 否则就是"拿旧包的签名配新包的内容"。
+    //     核对不通过 ⇒ 当作没有签名 (降级 + 报警), 绝不转发错配的签名。
+    const ps = signing.presigned;
+    const psFileCount = Number(ps.fileCount);
+    const psVersion = String(ps.version || '');
+    if (Number.isInteger(psFileCount) && psFileCount === files.length && psVersion === String(meta.version)) {
+      signature = ps;
+      logger?.info?.({
+        event: 'agent.upgrade.source.presigned',
+        keyId: ps.keyId,
+        version: ps.version,
+        fileCount: psFileCount
+      }, 'agent upgrade source uses PRESIGNED signature (forwarded as-is)');
+    } else {
+      logger?.error?.({
+        event: 'agent.upgrade.source.presigned-mismatch',
+        keyId: ps.keyId ?? null,
+        presignedVersion: psVersion || null,
+        actualVersion: String(meta.version),
+        presignedFileCount: psFileCount,
+        actualFileCount: files.length
+      }, 'presigned signature does NOT match the bundle read from disk — bundle will be served UNSIGNED (never forward a mismatched signature)');
+      signature = null;
+    }
+  } else if (signing && signing.privateKeyPem && signing.keyId) {
+    try {
+      signature = encodeBundleSignature({
+        version: meta.version,
+        gitCommit: meta.gitCommit,
+        keyId: signing.keyId,
+        files: files.map((f) => ({ path: f.path, sha256: f.sha256 })),
+        privateKeyPem: signing.privateKeyPem
+      });
+      logger?.info?.({
+        event: 'agent.upgrade.source.signed',
+        keyId: signature.keyId,
+        version: signature.version,
+        fileCount: signature.fileCount
+      }, 'agent upgrade source signed');
+    } catch (err) {
+      // ★ 不抛 —— 降级到无签名, 但**大声报警**。见函数头注释。
+      logger?.error?.({
+        err: err.message,
+        keyId: signing.keyId,
+        event: 'agent.upgrade.source.sign-failed'
+      }, 'agent upgrade source SIGNING FAILED — bundle will be served UNSIGNED (agents on signing-capable versions will reject it)');
+      signature = null;
+    }
+  } else if (signing) {
+    logger?.warn?.({
+      event: 'agent.upgrade.source.sign-skipped',
+      hasPrivateKey: !!signing.privateKeyPem,
+      hasPresigned: !!signing.presigned
+    }, 'agent upgrade source signing skipped: no private key and no presigned file — bundle served UNSIGNED');
+  }
+
   return {
     available: true,
     version: meta.version,
@@ -208,6 +294,7 @@ export async function getAgentUpgradeSource(agentRoot, logger = null) {
     gitCommit: meta.gitCommit,
     files,
     fileCount: files.length,
-    totalBytes
+    totalBytes,
+    signature
   };
 }

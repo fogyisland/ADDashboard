@@ -43,6 +43,15 @@ appsettings.json
 !appsettings.json.example
 !.env.example
 
+# R161.35 第 4 步 — 发布签名私钥 (构建侧持有, 中心**不**持有)。
+#   · 私钥只在构建机上, 用来给升级包做 Ed25519 签名。
+#   · 中心只转发构建侧预签好的包 (bundle-signature.json)。
+#   · 一旦入库 = 私钥公开 = 任何人都能签任意包 ⇒ agent 验签形同虚设。
+#   只挡**发布签名私钥**这一条路径, 不用宽泛的 *.pem —— 后者会顺手把
+#   将来可能入库的其它证书也悄悄挡掉 (gitignore 的负向规则极难排查)。
+Server/.secrets/
+Server/scripts/release/*.pem
+
 # ---------- 日志与运行期输出 ----------
 *.log
 *.log.*

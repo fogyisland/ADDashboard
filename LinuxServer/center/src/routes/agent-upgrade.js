@@ -21,6 +21,8 @@
 // upgradeAvailable flag from the heartbeat response first).
 
 import { Router } from 'express';
+// R161.35 第 4 步 — 验签失败要落审计 (见 upgrade-result 处理器的说明)。
+import { writeAudit } from '../services/audit.js';
 // R161.22 (2026-10-29) — 纯逻辑外移到 services/agent-upgrade-envelope.js,
 //   因为本模块 import 了 express ⇒ 本机 center/node_modules 是空的 ⇒
 //   离线回归网没法 import 它。纯函数搬出去 ⇒ 可断言。
@@ -177,7 +179,9 @@ export function registerAgentUpgradeRoutes(router, { agentMw, logger }) {
         buildTime: _agentUpgradeSource.buildTime,
         gitCommit: _agentUpgradeSource.gitCommit,
         fileCount: _agentUpgradeSource.fileCount,
-        files: wireFiles
+        files: wireFiles,
+        // R161.35 第 4 步 — 附签名块 (可为 null = 无签名, 走双轨老路)。
+        signature: _agentUpgradeSource.signature ?? null
       });
     } catch (err) {
       logger.error?.({ err: err.message, event: 'agent.upgrade.500' },
@@ -225,7 +229,9 @@ export function registerAgentUpgradeRoutes(router, { agentMw, logger }) {
         buildTime: _noadAgentUpgradeSource.buildTime,
         gitCommit: _noadAgentUpgradeSource.gitCommit,
         fileCount: _noadAgentUpgradeSource.fileCount,
-        files: wireFiles
+        files: wireFiles,
+        // R161.35 第 4 步 — 附签名块 (可为 null = 无签名, 走双轨老路)。
+        signature: _noadAgentUpgradeSource.signature ?? null
       });
     } catch (err) {
       logger.error?.({ err: err.message, event: 'agent.upgrade.nonad.500' },
@@ -279,6 +285,37 @@ export function registerAgentUpgradeRoutes(router, { agentMw, logger }) {
           err,
           stage: body.stage ?? null
         }, 'agent upgrade error (fleet reported)');
+        // R161.35 第 4 步 — **验签失败必须落审计**。
+        //   agent 报上来 error='signature-invalid' ⇒ 它拿到的包验签没过,
+        //   已经**拒收** (没写盘 / 没覆盖代码)。这有两种可能:
+        //     (a) 真的有人换了包 (攻击 / 中间人);
+        //     (b) 构建链漏签或用了另一把私钥 (运维事故)。
+        //   两者都必须**留痕**: 落一条审计, 操作员一眼能查到"哪台机、
+        //   什么时候、拒了什么版本"。
+        //   ⇒ 用 writeAudit (best-effort) 而不是 writeAuditRequired:
+        //     审计写不进去不该让上报端点 500 (那会让 agent 以为上报失败
+        //     而重试, 反而刷日志)。写失败会有 logger.error 兜底。
+        if (err === 'signature-invalid') {
+          try {
+            await writeAudit({
+              userId: null,
+              action: 'agent_upgrade_signature_rejected',
+              target: `host:${body.hostname ?? 'unknown'}`,
+              payload: {
+                agentId: body.agentId ?? null,
+                hostname: body.hostname ?? null,
+                installedAgentVersion,
+                upgradeVersion,
+                reason: String(body.reason || '').slice(0, 500),
+                stage: body.stage ?? null
+              },
+              logger
+            });
+          } catch (auditErr) {
+            logger.error?.({ err: auditErr?.message, agentId: body.agentId ?? null },
+              'agent_upgrade_signature_rejected audit write failed');
+          }
+        }
       } else {
         logger.warn?.({ event: 'agent.upgrade.unknown', receivedEvent: event },
           'agent upgrade result unknown event');
@@ -321,7 +358,9 @@ export function registerAgentUpgradeRoutes(router, { agentMw, logger }) {
         buildTime: _agentUpgradeSource.buildTime,
         gitCommit: _agentUpgradeSource.gitCommit,
         fileCount: _agentUpgradeSource.fileCount,
-        files: wireFiles
+        files: wireFiles,
+        // R161.35 第 4 步 — 附签名块 (可为 null = 无签名, 走双轨老路)。
+        signature: _agentUpgradeSource.signature ?? null
       });
     } catch (err) {
       logger.error?.({ err: err.message, event: 'agent.upgrade.push.500' },

@@ -97,6 +97,8 @@ import { createAdMgmtAuditRetentionLoop } from './src/services/ad-mgmt-audit-ret
 // R158.48 (2026-10-06) — agent auto-update. Reads <repoRoot>/agent/build-manifest.json
 // + walks agent.js + src/**/*.js at boot, caches as JSON bundle for GET /api/agent/upgrade.
 import { getAgentUpgradeSource } from './src/services/agent-upgrade-source.js';
+// R161.35 第 4 步 — 发布签名策略 (预签名转发 / 中心本地签名 / 无签名)。
+import { resolveSigningStrategy } from './src/services/release-signing-key.js';
 import { setAgentUpgradeSource, setNoadAgentUpgradeSource } from './src/routes/agent-upgrade.js';
 import { createDirectorySyncLoop } from './src/services/directory-sync-loop.js';
 // R155.6 — operator directive "另外我们新建一个脚本,定期更新 inbound_partner
@@ -543,7 +545,10 @@ function latestRoundId(rounds) {
   let agentUpgradeSource = null;
   try {
     const agentRoot = join(repoRoot, 'agent');
-    agentUpgradeSource = await getAgentUpgradeSource(agentRoot, logger);
+    // R161.35 第 4 步 — 签名策略: 优先转发构建侧预签好的签名 (中心不碰
+    //   私钥); 中心本地签名需显式开关; 都没有 ⇒ 无签名 (双轨老路)。
+    const adSigning = resolveSigningStrategy({ agentRoot, repoRoot, logger });
+    agentUpgradeSource = await getAgentUpgradeSource(agentRoot, logger, adSigning);
     setAgentUpgradeSource(agentUpgradeSource, logger);
   } catch (err) {
     logger.warn({ err: err.message }, 'agent upgrade source load threw; non-fatal');
@@ -563,7 +568,10 @@ function latestRoundId(rounds) {
   let noadAgentUpgradeSource = null;
   try {
     const noadAgentRoot = join(repoRoot, 'noadagent');
-    noadAgentUpgradeSource = await getAgentUpgradeSource(noadAgentRoot, logger);
+    // R161.35 第 4 步 — noad 树用**自己的**签名策略 (预签名文件在
+    //   noadagent/ 树根下, 跟 AD 树各自的 bundle-signature.json)。
+    const noadSigning = resolveSigningStrategy({ agentRoot: noadAgentRoot, repoRoot, logger });
+    noadAgentUpgradeSource = await getAgentUpgradeSource(noadAgentRoot, logger, noadSigning);
     setNoadAgentUpgradeSource(noadAgentUpgradeSource, logger);
   } catch (err) {
     logger.warn({ err: err.message }, 'non-ad agent upgrade source load threw; non-fatal');

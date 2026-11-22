@@ -39,6 +39,8 @@ import { createHash } from 'node:crypto';
 import { writeAppsettingsPatchAtomic } from './appsettings-writer.js';
 // R161.34 (2026-11-07, security) — upgradeVersion 路径段守卫用。
 import { isSafeSegment } from './lib/path-safety.js';
+// R161.35 第 4 步 (2026-11-22) — 升级包 Ed25519 验签。
+import { evaluateBundleSignature } from './lib/bundle-signature.js';
 
 const EBUSY_RETRY_COUNT = 3;
 const EBUSY_RETRY_DELAY_MS = 250;
@@ -249,6 +251,41 @@ export async function applyUpgradeDelivery({
         bundleLineage: lineageVerdict.lineage },
       'agent upgrade bundle lineage mismatch; aborting (refuse to cross lineage)');
     return { applied: false, error: lineageVerdict.reason };
+  }
+
+  // R161.35 第 4 步 (2026-11-22) — **签名校验** (与 AD 端对称)。
+  //
+  //   放在血统校验之后、**写盘之前** ⇒ 拒收时磁盘还是干净的。
+  //
+  //   双轨判定 (详见 src/lib/bundle-signature.js 的文档):
+  //     · 带签名 + 验签通过 ⇒ 用
+  //     · 带签名 + 验签失败 ⇒ **拒收整个包** (fail-closed)
+  //     · 不带签名        ⇒ 放行, 但打 warn (双轨老路)
+  //
+  //   ★ "没公钥 ⇒ 也拒收带签名的包": 若没公钥就放行, 攻击者只要删掉
+  //     签名字段就能绕过验签 ⇒ 验签形同虚设。
+  const publicKeyBase64 = typeof config.releasePublicKey === 'string' ? config.releasePublicKey : '';
+  const sigVerdict = evaluateBundleSignature({
+    bundle: r.data,
+    publicKeyBase64
+  });
+  if (sigVerdict.mode === 'rejected') {
+    try { rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    logger?.error?.({
+      event: 'agent.upgrade.error',
+      error: 'signature-invalid',
+      reason: sigVerdict.reason,
+      bundleKeyId: r.data?.signature?.keyId ?? null,
+      hasPublicKey: !!publicKeyBase64
+    }, 'agent upgrade bundle SIGNATURE VERIFICATION FAILED; aborting (refuse to apply unverified code)');
+    return { applied: false, error: 'signature-invalid' };
+  }
+  if (sigVerdict.mode === 'unsigned') {
+    logger?.warn?.({
+      event: 'agent.upgrade.unsigned-bundle',
+      hasPublicKey: !!publicKeyBase64,
+      upgradeVersion
+    }, 'agent upgrade bundle carries NO signature — applying anyway (legacy path); upgrade agent to a signature-verifying build to close this');
   }
 
   // Stage 3 — write each file to staging, sha256-verifying as we go.

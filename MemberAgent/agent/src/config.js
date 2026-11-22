@@ -90,6 +90,14 @@ const DEFAULTS = {
   // means "fresh install, force first upgrade" — after the first successful
   // upgrade the centre sees a matching version and stops nudging.
   installedAgentVersion: '0.0.0',
+  // R161.35 第 4 步 (2026-11-22) — 发布签名公钥 (base64 SPKI DER)。
+  //   与 AD 端 (Server/agent/src/config.js) **逐字一致** ——
+  //   两棵树的 config DEFAULTS 由 check-green-package-drift.mjs 盯同步。
+  //   · 公钥**不是秘密** ⇒ 可以随包分发, 也可以写进 appsettings.json。
+  //   · 空字符串 ⇒ 本机没有公钥 ⇒ 收到带签名的包时**拒收** (fail-closed),
+  //     收到不带签名的包时放行 (双轨老路)。
+  releasePublicKey: '',
+  releaseKeyId: '',
   // R158.50.7f (2026-10-07) — agent in-process dashboard config. Passed
   // straight to startDashboard() in agent.js boot (fire-and-forget, see
   // agent.js boot block), which binds the loopback HTTP server that renders

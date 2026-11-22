@@ -79,6 +79,20 @@ const DEFAULTS = {
   // means "fresh install, force first upgrade" — after the first successful
   // upgrade the centre sees a matching version and stops nudging.
   installedAgentVersion: '0.0.0',
+  // R161.35 第 4 步 (2026-11-22) — 发布签名公钥 (base64 SPKI DER)。
+  //   中心下发的升级包带 Ed25519 签名 ⇒ agent 用这把**公钥**验签。
+  //   · 公钥**不是秘密** ⇒ 可以随包分发, 也可以写进 appsettings.json。
+  //   · 空字符串 ⇒ 本机没有公钥 ⇒ 收到带签名的包时**拒收** (fail-closed),
+  //     收到不带签名的包时放行 (双轨老路)。
+  //   ★ 为什么"没公钥 ⇒ 拒收带签名的包"而不是"没公钥 ⇒ 放行":
+  //     放行 = 攻击者只要**把签名字段删掉**就能绕过验签 ⇒ 验签形同
+  //     虚设。拒收 = 攻击者必须**伪造一个合法签名**才行。
+  //     这只影响"已经预置了公钥的机"与"收到带签名的包"这个组合;
+  //     存量机 (没公钥) 收到老包 (无签名) 依然正常升级。
+  releasePublicKey: '',
+  // 发布签名密钥标识 —— 只用于日志/审计 (说明"这把包是谁签的")。
+  //   验签本身不依赖它 (公钥一把就够); 保留它是为了让审计日志可读。
+  releaseKeyId: '',
   // R158.50.7f (2026-10-07) — agent in-process dashboard config. Passed
   // straight to startDashboard() in agent.js boot (fire-and-forget, see
   // agent.js boot block), which binds the loopback HTTP server that renders

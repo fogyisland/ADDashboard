@@ -39,6 +39,8 @@ import { createHash } from 'node:crypto';
 import { writeAppsettingsPatchAtomic } from './appsettings-writer.js';
 // R161.34 (2026-11-07, security) — upgradeVersion 路径段守卫用。
 import { isSafeSegment } from './lib/path-safety.js';
+// R161.35 第 4 步 (2026-11-22) — 升级包 Ed25519 验签。
+import { evaluateBundleSignature } from './lib/bundle-signature.js';
 
 const EBUSY_RETRY_COUNT = 3;
 const EBUSY_RETRY_DELAY_MS = 250;
@@ -295,6 +297,56 @@ export async function applyUpgradeDelivery({
     await reportUpgradeResult({ event: 'agent.upgrade.error', error: 'lineage-mismatch', stage: '2',
         installedAgentVersion: config.installedAgentVersion, upgradeVersion, config, logger, fetchUpgradeResult });
     return { applied: false, error: 'lineage-mismatch' };
+  }
+
+  // R161.35 第 4 步 (2026-11-22) — **签名校验**。
+  //
+  //   放在血统校验之后、**写盘之前** ⇒ 拒收时磁盘还是干净的 (staging
+  //   目录已建但没内容, 会被 rm 掉)。
+  //
+  //   双轨判定 (详见 src/lib/bundle-signature.js 的文档):
+  //     · 带签名 + 验签通过 ⇒ 用
+  //     · 带签名 + 验签失败 ⇒ **拒收整个包** (fail-closed)
+  //     · 不带签名        ⇒ 放行, 但打 warn + 回报中心
+  //
+  //   ★ 为什么"没公钥 ⇒ 也拒收带签名的包":
+  //     若没公钥就放行, 攻击者只要**把签名字段删掉**就能绕过验签 ⇒
+  //     验签形同虚设。拒收 ⇒ 攻击者必须伪造一个合法签名。
+  //     这只影响"收到了带签名的包"这个组合; 存量机 (没公钥) 收到老包
+  //     (无签名) 依然正常升级 ⇒ 零 fleet 破坏面。
+  //
+  //   ★ 签名对象 = (version, gitCommit, 文件清单的 path+sha256)。
+  //     载荷里**不含** base64 —— base64 的完整性由现有的逐文件 sha256
+  //     比对保证, 而那份清单本身被签名覆盖 ⇒ 两者合起来覆盖全部字节。
+  const publicKeyBase64 = typeof config.releasePublicKey === 'string' ? config.releasePublicKey : '';
+  const sigVerdict = evaluateBundleSignature({
+    bundle: r.data,
+    publicKeyBase64
+  });
+  if (sigVerdict.mode === 'rejected') {
+    try { rmSync(stagingDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    logger?.error?.({
+      event: 'agent.upgrade.error',
+      error: 'signature-invalid',
+      reason: sigVerdict.reason,
+      bundleKeyId: r.data?.signature?.keyId ?? null,
+      hasPublicKey: !!publicKeyBase64
+    }, 'agent upgrade bundle SIGNATURE VERIFICATION FAILED; aborting (refuse to apply unverified code)');
+    await reportUpgradeResult({ event: 'agent.upgrade.error', error: 'signature-invalid', stage: '2',
+        reason: String(sigVerdict.reason || '').slice(0, 500),
+        installedAgentVersion: config.installedAgentVersion, upgradeVersion, config, logger, fetchUpgradeResult });
+    return { applied: false, error: 'signature-invalid' };
+  }
+  if (sigVerdict.mode === 'unsigned') {
+    // 双轨老路: 无签名的包照常升级, 但**大声**报警 —— 中心据此统计
+    // "还有多少台没跑在验签版 agent 上"。
+    logger?.warn?.({
+      event: 'agent.upgrade.unsigned-bundle',
+      hasPublicKey: !!publicKeyBase64,
+      upgradeVersion
+    }, 'agent upgrade bundle carries NO signature — applying anyway (legacy path); upgrade agent to a signature-verifying build to close this');
+    await reportUpgradeResult({ event: 'agent.upgrade.skip', reason: 'unsigned-bundle',
+        installedAgentVersion: config.installedAgentVersion, upgradeVersion, config, logger, fetchUpgradeResult });
   }
 
   // Stage 3 — write each file to staging, sha256-verifying as we go.
