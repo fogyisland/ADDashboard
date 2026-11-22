@@ -1,5 +1,7 @@
 <!--
-  2026-09-05 R81 — MemberCommandsView.vue (成员服务器 PowerShell 命令执行).
+  2026-09-05 R81 — MemberCommandsView.vue (成员服务器动作下发).
+  ★ R161.35 第 2 步 (2026-11-22) — 不再是「自由 PowerShell」: 只能从
+    agent 随版本发布的密封动作清单里选一个动作 + 填结构化参数.
 
   Per R81 spec §6. Mirrors R75 UserManagementView visual language.
 
@@ -7,22 +9,22 @@
     1. Page header (eyebrow / subtitle / refresh button)
     2. Toolbar — host picker + online/offline hint + 执行命令 + 刷新
     3. Right-side drawer (MemberCommandHistoryDrawer, scoped to selectedHost)
-    4. Modal — ExecuteCommandModal (PowerShell editor + submit)
+    4. Modal — ExecuteCommandModal (动作下拉 + 动态参数表单 + submit)
 
   data-test contract (matched by tests/member-commands-view.test.js):
     host-picker              host select dropdown
     host-online-status       online/offline badge for selected host
-    exec-button              open the script-execution modal
+    exec-button              open the action modal
     mc-recent-section        recent-commands inline table for current host
 -->
 <template>
   <AdminLayout>
     <header class="page-header">
       <div class="page-titles">
-        <div class="eyebrow">运维管理 · 成员服务器 PowerShell 命令</div>
-        <h2 class="page-title">成员服务器命令执行</h2>
+        <div class="eyebrow">运维管理 · 成员服务器动作</div>
+        <h2 class="page-title">成员服务器动作下发</h2>
         <p class="subtitle">
-          在任意已注册的成员服务器上执行自由 PowerShell ·
+          在已注册的成员服务器上执行预置动作 (脚本随 agent 封印发布, 不接受自由代码) ·
           目标主机<span data-test="host-banner">{{ selectedHost || '—' }}</span>
         </p>
       </div>
@@ -59,14 +61,15 @@
           data-test="exec-button"
           @click="openExec"
           :disabled="!selectedHost"
-        >+ 执行命令</button>
+        >+ 执行动作</button>
       </div>
     </section>
 
     <div v-if="!selectedHost" class="hint-block">请先选择目标成员服务器</div>
     <div v-else>
       <p class="risk-warning">
-        提示: 命令将以 <strong>SYSTEM</strong> 权限在目标主机上执行。脚本内容会被完整审计持久化。
+        提示: 动作将以 <strong>SYSTEM</strong> 权限在目标主机上执行。动作名与参数会被完整审计持久化。
+        可执行的动作集合固定, 由 agent 版本决定 —— 不能在此输入任意脚本。
       </p>
 
       <section class="recent-section" data-test="mc-recent-section">

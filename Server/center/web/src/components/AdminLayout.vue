@@ -281,7 +281,7 @@ const groups = [
     { label: '成员服务器',           path: '/admin/member-servers' },
     // R53: NEW placeholders (mock-first per operator directive).
     { label: '成员服务器文件推送',   path: '/admin/member-file-push' },
-    { label: '成员服务器执行命令',   path: '/admin/member-command-exec' },
+    { label: '成员服务器动作下发',   path: '/admin/member-command-exec' },
     // R158.X.115 (2026-10-20) — 退役/暂停总览页 (跨 DC + member 一页看完)。
     // 摆在「成员服务器管理」组末尾, 让两类机器的下线管理一个入口可达。
     { label: '下线管理',             path: '/admin/server-lifecycle' }

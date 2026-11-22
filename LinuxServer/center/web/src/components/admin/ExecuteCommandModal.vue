@@ -1,32 +1,33 @@
 <!--
-  2026-09-05 R81 — ExecuteCommandModal.vue.
+  ExecuteCommandModal.vue — 成员服务器「动作」弹窗.
 
-  Mirrors R75 UserCreateModal: hosts the PS script editor + timeout
-  picker + submit/cancel. Submits via `member_script` commandType, polls
-  to terminal via useCommandPolling.
+  2026-09-05 R81 — 初版: 自由 PowerShell 编辑器 + 超时选择 + 提交.
+  ★ R161.35 第 2 步 (2026-11-22) — **重写为动作表单**:
+    中心不再接受脚本文本. 操作员只能从密封清单里选一个 scriptId,
+    再填它的结构化参数. 代码 = 随 agent 发版的 .ps1 (带 sha256 封印),
+    数据 = 经过 schema 校验的 JSON 参数 —— 两者在 wire 上永远分离.
 
-  Fields per R81 spec §3 + §6:
-    hostname (required, pre-populated from caller via prop, read-only here)
-    script (required, PowerShell body, max 32KB)
-    timeoutSec (optional, default 30, range 5-60)
-    forceOnline (checkbox, default false — bypass the heartbeat-online guard
-                 with documented use case: offline diagnostics)
+  Fields:
+    hostname (required, prop, read-only here)
+    scriptId (required, 来自 GET /api/admin/member-commands/actions)
+    args     (per-action, 由 actions[].args 的 schema 动态渲染)
 
   data-test contract:
     exec-modal            — modal root
-    exec-hostname          — host preview banner
-    exec-script            — script textarea
-    exec-timeout           — timeout select
-    exec-force             — force-online checkbox
-    exec-submit            — submit button
-    exec-cancel            — cancel button
-    exec-progress          — in-flight "已发送..." banner
-    exec-result            — terminal success/failure banner
+    exec-hostname         — host preview banner
+    exec-script           — 动作下拉框 (原名保留, 供旧测试/脚本定位)
+    exec-args             — 参数表单容器
+    exec-arg-<name>       — 单个参数输入
+    exec-force            — 跳过在线检查 checkbox
+    exec-submit           — submit button
+    exec-cancel           — cancel button
+    exec-progress         — in-flight banner
+    exec-result           — terminal success/failure banner
 -->
 <template>
   <div class="modal-bg" @click.self="cancel">
     <div class="modal" data-test="exec-modal">
-      <header><h3>新建成员服务器 PowerShell 命令</h3></header>
+      <header><h3>成员服务器动作</h3></header>
       <section class="form-body">
         <div class="host-banner">
           <span class="label">目标主机</span>
@@ -34,40 +35,90 @@
         </div>
 
         <label class="field">
-          <span class="label">PowerShell 脚本 <em>*</em></span>
-          <textarea
+          <span class="label">动作 <em>*</em></span>
+          <select
             data-test="exec-script"
-            v-model="form.script"
-            :disabled="submitting"
-            placeholder="例如: Get-Service | Where-Object { $_.Status -eq 'Running' } | Select-Object -First 10"
-            rows="10"
-            spellcheck="false"
-            @input="onScriptInput"
-          ></textarea>
-          <small class="size-hint" :class="{ over: scriptBytes > SCRIPT_MAX_BYTES }">
-            <span v-if="scriptBytes > SCRIPT_MAX_BYTES" class="over-tag">[over] </span>
-            脚本大小: {{ formatBytes(scriptBytes) }} / {{ formatBytes(SCRIPT_MAX_BYTES) }}
+            v-model="form.scriptId"
+            :disabled="submitting || isLoadingActions"
+            @change="onActionChange"
+          >
+            <option value="" disabled>{{ isLoadingActions ? '加载动作清单…' : '— 请选择 —' }}</option>
+            <option v-for="a in actions" :key="a.scriptId" :value="a.scriptId">
+              {{ a.label }} ({{ a.scriptId }} · 超时 {{ a.timeoutSec }}s)
+            </option>
+          </select>
+          <small class="size-hint">
+            可用动作由 agent 随版本发布, 此处只能选择, 不能输入代码.
           </small>
         </label>
 
-        <div class="row">
-          <label class="field">
-            <span class="label">超时 (秒)</span>
-            <select data-test="exec-timeout" v-model.number="form.timeoutSec" :disabled="submitting">
-              <option v-for="s in TIMEOUT_OPTIONS" :key="s" :value="s">{{ s }} 秒</option>
+        <div v-if="selectedAction" class="args-box" data-test="exec-args">
+          <div
+            v-for="spec in selectedAction.args"
+            :key="spec.name"
+            class="field arg-field"
+          >
+            <span class="label">
+              {{ spec.label }}
+              <em v-if="!spec.optional">*</em>
+            </span>
+
+            <select
+              v-if="spec.type === 'enum'"
+              :data-test="`exec-arg-${spec.name}`"
+              v-model="form.args[spec.name]"
+              :disabled="submitting"
+            >
+              <option value="" disabled>— 请选择 —</option>
+              <option v-for="v in spec.values" :key="v" :value="v">{{ v }}</option>
             </select>
-          </label>
-          <label class="field checkbox-field">
+
+            <label v-else-if="spec.type === 'bool'" class="checkbox-field">
+              <input
+                type="checkbox"
+                :data-test="`exec-arg-${spec.name}`"
+                v-model="form.args[spec.name]"
+                :disabled="submitting"
+              />
+              <span>{{ spec.label }}</span>
+            </label>
+
             <input
-              type="checkbox"
-              data-test="exec-force"
-              v-model="form.force"
+              v-else-if="spec.type === 'int'"
+              type="number"
+              :min="spec.min ?? undefined"
+              :max="spec.max ?? undefined"
+              :data-test="`exec-arg-${spec.name}`"
+              v-model.number="form.args[spec.name]"
               :disabled="submitting"
             />
-            <span>跳过在线检查 (目标主机心跳 ≥ 5 分钟内仍可执行)</span>
-          </label>
+
+            <input
+              v-else
+              type="text"
+              :maxlength="spec.maxLen ?? undefined"
+              :data-test="`exec-arg-${spec.name}`"
+              v-model="form.args[spec.name]"
+              :disabled="submitting"
+            />
+
+            <small v-if="spec.type === 'string' && spec.maxLen" class="size-hint">
+              最多 {{ spec.maxLen }} 字符
+            </small>
+          </div>
         </div>
 
+        <label class="field checkbox-field">
+          <input
+            type="checkbox"
+            data-test="exec-force"
+            v-model="form.force"
+            :disabled="submitting"
+          />
+          <span>跳过在线检查 (目标主机心跳 ≥ 5 分钟内仍可执行)</span>
+        </label>
+
+        <p v-if="actionsError" class="error">{{ actionsError }}</p>
         <p v-if="formError" class="error">{{ formError }}</p>
         <p v-if="submitting" class="hint" data-test="exec-progress">
           命令已发送到 {{ props.hostname }} · 命令 ID #{{ activeCommand?.id }} · 等待结果…
@@ -92,7 +143,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, watch } from 'vue';
+import { ref, computed, reactive, onMounted, watch } from 'vue';
 import { memberCommandsApi } from '../../api/member-commands.js';
 import { useCommandPolling } from '../../composables/useCommandPolling.js';
 
@@ -101,13 +152,13 @@ const props = defineProps({
 });
 const emit = defineEmits(['close', 'submitted']);
 
-// R81 spec §3 guard rails mirrored client-side for fast UX feedback.
-const SCRIPT_MAX_BYTES = 32 * 1024;
-const TIMEOUT_OPTIONS = [5, 10, 15, 20, 30, 45, 60];
+const actions = ref([]);
+const isLoadingActions = ref(false);
+const actionsError = ref('');
 
 const form = reactive({
-  script: '',
-  timeoutSec: 30,
+  scriptId: '',
+  args: {},
   force: false
 });
 
@@ -118,37 +169,66 @@ const resultOk = ref(false);
 const activeCommand = ref(null);
 const timedOut = ref(false);
 
-// Byte size is the on-the-wire size (UTF-8). TextEncoder gives us the
-// authoritative byte count — for ASCII it's == .length, but a multibyte
-// script (e.g. with Chinese comments) would otherwise pass the char
-// check while exceeding the 32KB wire limit.
-const scriptBytes = computed(() => {
-  try { return new TextEncoder().encode(form.script).length; }
-  catch { return form.script.length; }
-});
-
-const canSubmit = computed(() =>
-  form.script.trim().length > 0
-  && scriptBytes.value <= SCRIPT_MAX_BYTES
-  && TIMEOUT_OPTIONS.includes(form.timeoutSec)
-  && !submitting.value
+const selectedAction = computed(() =>
+  actions.value.find((a) => a.scriptId === form.scriptId) || null
 );
 
-function onScriptInput() {
-  // Clear stale error when the user edits after a submit attempt.
-  if (formError.value && formError.value.startsWith('脚本')) formError.value = '';
+// 本地先校验一遍, 让操作员在点提交前就看到问题. **权威校验在服务端**
+// (member-commands.js:validateMemberAction → member-scripts-manifest.js:
+// validateArgs); 这里只是 UX 提速, 不做安全判断.
+const canSubmit = computed(() => {
+  if (submitting.value || !selectedAction.value) return false;
+  for (const spec of selectedAction.value.args) {
+    const raw = form.args[spec.name];
+    const missing = raw === undefined || raw === null || raw === '';
+    if (missing && !spec.optional) return false;
+    if (!missing && spec.type === 'int' && !Number.isInteger(Number(raw))) return false;
+  }
+  return true;
+});
+
+function buildDefaultArg(spec) {
+  if (spec.type === 'bool') return false;
+  if (spec.type === 'int') return spec.min ?? null;
+  return '';
 }
 
-function formatBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(2)} MB`;
+function onActionChange() {
+  // 切换动作时重建参数对象: 上一个动作遗留的键会被服务端当作 unknown arg
+  // 拒绝, 留着只会制造一个看不懂的 400.
+  const next = {};
+  if (selectedAction.value) {
+    for (const spec of selectedAction.value.args) next[spec.name] = buildDefaultArg(spec);
+  }
+  form.args = next;
+  formError.value = '';
 }
 
 function validateLocal() {
-  if (!form.script.trim()) return '脚本不能为空';
-  if (scriptBytes.value > SCRIPT_MAX_BYTES) return `脚本超过 ${formatBytes(SCRIPT_MAX_BYTES)} 上限`;
-  if (!TIMEOUT_OPTIONS.includes(form.timeoutSec)) return '超时必须在 5-60 秒之间';
+  if (!selectedAction.value) return '请选择动作';
+  for (const spec of selectedAction.value.args) {
+    const raw = form.args[spec.name];
+    const missing = raw === undefined || raw === null || raw === '';
+    if (missing) {
+      if (spec.optional) continue;
+      return `${spec.label} 必填`;
+    }
+    if (spec.type === 'string' && /[\x00-\x1f\x7f]/.test(String(raw))) {
+      return `${spec.label} 含控制字符`;
+    }
+    if (spec.type === 'string' && spec.pattern && !new RegExp(spec.pattern).test(String(raw))) {
+      return `${spec.label} 格式不正确`;
+    }
+    if (spec.type === 'int') {
+      const n = Number(raw);
+      if (!Number.isInteger(n)) return `${spec.label} 必须是整数`;
+      if (spec.min != null && n < spec.min) return `${spec.label} 不能小于 ${spec.min}`;
+      if (spec.max != null && n > spec.max) return `${spec.label} 不能大于 ${spec.max}`;
+    }
+    if (spec.type === 'enum' && !spec.values.includes(raw)) {
+      return `${spec.label} 必须是 ${spec.values.join(' / ')} 之一`;
+    }
+  }
   return null;
 }
 
@@ -181,6 +261,27 @@ watch(polling.isTerminal, (terminal) => {
   }
 });
 
+async function loadActions() {
+  isLoadingActions.value = true;
+  actionsError.value = '';
+  try {
+    const r = await memberCommandsApi.listActions();
+    const list = Array.isArray(r.data?.actions) ? r.data.actions : [];
+    actions.value = list;
+    // 只有一个动作时直接选中, 省一次点击.
+    if (list.length === 1) {
+      form.scriptId = list[0].scriptId;
+      onActionChange();
+    }
+  } catch (e) {
+    actionsError.value = `动作清单加载失败: ${e?.response?.data?.error || e?.message || '未知错误'}`;
+  } finally {
+    isLoadingActions.value = false;
+  }
+}
+
+onMounted(loadActions);
+
 async function submit() {
   formError.value = '';
   const v = validateLocal();
@@ -189,17 +290,19 @@ async function submit() {
   resultMessage.value = '';
   timedOut.value = false;
   try {
+    // ★ 只发 schema 里声明过的参数; bool 型未勾选时也显式发 false,
+    //   否则服务端会把它当作"未提供"(optional) 而不是 false.
+    const args = {};
+    for (const spec of selectedAction.value.args) {
+      const raw = form.args[spec.name];
+      if (spec.type === 'bool') args[spec.name] = !!raw;
+      else if (raw !== undefined && raw !== null && raw !== '') args[spec.name] = raw;
+    }
     const resp = await memberCommandsApi.queueCommand({
       hostname: props.hostname,
-      commandType: 'member_script',
-      params: {
-        script: form.script,
-        timeoutSec: form.timeoutSec
-      },
-      // R161.35 (2026-11-22) — `force` rides the query string, not params.
-      // The server reads it from req.query (admin.js) and the params
-      // normalizer drops anything but `script`/`timeoutSec`, so putting it
-      // in params made this checkbox a silent no-op.
+      commandType: 'member_action',
+      params: { scriptId: form.scriptId, args },
+      // `force` rides the query string, not params (R161.35 第 1 步修复).
       force: form.force
     });
     activeCommand.value = resp.data;
@@ -223,7 +326,7 @@ function cancel() {
 }
 .modal {
   background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-  min-width: 640px; max-width: 800px; max-height: 90vh;
+  min-width: 560px; max-width: 760px; max-height: 90vh;
   display: flex; flex-direction: column;
 }
 .modal header { padding: 12px 18px; border-bottom: 1px solid var(--border); }
@@ -241,7 +344,10 @@ function cancel() {
   color: var(--accent); font-size: 13px; font-weight: 600;
 }
 
-.row { display: flex; gap: 12px; align-items: flex-end; }
+.args-box {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 12px; border: 1px dashed var(--border); border-radius: 3px;
+}
 .field { display: flex; flex-direction: column; gap: 4px; flex: 1; font-size: 13px; }
 .field .label { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
 .field .label em { color: var(--red); font-style: normal; margin-left: 2px; }
@@ -250,12 +356,6 @@ function cancel() {
   border: 1px solid var(--border); border-radius: 3px;
   padding: 5px 8px; font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.field textarea {
-  resize: vertical;
-  min-height: 180px;
-  line-height: 1.4;
-  white-space: pre;
 }
 .field input:focus, .field select:focus, .field textarea:focus {
   outline: 2px solid var(--accent); border-color: var(--accent);
@@ -266,7 +366,6 @@ function cancel() {
 .checkbox-field span { font-size: 12px; color: var(--text); }
 
 .size-hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
-.size-hint.over { color: var(--red); font-weight: 600; }
 
 .hint { color: var(--muted); font-size: 11px; margin: 0; }
 .error {

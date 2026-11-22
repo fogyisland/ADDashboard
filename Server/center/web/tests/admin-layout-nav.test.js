@@ -50,7 +50,7 @@ const EXPECTED_GROUPS = [
     ['成员服务器组', '/admin/server-groups'],
     ['成员服务器', '/admin/member-servers'],
     ['成员服务器文件推送', '/admin/member-file-push'],
-    ['成员服务器执行命令', '/admin/member-command-exec'],
+    ['成员服务器动作下发', '/admin/member-command-exec'],
     ['下线管理', '/admin/server-lifecycle']
   ]],
   ['权限和账户', [

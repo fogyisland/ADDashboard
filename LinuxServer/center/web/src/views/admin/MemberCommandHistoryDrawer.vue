@@ -3,7 +3,7 @@
 
   Polls GET /api/admin/member-commands?hostname=X every 5s and renders
   the most recent commands newest first. Each row expands to show the
-  params (script body + timeoutSec) + result (stdout/stderr/exitCode/
+  params ({ scriptId, args }) + result (stdout/stderr/exitCode/
   durationMs, with password/newPassword/token redacted belt-and-suspenders
   even though the server already strips them per R81 §3).
 

@@ -29,61 +29,62 @@
 //      before persisting (defense-in-depth — agent should not echo creds)
 
 import { getDb } from '../db/index.js';
+// R161.35 step 2 — the sealed action schema (mirror of the agent manifest).
+// Validation happens HERE, at queue time, so a bad command never lands in
+// ad_member_commands and the operator gets a 400 instead of a silent
+// "queued but never ran".
+import { MEMBER_SCRIPTS, SCRIPT_IDS, validateArgs } from './member-scripts-manifest.js';
 
-// ── command types ───────────────────────────────────────────────────────
-// Single type for R81; future extension can add download_and_run,
-// install_msi, etc. Without an enum the spec's "command_type" column
-// stays ready for the next round.
-const COMMAND_TYPES = Object.freeze(new Set(['member_script']));
+// ★ R161.35 step 2 (2026-11-22) — `member_script` (free-form PowerShell) is
+//   RETIRED. The only command type is now `member_action`, whose params are
+//   { scriptId, args } — a name into the sealed manifest plus structured
+//   arguments. See services/member-scripts-manifest.js for WHY.
+/**
+ * @deprecated R161.35 — kept only so historical `ad_member_commands` rows
+ * that still say command_type='member_script' can be read back by the
+ * history UI. **Nothing may be queued under this type any more.**
+ */
+const LEGACY_COMMAND_TYPE = 'member_script';
+const COMMAND_TYPES = Object.freeze(new Set(['member_action']));
 
-// ── constants for the 8 guard rails ─────────────────────────────────────
-const SCRIPT_MAX_BYTES = 32 * 1024;
-const TIMEOUT_MIN_SEC = 5;
-const TIMEOUT_MAX_SEC = 60;
-const TIMEOUT_DEFAULT_SEC = 30;
+// ── constants for the remaining guard rails ─────────────────────────────
+// ★ SCRIPT_MAX_BYTES / TIMEOUT_MIN_SEC / TIMEOUT_MAX_SEC / TIMEOUT_DEFAULT_SEC
+//   were removed with R161.35 step 2: there is no script body left to size-
+//   check, and each sealed action carries its own timeout in the manifest
+//   (the agent clamps to it — a caller can shorten, never lengthen).
 const STDOUT_MAX_BYTES = 32 * 1024;
 const STDERR_MAX_BYTES = 8 * 1024;
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_SEC = 60;
 
-// 2026-09-09 S82 (security) — deny-list of PowerShell patterns that
-// R81's free-form script body must never carry. The agent typically runs
-// as SYSTEM, so a successful match means full server compromise. Each
-// pattern is case-insensitive. Strings matched literally; regexes (e.g.
-// drive-glob \\.\.\\) matched as written. Keep this list tight — it's a
-// defense-in-depth layer on top of the script-size cap + timeout, not a
-// full sandbox. The agent's wrapper (.ps1) trusts the upstream guard
-// rails, so any reject at this layer MUST be enforced server-side before
-// the row is queued.
-const DENIED_PATTERNS = Object.freeze([
-  /\bremove-item\b[\s\S]*\s(-r(ecurse)?\b|-force\b|-rf\b)/i,
-  /\bformat-volume\b/i,
-  /\bstop-computer\b/i,
-  /\brestart-computer\b/i,
-  /\binvoke-expression\b/i,
-  /\biex\b/i,
-  /\bnew-object\b[\s\S]*\bnet\.webclient\b/i,
-  /\bstart-bitstransfer\b/i,
-  /\bbitsadmin\b/i,
-  /\bwget\s+/i,
-  /\bcurl\s+/i,
-  /\\\\\.\\(pipe|ndishc|physicaldrive)/i,
-  /\breg\s+delete\b[\s\S]*\\currentcontrolset/i,
-  /\bbcdedit\b/i,
-  /\bdiskpart\b/i,
-  /\bstop-process\b[\s\S]*-force\b/i
-]);
+// ★ R161.35 step 2 (2026-11-22) — the S82 deny-list is GONE.
+//
+//   It existed to bound a free-form PowerShell body. That body no longer
+//   exists: `member_script` is retired and the only accepted payload is
+//   { scriptId, args } against a sealed manifest. There is no text left for
+//   a regex to scan.
+//
+//   ★ This is not "we stopped checking" — it is "the thing we were checking
+//     no longer exists, and we replaced it with something checkable". A
+//     deny-list can never cover PowerShell (encoded commands, reflection,
+//     dynamic script blocks, persistence tools absent from the list); an
+//     allow-list of sealed actions can be complete because the set is finite.
+//
+//   Historical rows with command_type='member_script' are still readable
+//   (the column and its history are untouched) — only queueing them is
+//   refused.
+//
+//   If you are tempted to re-add a pattern list here: don't. Add an action
+//   to the manifest, write the .ps1, seal it, ship it.
+
+/** Kept for the audit classifier's benefit — see the module header. */
+const DENIED_PATTERNS = Object.freeze([]);
 
 /**
- * Returns the first denied-pattern regex that matches `script`, or null
- * when the script passes every check. Pure function — exported via
- * _testInternals so the test harness can assert specific payloads.
+ * @deprecated R161.35 — always returns null. Retained so anything that
+ * still imports it does not crash; new code must not call it.
  */
-function containsDeniedPattern(script) {
-  if (typeof script !== 'string' || script.length === 0) return null;
-  for (const re of DENIED_PATTERNS) {
-    if (re.test(script)) return re;
-  }
+function containsDeniedPattern(_script) {
   return null;
 }
 
@@ -143,84 +144,56 @@ function redactPasswords(value) {
   return value;
 }
 
-// ── param validator for member_script ───────────────────────────────────
-// Spec §3 guard rails #2 + #3: script size cap + timeout range.
+// ── param validator for member_action ───────────────────────────────────
+// R161.35 step 2 (2026-11-22) — replaces validateMemberScript.
+//
+// params must be { scriptId, args }. Anything else is rejected:
+//   · a `script` field (the old free-form body) ⇒ explicit "retired" error,
+//     so an old client gets an actionable message instead of a mystery 400
+//   · unknown top-level keys ⇒ rejected, not dropped (same lesson as the
+//     `force` bug from step 1)
+//   · args are validated against the sealed manifest's schema
+//
 // Returns { ok: true, normalized } or { ok: false, error }.
-function validateMemberScript(params) {
-  if (params == null || typeof params !== 'object') {
+function validateMemberAction(params) {
+  if (params == null || typeof params !== 'object' || Array.isArray(params)) {
     return { ok: false, error: 'params object required' };
   }
-  if (!isNonEmptyString(params.script)) {
-    return { ok: false, error: 'invalid params: script' };
-  }
-  // R161.35 (2026-11-22) — reject unknown params instead of dropping them
-  // silently. See the note at the `normalized` return below.
-  //
-  // ★ `force` gets a dedicated message because it has a real cause: older
-  //   frontend builds put it in `params` (ExecuteCommandModal.vue) where the
-  //   server never read it. Telling the caller to move it to the query
-  //   string turns a mystery 400 into an actionable message.
-  const unknownKeys = Object.keys(params)
-    .filter((k) => k !== 'script' && k !== 'timeoutSec');
-  if (unknownKeys.length > 0) {
-    if (unknownKeys.length === 1 && unknownKeys[0] === 'force') {
-      return {
-        ok: false,
-        error: 'invalid params: force is not a command parameter — send it as the ?force=true query parameter'
-      };
-    }
+
+  // ★ Explicit, actionable rejection for the retired free-form path.
+  if (Object.prototype.hasOwnProperty.call(params, 'script')) {
     return {
       ok: false,
-      error: `invalid params: unknown field(s) ${unknownKeys.map((k) => `"${k}"`).join(', ')} (allowed: script, timeoutSec)`
+      error: 'free-form PowerShell (params.script) has been retired — '
+        + 'send { scriptId, args } and pick an action from GET /api/admin/member-commands/actions'
     };
   }
-  // guard rail #2: 32KB cap on script size. We measure as bytes since the
-  // JSON column stores the encoded form.
-  const scriptBytes = Buffer.byteLength(params.script, 'utf8');
-  if (scriptBytes > SCRIPT_MAX_BYTES) {
+
+  const allowedTopLevel = new Set(['scriptId', 'args']);
+  const unknownTop = Object.keys(params).filter((k) => !allowedTopLevel.has(k));
+  if (unknownTop.length > 0) {
     return {
       ok: false,
-      error: `invalid params: script exceeds ${SCRIPT_MAX_BYTES} bytes (got ${scriptBytes})`
+      error: `invalid params: unknown field(s) ${unknownTop.map((k) => `"${k}"`).join(', ')} `
+        + '(allowed: scriptId, args)'
     };
   }
-  // guard rail #3: timeout range. Default when not supplied.
-  let timeoutSec = TIMEOUT_DEFAULT_SEC;
-  if (params.timeoutSec != null) {
-    const n = Number(params.timeoutSec);
-    if (!Number.isFinite(n)) return { ok: false, error: 'invalid params: timeoutSec' };
-    if (n < TIMEOUT_MIN_SEC || n > TIMEOUT_MAX_SEC) {
-      return {
-        ok: false,
-        error: `invalid params: timeoutSec must be in [${TIMEOUT_MIN_SEC}, ${TIMEOUT_MAX_SEC}]`
-      };
-    }
-    timeoutSec = Math.floor(n);
+
+  const scriptId = params.scriptId;
+  if (!isNonEmptyString(scriptId)) {
+    return { ok: false, error: 'invalid params: scriptId' };
   }
+
+  const v = validateArgs(scriptId, params.args);
+  if (!v.ok) return { ok: false, error: `invalid args: ${v.error}` };
+
   return {
     ok: true,
-    // R161.35 (2026-11-22) — the normalizer now REJECTS unknown params
-    // instead of silently dropping them.
-    //
-    // ★ The bug this fixes: the normalizer used to return only
-    //   `{ script, timeoutSec }` and silently discard every other field.
-    //   The UI's "跳过在线检查" checkbox sent `params.force`, which was
-    //   accepted, sent, and then dropped — the operator saw a no-op
-    //   checkbox and got a 503 with no explanation. A silently-dropped
-    //   field is a silent failure: it looks like the feature works.
-    //
-    // ★ Why reject rather than keep dropping: "ignored" is indistinguishable
-    //   from "broken" from the operator's side, and a typo'd field name
-    //   (e.g. `timeout_secs`) would be swallowed the same way. Rejecting
-    //   turns a silent no-op into a loud 400 at queue time.
-    //
-    //   `force` is NOT a command parameter — it is a transport-level
-    //   override for the heartbeat-online check, read from the query
-    //   string (admin.js). It has no meaning in the stored payload.
-    normalized: { script: params.script, timeoutSec }
+    normalized: { scriptId, args: v.normalized }
   };
 }
 
-const VALIDATORS = Object.freeze({ member_script: validateMemberScript });
+const VALIDATORS = Object.freeze({ member_action: validateMemberAction });
 
 // ── hostname-on-host check ─────────────────────────────────────────────
 // Spec §3 guard rail #1: a registered agent must be heartbeating for the
@@ -257,8 +230,8 @@ export async function checkHostOnline(hostname, { force = false } = {}) {
  * status='queued'. Enforces all 8 guard rails at the service boundary:
  *
  *   1. Hostname-online check (unless `skipOnlineCheck` — admin batch path)
- *   2. script size <= 32KB
- *   3. timeout in [5, 60] (default 30)
+ *   2. scriptId ∈ sealed manifest, args match its schema
+ *   3. per-action timeout (manifest-owned; agent clamps)
  *   4. stdout truncation 32KB   (in completeCommand)
  *   5. stderr truncation 8KB    (in completeCommand)
  *   6. per-host rate limit 5 / 60s
@@ -282,17 +255,15 @@ export async function queueCommand({ hostname, params, operatorId, skipOnlineChe
     }
   }
 
-  // validate params (guard rails #2 + #3)
-  const v = validateMemberScript(params);
+  // validate params — scriptId must be in the sealed manifest and `args`
+  // must satisfy that action's schema. Nothing else is accepted.
+  //
+  // ★ R161.35 step 2 removed the S82 deny-list check that used to follow
+  //   this. It scanned a free-form script body that no longer exists; the
+  //   manifest membership check below is a complete allow-list, which is
+  //   what a deny-list never could be.
+  const v = validateMemberAction(params);
   if (!v.ok) throw httpErr(400, v.error);
-
-  // 2026-09-09 S82 (security) — deny-list pattern check. R81's
-  // free-form PS body is a RCE surface; reject at queue time so the
-  // row never lands. Defense-in-depth on top of script size + timeout.
-  const denied = containsDeniedPattern(v.normalized.script);
-  if (denied) {
-    throw httpErr(400, `script contains denied pattern: ${denied.source}`);
-  }
 
   const db = getDb();
 
@@ -315,7 +286,7 @@ export async function queueCommand({ hostname, params, operatorId, skipOnlineChe
   const paramsJson = JSON.stringify(v.normalized);
   const exec = await db.execute(db.sql.adMemberCommands.insert, [
     trimmedHost,
-    'member_script',
+    'member_action',
     paramsJson,
     operatorId ?? null
   ]);
@@ -323,7 +294,7 @@ export async function queueCommand({ hostname, params, operatorId, skipOnlineChe
   return {
     id: insertId,
     hostname: trimmedHost,
-    command_type: 'member_script',
+    command_type: 'member_action',
     status: 'queued',
     operator_id: operatorId ?? null,
     created_at: new Date().toISOString()
@@ -622,10 +593,6 @@ export const _testInternals = Object.freeze({
   COMMAND_TYPES,
   VALIDATORS,
   PASSWORD_KEYS,
-  SCRIPT_MAX_BYTES,
-  TIMEOUT_MIN_SEC,
-  TIMEOUT_MAX_SEC,
-  TIMEOUT_DEFAULT_SEC,
   STDOUT_MAX_BYTES,
   STDERR_MAX_BYTES,
   RATE_LIMIT_MAX,
@@ -634,9 +601,12 @@ export const _testInternals = Object.freeze({
   redactPasswords,
   truncateUtf8,
   containsDeniedPattern,
-  // R161.35 (2026-11-22) — exposed so the regression net can assert the
-  // params contract directly (unknown-field rejection, force handling)
-  // instead of only reading the source text.
-  validateMemberScript,
+  // R161.35 step 2 (2026-11-22) — exposed so the regression net can assert
+  // the { scriptId, args } contract directly (unknown scriptId, unknown /
+  // missing args, retired free-form `script`) instead of only reading the
+  // source text.
+  validateMemberAction,
+  MEMBER_SCRIPTS,
+  SCRIPT_IDS,
   httpErr
 });

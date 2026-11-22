@@ -1,40 +1,57 @@
-// 2026-09-05 R81 — Real agent JS dispatcher for member-server
-// PowerShell commands.
+// 2026-09-05 R81 — Real agent JS dispatcher for member-server commands.
 //
-// Bridges queued `member_script` commands (queued in center, polled
-// via /api/agent/member-commands) to the matching PowerShell script
-// agent/scripts/run-member-script.ps1. Mirrors the shape of
-// center/mock-member-commands.mjs::dispatchMockMemberCommand so the
-// center-side audit classifier + result handler don't care whether
-// the executor was the mock store or a real member-server agent.
+// ★ R161.35 step 2 (2026-11-22) — REWRITTEN from "free-form script
+//   runner" to "sealed action runner".
 //
-// Contract (matches ad-admin.js dispatchAdCommand):
-//   dispatchMemberCommand({ commandType, params, powerShellPath?,
-//                           scriptsDir?, timeoutMs?, spawnFn?, nowFn? })
+//   Before: the center sent `{ script: "<任意 PowerShell 全文>" }`; this
+//   dispatcher spawned run-member-script.ps1 which did
+//   `Invoke-Expression $body` as SYSTEM. There was no way to bound what the
+//   script could do — the only gate was a 16-pattern deny-list in the
+//   center, which is structurally unable to cover PowerShell's surface
+//   (encoded commands, reflection, dynamic script blocks, persistence
+//   tools that simply aren't in the list).
+//
+//   After: the center sends `{ scriptId, args }`. The dispatcher:
+//     1. checks `scriptId` against the SEALED manifest (member-scripts.js)
+//     2. validates `args` against that script's schema (unknown args are
+//        REJECTED, not dropped)
+//     3. verifies the on-disk .ps1's sha256 against the manifest digest
+//        — this is the direct answer to "someone edited the PowerShell
+//          file on this box", and it runs before powershell.exe exists
+//     4. hands only the validated args to a fixed script that already
+//        ships with the agent
+//
+//   The operator can now choose WHICH action and WHAT arguments. They
+//   cannot send code. Adding a new action means writing a .ps1, sealing it,
+//   and shipping — a deliberate gap that an attacker without the build
+//   cannot cross.
+//
+// Contract:
+//   dispatchMemberCommand({ commandType: 'member_action',
+//                           params: { scriptId, args },
+//                           powerShellPath?, scriptsDir?, timeoutMs?,
+//                           spawnFn?, logger? })
 //     → Promise<{ success, data, error, exitCode, durationMs }>
 //
-// - `commandType` MUST be 'member_script' for R81. Future types can
-//   layer on by extending pickScript() below.
-// - `params` is the JSON object the PS1 reads via ConvertFrom-Json.
-//   It is written to a unique temp file (-ParamsPath) and the file is
-//   deleted on the way out (best-effort).
-// - `spawnFn` is injectable for unit tests; defaults to node:child_process spawn.
-// - On spawn / parse / non-zero-exit failures we synthesize a result
-//   envelope with success:false — the center-side handler only ever
-//   consumes a result envelope, not a thrown error.
-//
-// Password / token fields are NEVER copied into data on the way back.
-// The PS1 doesn't echo them on stdout, and the dispatcher does not log
-// `params` either (spec §3 guard rail #8 — passwords redacted
-// everywhere downstream of the cmdlet call).
+// - Always resolves — NEVER throws — so the heartbeat drainer can await it
+//   without try/catch.
+// - Password / token fields are never echoed by the shipped scripts, and
+//   the dispatcher does not log the raw payload.
 
 import { spawn } from 'node:child_process';
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+// R161.35 step 2 (2026-11-22) — the sealed script manifest. This is what
+// replaces the free-form Invoke-Expression path; see member-scripts.js.
+import { MEMBER_SCRIPTS, validateArgs, resolveScriptFile } from '../member-scripts.js';
 
-const SUPPORTED_TYPES = Object.freeze(new Set(['member_script']));
+// ★ R161.35 step 2 — `member_script` (free-form PowerShell) is RETIRED.
+//   The only command type now is `member_action`, whose payload is
+//   { scriptId, args } — a name into the sealed manifest plus structured
+//   parameters. There is no way to send code.
+const SUPPORTED_TYPES = Object.freeze(new Set(['member_action']));
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_TIMEOUT_SEC = 30;
 
@@ -44,18 +61,51 @@ const DEFAULT_TIMEOUT_SEC = 30;
 const __filename = fileURLToPath(import.meta.url);
 const DEFAULT_SCRIPTS_DIR = resolve(dirname(__filename), '..', '..', 'scripts');
 
-function pickScript(commandType, scriptsDir) {
+/**
+ * Resolve a member action: manifest membership → argument schema →
+ * on-disk integrity.
+ *
+ * ★ The order matters. The integrity check is the answer to "what if
+ *   someone modified the PowerShell file on this box?" — it must run
+ *   BEFORE powershell.exe is ever spawned, and it must run on every
+ *   command (not cached), because the threat is exactly a local edit that
+ *   happens while the agent is running.
+ *
+ * Returns { ok: true, scriptPath, params, timeoutSec } or { ok: false, error }.
+ */
+function pickScript(commandType, params, scriptsDir) {
   if (typeof commandType !== 'string' || commandType.length === 0) {
     return { error: 'commandType required' };
   }
   if (!SUPPORTED_TYPES.has(commandType)) {
     return { error: `unsupported commandType: ${commandType}` };
   }
-  return { script: 'run-member-script.ps1' };
+  const payload = params || {};
+  const scriptId = payload.scriptId;
+  if (typeof scriptId !== 'string' || scriptId.length === 0) {
+    return { error: 'params.scriptId required' };
+  }
+
+  // 1) manifest membership + argument schema
+  const v = validateArgs(scriptId, payload.args);
+  if (!v.ok) return { error: v.error };
+
+  // 2) on-disk integrity (sha256 vs the manifest sealed at build time)
+  const resolved = resolveScriptFile(scriptId, scriptsDir);
+  if (!resolved.ok) return { error: resolved.error };
+
+  return {
+    scriptPath: resolved.scriptPath,
+    params: v.normalized,
+    // The manifest's per-script timeout is authoritative; the caller may
+    // only make it SHORTER, never longer.
+    timeoutSec: resolved.entry.timeoutSec,
+    scriptId,
+  };
 }
 
 function writeParamsFile(params) {
-  const dir = mkdtempSync(join(tmpdir(), 'addash-member-script-'));
+  const dir = mkdtempSync(join(tmpdir(), 'addash-member-action-'));
   const file = join(dir, 'params.json');
   writeFileSync(file, JSON.stringify(params || {}), { encoding: 'utf8' });
   return { dir, file };
@@ -64,7 +114,13 @@ function writeParamsFile(params) {
 // Execute the picked PS1 script and resolve with a normalized result
 // envelope. NEVER throw — any internal error becomes
 // { success:false, error, exitCode:2 }.
-function executeScript({ scriptPath, commandType, paramsPath, timeoutSec, powerShellPath, spawnFn, logger }) {
+//
+// ★ R161.35 step 2 — the argument list no longer carries -CommandType or
+//   -TimeoutSec. Each sealed script is bound to ONE action, so it knows
+//   what to do; the timeout is enforced here (JS kill) and the script's
+//   own internal budget. Passing a command type to a script that already IS
+//   the command was redundant and was one more string to trust.
+function executeScript({ scriptPath, paramsPath, timeoutSec, powerShellPath, spawnFn, logger }) {
   const startedAt = Date.now();
   return new Promise((resolve) => {
     const args = [
@@ -72,9 +128,7 @@ function executeScript({ scriptPath, commandType, paramsPath, timeoutSec, powerS
       '-NonInteractive',
       '-ExecutionPolicy', 'Bypass',
       '-File', scriptPath,
-      '-CommandType', commandType,
-      '-ParamsPath', paramsPath,
-      '-TimeoutSec', String(timeoutSec)
+      '-ParamsPath', paramsPath
     ];
     let child;
     try {
@@ -185,8 +239,13 @@ export async function dispatchMemberCommand({
   logger,
 } = {}) {
   const startedAt = Date.now();
-  const pick = pickScript(commandType, scriptsDir);
+  const pick = pickScript(commandType, params, scriptsDir);
   if (pick.error) {
+    // ★ A rejected action is a security event worth logging: an unknown
+    //   scriptId, a schema violation, or a digest mismatch all land here.
+    //   The center receives it in the result envelope and records it.
+    logger?.warn?.({ commandType, scriptId: params?.scriptId, err: pick.error },
+      'member action rejected');
     return {
       success: false,
       data: null,
@@ -196,26 +255,27 @@ export async function dispatchMemberCommand({
     };
   }
 
-  const scriptPath = join(scriptsDir, pick.script);
+  const { scriptPath, params: normalizedParams, scriptId } = pick;
 
-  // Convert the ms budget the drainer passes into a sec budget the
-  // PS1 reads. The PS1 enforces the actual cap; we clamp here too so
-  // a caller passing timeoutMs=0 doesn't break the script.
-  const timeoutSec = Math.max(
+  // The manifest's per-script timeout is authoritative. A caller may only
+  // shorten it; never lengthen.
+  const requestedSec = Math.max(
     1,
-    Math.min(120, Math.floor(timeoutMs / 1_000) || DEFAULT_TIMEOUT_SEC)
+    Math.floor(Number(timeoutMs) / 1_000) || DEFAULT_TIMEOUT_SEC
   );
+  const timeoutSec = Math.max(1, Math.min(pick.timeoutSec, requestedSec));
 
   let paramsDir = null;
   let paramsPath = null;
   try {
-    const tmp = writeParamsFile(params);
+    // Only the validated, normalized args are handed to the script — never
+    // the raw payload. A field the schema does not name cannot reach PS.
+    const tmp = writeParamsFile(normalizedParams);
     paramsDir = tmp.dir;
     paramsPath = tmp.file;
 
     const result = await executeScript({
       scriptPath,
-      commandType,
       paramsPath,
       timeoutSec,
       powerShellPath,

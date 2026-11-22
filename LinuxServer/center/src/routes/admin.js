@@ -2503,8 +2503,50 @@ export function adminRouter({ config, logger, db }) {
   // ruling #7); agent-claimed / _succeeded / _failed / _timed_out audit
   // rows are emitted by the agent routes + the sweeper.
 
-  // POST /api/admin/member-commands — queue a new PowerShell command
-  // against a member-server hostname.
+  // GET /api/admin/member-commands/actions — the sealed action catalogue.
+  //
+  // ★ R161.35 step 2 (2026-11-22) — the operator no longer types PowerShell.
+  //   This endpoint is what the UI renders its "动作" dropdown + argument
+  //   form from. It returns ONLY names/schemas — never a script path, never
+  //   a digest, never anything that would let a client reason about files on
+  //   the agent. Adding an action = shipping a new manifest entry; there is
+  //   no runtime registration path.
+  //
+  // ★ Registered BEFORE '/api/admin/member-commands/:id' — Express matches in
+  //   registration order and `actions` would otherwise be parsed as an id.
+  r.get('/api/admin/member-commands/actions', authMemberSrv, async (_req, res) => {
+    try {
+      const { MEMBER_SCRIPTS, SCRIPT_IDS } = await import('../services/member-scripts-manifest.js');
+      const actions = SCRIPT_IDS.map((scriptId) => {
+        const entry = MEMBER_SCRIPTS[scriptId];
+        const args = Object.entries(entry.args).map(([name, spec]) => ({
+          name,
+          type: spec.type,
+          label: spec.label ?? name,
+          optional: !!spec.optional,
+          // Only the constraint fields the UI needs to render; the actual
+          // enforcement is server-side in validateArgs().
+          maxLen: spec.maxLen ?? null,
+          pattern: spec.pattern ?? null,
+          values: spec.values ?? null,
+          min: spec.min ?? null,
+          max: spec.max ?? null
+        }));
+        return { scriptId, label: entry.label ?? scriptId, timeoutSec: entry.timeoutSec, args };
+      });
+      res.json({ actions });
+    } catch (e) {
+      logger.error({ err: e }, 'member-commands actions list failed');
+      res.status(500).json({ error: '内部错误' });
+    }
+  });
+
+  // POST /api/admin/member-commands — queue a sealed member action
+  // ({ scriptId, args }) against a member-server hostname.
+  //
+  // ★ Free-form PowerShell (`commandType: 'member_script'`, `params.script`)
+  //   is RETIRED (R161.35 step 2). A payload that still uses it gets a 400
+  //   with an actionable message from the service validator.
   r.post('/api/admin/member-commands', authMemberSrv, async (req, res) => {
     const { hostname, params } = req.body || {};
     if (!hostname || typeof hostname !== 'string') {
@@ -2544,15 +2586,11 @@ export function adminRouter({ config, logger, db }) {
       logger.error({ err: e, hostname }, 'member-commands queue failed');
       return res.status(500).json({ error: '内部错误' });
     }
-    // Audit row (spec §3.4 ruling #7). Payload: redact password-shaped
-    // keys (defense-in-depth — script body is operator-visible so we
-    // include a short script summary + the timeoutSec for context).
-    const scriptSummary = (params && typeof params.script === 'string')
-      ? params.script.slice(0, 256)
-      : null;
-    const timeoutSec = (params && Number.isFinite(Number(params.timeoutSec)))
-      ? Number(params.timeoutSec)
-      : null;
+    // Audit row (spec §3.4 ruling #7). Payload: the action name + its
+    // (redacted) arguments. There is no script body to summarise any more —
+    // `scriptId` IS the whole "what was run" and it is already a closed set.
+    //
+    const scriptId = (params && typeof params.scriptId === 'string') ? params.scriptId : null;
     const auditParams = params ? redactPasswordsForAudit(params) : null;
     // ★ R161.32 (2026-11-07) — 这行原来在**任何 try 之外** (admin.js 51 个
     //   writeAudit 调用点里唯一一个)。而 writeAudit 的非 tx 分支会 reject:
@@ -2571,9 +2609,8 @@ export function adminRouter({ config, logger, db }) {
         payload: {
           commandId: row.id,
           hostname,
-          commandType: 'member_script',
-          timeoutSec,
-          scriptSummary,
+          commandType: 'member_action',
+          scriptId,
           params: auditParams
         },
         logger

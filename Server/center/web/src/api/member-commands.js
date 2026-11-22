@@ -1,4 +1,8 @@
-// 2026-09-05 R81 — member-server PowerShell command execution frontend API client.
+// 2026-09-05 R81 — member-server command execution frontend API client.
+//
+// ★ R161.35 step 2 (2026-11-22) — free-form PowerShell is retired. The UI
+//   now queues a SEALED ACTION: { scriptId, args } picked from the catalogue
+//   returned by `listActions()`. No endpoint here accepts script text.
 //
 // Mirrors the R75 pattern (api/ad-admin.js) — the view talks directly to
 // the API, no Pinia store. Backend routes:
@@ -7,7 +11,8 @@
 //
 // Endpoint reference (R81 spec §2 + §6):
 //   GET  /api/admin/member-commands/hosts   — registered hostnames (heartbeat tokenDeliveryList)
-//   POST /api/admin/member-commands         — queue a new member_script command
+//   GET  /api/admin/member-commands/actions — sealed action catalogue (scriptId + arg schema)
+//   POST /api/admin/member-commands         — queue a member_action command
 //   GET  /api/admin/member-commands         — history (filter by hostname/status, paginated)
 //   GET  /api/admin/member-commands/:id     — single row incl params + result (password-redacted)
 //
@@ -21,17 +26,22 @@ export const memberCommandsApi = {
   // mirrors what the agent itself sees when polling /api/agent/member-commands.
   listHosts: () => api.get('/api/admin/member-commands/hosts'),
 
+  // Sealed action catalogue — the "动作" dropdown + per-action argument form
+  // are rendered from this. Server returns
+  //   { actions: [{ scriptId, label, timeoutSec, args: [{ name, type, label,
+  //                 optional, maxLen, pattern, values, min, max }] }] }.
+  listActions: () => api.get('/api/admin/member-commands/actions'),
+
   // Queue a new command. body = { hostname, commandType, params }.
-  // commandType is always 'member_script' for R81; params = { script, timeoutSec }.
+  // commandType is always 'member_action'; params = { scriptId, args }.
   // Returns 201 with the inserted row (id, status: 'queued', createdAt, ...).
   //
   // R161.35 (2026-11-22) — `force` moved from `params` to the query string.
   //
   // ★ The bug: the UI's "跳过在线检查" checkbox put `force` inside `params`
-  //   (ExecuteCommandModal.vue:198), but the server reads the override from
-  //   the QUERY (`req.query.force` in admin.js:2517) and the service's
-  //   `validateMemberScript` normalizer silently drops every params field
-  //   except `script` and `timeoutSec` (member-commands.js:180). So the
+  //   (ExecuteCommandModal.vue), but the server reads the override from the
+  //   QUERY (`req.query.force` in the admin route) and the service's params
+  //   normalizer silently dropped every field it did not know. So the
   //   checkbox was accepted by the UI, sent to the server, and **ignored** —
   //   a silent failure: the operator believes the online check was skipped
   //   when it was not, and gets a 503 instead.
@@ -43,7 +53,7 @@ export const memberCommandsApi = {
   //   to the agent — a "force" flag has no meaning there. Sending it in
   //   the query keeps it out of the stored params and out of the audit
   //   payload, which is where the AD side already does it (admin.js).
-  queueCommand: ({ hostname, commandType = 'member_script', params, force = false }) =>
+  queueCommand: ({ hostname, commandType = 'member_action', params, force = false }) =>
     api.post(
       '/api/admin/member-commands',
       { hostname, commandType, params },

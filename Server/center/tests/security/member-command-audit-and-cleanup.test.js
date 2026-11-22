@@ -241,48 +241,70 @@ describe('R161.35 B — agent 侧临时目录泄漏', () => {
 
 // ---------------------------------------------------------------------------
 // C. force 字段必须真正生效, 未知字段必须被拒绝
+//
+// ★ R161.35 第 2 步 (2026-11-22) 改写了这里的契约: params 不再是
+//   { script, timeoutSec }, 而是 { scriptId, args }。但 C 组要守的**性质**
+//   没变 —— 未知字段必须响亮拒绝 (而不是静默丢弃), force 必须走 query。
 // ---------------------------------------------------------------------------
 
-describe('R161.35 C — force 字段无声失败', () => {
-  test('C1. 服务端必须拒绝 params 里的 force (并指向 query)', () => {
-    const src = fs.readFileSync(path.join(CENTER_ROOT, 'src', 'services', 'member-commands.js'), 'utf8');
-    assert.match(
-      src,
-      /force is not a command parameter/,
-      '★ 服务端必须对 params.force 给出明确错误 (而不是静默丢弃) —— '
-      + '静默丢弃让操作员以为"跳过在线检查"生效了, 实际没有'
-    );
-    assert.match(
-      src,
-      /unknown field\(s\)/,
-      '必须拒绝一切未知 params 字段 —— 拼错的字段名 (timeout_secs) 不该被静默吞掉'
-    );
-  });
+describe('R161.35 C — force 字段无声失败 / 未知字段拒绝', () => {
+  test('C1. 服务端 params 校验必须拒绝未知顶层字段 (并给出允许清单)', () => {
+    const validate = memberCmd._testInternals.validateMemberAction;
+    assert.ok(validate, '_testInternals 必须暴露 validateMemberAction');
 
-  test('C2. validateMemberScript 必须拒绝 force, 接受 script + timeoutSec', () => {
-    const svc = memberCmd._testInternals;
-    assert.ok(svc, 'member-commands 服务必须导出 _testInternals');
-    const validate = svc.validateMemberScript;
-    assert.ok(validate, '_testInternals 必须暴露 validateMemberScript');
-
-    // force in params => rejected, with the actionable message
-    const withForce = validate({ script: 'Get-Service', timeoutSec: 30, force: true });
+    // force is still not a command parameter — it belongs on the query string
+    const withForce = validate({ scriptId: 'restart_service', args: { serviceName: 'Spooler' }, force: true });
     assert.equal(withForce.ok, false, 'params.force 必须被拒绝');
     assert.match(withForce.error, /force/);
-    assert.match(withForce.error, /query/i, '错误信息必须指向 query 参数 (可操作)');
+    assert.match(withForce.error, /scriptId/, '错误信息必须列出允许的字段 (可操作)');
 
-    // unknown field => rejected
-    const withUnknown = validate({ script: 'Get-Service', timeoutSec: 30, timeout_secs: 30 });
-    assert.equal(withUnknown.ok, false, '未知字段必须被拒绝');
+    // a typo'd field is not silently swallowed
+    const withUnknown = validate({ scriptId: 'restart_service', args: { serviceName: 'Spooler' }, timeout_secs: 30 });
+    assert.equal(withUnknown.ok, false, '未知顶层字段必须被拒绝');
     assert.match(withUnknown.error, /timeout_secs/);
+  });
 
-    // the happy path still works
-    const ok = validate({ script: 'Get-Service', timeoutSec: 30 });
-    assert.equal(ok.ok, true, '正常路径不能被误伤');
-    assert.deepEqual(
-      ok.normalized, { script: 'Get-Service', timeoutSec: 30 },
-      '归一化结果必须只含 script + timeoutSec'
-    );
+  test('C2. validateMemberAction 接受 { scriptId, args } 并按 schema 归一化', () => {
+    const validate = memberCmd._testInternals.validateMemberAction;
+
+    const ok = validate({ scriptId: 'restart_service', args: { serviceName: 'Spooler' } });
+    assert.equal(ok.ok, true, `正常路径不能被误伤: ${ok.error || ''}`);
+    assert.deepEqual(ok.normalized, { scriptId: 'restart_service', args: { serviceName: 'Spooler' } });
+  });
+
+  test('C2b. ★ 自由 PowerShell (params.script) 必须被明确拒绝, 且错误可操作', () => {
+    const validate = memberCmd._testInternals.validateMemberAction;
+    const retired = validate({ script: 'Get-Service', timeoutSec: 30 });
+    assert.equal(retired.ok, false, '★ 自由脚本文本必须被拒绝 —— 整个第 2 步就是为了删掉它');
+    assert.match(retired.error, /retired/i, '错误必须说明这是"已退役"的通道, 不是拼写错误');
+    assert.match(retired.error, /scriptId/, '错误必须告诉调用方改用 { scriptId, args }');
+  });
+
+  test('C2c. 未知 scriptId / 未知 arg / 缺失必填 arg 都必须被拒绝', () => {
+    const validate = memberCmd._testInternals.validateMemberAction;
+
+    const badScript = validate({ scriptId: 'rm_rf', args: {} });
+    assert.equal(badScript.ok, false);
+    assert.match(badScript.error, /unknown scriptId/);
+
+    const badArg = validate({ scriptId: 'restart_service', args: { serviceName: 'Spooler', extra: 1 } });
+    assert.equal(badArg.ok, false);
+    assert.match(badArg.error, /extra/);
+
+    const missing = validate({ scriptId: 'restart_service', args: {} });
+    assert.equal(missing.ok, false);
+    assert.match(missing.error, /serviceName/);
+
+    // schema violation: serviceName with a space can never reach Get-Service
+    const pattern = validate({ scriptId: 'restart_service', args: { serviceName: 'Spooler; calc' } });
+    assert.equal(pattern.ok, false, 'serviceName 必须匹配白名单正则');
+  });
+
+  test('C2d. 服务层的 COMMAND_TYPES 只接受 member_action', () => {
+    const { COMMAND_TYPES, VALIDATORS } = memberCmd._testInternals;
+    assert.deepEqual([...COMMAND_TYPES], ['member_action'], '只允许 member_action');
+    assert.equal(typeof VALIDATORS.member_action, 'function', 'VALIDATORS 必须挂在 member_action 上');
+    assert.equal(VALIDATORS.member_script, undefined, 'member_script 不得再有校验器 (已退役)');
   });
 
   test('C3. 前端必须把 force 放进 query 而不是 params', () => {
@@ -296,22 +318,21 @@ describe('R161.35 C — force 字段无声失败', () => {
     const modalSrc = fs.readFileSync(
       path.join(CENTER_ROOT, 'web', 'src', 'components', 'admin', 'ExecuteCommandModal.vue'), 'utf8');
     // the modal must NOT put force inside params any more
-    const paramsBlock = modalSrc.match(/params:\s*\{[\s\S]*?\}/);
+    const paramsBlock = modalSrc.match(/params:\s*\{[^}]*\}/);
     assert.ok(paramsBlock, 'modal 必须有 params 块');
     assert.doesNotMatch(
       paramsBlock[0],
       /force/,
-      '★ modal 不得再把 force 放进 params —— 那样它会被服务端静默丢弃 (复选框变摆设)'
+      '★ modal 不得再把 force 放进 params —— 那样它会被服务端拒绝 (或静默丢弃, 复选框变摆设)'
     );
     // but it must still be sent, at the top level of the request
-    assert.match(
-      modalSrc,
-      /force:\s*form\.force/,
-      'modal 必须仍然发送 force (只是换到 query 上), 否则功能被砍掉了'
-    );
+    assert.match(modalSrc, /force:\s*form\.force/, 'modal 必须仍然发送 force (只是换到 query 上)');
+
+    // and the modal must no longer send script text
+    assert.doesNotMatch(modalSrc, /script:\s*form\.script/, '★ modal 不得再提交自由脚本文本');
   });
 
-  test('C4. ★ 负向测试: 旧的"塞进 params"实现必须被 C1/C3 的判据抓出来', () => {
+  test('C4. ★ 负向测试: 旧的"塞进 params"实现必须被 C3 的判据抓出来', () => {
     const oldApi = [
       "queueCommand: ({ hostname, commandType = 'member_script', params }) =>",
       "  api.post('/api/admin/member-commands', { hostname, commandType, params }),"
@@ -323,8 +344,96 @@ describe('R161.35 C — force 字段无声失败', () => {
     );
 
     const oldModal = 'params: { script: form.script, timeoutSec: form.timeoutSec, force: form.force }';
-    const paramsBlock = oldModal.match(/params:\s*\{[\s\S]*?\}/);
+    const paramsBlock = oldModal.match(/params:\s*\{[^}]*\}/);
     assert.match(paramsBlock[0], /force/,
       '旧实现的 params 里含 force, 必须被 C3 的判据抓到');
+    assert.match(oldModal, /script:\s*form\.script/,
+      '旧实现的 params 里含脚本文本, 必须被 C3 的"不得提交脚本文本"判据抓到');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D. 退役证明: 自由脚本执行链必须整条消失
+//
+// ★ 这些是"负向不变量" —— 断言某些东西**不存在**。它们比断言"新东西存在"
+//   更容易因为合法注释而误报, 所以 D2 会先剥掉注释, 再由 D4 证明剥离逻辑
+//   既不会漏掉真调用, 也不会把注释当成调用。
+// ---------------------------------------------------------------------------
+
+// Strip // and /* */ comments so "the code used to do X" notes don't trip
+// the negative invariants above. Deliberately dumb: this only ever runs on
+// our own source, and a wrong strip is caught by D4.
+//
+// ★ 第一版的判据是「排除冒号」的行内注释正则 —— 想避开 http:// 这种 URL,
+//   结果是把注释**删掉**而不是保留, 于是「注释里的 Invoke-Expression」和
+//   「真调用」都变成不存在, 判据完全分不开 (D4 当场抓到了这个假绿)。
+//   现在按行处理: 整行注释直接丢弃, 行尾注释截断 (引号后的 // 不算注释)。
+//
+// ★ 正则用 RegExp 构造器写, 是为了让这个文件本身不出现裸的 /* 序列,
+//   免得本文件被别的、更粗的剥离器误伤 —— 教训来自 R161.35 第 2 步里
+//   反复踩的「注释/字符串里的特殊字符被当成代码」这一类。
+const BLOCK_COMMENT_RE = new RegExp('/\\*[\\s\\S]*?\\*/', 'g');
+const LINE_SPLIT_RE = new RegExp('\r?\n');
+const FULL_LINE_COMMENT_RE = new RegExp('^\\s*//');
+const TRAILING_COMMENT_RE = new RegExp("(^|[^:'\"])\\/\\/.*$");
+function stripComments(src) {
+  return src
+    .replace(BLOCK_COMMENT_RE, '')
+    .split(LINE_SPLIT_RE)
+    .filter((line) => !FULL_LINE_COMMENT_RE.test(line))
+    .map((line) => line.replace(TRAILING_COMMENT_RE, '$1'))
+    .join(String.fromCharCode(10));
+}
+
+describe('R161.35 第 2 步 D — 自由 PowerShell 执行链退役', () => {
+  test('D1. run-member-script.ps1 必须在四棵树里都不存在', () => {
+    const candidates = [
+      path.join(SERVER_ROOT, 'agent', 'scripts', 'run-member-script.ps1'),
+      path.join(SERVER_ROOT, 'noadagent', 'scripts', 'run-member-script.ps1'),
+      path.join(REPO_ROOT, 'ADAgent', 'agent', 'scripts', 'run-member-script.ps1'),
+      path.join(REPO_ROOT, 'MemberAgent', 'agent', 'scripts', 'run-member-script.ps1')
+    ];
+    for (const f of candidates) {
+      assert.equal(fs.existsSync(f), false,
+        `★ ${f} 必须被删除 —— 它是 Invoke-Expression 的执行入口, 留着就等于留着 RCE`);
+    }
+  });
+
+  test('D2. 四棵树的 dispatcher 都不得再出现 Invoke-Expression / -Command', () => {
+    const dispatchers = [
+      path.join(SERVER_ROOT, 'agent', 'src', 'dispatchers', 'member-commands.js'),
+      path.join(SERVER_ROOT, 'noadagent', 'src', 'dispatchers', 'member-commands.js'),
+      path.join(REPO_ROOT, 'ADAgent', 'agent', 'src', 'dispatchers', 'member-commands.js'),
+      path.join(REPO_ROOT, 'MemberAgent', 'agent', 'src', 'dispatchers', 'member-commands.js')
+    ];
+    for (const f of dispatchers) {
+      assert.ok(fs.existsSync(f), `${f} 必须存在 (它现在只调度密封动作)`);
+      const stripped = stripComments(fs.readFileSync(f, 'utf8'));
+      assert.doesNotMatch(stripped, /Invoke-Expression/i,
+        `${f}: 不得调用 Invoke-Expression (注释里的历史说明不算)`);
+      assert.doesNotMatch(stripped, /['"]-Command['"]/,
+        `${f}: 不得再用 powershell -Command 传代码 —— 只能是 -File + -ParamsPath`);
+    }
+  });
+
+  test('D3. 中心侧的 deny-list 不得复活', () => {
+    const { DENIED_PATTERNS } = memberCmd._testInternals;
+    assert.equal(DENIED_PATTERNS.length, 0,
+      '★ 正则黑名单不能复活 —— 它守不住 PowerShell, 真正的闸门是密封清单');
+  });
+
+  test('D4. ★ 负向测试: 判据必须能区分真调用与历史注释', () => {
+    const broken = [
+      "const args = ['-NoProfile', '-Command', body];",
+      'Invoke-Expression $body;',
+      '// 历史注释: 以前这里就是 Invoke-Expression $body;'
+    ].join('\n');
+    assert.match(stripComments(broken), /Invoke-Expression/i, '判据必须能抓到真调用');
+    assert.match(stripComments(broken), /['"]-Command['"]/);
+    const clean = [
+      '// historical: used to call Invoke-Expression, see R161.35',
+      "const args = ['-File', scriptPath, '-ParamsPath', paramsPath];"
+    ].join('\n');
+    assert.doesNotMatch(stripComments(clean), /Invoke-Expression/i, '纯注释不得误报');
   });
 });
